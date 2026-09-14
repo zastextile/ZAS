@@ -530,6 +530,189 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
   border-top:1px solid var(--bd-2) !important;backdrop-filter:none !important;
   background:var(--panel) !important}
 
+/* ============================================================
+   THE PRODUCTION MODULE — .zp-card / .zp-t / .zp-b
+   ------------------------------------------------------------
+   Eleven pages share this vocabulary, and every one of them carries its
+   own copy of the definitions, pasted in:
+
+     product_master.php        production_reports.php
+     production_entry.php      production_dashboard.php
+     production_ops_bulk.php   production_amend.php
+     production_stages.php     production_workers.php
+     production_order_rates.php  production_my_work.php
+     part_library.php
+
+   So mapping the three names ONCE here converts the whole module, and each
+   page needs nothing but its own <div class="zskin"> wrapper. A page's own
+   <style> loads after this file, which is why every rule below says
+   !important — the same mechanism .zbtn and .ztable already rely on.
+
+   Nothing here is behaviour. Colour, spacing, border and weight only.
+   ============================================================ */
+.zskin .zp-card{
+  background:var(--panel) !important;border:1px solid var(--bd) !important;
+  border-radius:8px !important;box-shadow:none !important;
+  padding:12px 14px !important;margin-bottom:10px !important}
+.zskin .zp-card h2{margin:0 0 9px !important;font-size:13.5px !important;
+  font-weight:600 !important;color:var(--fg) !important}
+
+.zskin table.zp-t{font-size:12.5px !important}
+.zskin table.zp-t th{
+  background:var(--sub) !important;color:var(--fg-2) !important;
+  font-size:10.5px !important;font-weight:600 !important;
+  text-transform:none !important;letter-spacing:0 !important;
+  padding:0 8px !important;height:30px !important;white-space:nowrap;
+  border-bottom:1px solid var(--bd) !important;
+  border-right:1px solid var(--bd-2) !important}
+.zskin table.zp-t th:last-child{border-right:0 !important}
+.zskin table.zp-t td{
+  padding:0 8px !important;height:var(--rowh);vertical-align:middle;
+  border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important}
+.zskin table.zp-t td:last-child{border-right:0 !important}
+.zskin table.zp-t tbody tr{transition:background var(--t)}
+.zskin table.zp-t tbody tr:hover>td{background:var(--hover) !important}
+.zskin table.zp-t tfoot td{background:var(--sub) !important;font-weight:600 !important}
+/* a cell holding a code UNDER its label is two lines by design on these
+   pages (worker name + code, product + PI). Left alone — unlike the costing
+   grid, the second line here is data somebody reads, not a status badge. */
+.zskin table.zp-t td:has(>div.code){height:auto;padding-top:3px !important;padding-bottom:3px !important}
+
+/* flat cells wherever a .zp-t row holds an input, same as every other grid */
+.zskin table.zp-t td>.zin{
+  width:100% !important;height:calc(var(--rowh) - 2px) !important;
+  border:1px solid transparent !important;border-radius:0 !important;
+  background:transparent !important;padding:0 6px !important;
+  box-shadow:none !important;transition:border-color var(--t),background var(--t),box-shadow var(--t)}
+.zskin table.zp-t td>.zin:hover{border-color:var(--bd) !important}
+.zskin table.zp-t td>.zin:focus{border-color:var(--acc) !important;
+  background:var(--panel) !important;box-shadow:inset 0 0 0 1px var(--acc) !important}
+.zskin table.zp-t td>.zin.num,.zskin table.zp-t .num{
+  text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+/* OVER stays loud. It is the one state on this page that must never be
+   quietened by a density pass — it is what stops a wage being over-booked. */
+.zskin .zin.over,.zskin .over{
+  border-color:var(--bad) !important;background:var(--bad-soft) !important;
+  box-shadow:inset 0 0 0 1px var(--bad) !important}
+
+.zskin .zp-b{
+  height:28px;display:inline-flex;align-items:center;gap:5px;
+  padding:0 12px !important;border-radius:5px !important;
+  border:1px solid var(--bd) !important;background:var(--panel) !important;
+  color:var(--fg-2) !important;font-family:var(--ui) !important;
+  font-size:12px !important;font-weight:500 !important;box-shadow:none !important;
+  cursor:pointer;transition:all var(--t)}
+.zskin .zp-b:hover{background:var(--hover) !important;border-color:var(--fg-4) !important;
+  color:var(--fg) !important}
+/* SAVE AND DELETE MUST NOT LOOK THE SAME. .zp-b forces its background, so
+   each intent is named rather than left to whichever rule wins. */
+.zskin .zp-b.pri,.zskin .zp-b.ok{background:var(--acc) !important;border-color:var(--acc) !important;
+  color:#fff !important;font-weight:600 !important}
+.zskin .zp-b.pri:hover,.zskin .zp-b.ok:hover{filter:brightness(1.08);background:var(--acc) !important}
+.zskin .zp-b.red{background:var(--panel) !important;border-color:var(--bd) !important;
+  color:var(--bad) !important;font-weight:500 !important}
+.zskin .zp-b.red:hover{background:var(--bad-soft) !important;border-color:var(--bad) !important;filter:none}
+.zskin .zp-b.sm{height:24px;padding:0 8px !important;font-size:11px !important}
+.zskin .zp-b[disabled]{opacity:.45;cursor:not-allowed;filter:none}
+
+/* the small round status pills become square badges, like everywhere else */
+.zskin .pill{border-radius:3px !important;font-size:10px !important;font-weight:600 !important;
+  letter-spacing:0 !important;padding:2px 6px !important}
+.zskin .pill.cut{background:var(--warn-soft) !important;color:var(--warn) !important}
+.zskin .pill.man{background:var(--acc-soft) !important;color:var(--acc) !important}
+.zskin .pill.st{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .pill.canc{background:var(--bad-soft) !important;color:var(--bad) !important}
+.zskin .code{font-family:var(--mono) !important;font-size:11px !important;color:var(--fg-3) !important}
+.zskin .lab{font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
+  color:var(--fg-4) !important;margin-bottom:3px !important}
+.zskin .tot{background:var(--sub) !important;border:1px solid var(--bd) !important;
+  border-radius:6px !important;padding:8px 11px !important;font-size:12px !important}
+.zskin .tot b{font-size:14px !important;font-family:var(--mono);color:var(--fg) !important}
+/* .note AND .empty ARE SCOPED TO .zp-card ON PURPOSE.
+   product_costing.php defines both names too, and means something different
+   by .empty — a bare inline message with NO padding, which a blanket
+   padding:20px would have pushed 20px apart for no reason anyone could see
+   in that page's own markup. .zp-card exists only on the production pages,
+   so this reaches theirs and leaves costing's alone. (The .zgrid lesson,
+   caught again by the same test.) */
+.zskin .zp-card .note{border-radius:6px !important;font-size:12px !important;padding:9px 11px !important}
+.zskin .zp-card .note.info{background:var(--acc-soft) !important;border-color:var(--acc-bd) !important;
+  color:var(--fg-2) !important}
+.zskin .zp-card .note.warn{background:var(--warn-soft) !important;border-color:#f0ddb9 !important;
+  color:var(--warn) !important}
+.zskin .zp-card .empty{color:var(--fg-4) !important;font-size:12.5px !important;padding:20px !important}
+.zskin .flash{border-radius:6px !important;font-size:12.5px !important;padding:9px 12px !important;
+  font-weight:500 !important}
+
+/* ---------- the Daily Entry picker, .ze-* ----------
+   Only production_entry.php uses these, but they live here with the rest of
+   the module so the whole screen is one language. */
+.zskin .ze-tabs{background:var(--sub) !important;border:1px solid var(--bd) !important;
+  border-radius:6px !important;padding:0 !important;gap:0 !important;
+  width:fit-content;overflow:hidden;margin-bottom:10px !important}
+.zskin .ze-tab{flex:none !important;min-width:0 !important;border-radius:0 !important;
+  padding:6px 16px !important;color:var(--fg-3) !important;
+  border-right:1px solid var(--bd) !important;transition:all var(--t)}
+.zskin .ze-tab:last-child{border-right:0 !important}
+.zskin .ze-tab b{font-size:12.5px !important;font-weight:600 !important}
+.zskin .ze-tab span{font-size:10.5px !important;color:var(--fg-4) !important;opacity:1 !important}
+.zskin .ze-tab[aria-selected="true"]{background:var(--panel) !important;color:var(--fg) !important;
+  box-shadow:inset 0 -2px 0 var(--acc) !important}
+.zskin .ze-tab[aria-selected="true"] span{color:var(--fg-3) !important}
+
+.zskin .ze-in{
+  padding:0 70px 0 32px !important;height:32px;border:1px solid var(--bd) !important;
+  border-radius:5px !important;background:var(--panel) !important;
+  font-size:12.5px !important;font-weight:400 !important;font-family:var(--ui) !important}
+.zskin .ze-in:focus{border-color:var(--acc) !important;box-shadow:0 0 0 3px var(--acc-soft) !important}
+.zskin .ze-srch svg{width:14px;height:14px;left:10px;color:var(--fg-4)}
+.zskin .ze-cnt{right:10px;font-family:var(--mono);font-size:10.5px;color:var(--fg-4)}
+.zskin .ze-hint{font-size:10.5px !important;color:var(--fg-4) !important;margin:6px 1px 0 !important}
+.zskin .ze-hint kbd{background:var(--panel) !important;border-color:var(--bd) !important;
+  color:var(--fg-3) !important;border-radius:3px !important;font-family:var(--mono) !important}
+
+.zskin .ze-res{border:1px solid var(--bd) !important;border-radius:6px !important;
+  background:var(--panel) !important;max-height:274px !important;margin-top:6px !important}
+.zskin .ze-row{padding:5px 9px !important;border-bottom:1px solid var(--bd-2) !important;
+  gap:10px !important;color:var(--fg) !important;transition:background var(--t)}
+.zskin .ze-row:last-child{border-bottom:0 !important}
+.zskin .ze-row:hover{background:var(--hover) !important}
+.zskin .ze-row[data-cur="1"]{background:var(--sel) !important;box-shadow:inset 2px 0 0 var(--acc) !important}
+.zskin .ze-t{font-size:12.5px !important;font-weight:500 !important;letter-spacing:0 !important;
+  margin-bottom:0 !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.zskin .ze-s{font-size:10.5px !important;color:var(--fg-3) !important;gap:5px !important;margin-top:1px}
+.zskin .ze-s i{color:var(--bd) !important}
+.zskin .ze-chip{border-radius:3px !important;font-size:10px !important;font-weight:500 !important;
+  padding:0 5px !important;border-color:var(--bd) !important;color:var(--fg-3) !important;
+  background:var(--panel) !important}
+.zskin .ze-usual{border-radius:3px !important;font-size:10px !important;letter-spacing:0 !important;
+  text-transform:none !important;font-weight:600 !important;padding:0 5px !important;
+  background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .ze-left{font-family:var(--mono) !important;font-size:13px !important;font-weight:600 !important;
+  color:var(--ok) !important;line-height:1.1}
+.zskin .ze-left small{font-family:var(--ui) !important;font-size:9px !important;font-weight:400 !important;
+  text-transform:none !important;letter-spacing:.03em !important;color:var(--fg-4) !important}
+.zskin .ze-res mark{background:#fff3b0 !important;color:inherit !important;font-weight:600 !important;
+  border-radius:2px !important}
+.zskin .ze-none{padding:9px !important;font-size:12px !important;color:var(--fg-3) !important}
+.zskin .ze-head{background:var(--acc-soft) !important;border:1px solid var(--acc-bd) !important;
+  border-radius:6px !important;padding:7px 10px !important;margin-top:8px !important}
+.zskin .ze-head h3{font-size:13px !important;font-weight:600 !important;letter-spacing:0 !important;
+  margin:0 !important;color:var(--fg) !important}
+.zskin .ze-chips{gap:5px !important;margin-top:3px !important}
+.zskin .ze-stash{border:1px solid var(--bd) !important;border-radius:6px !important;margin-top:9px !important}
+.zskin .ze-stash h4{background:var(--sub) !important;color:var(--fg-3) !important;
+  font-size:10.5px !important;letter-spacing:0 !important;text-transform:none !important;
+  font-weight:600 !important;padding:6px 10px !important;border-color:var(--bd) !important}
+.zskin .ze-sl{padding:5px 10px !important;font-size:12px !important;
+  border-bottom:1px solid var(--bd-2) !important}
+.zskin .ze-sl .x{border-radius:3px !important;width:20px;height:20px;border-color:var(--bd) !important;
+  color:var(--fg-4) !important;font-size:12px}
+.zskin .ze-sl .x:hover{border-color:var(--bad) !important;color:var(--bad) !important;
+  background:var(--bad-soft) !important}
+.zskin .zesug{box-shadow:0 10px 30px rgba(21,32,51,.14) !important}
+
 /* ---------- empty state ---------- */
 .zskin .zempty{padding:34px 18px;text-align:center;color:var(--fg-3);font-size:12.5px}
 .zskin .zempty h4{margin:0 0 3px;font-size:13px;font-weight:600;color:var(--fg)}
