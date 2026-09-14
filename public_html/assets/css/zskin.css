@@ -711,7 +711,12 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
   color:var(--fg-4) !important;font-size:12px}
 .zskin .ze-sl .x:hover{border-color:var(--bad) !important;color:var(--bad) !important;
   background:var(--bad-soft) !important}
-.zskin .zesug{box-shadow:0 10px 30px rgba(21,32,51,.14) !important}
+/* The in-row panel is moved out of the grid at runtime — it was being clipped
+   by the overflow-x:auto wrapper around the table. It is re-parented to the
+   .zskin wrapper rather than to <body> precisely so these rules still reach
+   it; every .ze-* rule above is written as a descendant of .zskin. */
+.zskin .zesug{box-shadow:0 12px 34px rgba(21,32,51,.18) !important;
+  max-height:none !important;margin-top:0 !important}
 
 /* ---------- empty state ---------- */
 .zskin .zempty{padding:34px 18px;text-align:center;color:var(--fg-3);font-size:12.5px}

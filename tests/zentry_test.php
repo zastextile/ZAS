@@ -93,6 +93,13 @@ global.document={ getElementById(id){ return el[id] || (el[id]=mkEl()); },
   querySelectorAll(){return []}, querySelector(){return null},
   createElement(){return mkEl()}, addEventListener(){} };
 global.window=global; global.alert=function(){}; global.prompt=function(){return null};
+/* A REAL WINDOW ALWAYS HAS THESE. The picker registers scroll/resize handlers
+   so its list can follow the input it is anchored to; this stub had no
+   addEventListener, so the page looked broken when only the stub was.
+   Recorded here rather than guarded in the page — shipping `if
+   (window.addEventListener)` to satisfy a test would be the tail wagging. */
+global.addEventListener=function(){}; global.removeEventListener=function(){};
+global.innerWidth=1280; global.innerHeight=900;
 let src=fs.readFileSync(process.argv[2],'utf8');
 /* feed it real data in place of the PHP holes */
 src=src.replace('var WORK    = null;', `var WORK = ${JSON.stringify([

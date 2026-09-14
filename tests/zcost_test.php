@@ -320,7 +320,10 @@ ok(str_contains($php, 'discards unsaved changes'), 'and Reset now says what it d
 
 echo "11. The cache is busted, or nobody sees any of this\n";
 ok(str_contains($php, 'costing.js?v=27'), 'costing.js version raised');
-ok(str_contains(file_get_contents($B . 'includes/layout.php'), 'zskin.css?v=6'), 'zskin.css version raised');
+/* NOT PINNED TO A NUMBER. Asserting v=6 here meant the next legitimate
+   cache-bust failed this test — the same trap batch2_test.php had. */
+ok((bool)preg_match('~zskin\.css\?v=\d+~', file_get_contents($B . 'includes/layout.php')),
+   'zskin.css is cache-busted');
 
 echo "12. Why is written down, so the next person does not undo it\n";
 ok(str_contains($css, 'A THIRD table class'), 'the skin records that it had missed this grid');

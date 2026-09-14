@@ -32,8 +32,10 @@ $lifted = grab($pe, 'function zeWorkOpt(')
         . grab($pe, 'function zeWorkerOpt(')
         . grab($pe, 'function zeRowHtml(')
         . grab($pe, 'function zePaint(')
-        . grab($pe, 'function sugq(')
-        . grab($pe, 'function sugList(');
+        . grab($pe, 'function sugList(')
+        . grab($pe, 'function zeSugBox(')
+        . grab($pe, 'function zeSugPlace(')
+        . grab($pe, 'function zeSugHide(');
 $lifted = preg_replace('/<\?=[\s\S]*?\?>/', 'null', $lifted);
 file_put_contents(__DIR__ . '/.zp.js', $lifted);
 
@@ -86,7 +88,9 @@ const stubs = `
 (async () => {
   const lifted = fs.readFileSync(process.argv[2], 'utf8');
   const css    = fs.readFileSync(process.argv[3], 'utf8');
+  const ownCss = fs.readFileSync(process.argv[4], 'utf8');
   const page = `<!doctype html><meta charset="utf-8"><style>${css}</style>
+    <style>${ownCss}</style>
     <style>body{margin:0}
       .ze-res{border:1px solid #ccc}
       .ze-row{display:grid;grid-template-columns:minmax(0,1fr) auto;width:100%;
@@ -94,7 +98,16 @@ const stubs = `
       .ze-s{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
     </style>
     <div class="zskin"><div class="ze-res" id="top"></div>
-      <div class="ze-res zesug" id="sug0"></div></div>
+      <!-- THE CLIPPING ANCESTOR, REPRODUCED EXACTLY. production_entry.php
+           wraps its grid in this, and overflow-x:auto makes it a scroll
+           container: CSS computes overflow-y as auto too, so anything
+           absolutely positioned inside it is cut off vertically AND gets a
+           scrollbar. That is what the popup used to live in. -->
+      <div style="overflow-x:auto" id="clipbox">
+        <table class="zp-t" style="min-width:760px"><tbody id="erows"><tr>
+          <td style="position:relative"><input class="zin pk" id="pk0" value="x"></td>
+        </tr></tbody></table>
+      </div></div>
     <script>${stubs}\n${lifted}
       window.__set = function(t,p){ tab=t; picked=p; };
       window.__topPaint = function(list,terms){
@@ -103,9 +116,15 @@ const stubs = `
                                      : zeWorkerOpt(w,0,'zePick('+i+')','onclick')),
           terms, 0, 60);
       };
+      var sugRow = 0;
+      function $(i){ return document.getElementById(i); }
       window.__sugPaint = function(text){
-        zePaint(document.getElementById('sug0'), sugList(0, text),
+        var pop = zeSugBox();
+        zePaint(pop, sugList(0, text),
           (text||'').trim().toLowerCase().split(/\\s+/).filter(Boolean), 0, 12);
+        pop.hidden = false;
+        zeSugPlace(document.getElementById('pk0'));
+        return pop;
       };
     <\/script>`;
 
@@ -140,9 +159,9 @@ const stubs = `
 
     __set('A', WORK[1]);                 // picked: Flat Sheet -> Overlock (op 201)
     __sugPaint('ash');
-    r.A_sug = shape('sug0');
+    r.A_sug = shape('zeSugBox');
     __sugPaint('');
-    r.A_sugFirst = document.querySelector('#sug0 .ze-t').textContent;  // learned default first
+    r.A_sugFirst = document.querySelector('#zeSugBox .ze-t').textContent;  // learned default first
 
     /* ---- TAB B: top list is WORKERS, in-row list is WORK ---- */
     __set('B', null);
@@ -151,33 +170,51 @@ const stubs = `
 
     __set('B', WORKERS[0]);              // picked: the worker who usually does 201
     __sugPaint('overlock');
-    r.B_sug = shape('sug0');
-    r.B_sugCount = document.querySelectorAll('#sug0 .ze-row').length;
+    r.B_sug = shape('zeSugBox');
+    r.B_sugCount = document.querySelectorAll('#zeSugBox .ze-row').length;
 
     /* a FINISHED job must never be offered in the row */
     __sugPaint('finished');
-    r.B_finished = document.querySelectorAll('#sug0 .ze-row').length;
+    r.B_finished = document.querySelectorAll('#zeSugBox .ze-row').length;
 
     /* the cut is stated, never silent */
     const many = [];
     for (let i = 0; i < 40; i++) many.push(Object.assign({}, WORK[0], {k:'x'+i}));
-    zePaint(document.getElementById('sug0'),
+    zePaint(zeSugBox(),
       many.map(w => zeWorkOpt(w, "zeSugSet(0,'"+w.k+"')", 'onmousedown')), [], 0, 12);
-    r.capRows = document.querySelectorAll('#sug0 .ze-row').length;
-    r.capSaid = (document.querySelector('#sug0 .ze-none') || {}).textContent || '';
+    r.capRows = document.querySelectorAll('#zeSugBox .ze-row').length;
+    r.capSaid = (document.querySelector('#zeSugBox .ze-none') || {}).textContent || '';
 
-    /* a quote in a key must not break out of the onmousedown attribute */
-    zePaint(document.getElementById('sug0'),
-      [zeWorkOpt(Object.assign({}, WORK[0], {k:"it's"}), "zeSugSet(0,'" + sugq("it's") + "')", 'onmousedown')],
-      [], 0, 12);
-    r.quoteClick = document.querySelector('#sug0 .ze-row').getAttribute('onmousedown');
+    /* THE CLIPPING, MEASURED. Repaint a full list and ask the browser where
+       every row actually ended up — not whether the CSS says the right words. */
+    const pop = __sugPaint('flat');
+    const pr  = pop.getBoundingClientRect();
+    const prows = [...pop.querySelectorAll('.ze-row')];
+    r.panelParent     = pop.parentElement.className;
+    r.panelInsideClip = !!pop.closest('#clipbox');
+    r.panelInsideSkin = !!pop.closest('.zskin');
+    r.rowsCut = prows.filter(x => { const b = x.getBoundingClientRect();
+      return b.bottom > pr.bottom + 0.5 || b.top < pr.top - 0.5; }).length;
+    r.panelOnScreen = pr.top >= -0.5 && pr.bottom <= innerHeight + 0.5
+                   && pr.left >= -0.5 && pr.right <= innerWidth + 0.5;
+    r.rowWeight = getComputedStyle(pop.querySelector('.ze-t')).fontWeight;
+    r.panelPos  = getComputedStyle(pop).position;
+    /* a value carrying a quote must survive as an ATTRIBUTE now, not as a
+       hand-escaped JS string literal */
+    /* NOT <b>: every work row legitimately has one around its PI number, so
+       counting those proves nothing. <img> could only come from an injection. */
+    zePaint(pop, [zeWorkOpt(Object.assign({}, WORK[0], {k:'it"s & <img src=x>'}), '', '')], [], 0, 12);
+    const qrow = pop.querySelector('.ze-row');
+    r.quotePick   = qrow.getAttribute('data-pick');
+    r.quoteNoTags = qrow.querySelectorAll('img').length;
+    r.noInline    = qrow.getAttribute('onmousedown');
 
     /* markup in a worker name must stay text, never become tags */
-    zePaint(document.getElementById('sug0'),
+    zePaint(zeSugBox(),
       [zeWorkerOpt({id:9,name:'<img src=x onerror=alert(1)>',code:'W-9',dept:'X'},0,'x','onmousedown')],
       ['img'], 0, 12);
-    r.xssImgs = document.querySelectorAll('#sug0 img').length;
-    r.xssText = document.querySelector('#sug0 .ze-t').textContent;
+    r.xssImgs = document.querySelectorAll('#zeSugBox img').length;
+    r.xssText = document.querySelector('#zeSugBox .ze-t').textContent;
     return r;
   });
   out.pageErrors = errs;
@@ -186,9 +223,15 @@ const stubs = `
 })();
 JS;
 file_put_contents(__DIR__ . '/.zp_harness.js', $harness);
+/* BOTH stylesheets. The page's own <style> carries .zesug{position:fixed},
+   and zskin.css carries the row styling — testing one without the other
+   tests half the fix. */
+preg_match_all('/<style>([\s\S]*?)<\/style>/', $pe, $sm);
+file_put_contents(__DIR__ . '/.zp_own.css', implode("\n", $sm[1]));
 $raw = shell_exec('node ' . escapeshellarg(__DIR__ . '/.zp_harness.js') . ' '
     . escapeshellarg(__DIR__ . '/.zp.js') . ' '
-    . escapeshellarg($B . 'assets/css/zskin.css') . ' 2>&1');
+    . escapeshellarg($B . 'assets/css/zskin.css') . ' '
+    . escapeshellarg(__DIR__ . '/.zp_own.css') . ' 2>&1');
 $r = json_decode(trim((string)$raw), true);
 
 if (!is_array($r)) { echo "  FAIL: it did not run —\n$raw\n\n0 passed, 1 failed\n"; exit(1); }
@@ -244,10 +287,27 @@ echo "7. A name cannot break the row it is drawn into\n";
 ok($r['xssImgs'] === 0, 'markup in a name stays text, got ' . $r['xssImgs'] . ' tags');
 ok($r['xssText'] === '<img src=x onerror=alert(1)>', '  and reads back exactly, got '
    . json_encode($r['xssText']));
-ok(str_contains($r['quoteClick'], "it\\'s"),
-   'an apostrophe in a key is escaped inside the handler, got ' . json_encode($r['quoteClick']));
+ok($r['quotePick'] === 'it"s & <img src=x>',
+   'a quote in a key survives as an attribute, got ' . json_encode($r['quotePick']));
+ok($r['quoteNoTags'] === 0, '  and cannot inject a tag through it');
+ok($r['noInline'] === null,
+   'the in-row row carries NO inline handler, so a pick cannot fire twice, got '
+   . json_encode($r['noInline']));
+
+echo "7b. THE SECOND LIST IS NOT CLIPPED — this is what you reported\n";
+ok($r['panelInsideClip'] === false,
+   'the panel is NOT inside the overflow-x:auto wrapper any more');
+ok($r['panelInsideSkin'] === true,
+   'but it IS still inside .zskin, or it would lose every skin rule');
+ok($r['panelParent'] === 'zskin', '  re-parented to the outermost wrapper, got '
+   . json_encode($r['panelParent']));
+ok($r['panelPos'] === 'fixed', 'it is placed against the viewport, got ' . $r['panelPos']);
+ok($r['rowsCut'] === 0, 'NOT ONE ROW IS CUT OFF, got ' . $r['rowsCut'] . ' clipped');
+ok($r['panelOnScreen'] === true, 'and the whole panel is on screen');
+ok($r['rowWeight'] === '500', 'the skin still styles its rows, got ' . $r['rowWeight']);
 
 @unlink(__DIR__ . '/.zp.js'); @unlink(__DIR__ . '/.zp_harness.js');
+@unlink(__DIR__ . '/.zp_own.css');
 
 echo "8. There is ONE renderer now, not two copies that can drift\n";
 ok(substr_count($pe, 'function zeRowHtml(') === 1, 'one row renderer, got '

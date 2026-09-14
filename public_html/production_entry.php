@@ -264,11 +264,15 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .ze-sl .x:hover{border-color:#cf3350;color:#cf3350;background:#fdeef1}
 .over{border-color:#cf3350 !important;box-shadow:0 0 0 3px rgba(207,51,80,.14) !important}
 
-/* the in-row list. It carries the same rows as the top list now, which do not
-   fit a cell's width — so it is given its own, and allowed to overhang. */
-.zesug{position:absolute;z-index:30;left:0;margin-top:2px;background:#fff;
-       min-width:430px;max-width:min(560px,86vw);box-shadow:0 10px 30px rgba(21,32,51,.16)}
-@media(max-width:620px){.zesug{min-width:0;right:0}}
+/* THE IN-ROW LIST IS FIXED TO THE VIEWPORT, NOT PARKED IN THE CELL.
+   The grid sits inside <div style="overflow-x:auto">, and any overflow other
+   than visible turns that div into a scroll container that clips absolutely
+   positioned children — and CSS computes overflow-y as auto whenever
+   overflow-x is auto, so it clipped vertically too. The list showed one row
+   and half of the next, with a scrollbar of its own. It now lives on <body>
+   and is placed against the input by script. */
+.zesug{position:fixed;z-index:120;background:#fff;overflow-y:auto;
+       box-shadow:0 12px 34px rgba(21,32,51,.18)}
 /* the running ceiling, beside the row hints */
 .ze-cap{font-size:11px;color:#8a97ab;font-family:ui-monospace,monospace}
 .ze-cap.bad{color:#cf3350;font-weight:800}
@@ -592,7 +596,16 @@ table.zp-t tbody tr:hover{background:#fafcff}
 
   function zeRowHtml(o, t, isCur){
     return '<button type="button" class="ze-row" data-cur="' + (isCur ? 1 : 0) + '"'
-      + ' ' + (o.ev || 'onclick') + '="' + o.click + '">'
+      /* the value is on the element as well as in the handler: the body-level
+         panel reads it back on mousedown and on Enter, without having to parse
+         an attribute or fake an event */
+      + ' data-pick="' + esc(o.v) + '"'
+      /* The top list keeps an inline onclick (zePick is index-based). The
+         in-row list passes none: its panel sits on the body and handles the
+         whole list in one listener, so an inline handler here would fire the
+         pick TWICE. */
+      + (o.click ? ' ' + (o.ev || 'onclick') + '="' + o.click + '"' : '')
+      + '>'
       + '<div><div class="ze-t">' + hl(o.title, t) + '</div><div class="ze-s">'
       +   (o.strong ? '<b style="color:#38495f">' + hl(o.strong, t) + '</b><i>&middot;</i>' : '')
       +   o.bits.map(function(b){ return hl(b, t); }).join('<i>&middot;</i>')
@@ -732,9 +745,9 @@ table.zp-t tbody tr:hover{background:#fafcff}
         +   ' placeholder="' + (tab === 'A' ? 'Type a name or code…' : 'Type an order, part or operation…') + '"'
         +   ' oninput="zeSug(' + i + ',this)" onfocus="zeSug(' + i + ',this)"'
         +   ' onkeydown="zeSugKey(event,' + i + ')" onblur="zeSugClose(' + i + ')">'
-        /* min-width, not right:0 — the row now carries the customer, stage,
-           rate and remaining count, and none of that fits a cell's width */
-        +   '<div class="ze-res zesug" id="sug' + i + '" hidden></div>'
+        /* NO POPUP LIVES IN HERE ANY MORE — see zeSugBox() below. The table is
+           wrapped in overflow-x:auto, which makes that div a scroll container
+           and clips anything absolutely positioned inside it. */
         + '</td>'
         + '<td><input class="zin num q' + (r.over ? ' over' : '') + '" inputmode="numeric" value="' + esc(r.q) + '"'
         +   ' placeholder="0" oninput="zeQty(' + i + ',this.value)" onkeydown="zeQtyKey(event,' + i + ')"></td>'
@@ -752,10 +765,12 @@ table.zp-t tbody tr:hover{background:#fafcff}
      carries its customer, its stage, its rate and its LEFT count — all of
      which it used to drop, leaving you to pick a job on this tab without ever
      seeing how much of it was still open. */
-  function sugq(v){ return String(v).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
   function sugList(i, text){
     var t = (text||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
-    var click = function(v){ return 'zeSugSet(' + i + ',\'' + sugq(v) + '\')'; };
+    /* No inline handler and so no hand-escaping of the value into a JS string
+       either: the body-level panel reads data-pick, which esc() already made
+       safe as an attribute. */
+    var click = function(){ return ''; };
     if (tab === 'A') {
       var opId = picked ? picked.op : 0;
       /* THE LEARNED DEFAULT. Whoever actually does this operation comes first;
@@ -763,30 +778,101 @@ table.zp-t tbody tr:hover{background:#fafcff}
          anything. */
       return WORKERS.filter(function(w){ return hit(w.hay, t); })
         .slice().sort(function(a,b){ return score(b.id, opId) - score(a.id, opId); })
-        .map(function(w){ return zeWorkerOpt(w, opId, click(w.id), 'onmousedown'); });
+        .map(function(w){ return zeWorkerOpt(w, opId, click(), ''); });
     }
     var wid = picked ? picked.id : 0;
     return WORK.filter(function(w){ return !w.done && hit(w.hay, t); })
       .slice().sort(function(a,b){ return score(wid, b.op) - score(wid, a.op); })
       .map(function(w){
-        var o = zeWorkOpt(w, click(w.k), 'onmousedown');
+        var o = zeWorkOpt(w, click(), '');
         o.usual = score(wid, w.op) > 0;
         return o;
       });
   }
+  /* ============================================================
+     THE SECOND LIST LIVES ON THE BODY, NOT IN THE ROW
+     ------------------------------------------------------------
+     It used to be an absolutely positioned div inside the picker cell. The
+     grid is wrapped in <div style="overflow-x:auto">, and ANY overflow other
+     than visible makes that div a scroll container which clips absolutely
+     positioned descendants. Worse, CSS computes overflow-y as auto whenever
+     overflow-x is auto — so the list was clipped vertically as well, and got
+     its own scrollbar. You saw the top row and half of the second.
+
+     One panel, hung off the page's outermost wrapper and placed against the
+     input with getBoundingClientRect(). Nothing above it can clip it. This is
+     the same thing lov.js already does on the proforma grid, for the same
+     reason.
+     ============================================================ */
+  var sugRow = -1;
+  function zeSugBox(){
+    var b = $('zeSugBox');
+    if (!b) {
+      b = document.createElement('div');
+      b.id = 'zeSugBox';
+      b.className = 'ze-res zesug';
+      b.hidden = true;
+      /* mousedown, not click: it must fire before the input's blur closes it */
+      b.addEventListener('mousedown', function(e){
+        var row = e.target.closest ? e.target.closest('.ze-row') : null;
+        if (!row) return;
+        e.preventDefault();
+        var v = row.getAttribute('data-pick');
+        if (v !== null && sugRow >= 0) zeSugSet(sugRow, v);
+      });
+      /* MOUNTED ON THE .zskin WRAPPER, NOT ON <body>. Either one escapes the
+         overflow-x:auto container that was clipping it, but every skin rule
+         for these rows is written as `.zskin .ze-row` — hang the panel off
+         <body> and it lands OUTSIDE that ancestor and loses all of it. The
+         wrapper is the outermost element on the page, so it clips nothing. */
+      (document.querySelector('.zskin') || document.body).appendChild(b);
+    }
+    return b;
+  }
+  /* Put it where it FITS, not blindly underneath: drop below when there is
+     room, flip above when there is not, and never run off either edge. */
+  function zeSugPlace(el){
+    var b = zeSugBox(), r = el.getBoundingClientRect();
+    b.style.maxHeight = '';
+    var w = Math.min(Math.max(r.width, 430), window.innerWidth - 16);
+    b.style.width = w + 'px';
+    var left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+    b.style.left = left + 'px';
+    var below = window.innerHeight - r.bottom - 10, above = r.top - 10;
+    var h = b.offsetHeight;
+    if (h <= below || below >= above) {
+      b.style.top = (r.bottom + 3) + 'px';
+      b.style.maxHeight = Math.max(120, below) + 'px';
+    } else {
+      b.style.maxHeight = Math.max(120, above) + 'px';
+      b.style.top = Math.max(8, r.top - Math.min(b.offsetHeight, above) - 3) + 'px';
+    }
+  }
+  /* the input scrolls with the page; the panel is fixed, so it has to follow */
+  function zeSugTrack(){
+    if (sugRow < 0) return;
+    var el = document.querySelectorAll('#erows .pk')[sugRow];
+    if (el) zeSugPlace(el); else zeSugHide();
+  }
+  window.addEventListener('scroll', zeSugTrack, true);
+  window.addEventListener('resize', zeSugTrack);
+  function zeSugHide(){ var b = $('zeSugBox'); if (b) b.hidden = true; sugRow = -1; }
+
   window.zeSug = function(i, el){
     rows[i].label = el.value;
-    var pop = $('sug'+i), list = sugList(i, el.value);
+    var pop = zeSugBox(), list = sugList(i, el.value);
+    sugRow = i;
     if (!list.length) { pop.hidden = true; return; }
     /* 12, not 8, and the cut is stated. Eight was a silent truncation on a
        floor with 200 workers: the name you wanted was simply not there, with
        nothing on screen to say more existed. */
     zePaint(pop, list, (el.value||'').trim().toLowerCase().split(/\s+/).filter(Boolean), 0, 12);
     pop.hidden = false;
+    zeSugPlace(el);
   };
   window.zeSugKey = function(e, i){
-    var pop = $('sug'+i);
-    if (pop.hidden) { if (e.key === 'Enter') e.preventDefault(); return; }
+    var pop = $('zeSugBox');
+    if (!pop || pop.hidden) { if (e.key === 'Enter') e.preventDefault(); return; }
     var o = [].slice.call(pop.querySelectorAll('.ze-row'));
     var k = -1;
     for (var x=0; x<o.length; x++) if (o[x].dataset.cur === '1') { k = x; break; }
@@ -798,15 +884,17 @@ table.zp-t tbody tr:hover{background:#fafcff}
     } else if (e.key === 'Enter') {
       e.preventDefault();
       var p = o[k < 0 ? 0 : k];
-      if (p) p.dispatchEvent(new Event('mousedown'));
-    } else if (e.key === 'Escape') { pop.hidden = true; }
+      /* the row's pick is read straight off the element now, rather than
+         synthesising a mousedown that a real listener has to interpret */
+      if (p) zeSugSet(i, p.getAttribute('data-pick'));
+    } else if (e.key === 'Escape') { zeSugHide(); }
   };
-  window.zeSugClose = function(i){ setTimeout(function(){ var p = $('sug'+i); if (p) p.hidden = true; }, 130); };
+  window.zeSugClose = function(i){ setTimeout(function(){ if (sugRow === i) zeSugHide(); }, 130); };
   window.zeSugSet = function(i, v){
     var o = other(v);
     rows[i].v = (tab === 'A') ? +v : v;
     rows[i].label = o ? (tab === 'A' ? o.name : o.pn + ' → ' + o.on) : '';
-    $('sug'+i).hidden = true;
+    zeSugHide();
     grid();
     var q = document.querySelectorAll('#erows input.q');
     if (q[i]) { q[i].focus(); q[i].select(); }
