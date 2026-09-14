@@ -1,0 +1,574 @@
+/* ============================================================
+   ZSKIN — AG Grid language, applied one page at a time
+   ============================================================
+
+   WHY EVERY RULE IS SCOPED UNDER .zskin
+
+   This file is linked on every page, because layout.php is shared. Loose
+   rules would restyle all fifty-seven screens at once, including the ones
+   nobody has looked at — and a visual change nobody reviewed cannot be told
+   apart from a page that has broken.
+
+   A page opts IN with class="zskin" on one wrapper. Removing that attribute
+   puts the page back exactly as it was. That is what makes doing them one at
+   a time safe.
+
+   WHAT CHANGED FROM THE FIRST VERSION, AND WHY
+
+   The first pass was soft: lavender ground, 16px rounded cards, drop shadows,
+   pill buttons. That is a marketing aesthetic, and this is a screen people
+   work in for eight hours. Shadows and radius cost vertical space and add
+   visual noise to every row; on a grid of sixty lines that is the whole
+   screen. This version follows AG Grid's Quartz language instead: neutral
+   greys, hairline borders, flat panels, 5px radius, one accent.
+
+   NOTHING HERE IS BEHAVIOUR. Colour, spacing, border and weight only.
+   ============================================================ */
+
+.zskin{
+  --fg:#181d1f; --fg-2:#3d4750; --fg-3:#68737d; --fg-4:#9aa4ad;
+  --bg:#f6f7f8; --panel:#ffffff; --sub:#fbfcfc;
+  --bd:#dde2eb; --bd-2:#eaeef3;
+  --acc:#2563eb; --acc-fg:#ffffff; --acc-soft:#eaf1fe; --acc-bd:#b9d0fb;
+  --ok:#0a875a; --ok-soft:#e6f5ee;
+  --warn:#96650a; --warn-soft:#fdf3e2;
+  --bad:#c92d4b; --bad-soft:#fdeef1;
+  --hover:#f4f6f7; --sel:#e9f1fe;
+  --t:170ms;
+  --rowh:30px;
+  --ui:"IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-family:var(--ui);
+  color:var(--fg);
+  font-size:13px;
+}
+body:has(.zskin){background:var(--bg,#f6f7f8)}
+
+/* ---------- headings ---------- */
+.zskin h1{font-size:16px;font-weight:600;letter-spacing:-.01em;color:var(--fg)}
+.zskin h2{font-size:13.5px;font-weight:600;letter-spacing:-.01em;color:var(--fg)}
+.zskin .lead,.zskin p.lead{color:var(--fg-3);font-size:12px}
+
+/* ---------- panels ----------
+   One hairline border and no shadow. A border plus a shadow reads as two
+   edges, and every shadow is 10-20px of dead space around a screen whose
+   whole job is fitting more rows on it. */
+.zskin .zcard{
+  background:var(--panel);
+  border:1px solid var(--bd) !important;
+  border-radius:8px !important;
+  box-shadow:none !important;
+  padding:12px 14px !important;
+  margin-bottom:10px !important;
+  backdrop-filter:none !important;
+}
+.zskin .zcard h2{margin:0 0 9px !important}
+
+/* ---------- fields ---------- */
+.zskin .zin{
+  border:1px solid var(--bd) !important;
+  border-radius:5px !important;
+  background:var(--panel) !important;
+  color:var(--fg) !important;
+  font-family:var(--ui) !important;
+  font-size:12.5px !important;
+  line-height:1.3 !important;
+  padding:5px 8px !important;
+  transition:border-color var(--t), box-shadow var(--t);
+}
+.zskin .zin:focus{
+  outline:none !important;
+  border-color:var(--acc) !important;
+  box-shadow:0 0 0 3px var(--acc-soft) !important;
+}
+.zskin .zin::placeholder{color:var(--fg-4)}
+.zskin .zlab{
+  font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
+  text-transform:uppercase !important;color:var(--fg-4) !important;margin-bottom:4px !important;
+}
+
+/* ============================================================
+   FORM DENSITY
+   ============================================================
+
+   The grid was tightened first and the FORM sections were left behind, which
+   looked worse than not touching either: a 30px grid row under a block of
+   44px form rows reads as two different applications on one page.
+
+   These pages lay their fields out with INLINE grid styles — gap:14px written
+   into the markup — which no stylesheet can reach without saying so. Rather
+   than editing four files in four places, the gap is overridden here for any
+   grid container inside .zskin. The attribute selector is deliberate and
+   narrow: it only touches elements that already declare a grid inline, which
+   on these pages is exactly the field rows and nothing else.
+
+   WHAT THE SPACE WAS COSTING. On the proforma's Terms card, 14px gaps and a
+   5px label margin push the Bank 2 block below the fold on a laptop, so
+   somebody checking an IBAN scrolls for it. None of that space carries
+   meaning; it is just the default a form gets when nobody chooses. */
+.zskin [style*="grid-template-columns"]{gap:8px !important}
+.zskin [style*="display:grid"]{gap:8px !important}
+
+/* a field is 28px, the same height as a button, so a row of mixed controls
+   lines up instead of stepping */
+.zskin label>.zin,
+.zskin label>select.zin{margin-top:0 !important}
+.zskin textarea.zin{height:auto !important;min-height:54px}
+.zskin .zsub{background:var(--sub) !important;border-color:var(--bd) !important}
+.zskin .zsubh{color:var(--fg-4) !important}
+
+/* ---------- buttons ----------
+   28px, 5px radius, one hairline. Not pills: a pill is a marketing control,
+   and next to a dense grid it reads as decoration. */
+.zskin .zbt{
+  height:28px;
+  display:inline-flex;align-items:center;gap:6px;
+  border:1px solid var(--acc) !important;
+  border-radius:5px !important;
+  padding:0 12px !important;
+  font-family:var(--ui) !important;
+  font-size:12px !important;
+  font-weight:600 !important;
+  background:var(--acc) !important;
+  color:var(--acc-fg) !important;
+  box-shadow:none !important;
+  cursor:pointer;
+  transition:filter var(--t), background var(--t), border-color var(--t), color var(--t);
+}
+.zskin .zbt:hover{filter:brightness(1.08)}
+.zskin .zbt.sec{
+  background:var(--panel) !important;
+  color:var(--fg-2) !important;
+  border-color:var(--bd) !important;
+  font-weight:500 !important;
+}
+.zskin .zbt.sec:hover{background:var(--hover) !important;border-color:var(--fg-4) !important;filter:none}
+/* DESTRUCTIVE, SAID EXPLICITLY. .zbt forces its background, which would have
+   painted every Delete the same blue as Save — the two buttons you most need
+   to tell apart, made identical by a styling shortcut. */
+.zskin .zbt.del{
+  background:var(--panel) !important;color:var(--bad) !important;
+  border-color:var(--bd) !important;font-weight:500 !important;
+}
+.zskin .zbt.del:hover{background:var(--bad-soft) !important;border-color:var(--bad) !important;filter:none}
+
+/* ============================================================
+   THE GRID
+   ============================================================ */
+/* NAMED .zgpanel, NOT .zgrid, AND THAT IS NOT FUSSINESS.
+   shipment_view.php already defines .zgrid as a grid of FORM FIELDS. A skin
+   that claimed the same name would have wrapped that form in a border and
+   clipped it the moment the page opted in — a page "breaking" for no reason
+   anybody could see in its own markup. A shared stylesheet does not get to
+   take a name a page is already using. */
+.zskin .zgpanel{border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:var(--panel)}
+.zskin .zgwrap{overflow:auto;max-height:72vh;position:relative}
+.zskin .zgwrap table{border-collapse:separate;border-spacing:0;width:100%}
+
+.zskin .zgwrap thead th{
+  position:sticky;top:0;z-index:3;background:var(--panel);
+  text-align:left;font-size:10.5px;font-weight:600;color:var(--fg-2);
+  letter-spacing:0;text-transform:none;white-space:nowrap;
+  height:30px;padding:0 8px !important;
+  border:0 !important;
+  border-bottom:1px solid var(--bd) !important;
+  border-right:1px solid var(--bd-2) !important;
+  user-select:none;
+}
+.zskin .zgwrap thead th:last-child{border-right:0 !important}
+
+.zskin .zgwrap tbody td{
+  height:var(--rowh);
+  padding:0 !important;
+  border:0 !important;
+  border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important;
+  vertical-align:middle;
+}
+.zskin .zgwrap tbody td:last-child{border-right:0 !important}
+.zskin .zgwrap tbody tr{transition:background var(--t)}
+.zskin .zgwrap tbody tr:hover>td{background:var(--hover)}
+.zskin .zgwrap tbody tr.zsel>td{background:var(--sel)}
+.zskin .zgwrap tfoot td{
+  border:0 !important;border-top:1px solid var(--bd) !important;
+  padding:7px 8px !important;background:var(--sub);font-size:12px;
+}
+
+/* THE CELL. Flat until you are in it — no border, no background, nothing to
+   read. The whole reason a grid of sixty lines is scannable and a grid of
+   sixty boxes is not. */
+.zskin .zgwrap td>input,
+.zskin .zgwrap td>select{
+  width:100%;height:calc(var(--rowh) - 2px);
+  border:1px solid transparent !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  color:var(--fg) !important;
+  font-family:var(--ui) !important;font-size:12.5px !important;
+  padding:0 8px !important;
+  box-shadow:none !important;
+  transition:border-color var(--t), background var(--t), box-shadow var(--t);
+}
+.zskin .zgwrap td>input:hover{border-color:var(--bd) !important}
+.zskin .zgwrap td>input:focus,
+.zskin .zgwrap td>select:focus{
+  outline:none !important;
+  border-color:var(--acc) !important;
+  background:var(--panel) !important;
+  box-shadow:inset 0 0 0 1px var(--acc) !important;
+}
+.zskin .zgwrap td>input.num,
+.zskin .zgwrap td>input[type=number]{
+  text-align:right;font-family:var(--mono) !important;font-variant-numeric:tabular-nums;
+}
+.zskin .zgwrap td.zro{                       /* a computed cell, not typed into */
+  font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;
+  padding:0 8px !important;font-weight:600;color:var(--fg);
+}
+.zskin .zgwrap td.zdim{color:var(--fg-3)}
+
+/* PINNED. The name column and the row actions stay put, because on a wide
+   grid the thing you are reading and the thing you click are at opposite
+   ends of a sideways scroll. */
+.zskin .zpin-l{position:sticky;left:0;z-index:2;background:var(--panel);
+               border-right:1px solid var(--bd) !important}
+.zskin .zpin-r{position:sticky;right:0;z-index:2;background:var(--panel);
+               border-left:1px solid var(--bd) !important}
+.zskin .zgwrap thead .zpin-l,.zskin .zgwrap thead .zpin-r{z-index:4}
+.zskin .zgwrap tbody tr:hover>.zpin-l,.zskin .zgwrap tbody tr:hover>.zpin-r{background:var(--hover)}
+.zskin .zgwrap tbody tr.zsel>.zpin-l,.zskin .zgwrap tbody tr.zsel>.zpin-r{background:var(--sel)}
+
+/* ---------- toolbar ---------- */
+.zskin .ztools{display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+               padding:7px 9px;border-bottom:1px solid var(--bd);background:var(--panel)}
+.zskin .zfind{position:relative;flex:1;min-width:160px;max-width:280px}
+.zskin .zfind input{width:100%;height:28px;padding:0 9px 0 27px;border:1px solid var(--bd);
+  border-radius:5px;background:var(--panel);color:var(--fg);font-family:var(--ui);font-size:12.5px;
+  transition:border-color var(--t),box-shadow var(--t)}
+.zskin .zfind input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+.zskin .zfind svg{position:absolute;left:8px;top:50%;transform:translateY(-50%);
+  width:13px;height:13px;color:var(--fg-4);pointer-events:none}
+.zskin .zsep{width:1px;height:17px;background:var(--bd);margin:0 1px}
+.zskin .zsp{flex:1}
+.zskin .zcnt{font-size:11.5px;color:var(--fg-3);font-family:var(--mono);white-space:nowrap}
+
+/* ---------- status badges ---------- */
+.zskin .zst{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;
+            padding:1px 7px;border-radius:4px;line-height:1.6;white-space:nowrap}
+.zskin .zst::before{content:"";width:5px;height:5px;border-radius:99px;background:currentColor;flex:none}
+.zskin .zst.ok{background:var(--ok-soft);color:var(--ok)}
+.zskin .zst.wr{background:var(--warn-soft);color:var(--warn)}
+.zskin .zst.bd{background:var(--bad-soft);color:var(--bad)}
+.zskin .zst.gy{background:var(--bd-2);color:var(--fg-3)}
+
+/* ---------- pages that name their controls differently ----------
+   shipment_view, product_costing and final_costing were written before the
+   $inp/$btn variables existed and use .zbtn / .zlabel / .ztable instead. They
+   are mapped here rather than being edited, so opting a page in stays a
+   one-class change and no page has to be rewritten to be restyled. */
+.zskin .zbtn{
+  height:28px;display:inline-flex;align-items:center;gap:6px;
+  border:1px solid var(--acc) !important;border-radius:5px !important;
+  padding:0 12px !important;font-family:var(--ui) !important;font-size:12px !important;
+  font-weight:600 !important;background:var(--acc) !important;color:var(--acc-fg) !important;
+  box-shadow:none !important;cursor:pointer;
+  transition:filter var(--t),background var(--t),border-color var(--t),color var(--t);
+}
+.zskin .zbtn:hover{filter:brightness(1.08)}
+.zskin .zbtn.sec{background:var(--panel) !important;color:var(--fg-2) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .zbtn.sec:hover{background:var(--hover) !important;border-color:var(--fg-4) !important;filter:none}
+.zskin .zbtn.red{background:var(--panel) !important;color:var(--bad) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .zbtn.red:hover{background:var(--bad-soft) !important;border-color:var(--bad) !important;filter:none}
+.zskin .zbtn.org{background:var(--warn-soft) !important;color:var(--warn) !important;
+  border-color:var(--warn) !important;font-weight:600 !important}
+.zskin .zbtn.off{opacity:.5;cursor:not-allowed}
+.zskin .zlabel{font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
+  text-transform:uppercase !important;color:var(--fg-4) !important}
+
+/* a page's own data table, given the same grid treatment */
+.zskin .ztable{font-size:12.5px}
+.zskin .ztable thead tr{color:var(--fg-2) !important;text-transform:none !important;letter-spacing:0 !important}
+.zskin .ztable th{font-size:10.5px !important;font-weight:600 !important;
+  padding:0 8px !important;height:30px !important;
+  border-bottom:1px solid var(--bd) !important;border-right:1px solid var(--bd-2) !important}
+.zskin .ztable th:last-child{border-right:0 !important}
+.zskin .ztable td{padding:0 8px !important;height:var(--rowh);
+  border-top:0 !important;border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important;vertical-align:middle}
+.zskin .ztable td:last-child{border-right:0 !important}
+.zskin .ztable tbody tr{transition:background var(--t)}
+.zskin .ztable tbody tr:hover>td{background:var(--hover)}
+.zskin .ztable .num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.zskin .ztable .zin{margin-top:0 !important;border-color:transparent !important;
+  background:transparent !important;border-radius:0 !important;padding:0 8px !important;
+  height:calc(var(--rowh) - 2px) !important}
+.zskin .ztable .zin:hover{border-color:var(--bd) !important}
+.zskin .ztable .zin:focus{border-color:var(--acc) !important;background:var(--panel) !important;
+  box-shadow:inset 0 0 0 1px var(--acc) !important}
+.zskin .total-row td{border-top:1px solid var(--bd) !important;font-weight:600 !important;
+  color:var(--fg) !important;background:var(--sub)}
+
+/* ---------- final_costing and product_costing name theirs differently ----------
+   .fc-table / .fc-in and .tablewrap predate everything else. Mapped here for
+   the same reason as .zbtn above: a page should not have to be rewritten to be
+   restyled, and a half-skinned screen — new toolbar, old grid — looks more
+   broken than one that was never touched. */
+.zskin .fc-table{font-size:12.5px}
+.zskin .fc-table th{background:var(--panel) !important;color:var(--fg-2) !important;
+  font-size:10.5px !important;text-transform:none !important;letter-spacing:0 !important;
+  font-weight:600 !important;padding:0 8px !important;height:30px !important;
+  border-bottom:1px solid var(--bd) !important;border-right:1px solid var(--bd-2) !important}
+.zskin .fc-table th:last-child{border-right:0 !important}
+.zskin .fc-table td{padding:0 8px !important;height:var(--rowh);
+  border-bottom:1px solid var(--bd-2) !important;border-right:1px solid var(--bd-2) !important}
+.zskin .fc-table td:last-child{border-right:0 !important}
+.zskin .fc-table tbody tr{transition:background var(--t)}
+.zskin .fc-table tbody tr:hover>td{background:var(--hover)}
+.zskin .fc-in{
+  border:1px solid transparent !important;border-radius:0 !important;
+  background:transparent !important;color:var(--fg) !important;
+  font-family:var(--ui) !important;font-size:12.5px !important;
+  padding:0 8px !important;height:calc(var(--rowh) - 2px) !important;
+  transition:border-color var(--t),background var(--t),box-shadow var(--t);
+}
+.zskin .fc-in:hover{border-color:var(--bd) !important}
+.zskin .fc-in:focus{outline:none !important;border-color:var(--acc) !important;
+  background:var(--panel) !important;box-shadow:inset 0 0 0 1px var(--acc) !important}
+.zskin .num{color:var(--fg) !important;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.zskin .tablewrap{border:1px solid var(--bd) !important;border-radius:8px !important;
+  margin-top:8px !important}
+
+/* the small round tags on both pages become square status badges */
+.zskin .itag,.zskin .badge,.zskin .chip{border-radius:4px !important;font-size:10.5px !important;
+  letter-spacing:0 !important;text-transform:none !important;font-weight:600 !important}
+.zskin .chip{padding:4px 9px !important;border-color:var(--bd) !important;
+  background:var(--panel) !important;font-size:12px !important}
+.zskin .itag{border-color:var(--bd) !important;background:var(--sub) !important;color:var(--fg-3) !important}
+.zskin .itag.ok{background:var(--ok-soft) !important;color:var(--ok) !important;border-color:transparent !important}
+
+/* ---------- the link chips, at grid density ---------- */
+.zskin .linkchip{
+  font-family:var(--ui);font-size:9.5px;gap:4px;margin:0;line-height:1.5;
+  display:flex;align-items:center;flex-wrap:nowrap;overflow:hidden;white-space:nowrap;
+  padding:0 8px 2px;
+}
+/* the chip never wraps to a second line — a status that changes the row
+   height makes the whole grid jump as you type */
+.zskin .linkchip>*{flex:none}
+.zskin .linkchip .ok{background:var(--ok-soft);color:var(--ok);border:0;border-radius:3px;
+  padding:0 5px;font-weight:600;max-width:15ch;overflow:hidden;text-overflow:ellipsis}
+.zskin .linkchip .un{background:var(--warn-soft);color:var(--warn);border-radius:3px;
+  padding:0 5px;font-weight:600;max-width:24ch;overflow:hidden;text-overflow:ellipsis}
+.zskin .linkchip .rw{color:var(--fg-4);font-weight:700;font-size:10px}
+.zskin .linkchip .cut{border:1px solid var(--bd);background:transparent;color:var(--fg-4);
+  border-radius:3px;width:14px;height:14px;padding:0;font-size:9px;font-weight:700;
+  display:inline-grid;place-items:center;line-height:1;cursor:pointer;
+  transition:all var(--t)}
+.zskin .linkchip .cut:hover{border-color:var(--bad);color:var(--bad);background:var(--bad-soft)}
+
+/* the per-row remove — a quiet glyph until you are on the row, because a red
+   button repeated sixty times down a grid is the loudest thing on the screen */
+.zskin .rowx{
+  border:1px solid transparent;background:transparent;color:var(--fg-4);
+  width:19px;height:19px;border-radius:4px;font-size:13px;line-height:1;cursor:pointer;
+  display:inline-grid;place-items:center;transition:all var(--t);
+}
+.zskin tr:hover .rowx{color:var(--fg-3);border-color:var(--bd)}
+.zskin .rowx:hover{background:var(--bad-soft) !important;border-color:var(--bad) !important;color:var(--bad) !important}
+
+/* a row carrying a chip is taller; say so once rather than per cell */
+.zskin .zgwrap tr.haschip td{height:auto;padding-top:2px !important}
+
+/* ============================================================
+   product_costing's cost-line grid — table.ct
+   ------------------------------------------------------------
+   A THIRD table class. When this skin was first written it mapped
+   .ztable and .fc-table and stopped there, so this grid picked up
+   the new input styling (.zskin .zin is global) but none of the row
+   work — new boxes bolted onto an old table. Measured: 58px a row
+   against the 30px every other grid uses.
+
+   Everything below is placed AFTER the .zbtn and .rowx blocks on
+   purpose. `.zskin table.ct .rowx` is (0,3,1); `.zskin .zbtn.red`
+   is (0,3,0) — so the delete button can keep BOTH classes and stay
+   a plain red button if this skin is ever removed.
+
+   table.ct is also used by the Compare Versions and AI tables on the
+   same page. They are read-only, so the density below suits them
+   too; only the column widths are scoped to .ct-edit, which is the
+   editable cost-line grid alone.
+
+   ONE HONEST EXCEPTION TO THE SKIN'S PROMISE. Everywhere else,
+   deleting the single .zskin attribute puts a page back exactly as
+   it was. That is only half true for this grid: the styling below
+   reverts, but the Code column is markup and does not revert — the
+   item code was moved out of the Item cell in costing.js, and CSS
+   cannot put it back. Without this skin the grid is still readable
+   and still works; it just goes back to loose padding with the code
+   in its own column rather than stacked. Undoing the column means
+   reverting itemCellHtml() in assets/js/costing.js as well.
+   ============================================================ */
+.zskin table.ct{font-size:12.5px}
+.zskin table.ct th{
+  background:var(--sub) !important;color:var(--fg-2) !important;
+  font-size:10.5px !important;font-weight:600 !important;
+  text-transform:none !important;letter-spacing:0 !important;
+  padding:0 8px !important;height:30px;white-space:nowrap;
+  border-bottom:1px solid var(--bd) !important;
+  border-right:1px solid var(--bd-2) !important;
+  position:sticky;top:0;z-index:2}
+.zskin table.ct th:last-child{border-right:0 !important}
+.zskin table.ct td{
+  padding:0 8px !important;height:var(--rowh);border-top:0 !important;
+  border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important;vertical-align:middle}
+.zskin table.ct td:last-child{border-right:0 !important}
+.zskin table.ct tbody tr{transition:background var(--t)}
+.zskin table.ct tbody tr:hover>td{background:var(--hover)}
+
+/* FLAT CELLS. The input is invisible until you touch it, but it is still an
+   ordinary input — click straight in and type. There is no edit mode to learn
+   and no double-click to remember. */
+.zskin table.ct td>.zin,
+.zskin table.ct .qtywrap>.zin{
+  width:100% !important;max-width:none !important;
+  height:calc(var(--rowh) - 2px) !important;
+  border:1px solid transparent !important;border-radius:0 !important;
+  background:transparent !important;padding:0 6px !important;
+  min-width:0 !important;
+  transition:border-color var(--t),background var(--t),box-shadow var(--t)}
+.zskin table.ct td>.zin:hover,
+.zskin table.ct .qtywrap>.zin:hover{border-color:var(--bd) !important}
+.zskin table.ct td>.zin:focus,
+.zskin table.ct .qtywrap>.zin:focus{
+  outline:none !important;border-color:var(--acc) !important;
+  background:var(--panel) !important;
+  box-shadow:inset 0 0 0 1px var(--acc) !important}
+
+/* figures stack on the decimal point instead of floating in a wide cell */
+.zskin table.ct td.n>.zin,
+.zskin table.ct .qtywrap>.zin{
+  text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.zskin table.ct td.amt{
+  text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-weight:500;color:var(--fg) !important}
+.zskin table.ct th.c-qty,.zskin table.ct th.c-wt,
+.zskin table.ct th.c-rate,.zskin table.ct th.c-amt{text-align:right}
+.zskin table.ct th.c-qty{padding-right:26px !important}
+
+/* THE CODE COLUMN. The item code used to sit on its own line under the Item
+   box, which is what made every row two lines tall. In its own column it is
+   both shorter and easier to read: run your eye down it and the lines not yet
+   linked to the Item Master stand out without hunting chip by chip. */
+.zskin table.ct .codecell{width:112px;padding:0 6px !important}
+.zskin table.ct .itag{
+  display:inline-block;font-family:var(--mono) !important;font-size:10.5px !important;
+  font-weight:600 !important;letter-spacing:0 !important;padding:4px 6px !important;
+  border-radius:3px !important;max-width:100%;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+.zskin table.ct button.itag.add{
+  font-family:var(--ui) !important;cursor:pointer;
+  background:var(--acc-soft) !important;color:var(--acc) !important;
+  border-color:transparent !important}
+.zskin table.ct button.itag.add:hover{background:var(--acc-bd) !important}
+.zskin table.ct .itag.warn{background:var(--warn-soft) !important;color:var(--warn) !important;
+  border-color:transparent !important}
+/* the old stacked wrapper is kept in no-skin markup; here it must not
+   reintroduce the second line */
+.zskin table.ct .itagrow{margin-top:0 !important;display:inline}
+
+/* fixed column widths beat max-width:92px floating inside a wide cell.
+   Item carries the longest text on the row, so it gets the largest share and
+   Description takes what is left — the reverse of what happens if nothing is
+   said, where the numeric columns take space the item name needed. */
+.zskin table.ct-edit td:first-child,
+.zskin table.ct-edit th:first-child{min-width:250px}
+.zskin table.ct-edit .c-qty{width:106px}
+.zskin table.ct-edit .c-unit{width:70px}
+.zskin table.ct-edit .c-wt{width:90px}
+.zskin table.ct-edit .c-rate{width:94px}
+.zskin table.ct-edit .c-amt{width:102px}
+.zskin table.ct-edit .c-x{width:32px;padding:0 4px !important}
+.zskin table.ct .qtywrap{display:flex;gap:4px;align-items:center;height:100%}
+/* the ÷ button must never sit on top of the last digit of the quantity */
+.zskin table.ct .qtywrap>.zin{padding-right:2px !important}
+.zskin table.ct .shbtn{
+  width:20px;height:20px;border-radius:3px;border:1px solid transparent !important;
+  background:transparent !important;color:var(--fg-4) !important;font-size:11px;
+  box-shadow:none !important;transition:all var(--t)}
+.zskin table.ct tr:hover .shbtn{border-color:var(--bd) !important}
+.zskin table.ct .shbtn:hover{border-color:var(--acc) !important;color:var(--acc) !important}
+.zskin table.ct .shbtn.on{background:var(--acc-soft) !important;border-color:var(--acc) !important;
+  color:var(--acc) !important;font-weight:700}
+
+/* the per-row remove, same quiet glyph the proforma grid uses. This beats
+   .zskin .zbtn.red on specificity, so the button keeps both classes and
+   degrades to the old red button if the skin is removed. */
+.zskin table.ct .rowx{
+  border:1px solid transparent !important;background:transparent !important;
+  color:transparent !important;width:20px;height:20px;padding:0 !important;
+  border-radius:3px !important;font-size:13px;line-height:1;font-weight:400 !important;
+  display:inline-grid;place-items:center;cursor:pointer;transition:all var(--t)}
+.zskin table.ct tr:hover .rowx{color:var(--fg-3) !important;border-color:var(--bd) !important}
+.zskin table.ct .rowx:hover{background:var(--bad-soft) !important;
+  border-color:var(--bad) !important;color:var(--bad) !important}
+
+/* Workmanship stays a locked summary line and stays distinct — but on one
+   line. It is deliberately a little taller than a data row, not double. */
+.zskin table.ct tr.wmrow>td{background:#eef4fb !important;height:34px}
+.zskin table.ct tr.wmrow:hover>td{background:#e6eef9 !important}
+.zskin table.ct tr.wmrow td{padding-top:0 !important;padding-bottom:0 !important}
+.zskin table.ct .wmlabel{font-weight:600 !important;color:#0c5a94 !important;font-size:12px !important}
+.zskin table.ct .wmsrc{display:inline !important;font-size:11px !important;
+  color:var(--fg-3) !important;margin:0 0 0 8px !important}
+.zskin table.ct td.rm{text-align:center;color:var(--fg-4)}
+
+/* the footer bar: one primary, the rest quiet and the same height as a row */
+.zskin .footbar{padding:9px 0 0 !important;margin-top:8px !important;
+  border-top:1px solid var(--bd-2) !important;backdrop-filter:none !important;
+  background:var(--panel) !important}
+
+/* ---------- empty state ---------- */
+.zskin .zempty{padding:34px 18px;text-align:center;color:var(--fg-3);font-size:12.5px}
+.zskin .zempty h4{margin:0 0 3px;font-size:13px;font-weight:600;color:var(--fg)}
+
+.zskin kbd{font-family:var(--mono);font-size:10.5px;background:var(--panel);
+  border:1px solid var(--bd);border-bottom-width:2px;border-radius:4px;padding:0 4px;color:var(--fg-2)}
+.zskin .zhint{font-size:11.5px;color:var(--fg-3);display:flex;gap:13px;flex-wrap:wrap;margin-top:8px}
+
+/* ---------- dark ----------
+   Redefined at token level only, so every component above follows without
+   being restated. A colour whose only definition sits in here would never
+   apply in light mode — the classic unreadable-page bug. */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .zskin{
+    --fg:#e6eaee; --fg-2:#c3cbd3; --fg-3:#8c98a4; --fg-4:#657280;
+    --bg:#0f1417; --panel:#171d21; --sub:#1b2226;
+    --bd:#2b353c; --bd-2:#222b31;
+    --acc:#5b9bff; --acc-fg:#0a1220; --acc-soft:#14243c; --acc-bd:#2d4c7d;
+    --ok:#3ecf8e; --ok-soft:#10291f;
+    --warn:#e0a44a; --warn-soft:#2b2112;
+    --bad:#ff6b85; --bad-soft:#2d151c;
+    --hover:#1d252a; --sel:#16253c;
+  }
+  :root:not([data-theme="light"]) body:has(.zskin){background:#0f1417}
+}
+:root[data-theme="dark"] .zskin{
+  --fg:#e6eaee; --fg-2:#c3cbd3; --fg-3:#8c98a4; --fg-4:#657280;
+  --bg:#0f1417; --panel:#171d21; --sub:#1b2226;
+  --bd:#2b353c; --bd-2:#222b31;
+  --acc:#5b9bff; --acc-fg:#0a1220; --acc-soft:#14243c; --acc-bd:#2d4c7d;
+  --ok:#3ecf8e; --ok-soft:#10291f;
+  --warn:#e0a44a; --warn-soft:#2b2112;
+  --bad:#ff6b85; --bad-soft:#2d151c;
+  --hover:#1d252a; --sel:#16253c;
+}
+:root[data-theme="dark"] body:has(.zskin){background:#0f1417}
+
+@media (max-width:640px){
+  .zskin .zcard{padding:10px 11px !important}
+  .zskin h1{font-size:15px}
+}
+@media (prefers-reduced-motion:reduce){ .zskin *{transition:none !important} }
