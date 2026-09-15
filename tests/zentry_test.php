@@ -45,8 +45,12 @@ ok(str_contains($wi, '$done = $left <= 0.0001;'), 'finished work is marked');
 ok(str_contains($wi, "'done' => \$done ? 1 : 0,"), '  and the flag rides on the row');
 ok(str_contains($pe, 'return !w.done && hit(w.hay, t);'), '  and it is never offered');
 ok(substr_count($pe, '!w.done &&') === 2, '  on both tabs, got ' . substr_count($pe, '!w.done &&'));
-ok(str_contains($wi, 'zp_rate_for($opId, (float)$o[\'rate\'], $rates)'),
+ok(str_contains($wi, 'zp_rate_for($opId, (float)$o[\'rate\'], $rates, $szRates, $szId)'),
    'the rate shown is the one this ORDER pays, amendments included');
+/* THE LIST MUST QUOTE WHAT THE SAVE WILL PAY. Showing the standard while
+   zp_book() freezes a size rate would only ever surface in a wage dispute. */
+ok(str_contains($wi, '$szRates = zp_op_rate_map($pid);') && str_contains($wi, '$szId    = zp_line_size_id($l);'),
+   '  and the size rate too, so the list cannot quote one number and pay another');
 ok(str_contains($wi, "if (zp_size_problem(\$l) !== '') continue;"),
    'a line whose size cannot be resolved is never offered');
 ok(str_contains($wi, "'hay'"), 'every row carries one folded search string');

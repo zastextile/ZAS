@@ -208,8 +208,14 @@ t('  saying why', str_contains($src, 'Production cannot be booked before it happ
 t('a nonsense date is refused too', str_contains($book, "preg_match('/^\\d{4}-\\d{2}-\\d{2}\$/', \$date)"));
 
 head('THE RATE IS FROZEN, AND NEVER COMES FROM THE BROWSER');
+/* the call gained the size map and the line's size when rates became able to
+   differ by size — the property is unchanged: the number comes from the
+   server at save time, never from the browser */
 t('the rate is looked up on the server at save time',
-  str_contains($book, '$rate = zp_rate_for($opId, (float)$op[\'rate\'], $rateCache[$pfid]);'));
+  str_contains(preg_replace('/\s+/', ' ', $book),
+    '$rate = zp_rate_for($opId, (float)$op[\'rate\'], $rateCache[$pfid], $sizeRateCache[$prodId], zp_line_size_id($line));'));
+t('  and it knows which SIZE the line is, so a King can pay more than a Single',
+  str_contains($book, 'zp_line_size_id($line)'));
 t('  and stored as rate_applied', str_contains($book, "'rate_applied' => \$rate"));
 t('  with the amount computed from it, not sent in',
   str_contains($book, "'amount' => round(\$qty * \$rate, 2)"));
