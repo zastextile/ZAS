@@ -418,42 +418,52 @@ table.zp-t tbody tr:hover{background:#fafcff}
 /* ---------- section 4: operations, and rates that differ by size ---------- */
 .cardhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .cardhead .hint{margin:0 0 9px;font-size:12px;color:#8a97ab;line-height:1.5;max-width:62ch}
-.seg{display:flex;border:1px solid #d9e0ea;border-radius:5px;overflow:hidden;background:#f7f9fc;flex:none}
-.seg button{border:0;background:transparent;font:500 12px inherit;color:#6b7a90;padding:0 13px;height:28px;
-  cursor:pointer;border-right:1px solid #d9e0ea;white-space:nowrap;transition:.17s}
+/* EVERY COLOUR HERE TAKES THE SKIN'S TOKEN WHEN THE PAGE IS SKINNED, and
+   falls back to this page's own palette when it is not. Hard-coding #1d6ff2
+   put a DIFFERENT blue under this switch from the accent on everything else
+   — the small kind of drift that makes a screen read as half-converted. */
+.seg{display:flex;border:1px solid var(--bd,#d9e0ea);border-radius:5px;overflow:hidden;
+  background:var(--sub,#f7f9fc);flex:none}
+.seg button{border:0;background:transparent;font:500 12px inherit;color:var(--fg-3,#6b7a90);
+  padding:0 13px;height:28px;cursor:pointer;border-right:1px solid var(--bd,#d9e0ea);
+  white-space:nowrap;transition:var(--t,.17s)}
 .seg button:last-child{border-right:0}
-.seg button[aria-pressed="true"]{background:#fff;color:#152033;font-weight:700;box-shadow:inset 0 -2px 0 #1d6ff2}
-.gridwrap{border:1px solid #e6ebf2;border-radius:6px;overflow:auto;max-height:70vh}
-#opgrid tr.grp>td{background:#eef6ff;font-weight:700;font-size:12px;color:#152033;border-bottom:1px solid #cfe3fb}
-#opgrid tr.grp .code{color:#1d6ff2}
-#opgrid tr.grp a{color:#1d6ff2;font-size:11px;text-decoration:none;font-weight:500;margin-left:6px}
+.seg button[aria-pressed="true"]{background:#fff;color:#152033;font-weight:700;
+  box-shadow:inset 0 -2px 0 var(--acc,#1d6ff2)}
+.gridwrap{border:1px solid var(--bd,#e6ebf2);border-radius:6px;overflow:auto;max-height:70vh}
+#opgrid tr.grp>td{background:var(--acc-soft,#eef6ff);font-weight:600;font-size:12px;
+  color:var(--fg,#152033);border-bottom:1px solid var(--acc-bd,#cfe3fb)}
+#opgrid tr.grp .code{color:var(--acc,#1d6ff2)}
+#opgrid tr.grp a{color:var(--acc,#1d6ff2);font-size:11px;text-decoration:none;font-weight:500;margin-left:6px}
 #opgrid tr.grp a:hover{text-decoration:underline}
 #opgrid tr.grp .grpqty{float:right;font-weight:400;color:#8a97ab;font-size:11px}
-#opgrid td.stdcol,#opgrid th.stdcol{background:#f7f9fc}
+#opgrid td.stdcol,#opgrid th.stdcol{background:var(--sub,#f7f9fc)}
 #opgrid td.nops{color:#8a5a10;background:#fff6e8;font-size:12px}
 #opgrid td.szcell{position:relative;padding:0}
-#opgrid td.szcell input{width:100%;height:28px;border:1px solid transparent;border-radius:0;background:transparent;
+#opgrid td.szcell input{width:100%;height:calc(var(--rowh,30px) - 2px);
+  border:1px solid transparent;border-radius:0;background:transparent;
   padding:0 19px 0 6px;text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace;
   font-variant-numeric:tabular-nums;font-size:12.5px;color:#9aa8ba;outline:0;box-sizing:border-box;transition:.17s}
-#opgrid td.szcell input:hover{border-color:#d9e0ea}
-#opgrid td.szcell input:focus{border-color:#1d6ff2;background:#fff;box-shadow:inset 0 0 0 1px #1d6ff2;color:#152033}
+#opgrid td.szcell input:hover{border-color:var(--bd,#d9e0ea)}
+#opgrid td.szcell input:focus{border-color:var(--acc,#1d6ff2);background:var(--panel,#fff);
+  box-shadow:inset 0 0 0 1px var(--acc,#1d6ff2);color:var(--fg,#152033)}
 /* AN OVERRIDE MUST NOT LOOK LIKE AN INHERITED NUMBER. Same column, two states —
    if they looked alike you could not tell what you had actually set. */
-#opgrid td.szcell.ovr{background:#e6f5ee}
-#opgrid td.szcell.ovr input{color:#0a875a;font-weight:600}
-#opgrid td.szcell.ovr::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:#0a875a}
+#opgrid td.szcell.ovr{background:var(--ok-soft,#e6f5ee)}
+#opgrid td.szcell.ovr input{color:var(--ok,#0a875a);font-weight:600}
+#opgrid td.szcell.ovr::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--ok,#0a875a)}
 #opgrid td.szcell .x{position:absolute;right:2px;top:50%;transform:translateY(-50%);width:15px;height:15px;
   border:0;background:transparent;color:#9aa8ba;font-size:12px;line-height:1;cursor:pointer;border-radius:3px;
   display:none;align-items:center;justify-content:center;padding:0}
 #opgrid td.szcell.ovr .x{display:inline-flex}
-#opgrid td.szcell .x:hover{background:#fdeef1;color:#cf3350}
-#opgrid tfoot tr.setcost td{background:#eef4fb;font-weight:800;border-top:1px solid #d9e0ea}
+#opgrid td.szcell .x:hover{background:var(--bad-soft,#fdeef1);color:var(--bad,#cf3350)}
+#opgrid tfoot tr.setcost td{background:var(--sel,#eef4fb);font-weight:600;border-top:1px solid var(--bd,#d9e0ea)}
 .leg{display:flex;gap:15px;flex-wrap:wrap;margin-top:9px;font-size:11.5px;color:#8a97ab;align-items:center}
 .leg kbd{font-family:ui-monospace,monospace;font-size:10px;background:#f4f7fb;border:1px solid #e2e9f1;
   border-bottom-width:2px;border-radius:3px;padding:0 4px;color:#38495f}
 .leg .sw{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:-1px;margin-right:5px}
-.leg .sw.i{background:#fff;border:1px solid #d9e0ea}
-.leg .sw.o{background:#e6f5ee;border-left:2px solid #0a875a}
+.leg .sw.i{background:var(--panel,#fff);border:1px solid var(--bd,#d9e0ea)}
+.leg .sw.o{background:var(--ok-soft,#e6f5ee);border-left:2px solid var(--ok,#0a875a)}
 .leg .ovrcount{margin-left:auto;font-family:ui-monospace,monospace;color:#9aa8ba}
 /* "same rate for all sizes" hides the size columns; it does not unload them,
    so nothing typed is lost by flipping the switch */
@@ -925,6 +935,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
         <span><i class="sw i"></i>grey = using the standard rate</span>
         <span><i class="sw o"></i>green = set for that size only</span>
         <span>Blank a cell, or press <kbd>Esc</kbd>, to go back to the standard</span>
+        <span><kbd>Ctrl</kbd>+<kbd>D</kbd> copies the cell above &middot; paste a block from Excel</span>
         <span class="ovrcount" id="ovrCount"><?= $ovrTotal ?> size rate<?= $ovrTotal === 1 ? '' : 's' ?> set</span>
       </div>
       <?php /* A SET COST YOU CANNOT ADD UP FROM THE RATES ON SCREEN IS A LIE BY
@@ -1269,13 +1280,58 @@ window.zpAddSize = function(){
   window.pmRateKey = function (e, el) {
     var all = cells(), i = all.indexOf(el), per = SETQTY.length || 1;
     function go(j) { if (all[j]) { e.preventDefault(); all[j].focus(); all[j].select(); } }
+
+    /* CTRL+D — COPY THE CELL ABOVE, the one key that makes a column of rates
+       quick. Set the King rate on the first operation, then hold it down. */
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault();
+      var up = all[i - per];
+      if (!up) return;
+      el.value = up.value; mark(el); refreshTotals();
+      go(i + per);                       // and move on, so it repeats
+      return;
+    }
+    /* Home / End, edge-aware like the rest of the app: they move the caret
+       first, and only jump to the end of the ROW once it is already there */
+    if (e.key === 'Home' && el.selectionStart === 0) {
+      e.preventDefault(); go(i - (i % per)); return; }
+    if (e.key === 'End' && el.selectionStart === el.value.length) {
+      e.preventDefault(); go(i - (i % per) + per - 1); return; }
+
     if (e.key === 'Escape') { e.preventDefault(); el.value = ''; mark(el); refreshTotals(); return; }
     if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); go(i + per); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); go(i - per); return; }
-    /* edge-only: mid-number the arrows still move the caret, as they should */
+    /* edge-only: mid-number the arrows still move the caret, as they should.
+       BACKSPACE IS DELIBERATELY NOT BOUND — everywhere on earth it rubs out one
+       character, and stealing it to clear a whole cell surprises people who
+       have used a computer before. */
     if (e.key === 'ArrowLeft'  && el.selectionStart === 0) { go(i - 1); return; }
     if (e.key === 'ArrowRight' && el.selectionStart === el.value.length) { go(i + 1); return; }
   };
+
+  /* PASTE A BLOCK STRAIGHT OUT OF EXCEL.
+     Tabs across, newlines down, starting at whichever cell you are in. It
+     cannot create rows — the operations are what they are — so anything past
+     the last one is dropped rather than silently landing somewhere else. */
+  grid.addEventListener('paste', function (e) {
+    var el = e.target;
+    if (!el.classList || !el.classList.contains('ratein')) return;
+    var txt = (e.clipboardData || window.clipboardData).getData('text') || '';
+    if (txt.indexOf('\t') < 0 && txt.indexOf('\n') < 0) return;   // one value: let the browser do it
+    e.preventDefault();
+    var all = cells(), start = all.indexOf(el), per = SETQTY.length || 1;
+    var col = start % per, row0 = (start - col) / per;
+    txt.replace(/\r/g, '').replace(/\n+$/, '').split('\n').forEach(function (line, dr) {
+      line.split('\t').forEach(function (cell, dc) {
+        if (col + dc >= per) return;                  // past the last size column
+        var t = all[(row0 + dr) * per + col + dc];
+        if (!t) return;                               // past the last operation
+        t.value = String(cell).trim().replace(/[^0-9.]/g, '');
+        mark(t);
+      });
+    });
+    refreshTotals();
+  });
 
   pmRateMode(countOvr() ? 1 : 0);   // arrive on the matrix only if there is something to see
   refreshTotals();

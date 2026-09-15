@@ -250,6 +250,59 @@ const {chromium} = require('playwright');
     document.querySelectorAll('input[name^="oprate"]').length);
   out.valueKept = await p.evaluate(() =>
     document.querySelector('input[name="oprate[102][13]"]').value);
+
+  /* ---- the fast keys, LAST, because they change every total on purpose ---- */
+  await p.evaluate(() => pmRateMode(1));
+  /* CTRL+D copies the cell ABOVE — so it needs a row above it. Starting on the
+     first operation there is nothing to copy, which is correct and is why this
+     starts on the second. */
+  await p.fill('input[name="oprate[101][13]"]', '3.75');
+  await p.click('input[name="oprate[102][13]"]');
+  await p.keyboard.press('Control+d');
+  await p.waitForTimeout(120);
+  out.ctrlD = await p.evaluate(() => ({
+    copied: document.querySelector('input[name="oprate[102][13]"]').value,
+    focus:  document.activeElement.name
+  }));
+  /* on the very first row it must do nothing at all, not throw */
+  await p.click('input[name="oprate[101][11]"]');
+  await p.keyboard.press('Control+d');
+  await p.waitForTimeout(80);
+  out.ctrlDTop = await p.evaluate(() =>
+    document.querySelector('input[name="oprate[101][11]"]').value);
+
+  /* a block pasted out of Excel: two rows x two columns, landing at 103/Single */
+  await p.click('input[name="oprate[103][11]"]');
+  await p.evaluate(() => {
+    const el = document.querySelector('input[name="oprate[103][11]"]');
+    const dt = new DataTransfer();
+    dt.setData('text', '1.10\t1.20\n1.30\t1.40');
+    el.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true}));
+  });
+  await p.waitForTimeout(150);
+  out.pasted = await p.evaluate(() => ({
+    a: document.querySelector('input[name="oprate[103][11]"]').value,
+    b: document.querySelector('input[name="oprate[103][12]"]').value,
+    c: document.querySelector('input[name="oprate[104][11]"]').value,
+    d: document.querySelector('input[name="oprate[104][12]"]').value,
+    king: document.querySelector('input[name="oprate[103][13]"]').value
+  }));
+  /* a block wider or taller than what is left must be TRIMMED, never wrapped
+     onto the next operation — that would put a rate somewhere nobody asked */
+  await p.click('input[name="oprate[106][12]"]');
+  await p.evaluate(() => {
+    const el = document.querySelector('input[name="oprate[106][12]"]');
+    const dt = new DataTransfer();
+    dt.setData('text', '9.10\t9.20\t9.30\n9.40\t9.50\t9.60');
+    el.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true}));
+  });
+  await p.waitForTimeout(150);
+  out.overflow = await p.evaluate(() => ({
+    hit:  document.querySelector('input[name="oprate[106][12]"]').value,
+    next: document.querySelector('input[name="oprate[106][13]"]').value,
+    /* 106 is the LAST operation, so the second pasted line has nowhere to go */
+    first: document.querySelector('input[name="oprate[101][11]"]').value
+  }));
   console.log(JSON.stringify(out));
   await b.close();
 })();
@@ -298,6 +351,61 @@ else {
     ok($r['off']['totals'][2] === '32.00', 'the set cost still includes the size rate');
 }
 @unlink(__DIR__ . '/.zsr.html'); @unlink(__DIR__ . '/.zsr.js');
+
+    echo "11b. Ctrl+D and an Excel block paste — this is the 'fast' part\n";
+    ok($r['ctrlD']['copied'] === '3.75',
+       'Ctrl+D copies the cell above, got ' . json_encode($r['ctrlD']['copied']));
+    ok($r['ctrlD']['focus'] === 'oprate[103][13]',
+       '  and moves on, so holding it fills a column, got ' . json_encode($r['ctrlD']['focus']));
+    ok($r['ctrlDTop'] === '',
+       '  and on the top row it does nothing rather than throwing, got ' . json_encode($r['ctrlDTop']));
+    ok($r['pasted']['a'] === '1.10' && $r['pasted']['b'] === '1.20'
+       && $r['pasted']['c'] === '1.30' && $r['pasted']['d'] === '1.40',
+       'a 2x2 block from Excel lands across and down, got ' . json_encode($r['pasted']));
+    ok($r['pasted']['king'] === '', '  and a column it never reached stays empty');
+    ok($r['overflow']['hit'] === '9.10', 'a block bigger than what is left still starts where you are');
+    ok($r['overflow']['next'] === '9.20', '  filling what it can');
+    ok($r['overflow']['first'] === '',
+       '  AND TRIMS THE REST — it never wraps a rate onto another operation, got '
+       . json_encode($r['overflow']['first']));
+
+echo "11c. NOTHING IS DISTURBED — the default path is the old path\n";
+/* This is the promise that matters most: a product nobody has typed a size
+   rate for must behave, to the digit, as it did before any of this existed. */
+ok(str_contains($pm, 'pmRateMode(countOvr() ? 1 : 0);'),
+   'the grid opens on the PLAIN view unless there is something to see');
+ok(str_contains($pm, '<?php if ($anySize): ?>') || str_contains($pm, 'if ($anySize):'),
+   'a product with no sizes never renders a size column at all');
+ok(str_contains($pm, '$cols = 4 + ($anySize ? count($sizes) : 0);'),
+   '  and the group rows span the right width either way, so the table cannot shear');
+ok(str_contains($pm, 'if ($rr) {'),
+   'a submit carrying no rate cells writes nothing');
+/* the Standard column is READ-ONLY, and that is not an oversight: a part is a
+   shared library row, so editing its rate here would move every other product
+   using that part — which is exactly what production_order_rates.php exists to
+   avoid doing by accident */
+ok(!str_contains($pm, 'name="opstd['), 'the Standard rate is not editable here');
+ok(str_contains($pm, 'Edit in Part Library'), '  and says where it IS edited');
+ok(substr_count($pm, 'zp_op_rate_save($pid') === 1, 'one writer, got '
+   . substr_count($pm, 'zp_op_rate_save($pid'));
+
+echo "11d. It is the SAME grid language as every other screen\n";
+/* measured, not asserted — .verify.js reads these back out of a browser.
+   Here we only check the page asks for the tokens rather than hard-coding a
+   near-miss colour, which is what makes a screen look half-converted. */
+ok(!preg_match('/box-shadow:inset 0 -2px 0 #1d6ff2/', $pm),
+   'the switch no longer paints its own blue');
+ok(str_contains($pm, 'box-shadow:inset 0 -2px 0 var(--acc,#1d6ff2)'),
+   '  it takes the skin accent, and keeps a fallback for an unskinned page');
+ok(str_contains($pm, 'height:calc(var(--rowh,30px) - 2px)'),
+   'the cell tracks the shared row height instead of repeating 28px');
+foreach (['--bd','--sub','--ok-soft','--acc-soft','--panel'] as $tok)
+    ok(str_contains($pm, 'var(' . $tok . ','), "section 4 uses $tok with a fallback");
+ok(str_contains($pm, "(e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')"),
+   'Ctrl+D is bound, like the other grids');
+ok(str_contains($pm, "grid.addEventListener('paste'"), 'and an Excel block paste');
+ok(str_contains($pm, 'BACKSPACE IS DELIBERATELY NOT BOUND'),
+   'and Backspace is left alone, on purpose, in writing');
 
 echo "12. The schema mirrors the quantity table it sits beside\n";
 ok(str_contains($zp, 'CREATE TABLE IF NOT EXISTS zp_op_rate'), 'the table exists');
