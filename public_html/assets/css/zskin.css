@@ -1051,22 +1051,29 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
 .zskin .zhint{font-size:11.5px;color:var(--fg-3);display:flex;gap:13px;flex-wrap:wrap;margin-top:8px}
 
 /* ---------- dark ----------
+   THIS IS NOW OPT-IN ONLY, AND THAT IS A CORRECTION.
+
+   It used to be wrapped in @media (prefers-color-scheme:dark), which
+   reads the operating system's setting. That is the right default for a
+   page somebody visits once. It is the WRONG default for the screen a
+   data entry team sits in front of for eight hours: Windows ships plenty
+   of machines with dark mode on, nobody in this building asked for it,
+   and there was no switch anywhere in the app to turn it off. So the
+   production screens went black for the people entering the most data,
+   and the only cure was for each of them to change a Windows setting.
+
+   A theme is a decision the business makes, not one the laptop makes.
+   These rules now apply only when something deliberately puts
+   data-theme="dark" on <html>. Nothing in the app does that today, so
+   every skinned page is light, always, on every machine.
+
+   The rules are KEPT rather than deleted: the palette is correct and
+   tested, and the day somebody wants a night shift toggle it is one
+   attribute away. Deleting it would mean writing it again.
+
    Redefined at token level only, so every component above follows without
    being restated. A colour whose only definition sits in here would never
    apply in light mode — the classic unreadable-page bug. */
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]) .zskin{
-    --fg:#e6eaee; --fg-2:#c3cbd3; --fg-3:#8c98a4; --fg-4:#657280;
-    --bg:#0f1417; --panel:#171d21; --sub:#1b2226;
-    --bd:#2b353c; --bd-2:#222b31;
-    --acc:#5b9bff; --acc-fg:#0a1220; --acc-soft:#14243c; --acc-bd:#2d4c7d;
-    --ok:#3ecf8e; --ok-soft:#10291f;
-    --warn:#e0a44a; --warn-soft:#2b2112;
-    --bad:#ff6b85; --bad-soft:#2d151c;
-    --hover:#1d252a; --sel:#16253c;
-  }
-  :root:not([data-theme="light"]) body:has(.zskin){background:#0f1417}
-}
 :root[data-theme="dark"] .zskin{
   --fg:#e6eaee; --fg-2:#c3cbd3; --fg-3:#8c98a4; --fg-4:#657280;
   --bg:#0f1417; --panel:#171d21; --sub:#1b2226;

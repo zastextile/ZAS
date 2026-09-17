@@ -130,9 +130,30 @@ ok(str_contains($pf, 'font-size:13.5px;font-weight:600;margin:0 0 9px'),
 ok(str_contains($pf, 'padding:9px 11px;border-radius:6px'), 'the bank sub-panels are tightened');
 ok(str_contains($css, 'min-height:54px'), 'a textarea keeps a usable height rather than collapsing');
 
-echo "6. Both themes are defined at token level\n";
-ok(substr_count($css, '--acc:') >= 3, 'the palette is redefined for dark, not patched per component');
-ok(str_contains($css, ':root:not([data-theme="light"]) .zskin'), 'system dark is handled');
+echo "6. Both themes are defined at token level, and dark is OPT-IN\n";
+/* THIS SECTION USED TO REQUIRE THE OPPOSITE, and it was wrong.
+ *
+ * It asserted ':root:not([data-theme="light"]) .zskin' — the guard for an
+ * @media (prefers-color-scheme:dark) block — because designing for both
+ * themes is the right instinct for a page somebody visits once. It is the
+ * wrong instinct for the screens a data entry team lives in: plenty of
+ * their Windows machines have dark mode on, nobody asked for it, and the
+ * app had no switch. Production went black for the people doing the most
+ * typing.
+ *
+ * The requirement changed, so the test changed with it — in the direction
+ * of the new rule, not deleted. What it protects now is that the app
+ * cannot go dark because of a laptop setting, while the dark palette
+ * itself survives for a future switch. ztheme_test.php proves the same
+ * thing the other way: it opens the pages in a browser that reports a
+ * dark machine and measures the colours. */
+ok(substr_count($css, '--acc:') >= 2, 'the palette is redefined for dark, not patched per component');
+ok(str_contains($css, ':root[data-theme="dark"] .zskin{'),
+   'the dark palette is still defined, behind an explicit opt-in');
+ok(!str_contains($css, ':root:not([data-theme="light"])'),
+   'and the OS-driven guard is gone — a laptop does not choose the company\'s theme');
+ok(!preg_match('/prefers-color-scheme/', preg_replace('#/\*.*?\*/#s', '', $css)),
+   '  no rule reads prefers-color-scheme at all');
 ok(str_contains($css, ':root[data-theme="dark"] .zskin'), 'and an explicit choice beats it');
 ok(str_contains(flat($css), 'classic unreadable-page bug'), 'and the reason is stated');
 
