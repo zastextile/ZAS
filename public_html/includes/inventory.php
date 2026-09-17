@@ -228,6 +228,64 @@ function inv_ensure_schema(): void {
         INDEX(move_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 
+    /* --- opening stock: where a balance comes from when no document
+           created it.
+
+           Until this existed, stock could only arrive through a posted
+           gate pass. That is correct for everything that arrives from
+           now on, and useless for the day the system is switched on, or
+           for an item found on a shelf that was never entered. The
+           alternative people reach for is typing a number straight onto
+           a balance, which is exactly how a stock figure becomes
+           something nobody can explain.
+
+           So it is a DOCUMENT, with the same shape as every other
+           document in this module: numbered, dated, draft until posted,
+           posted through inv_post_ledger() like everything else, and
+           reversible. An opening balance is therefore always traceable
+           to a date, a document and a person. --- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS inv_opening (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        opening_no VARCHAR(40) NOT NULL,
+        opening_date DATE NOT NULL,
+        location_id INT NULL,
+        remarks TEXT NULL,
+        status ENUM('draft','posted','reversed') NOT NULL DEFAULT 'draft',
+        posted_by INT NULL,
+        posted_at DATETIME NULL,
+        reversed_by INT NULL,
+        reversed_at DATETIME NULL,
+        reversal_reason TEXT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uniq_opening_no (opening_no),
+        INDEX(opening_date), INDEX(status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* location_id sits on the LINE as well as the header. The header's is
+       the default for new lines; the line's is what posts. One physical
+       count sheet routinely covers several stores, and splitting it into
+       one document per store only to satisfy the table would make the
+       paperwork disagree with what was actually counted. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS inv_opening_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        opening_id INT NOT NULL,
+        material_id INT NULL,
+        product_id INT NULL,
+        size_label VARCHAR(80) NULL,
+        location_id INT NULL,
+        lot_no VARCHAR(80) NULL,
+        qty DECIMAL(16,3) NOT NULL DEFAULT 0,
+        uom VARCHAR(20) NULL,
+        rate DECIMAL(16,4) NOT NULL DEFAULT 0,
+        amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+        ownership ENUM('own','customer') NOT NULL DEFAULT 'own',
+        owner_party_id INT NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        INDEX(opening_id), INDEX(material_id), INDEX(product_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
     /* --- consumption: the ONLY converter. inputs = materials consumed,
            outputs = finished products produced (from Product Master). --- */
     try { db()->exec("CREATE TABLE IF NOT EXISTS inv_consumption (
@@ -506,6 +564,7 @@ function inv_seed_defaults(): void {
         'prefix_consumption' => 'CON', 'prefix_contract_pur' => 'PC',
         'prefix_contract_sal' => 'SC', 'prefix_contract_jw' => 'JW',
         'prefix_jobwork_bill' => 'JWB', 'prefix_alloc' => 'ALC',
+        'prefix_opening' => 'OPN',
         'stage1_label' => 'Cutting', 'stage2_label' => 'Stitching', 'stage3_label' => 'Dispatch',
         'default_location' => '1', 'backdate_days' => '7',
         // how far below a lot's balance an ordinary user may consume, with
@@ -1938,6 +1997,213 @@ function inv_gate_reverse(int $gateId, string $reason): array {
         if (db()->inTransaction()) db()->rollBack();
         return ['ok' => false, 'error' => 'Reversal failed: ' . $e->getMessage()];
     }
+}
+
+/* ------------------------------------------------------ opening stock */
+
+/* What the ledger ALREADY holds for exactly this item, store, lot and
+   size — the figure the entry screen shows in its "In stock now" column.
+
+   This is the whole safety story of opening stock. An opening entry ADDS
+   to what is there; it does not set a balance to a value. So entering an
+   opening figure for something that already has stock is how a quantity
+   silently doubles, and the only defence is showing the operator that
+   balance while they type.
+
+   It is deliberately NOT a refusal. The same item can genuinely have a
+   balance at another store, or on another lot, and the entry in front of
+   them can be perfectly correct. Marked and explained, never blocked —
+   the same rule the gate form uses for a quantity over its contract. */
+function inv_opening_onhand(int $matId, int $prodId, int $locId, string $lot, string $size = ''): float {
+    try {
+        $w = ["source_type <> 'opening_rev'"];
+        $p = [];
+        if ($matId > 0)  { $w[] = 'material_id = ?'; $p[] = $matId; }
+        elseif ($prodId > 0) { $w[] = 'product_id = ?'; $p[] = $prodId; }
+        else return 0.0;
+        if ($locId > 0) { $w[] = 'location_id = ?'; $p[] = $locId; }
+        /* An empty lot is its own bucket, not "any lot". Treating blank as
+           a wildcard would report the whole item's balance against a line
+           that names one roll, and every such line would look like a
+           double count. */
+        $w[] = $lot !== '' ? 'lot_no = ?' : "(lot_no IS NULL OR lot_no = '')";
+        if ($lot !== '') $p[] = $lot;
+        if ($size !== '') { $w[] = 'size_label = ?'; $p[] = $size; }
+        $st = db()->prepare("SELECT COALESCE(SUM(qty_in),0) - COALESCE(SUM(qty_out),0)
+                               FROM inv_stock_ledger WHERE " . implode(' AND ', $w));
+        $st->execute($p);
+        return round((float)$st->fetchColumn(), 3);
+    } catch (Throwable $e) { return 0.0; }
+}
+
+/* Post an opening stock document. Every line is a qty_in at its own
+   location, written through the same inv_post_ledger() as everything
+   else, so it appears in the Stock Ledger, in Current Stock and in every
+   balance the app computes — with its date, its number and its author. */
+function inv_opening_post(int $id): array {
+    try {
+        $st = db()->prepare("SELECT * FROM inv_opening WHERE id=?");
+        $st->execute([$id]); $o = $st->fetch();
+        if (!$o) return ['ok' => false, 'error' => 'Opening stock document not found.'];
+        if ($o['status'] === 'posted')   return ['ok' => false, 'error' => 'This document is already posted.'];
+        if ($o['status'] === 'reversed') return ['ok' => false, 'error' => 'This document has been reversed and cannot be posted again.'];
+        // even a double-submitted form cannot post twice
+        if (inv_already_posted('opening', $id)) return ['ok' => false, 'error' => 'Stock has already been written for this document.'];
+
+        $st2 = db()->prepare("SELECT * FROM inv_opening_items WHERE opening_id=? ORDER BY sort_order, id");
+        $st2->execute([$id]); $items = $st2->fetchAll();
+        if (!$items) return ['ok' => false, 'error' => 'Add at least one line before posting.'];
+
+        /* A line has to name something and carry a quantity above zero —
+           the same rule the form uses when it saves, so what posts is
+           exactly what the screen said would post. Opening stock cannot
+           be negative: a negative opening balance is not an opening
+           balance, it is an adjustment, and that is a different document
+           with a different meaning. */
+        $real = 0; $bad = [];
+        foreach ($items as $it) {
+            $q = (float)$it['qty'];
+            if ($q < 0) { $bad[] = 'a line has a negative quantity'; continue; }
+            if ($q > 0 && ((int)$it['material_id'] > 0 || (int)$it['product_id'] > 0)) $real++;
+        }
+        if ($bad)   return ['ok' => false, 'error' => 'Opening stock cannot be negative. Use a stock adjustment for a correction downwards.'];
+        if (!$real) return ['ok' => false, 'error' => 'No line has both an item and a quantity above zero.'];
+
+        $defLoc = (int)$o['location_id'] ?: (int)inv_setting('default_location', '1');
+        db()->beginTransaction();
+        foreach ($items as $it) {
+            $qty = (float)$it['qty'];
+            if ($qty <= 0 || ((int)$it['material_id'] <= 0 && (int)$it['product_id'] <= 0)) continue;
+            inv_post_ledger([
+                'txn_date'    => $o['opening_date'],
+                'material_id' => $it['material_id'] ?: null,
+                'product_id'  => $it['product_id'] ?: null,
+                'size_label'  => $it['size_label'] ?: null,
+                'location_id' => (int)$it['location_id'] ?: $defLoc,
+                'ownership'   => $it['ownership'] ?: 'own',
+                'owner_party_id' => $it['owner_party_id'] ?: null,
+                'lot_no'      => $it['lot_no'] ?: null,
+                'qty_in'      => $qty,
+                'rate'        => (float)$it['rate'],
+                'source_type' => 'opening',
+                'source_id'   => $id,
+                'source_item_id' => (int)$it['id'],
+                'source_no'   => $o['opening_no'],
+                'remarks'     => 'Opening stock',
+            ]);
+        }
+        db()->prepare("UPDATE inv_opening SET status='posted', posted_by=?, posted_at=NOW() WHERE id=?")
+            ->execute([(int)(current_user()['id'] ?? 0), $id]);
+        db()->commit();
+        inv_audit('opening_post', $id, $o['opening_no'], 'Opening stock posted');
+        return ['ok' => true, 'error' => ''];
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return ['ok' => false, 'error' => 'Posting failed: ' . $e->getMessage()];
+    }
+}
+
+/* Reverse a posted opening stock document — same shape as the gate
+   reversal: the posted rows stay exactly as posted and an opposite set is
+   written beside them, so the history reads as what happened rather than
+   as though it never did. */
+function inv_opening_reverse(int $id, string $reason): array {
+    if (trim($reason) === '') return ['ok' => false, 'error' => 'A reason is required to reverse a posted document.'];
+    try {
+        $st = db()->prepare("SELECT * FROM inv_opening WHERE id=?");
+        $st->execute([$id]); $o = $st->fetch();
+        if (!$o) return ['ok' => false, 'error' => 'Opening stock document not found.'];
+        if ($o['status'] !== 'posted') return ['ok' => false, 'error' => 'Only a posted document can be reversed.'];
+
+        $st2 = db()->prepare("SELECT * FROM inv_stock_ledger WHERE source_type='opening' AND source_id=?");
+        $st2->execute([$id]); $rows = $st2->fetchAll();
+        if (!$rows) return ['ok' => false, 'error' => 'No stock rows found for this document.'];
+
+        db()->beginTransaction();
+        foreach ($rows as $r) {
+            inv_post_ledger([
+                'txn_date' => date('Y-m-d'),
+                'material_id' => $r['material_id'], 'product_id' => $r['product_id'],
+                'size_label' => $r['size_label'], 'location_id' => $r['location_id'],
+                'ownership' => $r['ownership'], 'owner_party_id' => $r['owner_party_id'],
+                'lot_no' => $r['lot_no'],
+                'qty_in'  => (float)$r['qty_out'],     // swapped on purpose
+                'qty_out' => (float)$r['qty_in'],
+                'rate' => (float)$r['rate'],
+                'source_type' => 'opening_rev', 'source_id' => $id,
+                'source_item_id' => $r['source_item_id'], 'source_no' => $o['opening_no'] . '-REV',
+                'remarks' => 'Reversal: ' . mb_substr($reason, 0, 240),
+            ]);
+        }
+        db()->prepare("UPDATE inv_opening SET status='reversed', reversed_by=?, reversed_at=NOW(), reversal_reason=? WHERE id=?")
+            ->execute([(int)(current_user()['id'] ?? 0), $reason, $id]);
+        db()->commit();
+        inv_audit('opening_reverse', $id, $o['opening_no'], $reason);
+        return ['ok' => true, 'error' => ''];
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return ['ok' => false, 'error' => 'Reversal failed: ' . $e->getMessage()];
+    }
+}
+
+/* Every stockable thing, materials and finished products in one list,
+   for the opening stock picker. A product carries its sizes so the form
+   can ask for one; a material carries its stage so the operator can see
+   at a glance whether they are opening grey, raw or finished goods. */
+function inv_opening_items(): array {
+    $out = [];
+    try {
+        foreach (db()->query("SELECT id, code, name, item_group, stage, uom, std_rate
+                                FROM inv_materials WHERE is_active=1 ORDER BY code")->fetchAll() as $m) {
+            $out[] = [
+                'key' => 'm' . (int)$m['id'], 'kind' => 'mat', 'id' => (int)$m['id'],
+                'code' => (string)$m['code'], 'name' => (string)$m['name'],
+                'grp' => (string)$m['item_group'], 'stage' => (string)$m['stage'],
+                'uom' => (string)$m['uom'], 'rate' => (float)$m['std_rate'], 'sizes' => [],
+            ];
+        }
+    } catch (Throwable $e) {}
+    try {
+        foreach (db()->query("SELECT id, name FROM products WHERE is_active=1 ORDER BY name LIMIT 800")->fetchAll() as $p) {
+            $out[] = [
+                'key' => 'p' . (int)$p['id'], 'kind' => 'prod', 'id' => (int)$p['id'],
+                'code' => 'PRD-' . (int)$p['id'], 'name' => (string)$p['name'],
+                'grp' => 'Finished goods', 'stage' => 'product',
+                'uom' => 'PCS', 'rate' => 0.0, 'sizes' => inv_product_sizes((int)$p['id']),
+            ];
+        }
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* Sizes a product is made in.
+
+   THE TABLE IS product_sizes, AND ONLY product_sizes. I first wrote this
+   against zp_sizes, which looks like the right table and is not: it is a
+   dead copy left on disk for its history, read by nothing. includes/
+   zprod.php carries the whole story — putting the production module on
+   its own size table meant a size typed in Product Master never reached
+   the seventeen files that read product_sizes. Reading it here would have
+   quietly reintroduced exactly that split, on a screen that sets opening
+   balances.
+
+   One query for every product, cached for the request: the picker asks
+   for sizes once per product and there may be hundreds.
+
+   An empty list is not a failure. It means nobody has set sizes on that
+   product, and the size box is then free text — which is the honest
+   answer rather than an empty dropdown that cannot be filled in. */
+function inv_product_sizes(int $productId): array {
+    static $cache = null;
+    if ($cache === null) {
+        $cache = [];
+        try {
+            foreach (db()->query("SELECT product_id, size_label FROM product_sizes
+                                   ORDER BY product_id, COALESCE(sort_order,0), id")->fetchAll() as $r)
+                $cache[(int)$r['product_id']][] = (string)$r['size_label'];
+        } catch (Throwable $e) { $cache = []; }
+    }
+    return $cache[$productId] ?? [];
 }
 
 /* Posted quantity already moved against one contract, in the direction

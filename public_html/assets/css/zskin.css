@@ -1042,6 +1042,112 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
   border-radius:6px !important;padding:7px 9px !important}
 .zskin .ig-kpi .l{font-size:10px !important;color:var(--fg-4) !important;letter-spacing:.04em !important}
 
+/* ============================================================
+   OPENING STOCK — .op-* (inv_opening.php)
+   ------------------------------------------------------------
+   A new screen, so there was no old look to preserve — but it still
+   defines its own .op-* styles and still opts in with a wrapper, for one
+   reason: a page that only looks right while this file loads is a page
+   that renders as raw HTML the day this file 404s. The rules below the
+   wrapper are the fallback; these are the treatment.
+
+   A first-time count sheet is hundreds of lines. Everything here exists
+   to make the hundredth line as quick as the first: 28px rows, flat cell
+   inputs, and the kind of item and the existing balance readable at a
+   glance so nothing has to be checked on another screen.
+
+   Same rule as every other block in this file — every name is scoped
+   under .op-tbl or .zskin, never left bare.
+   ============================================================ */
+.zskin .op-card{background:var(--panel) !important;border:1px solid var(--bd) !important;
+  border-radius:8px !important;box-shadow:none !important;
+  padding:11px 13px !important;margin-bottom:10px !important}
+.zskin .op-lbl{font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
+  color:var(--fg-4) !important;margin-bottom:3px !important}
+.zskin .op-bar{gap:8px !important;margin-bottom:10px !important}
+.zskin .op-in{box-sizing:border-box;height:28px;padding:0 8px !important;border-radius:5px !important;
+  border:1px solid var(--bd) !important;background:var(--panel) !important;
+  font-size:12.5px !important;color:var(--fg) !important}
+.zskin .op-in:focus{outline:none !important;border-color:var(--acc) !important;
+  box-shadow:0 0 0 3px var(--acc-soft) !important}
+
+.zskin .op-tbl{font-size:12.5px !important}
+.zskin .op-tbl th{background:var(--sub) !important;color:var(--fg-2) !important;
+  font-size:10.5px !important;font-weight:600 !important;letter-spacing:0 !important;
+  text-transform:none !important;padding:0 6px !important;height:26px;
+  border-bottom:1px solid var(--bd) !important;border-right:1px solid var(--bd-2) !important}
+.zskin .op-tbl th:last-child{border-right:0 !important}
+.zskin .op-tbl td{padding:0 6px !important;height:var(--rowh);vertical-align:middle !important;
+  border-top:0 !important;border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important}
+.zskin .op-tbl td:last-child{border-right:0 !important}
+.zskin .op-tbl tbody tr:hover>td{background:var(--hover) !important}
+.zskin .op-tbl td.n{color:var(--fg-4) !important;font-family:var(--mono) !important;font-size:11px !important}
+.zskin .op-tbl td.r{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.zskin .op-tbl tfoot td{background:var(--sub) !important;font-weight:600 !important;
+  height:26px;border-top:1px solid var(--bd) !important;border-bottom:0 !important}
+
+/* the cell IS the control — box-sizing stated, not inherited */
+.zskin .op-tbl td>.op-in{box-sizing:border-box;height:calc(var(--rowh) - 2px);
+  border:1px solid transparent !important;border-radius:0 !important;
+  background:transparent !important;padding:0 5px !important;box-shadow:none !important}
+.zskin .op-tbl td>.op-in:hover{border-color:var(--bd) !important}
+.zskin .op-tbl td>.op-in:focus{border-color:var(--acc) !important;background:var(--panel) !important;
+  box-shadow:inset 0 0 0 1px var(--acc) !important}
+.zskin .op-tbl td>.op-in.der{color:var(--fg-3) !important}
+.zskin .op-tbl td>.op-in.der:focus{color:var(--fg) !important}
+
+/* WHAT KIND OF THING IS THIS. Opening stock is the one screen where grey,
+   raw, finished and a finished product are all being entered in the same
+   sitting, and getting that wrong is not a typo — it is stock in the
+   wrong state. So it is a colour, readable without stopping to read. */
+.zskin .op-k{border-radius:3px !important;font-size:9.5px !important;font-weight:600 !important;
+  letter-spacing:0 !important;padding:1px 5px !important}
+.zskin .op-k.k-grey{background:var(--bd-2) !important;color:var(--fg-3) !important}
+.zskin .op-k.k-raw{background:var(--warn-soft) !important;color:var(--warn) !important}
+.zskin .op-k.k-finished{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .op-k.k-product{background:var(--acc-soft) !important;color:var(--acc) !important}
+.zskin .op-k.k-na{background:var(--bd-2) !important;color:var(--fg-4) !important}
+
+/* ALREADY HAS STOCK. Marked, never refused — an opening entry ADDS, so a
+   balance that is already there is how a figure doubles; but the same
+   item at another store or on another lot is perfectly correct. Same
+   decision as the contract balance on the gate form. */
+.zskin .op-tbl td.has{color:var(--warn) !important;font-weight:600 !important}
+
+.zskin .op-btn{box-sizing:border-box;height:28px;padding:0 13px !important;border-radius:5px !important;
+  border:1px solid var(--acc) !important;background:var(--acc) !important;color:#fff !important;
+  font-family:var(--ui) !important;font-size:12px !important;font-weight:600 !important;
+  display:inline-flex;align-items:center;gap:5px;box-shadow:none !important;transition:all var(--t)}
+.zskin .op-btn:hover{filter:brightness(1.08)}
+.zskin .op-btn.sec{background:var(--panel) !important;color:var(--fg-2) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .op-btn.sec:hover{background:var(--hover) !important;border-color:var(--fg-4) !important;filter:none}
+.zskin .op-btn.go{background:var(--ok) !important;border-color:var(--ok) !important}
+.zskin .op-btn.warn{background:var(--panel) !important;color:var(--bad) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .op-btn.warn:hover{background:var(--bad-soft) !important;border-color:var(--bad) !important;filter:none}
+.zskin .op-tbl td>.op-x{height:20px;width:20px;border-radius:4px}
+.zskin .op-tbl td>.op-x:hover{background:var(--bad-soft) !important;color:var(--bad) !important}
+
+.zskin .op-note{border-radius:6px !important;font-size:12px !important;
+  padding:9px 11px !important;margin-bottom:10px !important;line-height:1.55 !important}
+.zskin .op-note.info{background:var(--acc-soft) !important;border-color:var(--acc-bd) !important;
+  color:var(--fg-2) !important}
+.zskin .op-note.warn{background:var(--warn-soft) !important;border-color:#f0ddb9 !important;
+  color:var(--warn) !important}
+.zskin .op-note.bad{background:var(--bad-soft) !important;border-color:#f2c4cd !important;
+  color:var(--bad) !important}
+
+/* Scoped to .op-pill, for the same reason every other status set in this
+   file is scoped: .s-draft is two letters from a name any page could
+   pick, and inv_contract_print.php and inv_gate_print.php already own it. */
+.zskin .op-pill{border-radius:3px !important;font-size:10px !important;font-weight:600 !important;
+  letter-spacing:0 !important;padding:1px 6px !important;text-transform:none !important}
+.zskin .op-pill.s-draft{background:var(--bd-2) !important;color:var(--fg-3) !important}
+.zskin .op-pill.s-posted{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .op-pill.s-reversed{background:var(--bad-soft) !important;color:var(--bad) !important}
+
 /* ---------- empty state ---------- */
 .zskin .zempty{padding:34px 18px;text-align:center;color:var(--fg-3);font-size:12.5px}
 .zskin .zempty h4{margin:0 0 3px;font-size:13px;font-weight:600;color:var(--fg)}
