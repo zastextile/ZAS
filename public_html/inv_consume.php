@@ -333,6 +333,12 @@ flash();
 .ic2-note.bad{background:rgba(224,67,93,.08);border:1px solid rgba(224,67,93,.24);color:#8c2038}
 </style>
 
+<?php /* OPTING IN TO THE SKIN. Every rule in assets/css/zskin.css is
+         scoped under .zskin, so this one wrapper is what makes the page
+         compact, and deleting it restores the styles above with nothing
+         else to undo. It wraps the markup and never the <style>. */ ?>
+<div class="zskin">
+
 <?php if ($showForm): $D = $doc ?: []; ?>
 <div class="ic2-card">
   <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800"><?= $doc ? 'Edit ' . e($doc['con_no']) : 'New consumption' ?></h2>
@@ -1332,4 +1338,5 @@ flash();
   <?php endif; ?>
 </div>
 <?php endif; ?>
+</div><?php /* closes .zskin */ ?>
 <?php page_footer(); ?>

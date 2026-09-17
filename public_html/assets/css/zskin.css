@@ -1043,6 +1043,274 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
 .zskin .ig-kpi .l{font-size:10px !important;color:var(--fg-4) !important;letter-spacing:.04em !important}
 
 /* ============================================================
+   THE REST OF THE STORE MODULE — eleven screens at once
+   ------------------------------------------------------------
+     .ic2-*  Consumption          .ir-*   Reset
+     .is-*   Current Stock        .ip-*   Parties
+     .im-*   Item Master          .oc-*   Order Cost
+     .il-*   Stock Ledger         .ex-*   Exceptions
+     .jw-*   Job Work             .iv-*   Setup AND Health (see below)
+
+   WHY THIS IS ONE BLOCK AND NOT ELEVEN.
+   These eleven pages were written at different times and each invented
+   its own prefix, but they are the same SHAPE: a card, a table with a
+   header row, cell inputs, a primary and a secondary button, a status
+   pill, a note strip. Eleven near-identical blocks would be eleven places
+   to keep in step, and they would drift. The shared shape is written once
+   against a list of selectors; only what a page genuinely does
+   differently is written per page, below.
+
+   WHAT IS DELIBERATELY NOT TOUCHED.
+   Each page has ornaments of its own — .iv-sev, .im-fab, .il-chip,
+   .ex-val, .jw-kpi and so on. They are left exactly as their page defines
+   them. The purpose here is the density of the grid and one consistent
+   look for the things every screen has; repainting every ornament on
+   eleven pages in one sweep is how a change nobody reviewed gets shipped.
+
+   .iv-* IS THE ONE THAT NEEDED CARE, AND IT IS WHY THIS BLOCK EXISTS AT
+   ALL RATHER THAN A ONE-LINE FIND AND REPLACE.
+   inv_setup.php and inv_verify.php BOTH use .iv-*. .iv-card and .iv-tbl
+   are defined identically in the two files, so those are safe. .iv-btn
+   and .iv-ok are not:
+       .iv-btn   setup: a cyan-to-violet PRIMARY, .sec for secondary
+                 verify: a plain white SECONDARY, no modifier at all
+       .iv-ok    setup: a small green BADGE
+                 verify: a full-width success PANEL with a 4px left rule
+   A single .zskin .iv-ok rule would turn one of them into the other.
+   That is the .zgrid mistake exactly, and the fix is not to rewrite
+   either page: each wrapper carries one extra word — "zskin ivset" or
+   "zskin ivchk" — and the two names that disagree are written against
+   that. One word per page, no markup rewritten, and the ambiguity is
+   gone permanently.
+   ============================================================ */
+
+/* ---------- the card every screen sits in ---------- */
+.zskin .ic2-card, .zskin .is-card, .zskin .im-card, .zskin .il-card,
+.zskin .jw-card, .zskin .ir-card, .zskin .ip-card, .zskin .oc-card,
+.zskin .ex-card, .zskin .iv-card{
+  background:var(--panel) !important;border:1px solid var(--bd) !important;
+  border-radius:8px !important;box-shadow:none !important;
+  padding:11px 13px !important;margin-bottom:10px !important}
+
+/* ---------- filter bars and field grids ---------- */
+.zskin .is-bar, .zskin .im-bar, .zskin .il-bar, .zskin .ip-bar{
+  background:var(--panel) !important;border:1px solid var(--bd) !important;
+  border-radius:8px !important;padding:9px 11px !important;gap:8px !important;
+  margin-bottom:10px !important}
+.zskin .ic2-grid, .zskin .im-grid, .zskin .jw-grid, .zskin .ip-grid,
+.zskin .oc-grid, .zskin .ex-grid, .zskin .iv-grid, .zskin .iv-g2{gap:8px !important}
+.zskin .ic2-lbl, .zskin .is-lbl, .zskin .im-lbl, .zskin .il-lbl, .zskin .jw-lbl,
+.zskin .ir-lbl, .zskin .ip-lbl, .zskin .oc-lbl, .zskin .iv-lbl{
+  font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
+  color:var(--fg-4) !important;margin-bottom:3px !important}
+
+/* ---------- inputs ---------- */
+.zskin .ic2-inp, .zskin .is-inp, .zskin .im-inp, .zskin .il-inp, .zskin .jw-inp,
+.zskin .ir-inp, .zskin .ip-inp, .zskin .oc-inp, .zskin .iv-inp{
+  box-sizing:border-box;height:28px;padding:0 8px !important;border-radius:5px !important;
+  border:1px solid var(--bd) !important;background:var(--panel) !important;
+  font-size:12.5px !important;color:var(--fg) !important}
+.zskin .ic2-inp:focus, .zskin .is-inp:focus, .zskin .im-inp:focus, .zskin .il-inp:focus,
+.zskin .jw-inp:focus, .zskin .ir-inp:focus, .zskin .ip-inp:focus, .zskin .oc-inp:focus,
+.zskin .iv-inp:focus{outline:none !important;border-color:var(--acc) !important;
+  box-shadow:0 0 0 3px var(--acc-soft) !important}
+.zskin textarea.ic2-inp, .zskin textarea.im-inp, .zskin textarea.jw-inp,
+.zskin textarea.ip-inp, .zskin textarea.iv-inp, .zskin textarea.ir-inp{
+  height:auto;min-height:52px;padding:5px 8px !important}
+
+/* ---------- the grids ---------- */
+.zskin .ic2-tbl, .zskin .is-tbl, .zskin .im-tbl, .zskin .il-tbl, .zskin .jw-tbl,
+.zskin .ir-tbl, .zskin .ip-tbl, .zskin .oc-tbl, .zskin .iv-tbl{font-size:12.5px !important}
+.zskin .ic2-tbl th, .zskin .is-tbl th, .zskin .im-tbl th, .zskin .il-tbl th,
+.zskin .jw-tbl th, .zskin .ir-tbl th, .zskin .ip-tbl th, .zskin .oc-tbl th,
+.zskin .iv-tbl th{
+  background:var(--sub) !important;color:var(--fg-2) !important;
+  font-size:10.5px !important;font-weight:600 !important;letter-spacing:0 !important;
+  text-transform:none !important;padding:0 8px !important;height:28px;
+  border-bottom:1px solid var(--bd) !important;border-right:1px solid var(--bd-2) !important}
+.zskin .ic2-tbl th:last-child, .zskin .is-tbl th:last-child, .zskin .im-tbl th:last-child,
+.zskin .il-tbl th:last-child, .zskin .jw-tbl th:last-child, .zskin .ir-tbl th:last-child,
+.zskin .ip-tbl th:last-child, .zskin .oc-tbl th:last-child, .zskin .iv-tbl th:last-child{
+  border-right:0 !important}
+/* vertical-align:top is what lets a row drift with whatever is in it —
+   the same thing that was wrong on contracts and on the gate form. */
+.zskin .ic2-tbl td, .zskin .is-tbl td, .zskin .im-tbl td, .zskin .il-tbl td,
+.zskin .jw-tbl td, .zskin .ir-tbl td, .zskin .ip-tbl td, .zskin .oc-tbl td,
+.zskin .iv-tbl td{
+  padding:0 8px !important;height:var(--rowh);vertical-align:middle !important;
+  border-top:0 !important;border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important}
+.zskin .ic2-tbl td:last-child, .zskin .is-tbl td:last-child, .zskin .im-tbl td:last-child,
+.zskin .il-tbl td:last-child, .zskin .jw-tbl td:last-child, .zskin .ir-tbl td:last-child,
+.zskin .ip-tbl td:last-child, .zskin .oc-tbl td:last-child, .zskin .iv-tbl td:last-child{
+  border-right:0 !important}
+.zskin .ic2-tbl tbody tr:hover>td, .zskin .is-tbl tbody tr:hover>td,
+.zskin .im-tbl tbody tr:hover>td, .zskin .il-tbl tbody tr:hover>td,
+.zskin .jw-tbl tbody tr:hover>td, .zskin .ip-tbl tbody tr:hover>td,
+.zskin .oc-tbl tbody tr:hover>td, .zskin .iv-tbl tbody tr:hover>td{
+  background:var(--hover) !important}
+/* text-align IS PART OF THIS RULE, and leaving it out was a real gap.
+   Most of these pages define their own `td.r{text-align:right}`; a couple
+   never did, so a column marked .r sat left-aligned with the numbers
+   ragged down the page. A class called "r" that does not right-align is a
+   broken promise, so the skin states it rather than hoping each page
+   remembered. The th is included for the same reason — a right-aligned
+   column with a left-aligned heading reads as two columns. */
+.zskin .ic2-tbl td.r, .zskin .is-tbl td.r, .zskin .im-tbl td.r, .zskin .il-tbl td.r,
+.zskin .jw-tbl td.r, .zskin .ir-tbl td.r, .zskin .ip-tbl td.r, .zskin .oc-tbl td.r,
+.zskin .iv-tbl td.r{text-align:right !important;
+  font-family:var(--mono);font-variant-numeric:tabular-nums}
+.zskin .ic2-tbl th.r, .zskin .is-tbl th.r, .zskin .im-tbl th.r, .zskin .il-tbl th.r,
+.zskin .jw-tbl th.r, .zskin .ir-tbl th.r, .zskin .ip-tbl th.r, .zskin .oc-tbl th.r,
+.zskin .iv-tbl th.r{text-align:right !important}
+.zskin .ic2-tbl tfoot td, .zskin .is-tbl tfoot td, .zskin .im-tbl tfoot td,
+.zskin .il-tbl tfoot td, .zskin .jw-tbl tfoot td, .zskin .oc-tbl tfoot td{
+  background:var(--sub) !important;font-weight:600 !important;height:26px;
+  border-top:1px solid var(--bd) !important;border-bottom:0 !important}
+/* a cell holding an input goes flat — the cell IS the control */
+/* .il- and .is- were missing from this list. Stock and Ledger are report
+   screens whose inputs live in the filter bar rather than in a cell, so
+   nothing looks wrong today — but "it happens not to matter yet" is not a
+   reason for a rule to be inconsistent, and the day a filter moves into a
+   cell it would be a bordered box in a flat grid. */
+.zskin .ic2-tbl td>.ic2-inp, .zskin .im-tbl td>.im-inp, .zskin .jw-tbl td>.jw-inp,
+.zskin .ip-tbl td>.ip-inp, .zskin .oc-tbl td>.oc-inp, .zskin .iv-tbl td>.iv-inp,
+.zskin .il-tbl td>.il-inp, .zskin .is-tbl td>.is-inp, .zskin .ir-tbl td>.ir-inp{
+  box-sizing:border-box;height:calc(var(--rowh) - 2px);
+  border:1px solid transparent !important;border-radius:0 !important;
+  background:transparent !important;padding:0 6px !important;box-shadow:none !important}
+.zskin .ic2-tbl td>.ic2-inp:hover, .zskin .im-tbl td>.im-inp:hover,
+.zskin .jw-tbl td>.jw-inp:hover, .zskin .ip-tbl td>.ip-inp:hover,
+.zskin .oc-tbl td>.oc-inp:hover, .zskin .iv-tbl td>.iv-inp:hover,
+.zskin .il-tbl td>.il-inp:hover, .zskin .is-tbl td>.is-inp:hover,
+.zskin .ir-tbl td>.ir-inp:hover{border-color:var(--bd) !important}
+.zskin .ic2-tbl td>.ic2-inp:focus, .zskin .im-tbl td>.im-inp:focus,
+.zskin .jw-tbl td>.jw-inp:focus, .zskin .ip-tbl td>.ip-inp:focus,
+.zskin .oc-tbl td>.oc-inp:focus, .zskin .iv-tbl td>.iv-inp:focus,
+.zskin .il-tbl td>.il-inp:focus, .zskin .is-tbl td>.is-inp:focus,
+.zskin .ir-tbl td>.ir-inp:focus{
+  border-color:var(--acc) !important;background:var(--panel) !important;
+  box-shadow:inset 0 0 0 1px var(--acc) !important}
+
+/* ---------- tabs become a segmented control ---------- */
+.zskin .is-tabs, .zskin .im-tabs, .zskin .ip-tabs{
+  background:var(--sub) !important;border:1px solid var(--bd) !important;
+  border-radius:5px !important;padding:0 !important;gap:0 !important;
+  width:fit-content;max-width:100%;flex-wrap:nowrap !important;overflow-x:auto;
+  margin-bottom:10px !important}
+.zskin .is-tab, .zskin .im-tab, .zskin .ip-tab{
+  padding:0 13px !important;height:28px;display:inline-flex;align-items:center;gap:5px;
+  border-radius:0 !important;font-size:12px !important;font-weight:500 !important;
+  color:var(--fg-3) !important;white-space:nowrap;box-shadow:none !important;
+  border-right:1px solid var(--bd);transition:all var(--t)}
+.zskin .is-tab:last-child, .zskin .im-tab:last-child, .zskin .ip-tab:last-child{border-right:0}
+.zskin .is-tab.on, .zskin .im-tab.on, .zskin .ip-tab.on{
+  background:var(--panel) !important;color:var(--fg) !important;
+  font-weight:600 !important;box-shadow:inset 0 -2px 0 var(--acc) !important}
+
+/* ---------- buttons ----------
+   Primary is the accent; .sec is the quiet one. .iv-btn is NOT in this
+   list: the two pages that use that name disagree about which of the two
+   it is, so it is written against each page's wrapper further down. */
+.zskin .ic2-btn, .zskin .is-btn, .zskin .im-btn, .zskin .il-btn,
+.zskin .jw-btn, .zskin .ir-btn, .zskin .ip-btn, .zskin .oc-btn{
+  box-sizing:border-box;height:28px;padding:0 13px !important;border-radius:5px !important;
+  border:1px solid var(--acc) !important;background:var(--acc) !important;color:#fff !important;
+  font-family:var(--ui) !important;font-size:12px !important;font-weight:600 !important;
+  display:inline-flex;align-items:center;gap:5px;box-shadow:none !important;
+  transition:all var(--t)}
+.zskin .ic2-btn:hover, .zskin .is-btn:hover, .zskin .im-btn:hover, .zskin .il-btn:hover,
+.zskin .jw-btn:hover, .zskin .ir-btn:hover, .zskin .ip-btn:hover, .zskin .oc-btn:hover{
+  filter:brightness(1.08)}
+.zskin .ic2-btn.sec, .zskin .is-btn.sec, .zskin .im-btn.sec, .zskin .il-btn.sec,
+.zskin .jw-btn.sec, .zskin .ir-btn.sec, .zskin .ip-btn.sec, .zskin .oc-btn.sec{
+  background:var(--panel) !important;color:var(--fg-2) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .ic2-btn.sec:hover, .zskin .is-btn.sec:hover, .zskin .im-btn.sec:hover,
+.zskin .il-btn.sec:hover, .zskin .jw-btn.sec:hover, .zskin .ir-btn.sec:hover,
+.zskin .ip-btn.sec:hover, .zskin .oc-btn.sec:hover{
+  background:var(--hover) !important;border-color:var(--fg-4) !important;filter:none}
+.zskin .ic2-btn.go, .zskin .jw-btn.go, .zskin .ir-btn.go, .zskin .oc-btn.go{
+  background:var(--ok) !important;border-color:var(--ok) !important}
+.zskin .ic2-btn.warn, .zskin .jw-btn.warn, .zskin .ir-btn.warn, .zskin .oc-btn.warn{
+  background:var(--panel) !important;color:var(--bad) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+
+/* ---------- notes ---------- */
+.zskin .ic2-note, .zskin .is-note, .zskin .il-note, .zskin .jw-note,
+.zskin .ir-note, .zskin .oc-note, .zskin .ex-note, .zskin .iv-note{
+  border-radius:6px !important;font-size:12px !important;
+  padding:9px 11px !important;margin-bottom:10px !important;line-height:1.55 !important}
+.zskin .ic2-note.info, .zskin .is-note.info, .zskin .il-note.info, .zskin .jw-note.info,
+.zskin .ir-note.info, .zskin .oc-note.info, .zskin .ex-note.info, .zskin .iv-note.info{
+  background:var(--acc-soft) !important;border-color:var(--acc-bd) !important;color:var(--fg-2) !important}
+.zskin .ic2-note.ok, .zskin .is-note.ok, .zskin .il-note.ok, .zskin .jw-note.ok,
+.zskin .ir-note.ok, .zskin .oc-note.ok, .zskin .ex-note.ok, .zskin .iv-note.ok{
+  background:var(--ok-soft) !important;border-color:#bfe3cf !important;color:var(--ok) !important}
+.zskin .ic2-note.warn, .zskin .is-note.warn, .zskin .il-note.warn, .zskin .jw-note.warn,
+.zskin .ir-note.warn, .zskin .oc-note.warn, .zskin .ex-note.warn, .zskin .iv-note.warn{
+  background:var(--warn-soft) !important;border-color:#f0ddb9 !important;color:var(--warn) !important}
+.zskin .ic2-note.bad, .zskin .is-note.bad, .zskin .il-note.bad, .zskin .jw-note.bad,
+.zskin .ir-note.bad, .zskin .oc-note.bad, .zskin .ex-note.bad, .zskin .iv-note.bad{
+  background:var(--bad-soft) !important;border-color:#f2c4cd !important;color:var(--bad) !important}
+
+/* ---------- square badges, not pills ---------- */
+.zskin .ic2-pill, .zskin .is-pill, .zskin .im-pill, .zskin .jw-pill,
+.zskin .ip-pill, .zskin .oc-pill, .zskin .ex-pill, .zskin .iv-pill{
+  border-radius:3px !important;font-size:10px !important;font-weight:600 !important;
+  letter-spacing:0 !important;padding:1px 6px !important;text-transform:none !important}
+/* EVERY STATUS NAME IS TIED TO ITS OWN BADGE.
+   .p-draft and .p-reversed are used by Consumption AND by Store Issue —
+   two pages, one name — and .s-high / .s-med / .s-low sit in the same
+   family as the .s-draft the two print pages own. Bare rules would reach
+   pages nobody reviewed, so every one of these can only ever land on a
+   badge belonging to the page it was written for. */
+.zskin .ic2-pill.p-draft{background:var(--bd-2) !important;color:var(--fg-3) !important}
+.zskin .ic2-pill.p-posted{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .ic2-pill.p-reversed{background:var(--bad-soft) !important;color:var(--bad) !important}
+.zskin .jw-pill.b-draft{background:var(--bd-2) !important;color:var(--fg-3) !important}
+.zskin .jw-pill.b-settled{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .jw-pill.b-cancelled{background:var(--bad-soft) !important;color:var(--bad) !important}
+.zskin .ip-pill.t-supplier{background:var(--acc-soft) !important;color:var(--acc) !important}
+.zskin .ip-pill.t-customer{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .ip-pill.t-jobworker{background:#eeebfa !important;color:#5a4bb8 !important}
+.zskin .ip-pill.t-both{background:var(--warn-soft) !important;color:var(--warn) !important}
+.zskin .ex-pill.s-high{background:var(--bad-soft) !important;color:var(--bad) !important}
+.zskin .ex-pill.s-med{background:var(--warn-soft) !important;color:var(--warn) !important}
+.zskin .ex-pill.s-low{background:var(--bd-2) !important;color:var(--fg-3) !important}
+/* the item group colours are Item Master's own, and stay its own */
+.zskin .im-pill.g-Fabric{background:var(--acc-soft) !important;color:var(--acc) !important}
+.zskin .im-pill.g-Accessories{background:#eeebfa !important;color:#5a4bb8 !important}
+.zskin .im-pill.g-Packing{background:var(--bd-2) !important;color:var(--fg-3) !important}
+.zskin .im-pill.g-Other{background:var(--warn-soft) !important;color:var(--warn) !important}
+
+/* ---------- the two pages that share .iv-* ----------
+   Told apart by one extra word on each page's wrapper. */
+.zskin.ivset .iv-btn{box-sizing:border-box;height:28px;padding:0 13px !important;
+  border-radius:5px !important;border:1px solid var(--acc) !important;
+  background:var(--acc) !important;color:#fff !important;font-family:var(--ui) !important;
+  font-size:12px !important;font-weight:600 !important;display:inline-flex;align-items:center;
+  gap:5px;box-shadow:none !important;transition:all var(--t)}
+.zskin.ivset .iv-btn:hover{filter:brightness(1.08)}
+.zskin.ivset .iv-btn.sec{background:var(--panel) !important;color:var(--fg-2) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin.ivset .iv-ok{border-radius:3px !important;font-size:10px !important;
+  font-weight:600 !important;padding:1px 6px !important;
+  background:var(--ok-soft) !important;color:var(--ok) !important}
+/* Health: .iv-btn is the quiet one here, and .iv-ok is a PANEL. */
+.zskin.ivchk .iv-btn{box-sizing:border-box;height:28px;padding:0 13px !important;
+  border-radius:5px !important;border:1px solid var(--bd) !important;
+  background:var(--panel) !important;color:var(--fg-2) !important;
+  font-family:var(--ui) !important;font-size:12px !important;font-weight:500 !important;
+  display:inline-flex;align-items:center;gap:5px;box-shadow:none !important;
+  transition:all var(--t)}
+.zskin.ivchk .iv-btn:hover{background:var(--hover) !important;border-color:var(--fg-4) !important}
+.zskin.ivchk .iv-ok{border-radius:6px !important;padding:11px 13px !important;
+  font-size:12.5px !important;line-height:1.6 !important;
+  background:var(--ok-soft) !important;color:var(--ok) !important;
+  border:1px solid #bfe3cf !important;border-left:3px solid var(--ok) !important}
+
+/* ============================================================
    STORE ISSUE & RETURN — .iss-* (inv_store.php)
    ------------------------------------------------------------
    The screen the store team uses most: material off the shelf to a floor
