@@ -49,14 +49,37 @@ echo "3. THE NAMES ARE THIS PAGE'S ALONE\n";
 /* The .zgrid lesson, for the third time: a name the skin maps must belong
    to one page, or the mapping silently reaches a page nobody reviewed. */
 $pages = array_merge(glob($B . '*.php'), glob($B . 'includes/*.php'));
-foreach (['ig-card','ig-tbl','ig-btn','ig-inp','ig-pill','ig-grid','ig-note','ig-lbl','ig-kpi',
-          'matbox','lothint','dtog','dwrap','cbox','cline'] as $c) {
-    $owners = [];
+$owners = function (string $c) use ($pages): array {
+    $o = [];
     foreach ($pages as $f)
         if (preg_match('/(^|[\s,>])\.' . preg_quote($c, '/') . '[\s{,.:]/m', file_get_contents($f)))
-            $owners[] = basename($f);
-    ok(count($owners) <= 1, ".$c is defined by at most one page, got " . json_encode($owners));
-}
+            $o[] = basename($f);
+    return $o;
+};
+foreach (['ig-card','ig-tbl','ig-btn','ig-inp','ig-pill','ig-grid','ig-note','ig-lbl','ig-kpi',
+          'lothint','dtog','dwrap','cbox','cline'] as $c)
+    ok(count($owners($c)) <= 1, ".$c is defined by at most one page, got " . json_encode($owners($c)));
+
+/* .matbox IS defined by two pages, on purpose, and that is not the thing
+   this section is guarding against.
+ *
+ * The rule is "the skin must not map a name that two pages mean
+ * differently" — because the mapping would then reach a page nobody
+ * reviewed. .matbox is a one-line local utility (position:relative) that
+ * inv_store.php's markup was already using while only inv_gate.php
+ * defined it, so it had never applied there; stating it on both pages is
+ * the fix, not a collision.
+ *
+ * What has to remain true is that the SKIN never touches it bare. Both
+ * mappings sit under their own table — .ig-tbl and .iss-tbl — so neither
+ * can reach the other's page. That is what is checked. */
+$mb = $owners('matbox');
+ok(count($mb) === 2 && in_array('inv_gate.php', $mb, true) && in_array('inv_store.php', $mb, true),
+   '.matbox is stated by both pages that use it, got ' . json_encode($mb));
+ok(!preg_match('/\.zskin \.matbox[\s{,>]/', $css),
+   '  and the skin never maps it bare');
+ok(substr_count($css, '.zskin .ig-tbl td .matbox') > 0 && substr_count($css, '.zskin .iss-tbl td .matbox') > 0,
+   '  every .matbox rule is scoped to one page\'s own table');
 /* The status names are scoped anyway, for the same reason the contract
    page's are: "only one page uses it today" is a fact about today. */
 foreach (['st-draft','st-verified','st-posted','st-reversed'] as $c) {

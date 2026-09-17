@@ -216,7 +216,22 @@ flash();
 .iss-note.ok{background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.22);color:#1c5334}
 .iss-note.warn{background:rgba(217,119,6,.09);border:1px solid rgba(217,119,6,.25);color:#7a4d09}
 .iss-note.bad{background:rgba(224,67,93,.08);border:1px solid rgba(224,67,93,.24);color:#8c2038}
+/* .matbox is used by this page's markup but was only ever DEFINED in
+   inv_gate.php — a different page, a different <style>, so it has never
+   applied here. The item box is positioned by it, so it is stated where
+   it is used rather than borrowed from a file that cannot reach it. */
+.matbox{position:relative}
+/* An issue that takes more than is on the floor. Coloured, not blocked —
+   the posting routine is where it is enforced; this is where it is seen
+   in time to fix it. */
+.iss-tbl td.bal.short{color:#c0293f;font-weight:800}
 </style>
+
+<?php /* OPTING IN TO THE SKIN. Every rule in assets/css/zskin.css is scoped
+         under .zskin, so this one wrapper is what makes the page compact,
+         and deleting it restores the styles above with nothing else to
+         undo. It wraps the markup and never the <style>. */ ?>
+<div class="zskin">
 
 <?php if (!$doc && !$isNew): ?>
 <div class="iss-tabs">
@@ -325,13 +340,39 @@ flash();
           <?php if ($type === 'return'): ?>
           <td><input class="iss-inp" name="line[<?= $i ?>][condition_note]" value="<?= e($L['condition_note'] ?? '') ?>" placeholder="Usable / damaged"></td>
           <?php endif; ?>
-          <td class="r" style="padding-top:16px;color:#8a97ab"><?= (int)($L['material_id'] ?? 0) ? number_format(inv_balance((int)$L['material_id'], null, (int)($D['from_location_id'] ?? 0) ?: null), 2) : '—' ?></td>
-          <td style="padding-top:12px"><button type="button" class="iss-btn sec del" style="padding:5px 9px;cursor:pointer">×</button></td>
+          <?php /* "Stock now" WAS RENDERED ONCE AND NEVER CHANGED AGAIN.
+                   It was computed here in PHP, at page load, from the
+                   location that was on the document when it opened. Pick
+                   an item, change the From location, add a line — the
+                   number stayed exactly as it was. On a new line it read
+                   "—" for as long as the form was open, which is the
+                   moment the operator most needs it.
+
+                   The whole stock map is already in the browser for the
+                   picker, so it is now filled in by the same JavaScript
+                   the picker uses. No extra query, and it moves when the
+                   form moves. */ ?>
+          <td class="r bal">—</td>
+          <td><button type="button" class="iss-btn sec del" style="padding:3px 7px;cursor:pointer">×</button></td>
         </tr>
       <?php endforeach; ?>
       </tbody>
-      <tfoot><tr><td colspan="2" style="text-align:right;font-weight:800">Total</td><td class="r" id="sqty" style="font-weight:800">0</td><td colspan="4"></td></tr></tfoot>
+      <?php /* Material, Lot, Quantity, UOM, [Condition], Stock now, ×
+               — 6 columns on an issue, 7 on a return. The footer used a
+               flat colspan of 4 after the quantity, which adds up to 7
+               either way, so on every ISSUE the total row was one cell
+               wider than the table and the figures sat under the wrong
+               headings. It is counted from the type now, like the header
+               above it. */
+        $sCols = $type === 'return' ? 7 : 6; ?>
+      <tfoot><tr><td colspan="2" style="text-align:right;font-weight:800">Total</td>
+        <td class="r" id="sqty" style="font-weight:800">0</td>
+        <td colspan="<?= $sCols - 3 ?>"></td></tr></tfoot>
     </table></div>
+
+    <?php /* One strip for the whole table. A per-line message would push
+             every row down the moment it appeared. */ ?>
+    <div id="sWarn" class="iss-note warn" style="margin-top:12px;display:none"></div>
 
     <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="iss-btn sec" id="adds">+ Add line</button>
@@ -345,14 +386,61 @@ flash();
 <script>
 (function(){
   var tb=document.querySelector('#slines tbody');
-  function tot(){var t=0;tb.querySelectorAll('.qty').forEach(function(i){t+=parseFloat(i.value)||0;});
-    document.getElementById('sqty').textContent=t.toLocaleString(undefined,{maximumFractionDigits:3});}
+  var IS_ISSUE = <?= $type === 'issue' ? 'true' : 'false' ?>;
+
+  function q3(v){ return Number(v).toLocaleString('en-US',{maximumFractionDigits:3}); }
+
+  /* ONE PASS THAT PAINTS EVERYTHING: the total, the live balance on each
+     line, and the over-issue strip. They all read the same two things —
+     the item on the line and the From location — so computing them apart
+     is how they end up disagreeing. */
+  function tot(){
+    var t=0, over=[];
+    [].slice.call(tb.children).forEach(function(tr,i){
+      var q=parseFloat((tr.querySelector('.qty')||{}).value)||0;
+      t+=q;
+      var sel=tr.querySelector('select.mat'), id=sel?sel.value:'';
+      var cell=tr.querySelector('.bal'); if(!cell) return;
+      if(!id||id==='0'){ cell.textContent='—'; cell.classList.remove('short'); return; }
+      var b=balOf(id);
+      cell.textContent=q3(b);
+      /* A return ADDS to the source floor, so it can never overdraw it.
+         Only an issue can, and only then is the check meaningful. */
+      var short = IS_ISSUE && q > b + 0.0005;
+      cell.classList.toggle('short', short);
+      if(short){
+        var nm=(tr.querySelector('.matq')||{}).value||'that item';
+        over.push('line '+(i+1)+' — '+nm.split(' · ')[0]+' has '+q3(b)+' at '+fromName()
+                 +' and this document takes '+q3(q));
+      }
+    });
+    document.getElementById('sqty').textContent=t.toLocaleString(undefined,{maximumFractionDigits:3});
+
+    /* SAID HERE, NOT AT POST. The posting routine already refuses an
+       over-issue — but it does so after the operator has typed fourteen
+       lines and pressed a button, and it names the item rather than the
+       line. Showing it while they type is the whole difference between a
+       form that helps and a form that argues. */
+    var w=document.getElementById('sWarn'); if(!w) return;
+    if(!over.length){ w.style.display='none'; w.innerHTML=''; return; }
+    w.style.display='';
+    w.innerHTML='<b>'+over.length+' line(s) take more than is at '+fromName()+'.</b> '
+      +'Posting will stop unless an admin allows it, so it is worth fixing now rather than after saving.<br>'
+      +over.join('<br>');
+  }
   tb.addEventListener('input',tot);
   tb.addEventListener('change',function(e){
     var s=e.target; if(s.tagName!=='SELECT') return;
-    var o=s.options[s.selectedIndex]; if(!o||!o.dataset.uom) return;
-    var u=s.closest('tr').querySelector('.uom'); if(u&&!u.value) u.value=o.dataset.uom;
+    var o=s.options[s.selectedIndex];
+    if(o&&o.dataset.uom){
+      var u=s.closest('tr').querySelector('.uom'); if(u&&!u.value) u.value=o.dataset.uom;
+    }
+    tot();
   });
+  /* Changing the From location changes what "Stock now" means on EVERY
+     line, not just the one being edited. */
+  var fromSel=document.querySelector('select[name="from_location_id"]');
+  if(fromSel) fromSel.addEventListener('change', tot);
 
   /* ---- the List of Values ------------------------------------------
      Shared with Gate passes and Consumption — see assets/js/lov.js. A
@@ -427,13 +515,34 @@ flash();
   syncAll();
   tb.addEventListener('click',function(e){ if(!e.target.classList.contains('del'))return;
     if(tb.children.length>1) e.target.closest('tr').remove(); else tb.querySelectorAll('input').forEach(function(i){i.value='';}); tot(); });
-  document.getElementById('adds').addEventListener('click',function(){
+  function addLine(){
     var n=tb.children.length,c=tb.lastElementChild.cloneNode(true);
     c.querySelectorAll('input,select').forEach(function(el){el.name=el.name.replace(/line\[\d+\]/,'line['+n+']');
       if(el.tagName==='INPUT') el.value=''; else el.selectedIndex=0;});
-    tb.appendChild(c); syncAll();
+    /* The balance cell and its warning colour are not form values, so the
+       loop above leaves them alone and a new line would inherit the last
+       line's figure. */
+    var b=c.querySelector('.bal'); if(b){ b.textContent='—'; b.classList.remove('short'); }
+    tb.appendChild(c); syncAll(); tot();
+    return c;
+  }
+  document.getElementById('adds').addEventListener('click',function(){
+    var c=addLine();
     var f=c.querySelector('.matq');          // the LOV field, not the hidden select
     if(!f||f.style.display==='none') f=c.querySelector('select');
+    if(f) f.focus();
+  });
+  /* Enter on Quantity starts the next line. The picker already sends the
+     cursor from the item to the quantity, so with this the whole document
+     is typed without the mouse — which is the difference between a form
+     somebody tolerates and one they can work in all day. */
+  tb.addEventListener('keydown',function(e){
+    if(e.key!=='Enter'||!e.target.classList.contains('qty')) return;
+    e.preventDefault();
+    var tr=e.target.closest('tr');
+    if(tr===tb.lastElementChild) addLine();
+    var f=tr.nextElementSibling.querySelector('.matq');
+    if(!f||f.style.display==='none') f=tr.nextElementSibling.querySelector('select.mat');
     if(f) f.focus();
   });
   tot();
@@ -513,4 +622,5 @@ flash();
   <?php endif; ?>
 </div>
 <?php endif; ?>
+</div><?php /* closes .zskin */ ?>
 <?php page_footer(); ?>

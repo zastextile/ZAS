@@ -1043,6 +1043,128 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
 .zskin .ig-kpi .l{font-size:10px !important;color:var(--fg-4) !important;letter-spacing:.04em !important}
 
 /* ============================================================
+   STORE ISSUE & RETURN — .iss-* (inv_store.php)
+   ------------------------------------------------------------
+   The screen the store team uses most: material off the shelf to a floor
+   in the morning, what is left back to the shelf at night. Both
+   directions are one page because every field is the same.
+
+   All nine .iss-* names are defined by inv_store.php and used by nothing
+   else — checked across every inv_*.php and both print pages before this
+   was written. The status names are scoped to .iss-pill anyway, for the
+   same reason as everywhere else in this file.
+
+   WHAT WAS LOOSE, AND WHAT IT COST — measured, not estimated:
+     row             46px      a 37px input in a 3px cell, plus two
+                               padding-top fudges holding cells level
+     .iss-inp  9px pad, 9px radius   a form control in a spreadsheet
+     .iss-tabs pills on a grey tray  a control that reads as decoration
+     .iss-btn  cyan-to-violet        the loudest thing on the screen
+     .iss-card 14px radius + shadow  a frame round a working grid
+
+   Two things on this page are NOT styling and are fixed in the page
+   itself: the totals row spanned seven columns on an issue, which has
+   six, so every figure sat under the wrong heading; and "Stock now" was
+   rendered once in PHP and never moved again.
+   ============================================================ */
+.zskin .iss-card{background:var(--panel) !important;border:1px solid var(--bd) !important;
+  border-radius:8px !important;box-shadow:none !important;
+  padding:11px 13px !important;margin-bottom:10px !important}
+.zskin .iss-lbl{font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
+  color:var(--fg-4) !important;margin-bottom:3px !important}
+.zskin .iss-grid{gap:8px !important}
+
+/* the tabs become a segmented control: one border, one accent, no tray */
+.zskin .iss-tabs{background:var(--sub) !important;border:1px solid var(--bd) !important;
+  border-radius:5px !important;padding:0 !important;gap:0 !important;
+  width:fit-content;max-width:100%;flex-wrap:nowrap !important;overflow-x:auto;
+  margin-bottom:10px !important}
+.zskin .iss-tab{padding:0 13px !important;height:28px;display:inline-flex;align-items:center;
+  border-radius:0 !important;font-size:12px !important;font-weight:500 !important;
+  color:var(--fg-3) !important;white-space:nowrap;box-shadow:none !important;
+  border-right:1px solid var(--bd);transition:all var(--t)}
+.zskin .iss-tab:last-child{border-right:0}
+.zskin .iss-tab.on{background:var(--panel) !important;color:var(--fg) !important;
+  font-weight:600 !important;box-shadow:inset 0 -2px 0 var(--acc) !important}
+
+.zskin .iss-inp{box-sizing:border-box;height:28px;padding:0 8px !important;border-radius:5px !important;
+  border:1px solid var(--bd) !important;background:var(--panel) !important;
+  font-size:12.5px !important;color:var(--fg) !important}
+.zskin .iss-inp:focus{outline:none !important;border-color:var(--acc) !important;
+  box-shadow:0 0 0 3px var(--acc-soft) !important}
+.zskin textarea.iss-inp{height:auto;min-height:52px;padding:5px 8px !important}
+
+.zskin .iss-tbl{font-size:12.5px !important}
+.zskin .iss-tbl th{background:var(--sub) !important;color:var(--fg-2) !important;
+  font-size:10.5px !important;font-weight:600 !important;letter-spacing:0 !important;
+  text-transform:none !important;padding:0 6px !important;height:28px;
+  border-bottom:1px solid var(--bd) !important;border-right:1px solid var(--bd-2) !important}
+.zskin .iss-tbl th:last-child{border-right:0 !important}
+/* The two padding-top fudges in the markup existed to drag cells level
+   with an input that was taller than its row. With a stated row height
+   and middle alignment there is nothing to drag. */
+.zskin .iss-tbl td{padding:0 6px !important;height:var(--rowh);vertical-align:middle !important;
+  border-top:0 !important;border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important}
+.zskin .iss-tbl td:last-child{border-right:0 !important}
+.zskin .iss-tbl tbody tr:hover>td{background:var(--hover) !important}
+.zskin .iss-tbl td.r,.zskin .iss-tbl th.r{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.zskin .iss-tbl tfoot td{background:var(--sub) !important;font-weight:600 !important;
+  height:26px;border-top:1px solid var(--bd) !important;border-bottom:0 !important}
+
+/* a cell holding an input goes flat — the cell IS the control */
+.zskin .iss-tbl td>.iss-inp,
+.zskin .iss-tbl td .matbox>.iss-inp{box-sizing:border-box;height:calc(var(--rowh) - 2px);
+  border:1px solid transparent !important;border-radius:0 !important;
+  background:transparent !important;padding:0 5px !important;box-shadow:none !important}
+.zskin .iss-tbl td>.iss-inp:hover,
+.zskin .iss-tbl td .matbox>.iss-inp:hover{border-color:var(--bd) !important}
+.zskin .iss-tbl td>.iss-inp:focus,
+.zskin .iss-tbl td .matbox>.iss-inp:focus{border-color:var(--acc) !important;
+  background:var(--panel) !important;box-shadow:inset 0 0 0 1px var(--acc) !important}
+
+/* THE LIVE BALANCE. Quiet while it agrees with the quantity, loud the
+   moment the line takes more than is on that floor — which is the one
+   thing on this screen that will stop the document posting. */
+.zskin .iss-tbl td.bal{color:var(--fg-3) !important}
+.zskin .iss-tbl td.bal.short{color:var(--bad) !important;font-weight:600 !important}
+
+.zskin .iss-btn{box-sizing:border-box;height:28px;padding:0 13px !important;border-radius:5px !important;
+  border:1px solid var(--acc) !important;background:var(--acc) !important;color:#fff !important;
+  font-family:var(--ui) !important;font-size:12px !important;font-weight:600 !important;
+  display:inline-flex;align-items:center;gap:5px;box-shadow:none !important;transition:all var(--t)}
+.zskin .iss-btn:hover{filter:brightness(1.08)}
+.zskin .iss-btn.sec{background:var(--panel) !important;color:var(--fg-2) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .iss-btn.sec:hover{background:var(--hover) !important;border-color:var(--fg-4) !important;filter:none}
+.zskin .iss-btn.go{background:var(--ok) !important;border-color:var(--ok) !important}
+.zskin .iss-btn.warn{background:var(--panel) !important;color:var(--bad) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+/* the × on a line is a cell control, not a button in its own right */
+.zskin .iss-tbl td>.iss-btn.del{height:20px;width:20px;padding:0 !important;justify-content:center;
+  border-color:transparent !important;background:transparent !important;
+  color:var(--fg-4) !important;font-weight:400 !important}
+.zskin .iss-tbl td>.iss-btn.del:hover{background:var(--bad-soft) !important;
+  color:var(--bad) !important;border-color:transparent !important;filter:none}
+
+.zskin .iss-pill{border-radius:3px !important;font-size:10px !important;font-weight:600 !important;
+  letter-spacing:0 !important;padding:1px 6px !important;text-transform:none !important}
+.zskin .iss-pill.p-draft{background:var(--bd-2) !important;color:var(--fg-3) !important}
+.zskin .iss-pill.p-posted{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .iss-pill.p-reversed{background:var(--bad-soft) !important;color:var(--bad) !important}
+
+.zskin .iss-note{border-radius:6px !important;font-size:12px !important;
+  padding:9px 11px !important;margin-bottom:10px !important;line-height:1.55 !important}
+.zskin .iss-note.info{background:var(--acc-soft) !important;border-color:var(--acc-bd) !important;
+  color:var(--fg-2) !important}
+.zskin .iss-note.ok{background:var(--ok-soft) !important;border-color:#bfe3cf !important;
+  color:var(--ok) !important}
+.zskin .iss-note.warn{background:var(--warn-soft) !important;border-color:#f0ddb9 !important;
+  color:var(--warn) !important}
+.zskin .iss-note.bad{background:var(--bad-soft) !important;border-color:#f2c4cd !important;
+  color:var(--bad) !important}
+
+/* ============================================================
    OPENING STOCK — .op-* (inv_opening.php)
    ------------------------------------------------------------
    A new screen, so there was no old look to preserve — but it still
