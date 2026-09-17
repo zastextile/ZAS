@@ -150,8 +150,17 @@ t('final_costing links final_costing.js, cache-busted',
   (bool)preg_match('~<script src="assets/js/final_costing\.js\?v=\d+"></script>~', $fc));
 t('  before the block carrying its PHP item list',
   strpos($fc, 'assets/js/final_costing.js') < strpos($fc, 'json_encode(fc_inv_items()'));
+/* This counted cache-busted scripts and required EXACTLY two. It meant
+   "these two are busted", but what it actually said was "no page here
+   loads a third script" — so correctly adding ?v= to lov.js on
+   final_costing.php broke it. A test that fails when you do the right
+   thing elsewhere teaches people to stop doing the right thing. It now
+   names the two files it is about, and says nothing about any other. */
 t('both files are cache-busted, so an old copy cannot linger',
-  preg_match_all('~assets/js/[a-z_]+\.js\?v=\d+~', $pc . $fc) === 2);
+  preg_match('~assets/js/costing\.js\?v=\d+~', $pc) === 1
+  && preg_match('~assets/js/final_costing\.js\?v=\d+~', $fc) === 1);
+t('  and every other script beside them is busted too',
+  preg_match_all('~<script src="assets/js/[a-z_]+\.js(?!\?v=\d)~', $pc . $fc) === 0);
 /* The real risk is a top-level CALL or listener running before the page's data
    constants exist. Declarations, and lines continuing one, are fine. */
 t('neither moved file calls anything at load — it only declares', (function() use ($pcJs, $fcJs) {

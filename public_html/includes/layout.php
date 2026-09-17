@@ -80,7 +80,7 @@ function page_footer(): void {
     ?>
 </main>
 </div>
-<script src="assets/js/app.js"></script>
+<script src="assets/js/app.js?v=2"></script>
 <script>if ('serviceWorker' in navigator) { window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); }); }</script>
 </body>
 </html>

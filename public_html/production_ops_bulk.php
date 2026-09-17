@@ -210,9 +210,9 @@ flash();
          removing it puts the page back exactly as it was. The page keeps its
          own .zp-card / .zp-t / .zp-b names; the skin maps onto them. */ ?>
 <div class="zskin">
-<link rel="stylesheet" href="assets/css/lov.css">
-<script src="assets/js/lov.js"></script>
-<script src="assets/js/grid.js"></script>
+<link rel="stylesheet" href="assets/css/lov.css?v=2">
+<script src="assets/js/lov.js?v=2"></script>
+<script src="assets/js/grid.js?v=2"></script>
 
 <div class="topbar"><div><h1>Set Quantities &mdash; CSV</h1><p class="lead">How many of each part go in one set, per size. Export, edit in Excel, send it back &mdash; for every product at once. Operations and rates are not here: they come from the Part Library or the Product Master grid.</p></div>
   <a class="zbtn sec" href="product_master.php">← Product Master</a></div>

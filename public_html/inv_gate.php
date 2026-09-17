@@ -827,8 +827,8 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   </div>
 </div>
 
-<link rel="stylesheet" href="assets/css/lov.css">
-<script src="assets/js/lov.js"></script>
+<link rel="stylesheet" href="assets/css/lov.css?v=2">
+<script src="assets/js/lov.js?v=2"></script>
 <script>
 (function(){
   var tb=document.querySelector('#glines tbody');
