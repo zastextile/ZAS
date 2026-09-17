@@ -718,6 +718,129 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
 .zskin .zesug{box-shadow:0 12px 34px rgba(21,32,51,.18) !important;
   max-height:none !important;margin-top:0 !important}
 
+
+/* ============================================================
+   CONTRACTS — .ic-* (inv_contracts.php)
+   ------------------------------------------------------------
+   Purchase, sales and job work, in and out. The vocabulary is used by one
+   page and defined by that same page, so nothing here can collide — unlike
+   .note and .empty above, which two pages own between them.
+
+   WHAT WAS LOOSE, AND WHAT IT COST:
+     .ic-card    16px radius + a 30px drop shadow   dead space round every card
+     .ic-tbl td  vertical-align:top, no row height  rows that drift with content
+     .ic-tabs    pills on a grey tray               a control that reads as decoration
+     .ic-pill    20px radius                        a badge pretending to be a button
+     .ic-btn     a cyan-to-violet gradient          the loudest thing on the screen
+     .ic-grid    13px gaps                          four fields taking six fields' room
+
+   Nothing here is behaviour. Colour, spacing, border and weight only.
+   ============================================================ */
+.zskin .ic-card{background:var(--panel) !important;border:1px solid var(--bd) !important;
+  border-radius:8px !important;box-shadow:none !important;
+  padding:11px 13px !important;margin-bottom:10px !important}
+.zskin .ic-bar{background:var(--panel) !important;border:1px solid var(--bd) !important;
+  border-radius:8px !important;padding:10px 12px !important;gap:8px !important;
+  margin-bottom:10px !important}
+
+/* the tabs become a segmented control: one border, one accent, no tray */
+.zskin .ic-tabs{background:var(--sub) !important;border:1px solid var(--bd) !important;
+  border-radius:5px !important;padding:0 !important;gap:0 !important;
+  width:fit-content;max-width:100%;flex-wrap:nowrap !important;overflow-x:auto}
+.zskin .ic-tab{padding:0 13px !important;height:28px;display:inline-flex;align-items:center;gap:6px;
+  border-radius:0 !important;font-size:12px !important;font-weight:500 !important;
+  color:var(--fg-3) !important;white-space:nowrap;
+  border-right:1px solid var(--bd);transition:all var(--t)}
+.zskin .ic-tab:last-child{border-right:0}
+.zskin .ic-tab.on{background:var(--panel) !important;color:var(--fg) !important;
+  font-weight:600 !important;box-shadow:inset 0 -2px 0 var(--acc) !important}
+
+.zskin .ic-inp{box-sizing:border-box;height:28px;padding:0 8px !important;border-radius:5px !important;
+  border:1px solid var(--bd) !important;background:var(--panel) !important;
+  font-size:12.5px !important;color:var(--fg) !important}
+.zskin .ic-inp:focus{outline:none !important;border-color:var(--acc) !important;
+  box-shadow:0 0 0 3px var(--acc-soft) !important}
+.zskin textarea.ic-inp{height:auto;min-height:52px;padding:5px 8px !important}
+.zskin .ic-lbl{font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
+  color:var(--fg-4) !important;margin-bottom:3px !important}
+.zskin .ic-grid{gap:8px !important}
+
+/* the grid itself */
+.zskin .ic-tbl{font-size:12.5px !important}
+.zskin .ic-tbl th{background:var(--sub) !important;color:var(--fg-2) !important;
+  font-size:10.5px !important;font-weight:600 !important;letter-spacing:0 !important;
+  text-transform:none !important;padding:0 8px !important;height:30px;
+  border-bottom:1px solid var(--bd) !important;border-right:1px solid var(--bd-2) !important}
+.zskin .ic-tbl th:last-child{border-right:0 !important}
+/* vertical-align:top is what let these rows drift with their content */
+.zskin .ic-tbl td{padding:0 8px !important;height:var(--rowh);vertical-align:middle !important;
+  border-top:0 !important;border-bottom:1px solid var(--bd-2) !important;
+  border-right:1px solid var(--bd-2) !important}
+.zskin .ic-tbl td:last-child{border-right:0 !important}
+.zskin .ic-tbl tbody tr{transition:background var(--t)}
+.zskin .ic-tbl tbody tr:hover>td{background:var(--hover) !important}
+.zskin .ic-tbl td.r,.zskin .ic-tbl th.r{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.zskin .ic-tbl tfoot td{background:var(--sub) !important;font-weight:600 !important;
+  border-top:1px solid var(--bd) !important}
+/* a cell holding an input goes flat, like every other grid in the app */
+/* box-sizing is stated rather than inherited from app.css: a height that is
+   only correct while another file happens to load is not a height. */
+.zskin .ic-tbl td>.ic-inp{box-sizing:border-box;height:calc(var(--rowh) - 2px);
+  border:1px solid transparent !important;border-radius:0 !important;
+  background:transparent !important;padding:0 6px !important;box-shadow:none !important}
+.zskin .ic-tbl td>.ic-inp:hover{border-color:var(--bd) !important}
+.zskin .ic-tbl td>.ic-inp:focus{border-color:var(--acc) !important;
+  background:var(--panel) !important;box-shadow:inset 0 0 0 1px var(--acc) !important}
+
+/* square badges, not pills */
+.zskin .ic-pill{border-radius:3px !important;font-size:10px !important;font-weight:600 !important;
+  letter-spacing:0 !important;padding:1px 6px !important;text-transform:none !important}
+/* EVERY ONE OF THESE IS SCOPED TO .ic-pill, AND THAT IS NOT BELT AND BRACES.
+   inv_contract_print.php and inv_gate_print.php define .s-draft, .s-active,
+   .s-closed and .s-cancelled too. Neither opts into this skin today, so a bare
+   .zskin .s-active would reach nothing — but that is luck, not design, and the
+   day somebody skins a print page it would repaint its status colours with no
+   hint why. Tied to .ic-pill, these can only ever land on a badge. */
+.zskin .ic-pill.c-purchase{background:var(--acc-soft) !important;color:var(--acc) !important}
+.zskin .ic-pill.c-sales{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .ic-pill.c-jobwork_out{background:#eeebfa !important;color:#5a4bb8 !important}
+.zskin .ic-pill.c-jobwork_in{background:var(--warn-soft) !important;color:var(--warn) !important}
+.zskin .ic-pill.s-draft{background:var(--bd-2) !important;color:var(--fg-3) !important}
+.zskin .ic-pill.s-active{background:var(--acc-soft) !important;color:var(--acc) !important}
+.zskin .ic-pill.s-closed{background:var(--ok-soft) !important;color:var(--ok) !important}
+.zskin .ic-pill.s-cancelled{background:var(--bad-soft) !important;color:var(--bad) !important}
+
+/* SAVE AND CANCEL MUST NOT LOOK THE SAME. .ic-btn forces its background, so
+   each intent is named rather than left to whichever rule happens to win. */
+.zskin .ic-btn{box-sizing:border-box;height:28px;padding:0 13px !important;border-radius:5px !important;
+  border:1px solid var(--acc) !important;background:var(--acc) !important;color:#fff !important;
+  font-family:var(--ui) !important;font-size:12px !important;font-weight:600 !important;
+  display:inline-flex;align-items:center;gap:5px;box-shadow:none !important;
+  transition:all var(--t)}
+.zskin .ic-btn:hover{filter:brightness(1.08)}
+.zskin .ic-btn.sec{background:var(--panel) !important;color:var(--fg-2) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .ic-btn.sec:hover{background:var(--hover) !important;border-color:var(--fg-4) !important;
+  filter:none}
+.zskin .ic-btn.red{background:var(--panel) !important;color:var(--bad) !important;
+  border-color:var(--bd) !important;font-weight:500 !important}
+.zskin .ic-btn.red:hover{background:var(--bad-soft) !important;border-color:var(--bad) !important;
+  filter:none}
+.zskin .ic-btn[disabled]{opacity:.45;cursor:not-allowed;filter:none}
+
+.zskin .ic-note{border-radius:6px !important;font-size:12px !important;
+  padding:9px 11px !important;margin-bottom:10px !important;line-height:1.55 !important}
+.zskin .ic-note.info{background:var(--acc-soft) !important;border-color:var(--acc-bd) !important;
+  color:var(--fg-2) !important}
+.zskin .ic-note.warn{background:var(--warn-soft) !important;border-color:#f0ddb9 !important;
+  color:var(--warn) !important}
+
+/* The progress bar already sits INSIDE its cell, so it costs no extra row.
+   Thinned and flattened to match — a gradient on a 3px bar is just noise. */
+.zskin .ic-bar2{height:3px !important;border-radius:2px !important;
+  background:var(--bd-2) !important;margin-top:2px !important}
+.zskin .ic-bar2 i{background:var(--acc) !important;border-radius:2px !important}
+
 /* ---------- empty state ---------- */
 .zskin .zempty{padding:34px 18px;text-align:center;color:var(--fg-3);font-size:12.5px}
 .zskin .zempty h4{margin:0 0 3px;font-size:13px;font-weight:600;color:var(--fg)}
