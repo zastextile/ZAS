@@ -1058,6 +1058,24 @@ function inv_party_contract_lines(int $partyId): array {
     return $out;
 }
 
+/* Which contract a contract LINE belongs to.
+
+   The gate form posts both the line and its contract, but a line pulled
+   in by the older "Pull lines from contract" button carries only the
+   line. Rather than trust the header — which may since have been changed
+   to a different contract — the pair is closed here, from the line
+   itself. Returns null when the contract line no longer exists, and the
+   caller then stores no link at all rather than a pointer to nothing. */
+function inv_contract_of_line(int $lineId): ?int {
+    if ($lineId <= 0) return null;
+    try {
+        $s = db()->prepare("SELECT contract_id FROM inv_contract_items WHERE id=?");
+        $s->execute([$lineId]);
+        $v = (int)$s->fetchColumn();
+        return $v > 0 ? $v : null;
+    } catch (Throwable $e) { return null; }
+}
+
 /* Gate lines booked against a contract but not against any of its lines —
    older documents, or someone picking the contract without pulling its
    lines. Shown as its own figure so the balance above is never quietly
