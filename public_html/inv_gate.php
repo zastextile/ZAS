@@ -508,6 +508,20 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
 .ig-bar{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;background:#fff;border:1px solid #e3e9f2;border-radius:14px;padding:14px 16px;margin-bottom:16px}
 </style>
 
+<?php /* OPTING IN TO THE SKIN.
+
+         Everything above this line still defines how the page looks on its
+         own. assets/css/zskin.css scopes every one of its rules under
+         .zskin, so this one attribute is what lets it reach this page —
+         and deleting this one <div> puts the page back exactly as it was,
+         with nothing else to undo. That is the whole deal: no class was
+         renamed, no markup was rewritten.
+
+         It wraps the markup and NOT the <style> above it, so the page's own
+         rules still load first and the skin overrides them rather than the
+         other way round. It closes before page_footer(). */ ?>
+<div class="zskin">
+
 <?php if ($showForm): $D = $doc ?: []; $curType = $D['txn_type'] ?? array_key_first($TYPES); ?>
 <div class="ig-card">
   <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800"><?= $doc ? 'Edit ' . e($doc['gate_no']) : 'New ' . e($dirLabel) . ' pass' ?></h2>
@@ -729,7 +743,10 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                  never hide something that is filled in. */ ?>
         <tr class="detail<?= $hasDetail ? ' open' : '' ?>">
           <td colspan="<?= $dir === 'out' ? 9 : 8 ?>">
-            <button type="button" class="dtog"><?= $hasDetail ? '▴' : '▾' ?> Description, packing, finished product<?= $hasDetail ? ' · in use' : '' ?></button>
+            <?php /* The title carries the full words for when the compact
+                     grid shrinks this to a caret. A control that shrinks to
+                     a symbol has to keep its name somewhere. */ ?>
+            <button type="button" class="dtog" title="Description, packing, finished product"><?= $hasDetail ? '▴' : '▾' ?> Description, packing, finished product<?= $hasDetail ? ' · in use' : '' ?></button>
             <div class="dwrap"<?= $hasDetail ? '' : ' style="display:none"' ?>>
               <div><label class="ig-lbl">Description — as the contract words it</label>
                 <input class="ig-inp desc" name="line[<?= $i ?>][description]" value="<?= e($L['description'] ?? '') ?>"
@@ -1068,10 +1085,18 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     var cell = tr.querySelector('.avail'), hint = tr.querySelector('.lothint');
     if(!d){ if(cell){ cell.textContent = '—'; cell.style.color = '#8a97ab'; } if(hint) hint.textContent = ''; return; }
     /* The lots themselves are the LOV's business now. This only says how
-       many there are, so the operator knows the box is worth opening. */
-    if(hint) hint.textContent = (d.lots && d.lots.length)
+       many there are, so the operator knows the box is worth opening.
+
+       It is written TWICE: once into the hint under the box, and once onto
+       the box itself as a tooltip. The compact grid hides the hint, because
+       a second line of text under one cell sets the height of the whole
+       row — but hiding a warning is not the same as not needing it, so the
+       words move onto the field rather than disappearing. */
+    var msg = (d.lots && d.lots.length)
       ? d.lots.length + ' lot(s) here — leave blank to take from any'
       : 'no lot of this item is at ' + (d.location || 'this location');
+    if(hint) hint.textContent = msg;
+    var lotBox = tr.querySelector('.lot'); if(lotBox) lotBox.title = msg;
     refreshRow(tr);
   }
   function availFor(tr){
@@ -1609,6 +1634,13 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     var open = w.style.display !== 'none';
     w.style.display = open ? 'none' : '';
     b.textContent = (open ? '▾' : '▴') + b.textContent.slice(1);
+    /* The open/closed state existed only as an arrow character and an
+       inline style, and CSS can read neither. It is now also on the row as
+       a class, so the compact grid can shrink a CLOSED strip to a caret
+       without shrinking an open one. Nothing else reads this class —
+       it is state that was already true, written down where it can be
+       used. */
+    var dr = b.closest('tr'); if(dr) dr.classList.toggle('open', !open);
   });
 
   /* ---- contracts: this party, this movement, nothing else ----------
@@ -2107,4 +2139,5 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   <?php endif; ?>
 </div>
 <?php endif; ?>
+</div><?php /* closes .zskin */ ?>
 <?php page_footer(); ?>

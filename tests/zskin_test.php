@@ -268,9 +268,39 @@ echo "9. Nothing about behaviour moved\n";
 ok(str_contains($pf, 'pf_size_id('), 'the size link still resolves server-side');
 ok(str_contains($pf, 'window.pfUnlinkSize'), 'the unlink button still exists');
 ok(str_contains($pf, 'name="i_size_id[]"'), 'the posted fields are unchanged');
-ok(!str_contains($css, 'display:none'), 'the skin hides nothing');
+/* THE SKIN HIDES NOTHING — sharpened, not relaxed.
+ *
+ * This was a flat "the string display:none does not appear". It caught a
+ * real mistake: a first draft of the gate block hid the lot hint outright,
+ * and "no lot of this item is at Main Store" is a warning no stylesheet
+ * should be able to remove. That draft was thrown away, not excused.
+ *
+ * But the rule's INTENT is "no information disappears", and an element
+ * matched by :empty has no information in it — hiding it is arithmetic,
+ * not a judgement call. So the test now says what it always meant: a
+ * display:none is allowed only on a selector that proves the element is
+ * empty. Every other display:none still fails, which is the case that
+ * mattered.
+ *
+ * Comments are stripped first. A rule is code; a note explaining why a
+ * rule is not there is not a rule. */
+$rules = preg_replace('#/\*.*?\*/#s', '', $css);
+$bad = [];
+foreach (explode('display:none', $rules) as $i => $chunk) {
+    if ($i === 0) continue;                       // text before the first match
+    $before = explode('display:none', $rules)[$i - 1];
+    $sel = substr($before, strrpos($before, '}') === false ? 0 : strrpos($before, '}') + 1);
+    if (!str_contains($sel, ':empty')) $bad[] = trim(preg_replace('/\s+/', ' ', $sel));
+}
+ok($bad === [], 'the skin hides nothing that is not provably empty: ' . json_encode($bad));
+ok(str_contains(flat($css), 'hiding it is arithmetic') || str_contains($css, ':empty{display:none}'),
+   '  and the one :empty exception is in the stylesheet, where it can be read');
 /* content is allowed for the badge's dot, which is a shape, not words */
-preg_match_all('/content:\s*([^;}]+)/', $css, $cm);
+/* The lookbehind is not decoration. Without it this also matched the tail
+   of justify-content:center and reported "center" as invented text — the
+   test failing on a property that has nothing to do with generated
+   content. align-content and place-content would have done the same. */
+preg_match_all('/(?<![-\w])content:\s*([^;}]+)/', $css, $cm);
 $words = array_values(array_filter($cm[1], function ($v) {
     $v = trim($v); return $v !== '""' && $v !== "''" && $v !== 'none';
 }));
