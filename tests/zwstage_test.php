@@ -36,7 +36,15 @@ ok(str_contains($zp, 'NO ROW MEANS EVERY STAGE'), '  and the default is written 
 $a = strpos($zp, 'function zp_worker_does_stage');
 $b = strpos($zp, "\n}", $a);
 $fn = substr($zp, $a, $b - $a + 2);
-ok($fn !== '' && str_contains($fn, 'if (!$mine) return true;'), 'the rule lifted');
+/* THE RULE CHANGED ON 18 SEP, deliberately, and this file changed with it.
+   It used to be "nothing allotted means every stage", which was right while
+   the table was empty. Then 200 people arrived from the HR app with no
+   stages and every one of them passed every stage, so the allotment
+   narrowed nothing. It is now "nothing allotted means not production" — and
+   the safety that kept day one working MOVED to the caller rather than
+   going away. Both halves are checked below. */
+ok($fn !== '' && str_contains($fn, "return \$mine ? in_array(\$stageId, \$mine, true) : false;"),
+   'the rule lifted');
 eval($fn);
 
 $map = [7 => [2, 3], 9 => [2]];          // 7 does Stitching+Packing, 9 does Stitching
@@ -44,8 +52,10 @@ ok(zp_worker_does_stage($map, 7, 2) === true,  'an allotted worker is offered on
 ok(zp_worker_does_stage($map, 7, 3) === true,  '  on every one of their stages');
 ok(zp_worker_does_stage($map, 9, 3) === false, 'and not offered on a stage they are not on');
 /* THE ONE THAT MATTERS. */
-ok(zp_worker_does_stage($map, 42, 3) === true, 'A WORKER WITH NOTHING ALLOTTED IS OFFERED EVERYWHERE');
-ok(zp_worker_does_stage([], 7, 3) === true,    'and an empty table offers the whole floor');
+ok(zp_worker_does_stage($map, 42, 3) === false,
+   'A WORKER WITH NOTHING ALLOTTED IS NOT PRODUCTION — the man in the kitchen');
+ok(zp_worker_does_stage([], 7, 3) === false,
+   'and this function alone would offer nobody from an empty table — which is why');
 ok(zp_worker_does_stage($map, 9, 0) === true,  'an operation with no stage asks nobody to prove anything');
 
 /* ------------------------------------------------------------------ */
@@ -113,7 +123,8 @@ ok(strpos($pw, 'zp_save_worker_stages') < strpos($pw, "redirect('production_work
 ok(str_contains($pw, 'name="stage[]"'), 'the form posts the ticks');
 ok(str_contains($pw, 'type="checkbox"'), '  as real checkboxes, so it works with no JavaScript');
 ok(substr_count($pw, 'csrf_field()') >= 2, 'every form on the page is still CSRF-guarded');
-ok(str_contains($pw, 'NO STAGE TICKED MEANS EVERY STAGE'), 'the rule is stated on the screen that sets it');
+ok(str_contains(preg_replace('/\s+/', ' ', $pw), 'NO STAGE TICKED MEANS NOT PRODUCTION'),
+   'the rule is stated on the screen that sets it');
 
 /* The delete path must take the allotment with it, or it re-attaches to
    whoever next gets that auto-increment id. */
@@ -137,8 +148,8 @@ echo "5. The narrowing, run in a browser\n";
 $wa = strpos($pe, 'function wFits(w, sid){');
 $wb = strpos($pe, "\n  }", $wa);
 $wFits = substr($pe, $wa, $wb - $wa + 4);
-ok(str_contains($wFits, 'if (!w.sg || !w.sg.length) return true;'),
-   'the browser copy of the rule lifted, and it has the same default');
+ok(str_contains($wFits, 'return !!(w.sg && w.sg.length && w.sg.indexOf(sid) >= 0);'),
+   'the browser copy of the rule lifted, and it says the same thing');
 
 /* The lift starts at opId, not at the filter below it — the branch declares
    opId and uses it in the sort, so starting one line later lifted code that
@@ -216,22 +227,33 @@ if (!is_array($J) || !is_array($J['R'] ?? null)) {
 
     /* THE WHOLE POINT, MEASURED. 331 names down to 31 on a packing job:
        the 26 packers plus the 5 who are allotted nothing. */
-    ok($R['packEmpty']['n'] === 31,
-       'a packing job offers 31 of 331, got ' . $R['packEmpty']['n']);
-    ok(str_contains($R['packEmpty']['foot'], '300 more not on Packing'),
-       '  and says the other 300 are there, got "' . $R['packEmpty']['foot'] . '"');
-    ok(in_array(327, $R['packEmpty']['ids'], true),
-       '  THE NEWCOMER WITH NOTHING ALLOTTED IS IN THE SHORT LIST');
+    /* 26 packers out of 331 people. The five newcomers allotted nothing are
+       NOT in it any more — that is the whole change, and it is what he asked
+       for: "some worker are not related to direct production so do not want
+       show them on production pages if no relevant stage". */
+    ok($R['packEmpty']['n'] === 26,
+       'a packing job offers the 26 packers out of 331, got ' . $R['packEmpty']['n']);
+    ok(str_contains($R['packEmpty']['foot'], '305 not on Packing'),
+       '  and says the other 305 are there, got "' . $R['packEmpty']['foot'] . '"');
+    ok(!in_array(327, $R['packEmpty']['ids'], true),
+       '  THE NEWCOMER WITH NOTHING ALLOTTED IS NOT IN THE LIST');
     ok(!in_array(1, $R['packEmpty']['ids'], true), '  and a stitcher is not');
 
-    ok($R['stitchEmpty']['n'] === 305, 'a stitching job offers 305, got ' . $R['stitchEmpty']['n']);
+    ok($R['stitchEmpty']['n'] === 300, 'a stitching job offers the 300 stitchers, got ' . $R['stitchEmpty']['n']);
 
     /* An operation with no stage narrows nothing — and neither does a stage
        nobody is on, which would otherwise empty the list completely. */
     ok($R['noStage']['n'] === 331, 'an operation with no stage offers everybody, got ' . $R['noStage']['n']);
     ok($R['noStage']['foot'] === '', '  with nothing to explain');
+    /* THE SAFETY NET, AND IT IS THE REASON THE CHANGE IS SAFE TO UPLOAD.
+       A stage nobody has been put on yet still offers EVERYBODY — all 331,
+       newcomers included. So the day this goes up, every stage that has not
+       been set up yet behaves exactly as it did before, and he can do one
+       floor at a time instead of 200 forms before anything works. */
     ok($R['ghost']['n'] === 331,
-       'A STAGE NOBODY IS ALLOTTED TO FALLS BACK TO THE WHOLE FLOOR, got ' . $R['ghost']['n']);
+       'A STAGE NOBODY IS ALLOTTED TO STILL OFFERS THE WHOLE FLOOR, got ' . $R['ghost']['n']);
+    ok(in_array(327, $R['ghost']['ids'], true),
+       '  including the people with nothing allotted — nothing goes dark on day one');
 
     /* TYPING RELEASES THE FILTER. This is what makes it safe: the stand-in is
        always reachable, so the narrowing can never refuse work that happened. */

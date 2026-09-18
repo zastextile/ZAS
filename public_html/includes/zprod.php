@@ -1909,11 +1909,127 @@ function zp_worker_stages(int $workerId): array {
    feature additive: an empty table behaves exactly as the app did before it
    existed. Every screen asks this function rather than testing in_array
    itself, so no screen can drift into hiding people. */
+/* WHO MAY BE OFFERED FOR A STAGE — and the rule changed once, on purpose.
+   ====================================================================
+
+   IT USED TO BE: nothing allotted means every stage. That was right while
+   the table shipped empty — on day one it returned true for everybody and
+   the screen behaved exactly as it had before the allotment existed.
+
+   IT IS NO LONGER RIGHT, and he said why:
+
+     "some worker are not related to direct production so do not want show
+      them on production pages if no relevant stage"
+
+   Two hundred people arrived from the HR app in one go — Head Office, the
+   kitchen, fashion, the garment units, all of them. Under the old rule every
+   one of those passed every stage, so allotting forty people to Cutting
+   narrowed the Cutting list from 200 to 200. The allotment did nothing.
+
+   SO: ONCE A STAGE HAS ANYBODY NAMED ON IT, ONLY THOSE PEOPLE ARE OFFERED.
+   Somebody allotted nothing at all is not "available for everything" any
+   more — they are simply not production, which is the truth about the man
+   in the kitchen.
+
+   THE SAFETY NET IS NOT IN THIS FUNCTION, and that matters. A stage NOBODY
+   has been allotted to yet must still offer the whole floor, or the day this
+   file is uploaded the entry screen offers nobody. That is decided by the
+   caller, which counts how many people name the stage before it narrows at
+   all — see production_entry.php. It means he can do Cutting this morning
+   and Cutting starts narrowing immediately, while Stitching keeps working
+   exactly as before until he gets to it.
+
+   And nobody is ever unreachable: typing a name searches everybody, and the
+   list says how many it is holding back and why. */
 function zp_worker_does_stage(array $map, int $workerId, int $stageId): bool {
-    $mine = $map[$workerId] ?? [];
-    if (!$mine) return true;                  // not allotted = anywhere
     if ($stageId <= 0) return true;           // an operation with no stage asks nobody to prove anything
-    return in_array($stageId, $mine, true);
+    $mine = $map[$workerId] ?? [];
+    return $mine ? in_array($stageId, $mine, true) : false;
+}
+
+/* ============================================================
+   ALLOTTING STAGES TO TWO HUNDRED PEOPLE WITHOUT OPENING TWO HUNDRED FORMS
+   ============================================================
+
+   "as already sync with my app so each worker edit then choose stage
+    dificult for me for the first time so guide me to apply stage as ease
+    as see we have more than 200 worker just sync"
+
+   The answer is already in the data he synced: every worker carries a
+   DEPARTMENT, and a department is what decides the work. MADEUPS UNIT # 1
+   cuts and stitches; HEAD OFFICE does neither. Two hundred edits become
+   eight or ten.
+
+   zp_dept_stage_picture() reads what is there now, per department, so the
+   screen can show him where he has got to rather than asking him to
+   remember. zp_apply_dept_stages() writes a whole department at once. */
+
+/* [dept => ['n'=>people, 'stages'=>[stage_id => how many of them have it],
+             'none'=>how many have no stage at all]] */
+function zp_dept_stage_picture(): array {
+    zp_ensure_schema();
+    $map = zp_worker_stage_map();
+    $out = [];
+    foreach (zp_workers(true) as $w) {
+        /* A WORKER WITH NO DEPARTMENT IS NOT DROPPED. They would be the one
+           group nobody could ever reach from this screen. They get their own
+           row, named for what they are. */
+        $d = trim((string)($w['department'] ?? ''));
+        if ($d === '') $d = '(no department)';
+        if (!isset($out[$d])) $out[$d] = ['n' => 0, 'stages' => [], 'none' => 0];
+        $out[$d]['n']++;
+        $mine = $map[(int)$w['id']] ?? [];
+        if (!$mine) { $out[$d]['none']++; continue; }
+        foreach ($mine as $sid) $out[$d]['stages'][(int)$sid] = ($out[$d]['stages'][(int)$sid] ?? 0) + 1;
+    }
+    uksort($out, 'strnatcasecmp');
+    return $out;
+}
+
+/* $want = [department => [stage_id, ...]]. A department mapped to an empty
+   list is a real answer and means "these people do no production" — which is
+   the only way to say it about Head Office and the kitchen.
+
+   $replace = true  the department's people end up with exactly these stages
+              false these stages are ADDED to whatever each already has
+
+   Only ACTIVE workers are touched: somebody switched off should not be
+   quietly re-tooled by a bulk action aimed at their old department. */
+function zp_apply_dept_stages(array $want, bool $replace = true): array {
+    zp_ensure_schema();
+    $valid = [];
+    foreach (zp_stage_all(false) as $s) $valid[(int)$s['id']] = true;
+
+    $map = zp_worker_stage_map();
+    $byDept = [];
+    foreach (zp_workers(true) as $w) {
+        $d = trim((string)($w['department'] ?? ''));
+        if ($d === '') $d = '(no department)';
+        $byDept[$d][] = (int)$w['id'];
+    }
+
+    $people = 0; $depts = 0;
+    db()->beginTransaction();
+    try {
+        foreach ($want as $dept => $stages) {
+            $dept = (string)$dept;
+            if (!isset($byDept[$dept])) continue;          // a department with nobody in it
+            $clean = [];
+            foreach ((array)$stages as $sid) { $sid = (int)$sid; if ($sid > 0 && isset($valid[$sid])) $clean[$sid] = true; }
+            $depts++;
+            foreach ($byDept[$dept] as $wid) {
+                $final = $replace ? $clean : ($clean + array_flip($map[$wid] ?? []));
+                zp_save_worker_stages($wid, array_keys($final));
+                $people++;
+            }
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'people' => 0, 'depts' => 0,
+                'error' => 'Nothing was changed. ' . $e->getMessage()];
+    }
+    return ['ok' => true, 'people' => $people, 'depts' => $depts, 'error' => ''];
 }
 
 /* Replaces a worker's allotment with exactly what was ticked.

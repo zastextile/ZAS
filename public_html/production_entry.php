@@ -618,14 +618,25 @@ table.zp-t tbody tr:hover{background:#fafcff}
              rate: w.rate, left: w.left };
   }
   /* DOES THIS PERSON WORK THIS STAGE?
-     Stated once, on the browser side, exactly as zp_worker_does_stage() states
-     it on the server: NOTHING ALLOTTED MEANS EVERY STAGE. The table ships
-     empty, so on day one this returns true for everybody and the screen
-     behaves precisely as it did before the allotment existed. */
+     Stated once on the browser side, exactly as zp_worker_does_stage()
+     states it on the server — and the two must never drift, or the list
+     offers somebody the save then refuses.
+
+     NOTHING ALLOTTED NO LONGER MEANS EVERY STAGE. It used to, and that was
+     right while the table was empty. Then two hundred people arrived from
+     the HR app — head office, the kitchen, fashion, the garment units — and
+     every one of them passed every stage, so allotting forty people to
+     Cutting narrowed the Cutting list from 200 to 200.
+
+     Somebody allotted nothing is not "available for everything". They are
+     not production, which is the truth about the man in the kitchen.
+
+     THE SAFETY NET IS IN THE CALLER, not here: a stage NOBODY is on yet
+     still offers the whole floor, so one stage can be set up this morning
+     without the others going dark. */
   function wFits(w, sid){
     if (!sid) return true;
-    if (!w.sg || !w.sg.length) return true;
-    return w.sg.indexOf(sid) >= 0;
+    return !!(w.sg && w.sg.length && w.sg.indexOf(sid) >= 0);
   }
 
   /* a person, described once */
@@ -850,8 +861,13 @@ table.zp-t tbody tr:hover{background:#fafcff}
         .map(function(w){ return zeWorkerOpt(w, opId, click(), ''); });
       /* The cut is SAID, like every other cut on this screen. A list that
          silently stops short reads as "that person does not exist". */
+      /* THE CUT IS SAID, and now it says which way round it is. With two
+         hundred people synced from HR and a handful allotted, "191 more"
+         is not a footnote about a filter — it is the screen telling him
+         the allotment is doing its job. Nobody is unreachable: typing a
+         name searches the whole floor. */
       outw.foot = narrowed
-        ? narrowed + ' more not on ' + esc(picked.st) + ' — type a name or code to reach them.'
+        ? narrowed + ' not on ' + esc(picked.st) + ' — type a name or code to reach anybody.'
         : '';
       return outw;
     }

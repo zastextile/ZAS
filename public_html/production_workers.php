@@ -18,13 +18,27 @@
      nobody, and no report could ever explain the gap. They go inactive
      instead — off every picker, still on every payslip that already exists.
 
-  3. NO STAGE TICKED MEANS EVERY STAGE. Three hundred people on the floor and
-     a piping job offers all three hundred — that is the problem the stage
-     allotment solves. But the table ships EMPTY, and empty has to mean
-     "available for everything", or the day this file is uploaded the entry
-     screen offers nobody. You narrow the list person by person, at your own
-     speed. The rule itself lives in zp_worker_does_stage() so that no screen
-     can decide it differently.
+  3. NO STAGE TICKED MEANS NOT PRODUCTION. This was the other way round until
+     two hundred people arrived from the HR app in one sync — head office,
+     the kitchen, fashion, the garment units. Under the old rule every one of
+     them passed every stage, so allotting forty people to Cutting narrowed
+     the Cutting list from 200 to 200; the allotment did nothing at all.
+
+     Somebody with no stage is not "available for everything". They are not
+     production, which is the truth about the man in the kitchen.
+
+     THE SAFETY NET MOVED, IT DID NOT GO: a stage NOBODY is on yet still
+     offers the whole floor, so one stage can be set up this morning and the
+     others keep working exactly as they do now. That count is made by the
+     entry screen; the rule itself lives in zp_worker_does_stage() so that no
+     screen can decide it differently. Nobody is ever unreachable — typing a
+     name searches everybody, and the list says how many it is holding back.
+
+  4. A WHOLE DEPARTMENT AT A TIME. Two hundred people is two hundred forms,
+     which is nobody's afternoon. Every worker carries a department, and a
+     department is what decides the work, so the table at the top of the
+     screen sets a floor in one press and the exceptions are corrected by
+     hand afterwards.
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
@@ -91,6 +105,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $err = implode(' | ', array_slice($r['errors'], 0, 8))
              . (count($r['errors']) > 8 ? ' … and ' . (count($r['errors']) - 8) . ' more' : '');
         $impRows = $rows;
+    } elseif ($a === 'deptstage') {
+        /* THE WHOLE POINT OF THIS ACTION IS THAT IT IS NOT ONE WORKER.
+           The form posts stage[<department>][] — a department that appears
+           with no boxes ticked is a real answer ("these people do no
+           production"), so the list of departments ON THE FORM is what is
+           acted on, not the list of departments that happen to have ticks. */
+        $want = [];
+        foreach ((array)($_POST['dept'] ?? []) as $d) {
+            $d = (string)$d;
+            $want[$d] = array_map('intval', (array)($_POST['stage'][$d] ?? []));
+        }
+        $r = zp_apply_dept_stages($want, ($_POST['mode'] ?? 'set') !== 'add');
+        if ($r['ok']) {
+            $_SESSION['zp_msg'] = 'Stages applied to ' . number_format($r['people']) . ' worker'
+                . ($r['people'] === 1 ? '' : 's') . ' across ' . $r['depts'] . ' department'
+                . ($r['depts'] === 1 ? '' : 's') . '.';
+            redirect('production_workers.php#bulk');
+        }
+        $err = $r['error'];
     } elseif ($a === 'hrsave') {
         /* ONLY AN ADMIN SETS THE ADDRESS AND THE TOKEN. Everyone who can
            reach this screen may press Update; nobody but an admin may point
@@ -160,6 +193,10 @@ try {
 $depts = [];
 foreach ($workers as $w) if (trim((string)$w['department']) !== '' && !in_array($w['department'], $depts, true)) $depts[] = $w['department'];
 sort($depts);
+
+/* Where the stage allotment has got to, department by department — the
+   number that tells him what is left to do. */
+$deptPic = zp_dept_stage_picture();
 
 /* The stage list and every worker's allotment — two queries for the whole
    screen, not two per row. */
@@ -282,6 +319,120 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
            Nobody is ever removed from here, and no stage allotment is ever
            touched — both of those are his rules, stated on screen so the
            person pressing the button knows them without asking. */ ?>
+  <?php /* ==================================================================
+           STAGES BY DEPARTMENT — two hundred edits become ten
+           ==================================================================
+           "each worker edit then choose stage dificult for me for the first
+            time so guide me to apply stage as ease as see we have more than
+            200 worker just sync"
+
+           The answer was already in what HR sent: every worker carries a
+           department, and a department is what decides the work. Tick the
+           stages a department works, press Apply, and everybody in it is
+           done at once. Leave a department with NOTHING ticked and its
+           people do no production — which is the only honest thing to say
+           about Head Office and the kitchen.
+
+           A worker can still be edited one at a time below; this is the
+           first pass, not a replacement for it. */ ?>
+  <div class="zp-card" id="bulk">
+    <h2>Set stages a whole department at a time</h2>
+    <p class="sub">The fastest way through a fresh sync. Tick what a department works and apply it to
+      everyone in it — then correct the few exceptions by hand below.</p>
+
+    <?php if (!$stages): ?>
+      <div class="note warn">There are no stages set up yet. Add them in
+        <a href="production_stages.php">Stages</a> first — Cutting, Stitching, Packing and whatever
+        else your floor does.</div>
+    <?php elseif (!$deptPic): ?>
+      <div class="note info">No workers yet.</div>
+    <?php else: ?>
+      <form method="post"><?= csrf_field() ?>
+        <input type="hidden" name="action" value="deptstage">
+        <table class="zp-t">
+          <thead><tr>
+            <th>Department</th>
+            <th class="r" style="width:74px">People</th>
+            <?php foreach ($stages as $st): ?>
+              <th style="width:104px"><?= e($st['name']) ?></th>
+            <?php endforeach; ?>
+            <th style="width:150px">Where it stands</th>
+          </tr></thead>
+          <tbody>
+          <?php foreach ($deptPic as $dept => $p): ?>
+            <tr>
+              <td><b><?= e($dept) ?></b>
+                  <input type="hidden" name="dept[]" value="<?= e($dept) ?>"></td>
+              <td class="r"><?= number_format($p['n']) ?></td>
+              <?php foreach ($stages as $st):
+                  $sid = (int)$st['id'];
+                  $have = (int)($p['stages'][$sid] ?? 0);
+                  /* TICKED WHEN EVERYBODY IN THE DEPARTMENT ALREADY HAS IT.
+                     Ticking it when only some do would make Apply quietly
+                     spread one person's allotment across their whole floor. */
+                  $all = $have > 0 && $have === $p['n']; ?>
+                <td style="text-align:center">
+                  <label style="display:block;cursor:pointer">
+                    <input type="checkbox" name="stage[<?= e($dept) ?>][]" value="<?= $sid ?>" <?= $all ? 'checked' : '' ?>>
+                    <?php if ($have > 0 && !$all): ?>
+                      <span style="display:block;font-size:9.5px;color:#9a5710"><?= $have ?> of <?= $p['n'] ?></span>
+                    <?php endif; ?>
+                  </label>
+                </td>
+              <?php endforeach; ?>
+              <td>
+                <?php if ($p['none'] === $p['n']): ?>
+                  <span style="font-size:11px;color:#9a2740">none set — not on any production list</span>
+                <?php elseif ($p['none'] > 0): ?>
+                  <span style="font-size:11px;color:#9a5710"><?= $p['none'] ?> still with none</span>
+                <?php else: ?>
+                  <span style="font-size:11px;color:#1d6b46">all set</span>
+                <?php endif; ?>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+
+        <div style="margin-top:11px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <button class="zp-b pri" type="submit">Apply to every department above</button>
+          <?php /* REPLACE IS THE DEFAULT AND SAYS SO. "Add" exists for the
+                   second pass — giving the whole garment unit Packing as well
+                   without losing the Stitching they already have. */ ?>
+          <label style="font-size:12px;color:#5a6b82;display:inline-flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="radio" name="mode" value="set" checked> Replace what each person has</label>
+          <label style="font-size:12px;color:#5a6b82;display:inline-flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="radio" name="mode" value="add"> Add to it</label>
+        </div>
+        <p style="font-size:11px;color:#8a97ab;margin:9px 0 0;line-height:1.55">
+          A department with nothing ticked means <b>these people do no production</b> — they stay on
+          this list, keep every wage already booked, and simply stop being offered on the entry
+          screen. That is how Head Office and the kitchen are meant to be left.
+          <br>Only active workers are touched. Anyone switched off keeps what they had.</p>
+      </form>
+
+      <?php /* THE SAFETY NET, SAID OUT LOUD. A stage nobody is on yet still
+               offers the whole floor, so he can do one stage today and the
+               rest keep working exactly as they do now. Without this said,
+               the first Apply looks like it did nothing. */ ?>
+      <?php
+        $wide = [];
+        foreach ($stages as $st) if (empty($stageCount[(int)$st['id']])) $wide[] = (string)$st['name'];
+      ?>
+      <div class="note <?= $wide ? 'info' : 'ok' ?>" style="margin-top:12px">
+        <?php if ($wide): ?>
+          <b>Still offering everybody:</b> <?= e(implode(', ', $wide)) ?>.
+          A stage nobody has been put on yet offers the whole floor, on purpose — so you can set up
+          one stage at a time and nothing goes dark while you work. As soon as one person is put on
+          a stage, that stage only offers the people on it.
+        <?php else: ?>
+          <b>Every stage now has people on it</b>, so every production list is narrowed to the right
+          floor. Typing a name still reaches anybody.
+        <?php endif; ?>
+      </div>
+    <?php endif; ?>
+  </div>
+
   <div class="zp-card" id="hr">
     <h2>Workers from the HR app</h2>
     <p class="sub">Employee number, name and department come from HR. Stages stay yours.
@@ -439,7 +590,8 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
                Checkboxes dressed as chips — a real <input type="checkbox">
                under each one, so the form posts without a line of JavaScript
                and works with the keyboard. Nothing ticked is a valid answer
-               and it means every stage, which is what the strip below says. */ ?>
+               and it means NOT PRODUCTION, which is what the strip below
+               says — see the rule at the top of this file. */ ?>
       <div style="margin-top:13px">
         <span class="lab">Stages this person works &mdash; tick any number</span>
         <?php if (!$stages): ?>
@@ -456,8 +608,12 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
           <a class="zw-chip add" href="production_stages.php">+ add a stage</a>
         </div>
         <div class="zw-hint">
-          <?= $editWs ? 'Untick them all to put ' . e($edit['worker_name'] ?? 'this worker') . ' back on every stage.'
-                      : 'Nothing ticked = offered on every stage, exactly as today.' ?>
+          <?= $editWs
+              ? 'Untick them all and ' . e($edit['worker_name'] ?? 'this worker')
+                . ' stops being offered on any production list — which is right for office and'
+                . ' kitchen staff, and keeps every wage already booked to them.'
+              : 'Nothing ticked = not offered on any production list. Use the department table'
+                . ' above to set a whole floor at once.' ?>
         </div>
         <?php endif; ?>
       </div>
