@@ -5,9 +5,14 @@
    Nobody enters cost data here. Every actual is collected from something
    already recorded:
      materials  inv_consumption_items (input side)
-     wages      production_transactions.amount  — quantity x the rate the
-                system itself looked up. You have always captured this;
-                it has simply never been read as a cost before.
+     wages      zp_entries.amount  — quantity x the rate the system itself
+                looked up and froze onto the row. You have always captured
+                this; it has simply never been read as a cost before.
+                IT USED TO READ production_transactions, the old production
+                module's table, which nothing has written since the rebuild —
+                so this screen reported every order's workmanship as ZERO,
+                and a zero here does not look like a gap, it looks like
+                profit.
      other      inv_order_charges (freight, inspection, commission)
      selling    proforma_items
    Quoted comes from the costing version the order was quoted against. */
@@ -83,8 +88,14 @@ function inv_order_cost(int $pfId): ?array {
         // actual wages — already recorded by the production module
         $actWage = 0.0; $wageQty = 0.0;
         try {
-            $s = db()->prepare("SELECT COALESCE(SUM(amount),0) a, COALESCE(SUM(quantity),0) q
-                FROM production_transactions WHERE proforma_id=? AND status='active'");
+            /* zp_entries, NOT production_transactions. The old table has not
+               been written to since the production module was rebuilt, so this
+               reported every order's workmanship as ZERO — which on a cost
+               screen is not a gap, it is a lie in the direction that makes
+               every order look profitable. The column names differ: qty here,
+               quantity there. */
+            $s = db()->prepare("SELECT COALESCE(SUM(amount),0) a, COALESCE(SUM(qty),0) q
+                FROM zp_entries WHERE proforma_id=? AND status='active'");
             $s->execute([$pfId]); $w = $s->fetch();
             $actWage = (float)$w['a']; $wageQty = (float)$w['q'];
         } catch (Throwable $e) {}
@@ -145,7 +156,8 @@ if (!$C) {
                 (SELECT COALESCE(SUM(qty),0) FROM proforma_items WHERE proforma_id=pf.id) oqty,
                 (SELECT COALESCE(SUM(ci.amount),0) FROM inv_consumption_items ci JOIN inv_consumption c ON c.id=ci.con_id
                    WHERE c.proforma_id=pf.id AND c.status='posted' AND ci.side='input') amat,
-                (SELECT COALESCE(SUM(amount),0) FROM production_transactions WHERE proforma_id=pf.id AND status='active') awage,
+                -- zp_entries, not production_transactions — see the note above
+                (SELECT COALESCE(SUM(amount),0) FROM zp_entries WHERE proforma_id=pf.id AND status='active') awage,
                 (SELECT COALESCE(SUM(amount),0) FROM inv_order_charges WHERE proforma_id=pf.id) aoth
             FROM proforma_invoices pf ORDER BY pf.id DESC LIMIT 120")->fetchAll();
     } catch (Throwable $e) {}
@@ -224,7 +236,7 @@ flash();
       <?php
       $rows = [
         ['Fabric, accessories &amp; packing', $C['quoted']['mat'], $C['committed'], $C['actual']['mat'], $C['proj']['mat'], 'Posted consumption documents'],
-        ['Workmanship / wages', $C['quoted']['wage'], 0, $C['actual']['wage'], $C['proj']['wage'], 'production_transactions — already recorded per worker'],
+        ['Workmanship / wages', $C['quoted']['wage'], 0, $C['actual']['wage'], $C['proj']['wage'], 'Daily Production Entry — already recorded per worker'],
         ['Freight, commission &amp; other', $C['quoted']['oth'], 0, $C['actual']['oth'], $C['proj']['oth'], 'Charges booked below'],
       ];
       foreach ($rows as [$lbl, $q, $cm, $a, $pj, $src]):

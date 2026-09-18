@@ -1218,36 +1218,149 @@ function inv_totals(array $lines, bool $gstApplies, float $gstPct): array {
    comparing them worth anything.
 
    Returns finished / converted / available, plus the wage actually
-   recorded on the line and what that comes to per piece. */
+   recorded on the line and what that comes to per piece.
+
+   ====================================================================
+   THIS FUNCTION WAS READING A TABLE NOTHING HAS WRITTEN FOR MONTHS.
+   ====================================================================
+
+   It asked production_transactions — the OLD production module. Daily
+   Production Entry writes zp_entries. Nothing has written the old table
+   since the module was rebuilt, so every field here came back zero, and
+   zero is not a harmless wrong answer in this particular place:
+
+     inv_consumption_post() uses `available` as a HARD BLOCK. At zero it
+     refused to post ANY consumption carrying an order line — the one
+     door into finished goods stock, shut.
+
+     inv_consume.php skips lines where `started` is false, so the
+     production picker listed nothing at all.
+
+     `wage_per_unit` fed the cost check, so every order's real cost was
+     understated by the whole of its workmanship.
+
+   It also decided the stage by its SPELLING — 'Cutting', 'Stitching',
+   'Dispatch' — so a stage the owner typed himself was invisible. Stages
+   are rows now and position is what means something: the FIRST stage is
+   the one that makes pieces, every later one works on them.
+
+   WHAT "FINISHED" MEANS NOW, AND WHY IT CHANGED.
+
+   The old module booked whole products, so the last stage's quantity WAS
+   the finished count. The new one books PARTS, and a 7-piece set is not
+   finished because 400 pillow cases exist. So:
+
+     a part is done only when EVERY one of its operations has been booked
+     — the minimum across its operations, never the maximum, because a
+     cushion cover that is cut but not piped is not a cushion cover;
+
+     the line is finished for as many SETS as its shortest part allows,
+     counting how many of that part go into one set at THIS line's size.
+
+   A product with no parts defined keeps the old meaning — the quantity
+   at the last stage that has anything on it — so nothing that worked
+   before this stops working. */
 function inv_line_production(int $proformaItemId): array {
     $out = ['ordered'=>0.0,'cut'=>0.0,'stitched'=>0.0,'dispatched'=>0.0,'finished'=>0.0,
             'converted'=>0.0,'available'=>0.0,'wage'=>0.0,'wage_per_unit'=>0.0,
-            'started'=>false,'stages'=>[]];
+            'started'=>false,'stages'=>[],'limiting'=>'','by_part'=>[]];
     if ($proformaItemId <= 0) return $out;
-    try {
-        $s = db()->prepare("SELECT qty FROM proforma_items WHERE id=?");
-        $s->execute([$proformaItemId]);
-        $out['ordered'] = (float)$s->fetchColumn();
 
-        $s = db()->prepare("SELECT stage, SUM(quantity) q, SUM(amount) a
-            FROM production_transactions WHERE proforma_item_id=? AND status='active' GROUP BY stage");
+    /* Loaded here rather than at the top of the file: inventory.php is
+       included by screens that have nothing to do with production, and
+       they should not pay for the production schema to be checked. */
+    if (!function_exists('zp_part_ops')) {
+        $f = __DIR__ . '/zprod.php';
+        if (is_file($f)) require_once $f;
+    }
+    if (!function_exists('zp_part_ops')) return $out;   // production module absent — say nothing rather than guess
+
+    $line = null;
+    try {
+        $s = db()->prepare("SELECT pi.id item_id, pi.proforma_id, pi.product_id, pi.product_name,
+                                   pi.qty ordered_qty, pi.size, pi.product_size_id
+                            FROM proforma_items pi WHERE pi.id=?");
+        $s->execute([$proformaItemId]);
+        $line = $s->fetch() ?: null;
+    } catch (Throwable $e) {}
+    if (!$line) return $out;
+    $out['ordered'] = (float)$line['ordered_qty'];
+
+    /* The same resolver the production module uses, so the two can never
+       disagree about which product an order line is. */
+    $productId = (int)($line['product_id'] ?? 0);
+    if ($productId <= 0 && function_exists('zp_resolve_item')) $productId = zp_resolve_item($line);
+
+    /* ---- what the floor booked, per part, per operation, per stage ---- */
+    $booked = [];        // [part_id][op_id] => qty
+    $firstStage = function_exists('zp_stage_first_id') ? zp_stage_first_id() : 0;
+    try {
+        $s = db()->prepare("SELECT COALESCE(e.part_id,0) part_id, e.op_id,
+                                   COALESCE(e.stage_id,0) stage_id, e.stage,
+                                   SUM(e.qty) q, SUM(e.amount) a
+                            FROM zp_entries e
+                            WHERE e.proforma_item_id=? AND e.status='active'
+                            GROUP BY e.part_id, e.op_id, e.stage_id, e.stage");
         $s->execute([$proformaItemId]);
         foreach ($s->fetchAll() as $r) {
             $q = (float)$r['q'];
-            $out['stages'][$r['stage']] = ['qty'=>$q, 'wage'=>(float)$r['a']];
+            $partId = (int)$r['part_id'];
+            $opId   = (int)$r['op_id'];
+            $booked[$partId][$opId] = ($booked[$partId][$opId] ?? 0) + $q;
             $out['wage'] += (float)$r['a'];
-            if ($r['stage'] === 'Cutting')        $out['cut'] = $q;
-            elseif ($r['stage'] === 'Stitching')  $out['stitched'] = $q;
-            elseif ($r['stage'] === 'Dispatch')   $out['dispatched'] = $q;
+
+            $sid  = (int)$r['stage_id'];
+            $name = $sid > 0 && function_exists('zp_stage_name') ? zp_stage_name($sid) : (string)$r['stage'];
+            if ($name === '' || $name === '—') $name = (string)$r['stage'];
+            if ($name === '') $name = 'Unnamed stage';
+            if (!isset($out['stages'][$name])) $out['stages'][$name] = ['qty'=>0.0, 'wage'=>0.0];
+            $out['stages'][$name]['qty']  += $q;
+            $out['stages'][$name]['wage'] += (float)$r['a'];
+
+            /* POSITION, NOT SPELLING. The first stage is the one that makes
+               pieces; everything after it works on pieces that exist. */
+            if ($firstStage > 0 && $sid === $firstStage) $out['cut'] += $q;
+            elseif ($sid > 0 || $name !== '')            $out['stitched'] += $q;
+            /* 'dispatched' is kept only for callers written against the old
+               module; nothing in the rebuilt one books a dispatch stage. */
+            if (strcasecmp($name, 'Dispatch') === 0) { $out['dispatched'] += $q; $out['stitched'] -= $q; }
         }
     } catch (Throwable $e) {}
 
-    /* "Finished" is the last stage that has actually been claimed. Using
-       Dispatch alone would read zero for a floor that has not started
-       packing yet, and using Cutting would count cloth as product. */
-    $out['finished'] = $out['dispatched'] > 0 ? $out['dispatched']
-                     : ($out['stitched'] > 0 ? $out['stitched'] : 0.0);
-    $out['started']  = ($out['cut'] + $out['stitched'] + $out['dispatched']) > 0;
+    $out['started'] = !empty($booked);
+
+    /* ---- how many complete SETS that adds up to ---- */
+    $parts = $productId > 0 && function_exists('zp_product_parts') ? zp_product_parts($productId) : [];
+    if ($parts) {
+        $sizeId = function_exists('zp_line_size_id') ? zp_line_size_id($line) : 0;
+        $qtyMap = function_exists('zp_qty_map') ? zp_qty_map($productId) : [];
+        $sets = null;
+        foreach ($parts as $p) {
+            $partId = (int)$p['id'];
+            $ops = zp_part_ops($partId, true);
+            if (!$ops) continue;          // a part with no operations cannot be measured either way
+            /* THE MINIMUM ACROSS OPERATIONS, never the sum and never the max.
+               Two stitching operations on one part are two jobs done to the
+               SAME pieces — adding them would report double the parts that
+               exist, and taking the largest would call a part finished the
+               moment its easiest operation was done. */
+            $done = null;
+            foreach ($ops as $o) {
+                $q = (float)($booked[$partId][(int)$o['id']] ?? 0);
+                $done = $done === null ? $q : min($done, $q);
+            }
+            $per = $sizeId > 0 && function_exists('zp_qty_for') ? (float)zp_qty_for($qtyMap, $partId, $sizeId) : 1.0;
+            if ($per <= 0) $per = 1.0;
+            $mine = (float)$done / $per;
+            $out['by_part'][(string)$p['part_name']] = ['done'=>(float)$done, 'per_set'=>$per, 'sets'=>round($mine, 3)];
+            if ($sets === null || $mine < $sets) { $sets = $mine; $out['limiting'] = (string)$p['part_name']; }
+        }
+        $out['finished'] = $sets === null ? 0.0 : round(max(0.0, $sets), 3);
+    } else {
+        /* NO PARTS DEFINED — the old meaning, kept deliberately. */
+        $out['finished'] = $out['dispatched'] > 0 ? $out['dispatched']
+                         : ($out['stitched'] > 0 ? $out['stitched'] : 0.0);
+    }
 
     try {
         $s = db()->prepare("SELECT COALESCE(SUM(ci.qty),0) FROM inv_consumption_items ci
