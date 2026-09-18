@@ -160,7 +160,7 @@ const { chromium } = require('playwright');
                      .filter(r => !r.classList.contains('detail'));
       const det = t.querySelector('tbody tr.detail');
       const foot = [].slice.call(t.querySelectorAll('tfoot tr'));
-      const cline = rows[0].querySelector('.cline');
+      const cline = rows[0].querySelector('.ctag');
       const qty = rows[0].querySelector('.qty');
       return {
         cols: ths.length,
@@ -175,11 +175,10 @@ const { chromium } = require('playwright');
         clineTop: cline ? Math.round(cline.getBoundingClientRect().top) : 0,
         qtyTop: qty ? Math.round(qty.getBoundingClientRect().top) : 0,
         clineW: cline ? Math.round(cline.getBoundingClientRect().width) : 0,
-        clineVal: cline ? cline.value : null,
+        clineVal: cline ? cline.textContent.trim() : null,
         clineSet: cline ? cline.classList.contains('set') : false,
-        row2Val: rows[1].querySelector('.cline').value,
-        row2Ph: rows[1].querySelector('.cline').getAttribute('placeholder'),
-        row2Set: rows[1].querySelector('.cline').classList.contains('set'),
+        row2Val: rows[1].querySelector('.ctag').textContent.trim(),
+        row2Set: rows[1].querySelector('.ctag').classList.contains('set'),
         cid: rows[0].querySelector('.cid').value,
         citem: rows[0].querySelector('.citem').value,
         cidName: rows[0].querySelector('.cid').getAttribute('name'),
@@ -201,12 +200,17 @@ $raw = shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node ' . escapeshellarg
 $M = json_decode((string)$raw, true);
 if (!is_array($M)) { echo "  FAIL: the browser probe did not run:\n" . substr((string)$raw, 0, 900) . "\n"; $F++; }
 else {
-    /* Material, Contract, Lot, UOM, Quantity, Rate, Amount, ×  = 8
-       plus Available on an outward pass                        = 9 */
-    ok($M['in']['cols'] === 8, 'inward grid has 8 columns, got ' . $M['in']['cols']);
-    ok($M['out']['cols'] === 9, 'outward grid has 9 columns, got ' . $M['out']['cols']);
-    ok($M['in']['headers'][1] === 'Contract', 'Contract sits beside Material, got '
-       . json_encode($M['in']['headers']));
+    /* THE CONTRACT COLUMN IS GONE, at the owner's instruction: it held a
+       value chosen once and only read afterwards, on every pass, whether or
+       not a contract was ever used. The contract is chosen inside the item
+       list now and read back as a tag on the item itself.
+       Item, Lot/size, UOM, Quantity, Rate, Amount, ×  = 7
+       plus Available on an outward pass               = 8 */
+    ok($M['in']['cols'] === 7, 'inward grid has 7 columns, got ' . $M['in']['cols']);
+    ok($M['out']['cols'] === 8, 'outward grid has 8 columns, got ' . $M['out']['cols']);
+    ok($M['in']['headers'][0] === 'Item', 'the item leads, got ' . json_encode($M['in']['headers']));
+    ok(!in_array('Contract', $M['in']['headers'], true),
+       'and no column is spent on the contract, got ' . json_encode($M['in']['headers']));
 
     foreach (['in', 'out'] as $d) {
         ok($M[$d]['detColspan'] === $M[$d]['cols'],
@@ -237,23 +241,35 @@ else {
         ok(abs($M[$d]['rowH'] - $M[$d]['row2H']) <= 1,
            "$d: the line WITH a contract is the same height as the one without ("
            . $M[$d]['rowH'] . ' vs ' . $M[$d]['row2H'] . ')');
-        ok($M[$d]['clineTop'] === $M[$d]['qtyTop'],
-           "$d: the contract box is beside the quantity box, not under the item");
-        ok($M[$d]['clineH'] === $M[$d]['qtyH'],
-           "$d: and it is the same height as every other cell input ("
+        /* THE TAG IS OUT OF THE FLOW, which is the only reason it can sit on
+           the item without making that line taller. It is vertically centred
+           on the same band as the quantity box rather than aligned to its
+           top, so "same top" is the wrong test now — "inside the row" is the
+           right one. */
+        ok($M[$d]['clineTop'] >= $M[$d]['qtyTop'] - 12 && $M[$d]['clineTop'] <= $M[$d]['qtyTop'] + 12,
+           "$d: the contract tag sits on the item line, not under it ("
+           . $M[$d]['clineTop'] . ' vs ' . $M[$d]['qtyTop'] . ')');
+        ok($M[$d]['clineH'] < $M[$d]['qtyH'],
+           "$d: and it is smaller than a field, because it is a label and not one ("
            . $M[$d]['clineH'] . ' vs ' . $M[$d]['qtyH'] . ')');
     }
-    ok($M['in']['clineW'] >= 120 && $M['in']['clineW'] <= 165,
-       'the column is wide enough for a contract number and no wider, got '
+    /* Narrow: it is a tag on the item cell now, not a column of its own. */
+    ok($M['in']['clineW'] <= 110,
+       'the tag is small enough to sit on the item without hiding it, got '
        . $M['in']['clineW'] . 'px');
 
-    echo "5. Three states, and they read differently\n";
-    ok($M['in']['clineVal'] === 'PC-2026-0031', 'a line with its own contract shows it');
+    echo "5. Two states now, not three\n";
+    ok($M['in']['clineVal'] === 'PC-2026-0031', 'a line with a contract shows it');
     ok($M['in']['clineSet'] === true, '  and is marked as chosen');
-    ok($M['in']['row2Val'] === '', 'a line without one shows nothing in the box');
-    ok($M['in']['row2Set'] === false, '  and is not marked as chosen');
-    ok($M['in']['row2Ph'] === 'PC-2026-0031',
-       '  but its placeholder is the HEADER contract, so "following" is visible');
+    ok($M['in']['row2Val'] === '', 'a line without one shows nothing');
+    ok($M['in']['row2Set'] === false, '  and is not marked');
+    /* THE THIRD STATE IS GONE WITH THE HEADER FIELD. A line used to be able
+       to "follow" a contract named on the pass header, shown as a greyed
+       placeholder. There is no header contract any more — one pass routinely
+       carries lines from two contracts, so a single header value was never
+       the whole truth — and a line either names one or does not. */
+    ok(!str_contains($ig, 'follows the contract on the pass header'),
+       'nothing still promises a line can follow a header contract');
     ok($M['in']['cid'] === '31' && $M['in']['citem'] === '502',
        'both halves of the link are stored on the line');
     ok($M['in']['cidName'] === 'line[0][contract_id]'
@@ -264,316 +280,33 @@ else {
 }
 
 /* ------------------------------------------------------------------ */
-echo "6. The picker itself, driven the way an operator drives it\n";
+echo "6. The separate contract picker is gone, and so is this section\n";
+/* THIS SECTION USED TO DRIVE A SECOND PICKER.
+ *
+ * A line had its own contract box in its own column, with its own list, and
+ * this drove it: open it, type, choose, watch the party filter apply. That
+ * box no longer exists. The owner asked for the contract to leave both the
+ * header and the grid and to be chosen inside the item list instead — one
+ * question, "which item, and against what?", answered in one place.
+ *
+ * The behaviour it protected did not go anywhere; it moved. Party scoping,
+ * the two sections, what an outward pass may offer against an inward one,
+ * and a contract line naming an item the stock list has not got are all
+ * driven in zgatecl_test.php, against the list that replaced this one.
+ * Deleting the section outright would have left no trace of where its
+ * assertions went, which is how a test suite quietly loses coverage. */
+$igc = preg_replace('!/\*.*?\*/!s', '', $ig);
+ok(!str_contains($igc, "data-lov=\"cline\""), 'no line carries a second picker any more');
+ok(!str_contains($igc, "LOV.register('cline'"), '  and it is not registered');
+ok(!str_contains($igc, 'function clRows('), '  nor is its row builder still sitting unused');
+/* What replaced it still has to be party-scoped, which is the one rule this
+   section existed for. */
+ok(str_contains($igc, 'clLoad(function(){ var r = itemRowsFor(q, showAll); cb(r[0], r[1]); });'),
+   'the item list loads this PARTY\'s contract lines before it draws');
+ok(str_contains($igc, "var cls = (CLPARTY === clParty() && CLINES) ? CLINES : null;"),
+   '  and reads them only when they belong to the party now on the pass');
 
-/* Lift the REAL provider out of the page. */
-$ja = strpos($ig, '/* ---- contract on the line ---');
-$jb = strpos($ig, 'LOV.attach(tb);', $ja);
-ok($ja !== false && $jb !== false, 'the picker block is where it was');
-$js = substr($ig, $ja, $jb - $ja);
-/* one PHP tag inside it — the contract-type labels */
-$js = preg_replace('/<\?=.*?\?>/s',
-    '{"purchase":"Purchase","sales":"Sales","jobwork_out":"Job work — we send","jobwork_in":"Job work — we do"}',
-    $js);
-ok(!str_contains($js, '<?'), 'and it lifted with no PHP left in it');
 
-/* The over-balance strip is repainted by the page's own input listener.
-   Stubbing that listener in the harness would test the stub, so the REAL
-   one is lifted too — if someone deletes the clWarn() call from it, this
-   test goes red. */
-$la = strpos($ig, "tb.addEventListener('input',function(e){");
-$lb = strpos($ig, "\n  });", $la);
-ok($la !== false && $lb !== false, 'the grid input listener is where it was');
-$inputJs = substr($ig, $la, $lb - $la + 6);
-ok(str_contains($inputJs, 'clWarn()'),
-   '  and it is the one that repaints the over-balance strip');
-
-$fixture = json_encode([
-    ['id' => 502, 'contract_id' => 31, 'contract_no' => 'PC-2026-0031', 'ctype' => 'purchase',
-     'material_id' => 1, 'product_id' => 0, 'item' => 'Cotton greige 60s', 'code' => 'FAB-001',
-     'description' => 'Greige 60s 100% cotton', 'uom' => 'MTR', 'rate' => 210.5,
-     'qty' => 1000, 'done' => 600, 'balance' => 400, 'complete' => false,
-     'hay' => 'cotton greige 60s fab-001 pc-2026-0031 purchase'],
-    ['id' => 503, 'contract_id' => 31, 'contract_no' => 'PC-2026-0031', 'ctype' => 'purchase',
-     'material_id' => 2, 'product_id' => 0, 'item' => 'Button 4-hole', 'code' => 'BTN-014',
-     'description' => '', 'uom' => 'PCS', 'rate' => 1.25,
-     'qty' => 5000, 'done' => 5000, 'balance' => 0, 'complete' => true,
-     'hay' => 'button 4-hole btn-014 pc-2026-0031 purchase'],
-    ['id' => 610, 'contract_id' => 44, 'contract_no' => 'JW-2026-0044', 'ctype' => 'jobwork_out',
-     'material_id' => 1, 'product_id' => 0, 'item' => 'Cotton greige 60s', 'code' => 'FAB-001',
-     'description' => 'Send for dyeing', 'uom' => 'MTR', 'rate' => 18,
-     'qty' => 2000, 'done' => 0, 'balance' => 2000, 'complete' => false,
-     'hay' => 'cotton greige 60s fab-001 jw-2026-0044 jobwork_out'],
-]);
-
-/* The harness. Everything the lifted block reaches for that lives
-   elsewhere in the page is stubbed HERE — never patched in the shipped
-   file. A stub that is too thin is the harness's bug, not the app's. */
-$harness = '<!doctype html><html><head><meta charset="utf-8">'
-    . '<style>' . file_get_contents($B . 'assets/css/app.css') . '</style>'
-    . '<link rel="stylesheet" href="file://' . $B . 'assets/css/lov.css">'
-    . '<style>' . $pageCss . '</style></head><body style="width:1280px;margin:0">'
-    . '<select id="pSel"><option value="0">— not listed —</option>'
-    . '<option value="9" selected>Fine Weaving Mills</option>'
-    . '<option value="12">Other Supplier</option></select>'
-    . $html['in']
-    . '<div id="cWarn" class="ig-note warn" style="display:none"></div>'
-    . '<script src="file://' . $B . 'assets/js/lov.js"></script><script>'
-    . 'window.FETCHED = [];
-window.fetch = function(u){
-  window.FETCHED.push(u);
-  var pid = (String(u).match(/party_id=(\d+)/) || [])[1];
-  /* party 12 genuinely has nothing — that is what proves the scoping */
-  var rows = pid === "9" ? ' . $fixture . ' : [];
-  return Promise.resolve({ json: function(){ return Promise.resolve({ ok:true, lines: rows }); } });
-};
-(function(){
-  var tb = document.querySelector("#glines tbody");
-  var pSel = document.getElementById("pSel");
-  var IS_OUT = false;
-  function num(v){ var n = parseFloat(String(v).replace(/[^0-9.\-]/g,"")); return isNaN(n)?0:n; }
-  function lines(){ return [].slice.call(tb.querySelectorAll("tr"))
-    .filter(function(tr){ return !tr.classList.contains("detail"); }); }
-  function detailOf(tr){ var n = tr.nextElementSibling;
-    return (n && n.classList.contains("detail")) ? n : null; }
-  function partyName(){ var o = pSel.options[pSel.selectedIndex]; return o ? o.text : ""; }
-  window.TOTS = 0;
-  function tot(){ window.TOTS++; }
-  function syncAll(){}
-  function refreshRow(){}
-  function stockCheck(){}
-  ' . $js . '
-  ' . $inputJs . '
-  LOV.attach(tb);
-  /* what the page does on load */
-  lines().forEach(function(tr){
-    var cid = tr.querySelector(".cid"), f = tr.querySelector(".cline");
-    if(f && cid && +cid.value) f.classList.add("set");
-  });
-  window.T = { lines:lines, clLoad:clLoad, clPaint:clPaint, clWarn:clWarn,
-               clRecheck:null, clOf:clOf, get CLMSG(){ return CLMSG; } };
-  window.T.recheck = function(){ ' . '
-    CLINES = null; CLPARTY = -1;
-    var held = [];
-    lines().forEach(function(tr, i){
-      var cid = tr.querySelector(".cid"), f = tr.querySelector(".cline");
-      if(cid && +cid.value){ held.push(i + 1); clClear(tr); }
-    });
-    CLMSG = held.length ? "<b>Contract cleared on " + held.length + " line(s).</b>" : "";
-    clLoad(function(){ lines().forEach(clPaint); clWarn(); });
-    clWarn();
-  };
-  clLoad(function(){ lines().forEach(clPaint); clWarn(); });
-})();
-</' . 'script></body></html>';
-file_put_contents($work . '/pick.html', $harness);
-
-$drive = <<<'JS'
-const { chromium } = require('playwright');
-(async () => {
-  const br = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-  const pg = await br.newPage({ viewport: { width: 1280, height: 900 } });
-  const errs = [];
-  pg.on('pageerror', e => errs.push(String(e)));
-  await pg.goto('file://' + process.argv[2] + '/pick.html');
-  await pg.waitForTimeout(150);
-  const R = { errs };
-
-  const rowCline = n => `#glines tbody tr:not(.detail):nth-of-type(${n}) .cline`;
-
-  // open the picker on the THIRD line — the empty one, the line an
-  // operator would actually be typing into
-  await pg.click('#glines tbody tr:not(.detail):nth-of-type(5) .cline');
-  await pg.waitForTimeout(120);
-  R.openRows = await pg.$$eval('.lov-r', rs => rs.map(r => r.textContent));
-  R.openTitle = await pg.$eval('.lov .ttl', e => e.textContent).catch(() => null);
-  // the completed line is hidden behind "show N already completed"
-  R.xtra = await pg.$eval('.lov .xtra', e => e.textContent.trim()).catch(() => '');
-
-  // fuzzy: type part of the OTHER contract's number
-  await pg.fill('#glines tbody tr:not(.detail):nth-of-type(5) .cline', 'jw44');
-  await pg.waitForTimeout(120);
-  R.fuzzyTop = await pg.$eval('.lov-r.on', r => r.textContent).catch(() => null);
-  R.fuzzyCount = await pg.$$eval('.lov-r', rs => rs.length);
-
-  // Enter takes it
-  await pg.keyboard.press('Enter');
-  await pg.waitForTimeout(120);
-  R.afterPick = await pg.evaluate(() => {
-    const tr = document.querySelectorAll('#glines tbody tr:not(.detail)')[2];
-    const det = tr.nextElementSibling;
-    return {
-      text: tr.querySelector('.cline').value,
-      set: tr.querySelector('.cline').classList.contains('set'),
-      cid: tr.querySelector('.cid').value,
-      citem: tr.querySelector('.citem').value,
-      uom: tr.querySelector('.uom').value,
-      rate: tr.querySelector('.rate').value,
-      desc: det ? det.querySelector('.desc').value : null,
-      focused: document.activeElement.className,
-      rowH: Math.round(tr.getBoundingClientRect().height)
-    };
-  });
-
-  // a quantity OVER the balance is marked, not refused
-  await pg.fill('#glines tbody tr:not(.detail):nth-of-type(5) .qty', '2500');
-  await pg.waitForTimeout(80);
-  R.over = await pg.evaluate(() => ({
-    qty: document.querySelectorAll('#glines tbody tr:not(.detail)')[2].querySelector('.qty').value,
-    marked: document.querySelectorAll('#glines tbody tr:not(.detail)')[2]
-              .querySelector('.cline').classList.contains('over'),
-    warn: document.getElementById('cWarn').style.display !== 'none',
-    text: document.getElementById('cWarn').textContent
-  }));
-
-  // back under the balance and the marking goes away again
-  await pg.fill('#glines tbody tr:not(.detail):nth-of-type(5) .qty', '100');
-  await pg.waitForTimeout(80);
-  R.under = await pg.evaluate(() => ({
-    marked: document.querySelectorAll('#glines tbody tr:not(.detail)')[2]
-              .querySelector('.cline').classList.contains('over'),
-    warn: document.getElementById('cWarn').style.display !== 'none'
-  }));
-
-  // the clear row: only offered once something is set
-  await pg.click('#glines tbody tr:not(.detail):nth-of-type(5) .cline');
-  await pg.waitForTimeout(120);
-  R.clearOffered = await pg.$$eval('.lov-r', rs => rs.map(r => r.textContent));
-  R.clearIsLast = await pg.$$eval('.lov-r', rs =>
-    rs.length > 1 && /no contract/.test(rs[rs.length - 1].textContent)
-               && !/no contract/.test(rs[0].textContent));
-  await pg.keyboard.press('End');
-  await pg.keyboard.press('Enter');
-  await pg.waitForTimeout(120);
-  R.afterClear = await pg.evaluate(() => {
-    const tr = document.querySelectorAll('#glines tbody tr:not(.detail)')[2];
-    return { text: tr.querySelector('.cline').value, cid: tr.querySelector('.cid').value,
-             citem: tr.querySelector('.citem').value,
-             set: tr.querySelector('.cline').classList.contains('set') };
-  });
-
-  // half-typed and abandoned must not become a choice
-  await pg.click('#glines tbody tr:not(.detail):nth-of-type(5) .cline');
-  await pg.fill('#glines tbody tr:not(.detail):nth-of-type(5) .cline', 'PC-99');
-  await pg.keyboard.press('Escape');
-  await pg.waitForTimeout(220);
-  R.abandoned = await pg.evaluate(() => {
-    const tr = document.querySelectorAll('#glines tbody tr:not(.detail)')[2];
-    return { text: tr.querySelector('.cline').value, cid: tr.querySelector('.cid').value };
-  });
-
-  // the list is the PARTY'S — switch party and it empties
-  R.beforeSwitch = await pg.evaluate(() => {
-    const tr = document.querySelectorAll('#glines tbody tr:not(.detail)')[0];
-    return { cid: tr.querySelector('.cid').value };
-  });
-  await pg.selectOption('#pSel', '12');
-  await pg.evaluate(() => window.T.recheck());
-  await pg.waitForTimeout(200);
-  R.afterSwitch = await pg.evaluate(() => {
-    const tr = document.querySelectorAll('#glines tbody tr:not(.detail)')[0];
-    return { cid: tr.querySelector('.cid').value, citem: tr.querySelector('.citem').value,
-             text: tr.querySelector('.cline').value,
-             set: tr.querySelector('.cline').classList.contains('set'),
-             warn: document.getElementById('cWarn').style.display !== 'none',
-             warnText: document.getElementById('cWarn').textContent };
-  });
-  await pg.click('#glines tbody tr:not(.detail):nth-of-type(1) .cline');
-  await pg.waitForTimeout(150);
-  R.otherPartyRows = await pg.$$eval('.lov-r', rs => rs.length);
-  R.otherPartyEmpty = await pg.$eval('.lov-none', e => e.textContent).catch(() => null);
-  R.fetched = await pg.evaluate(() => window.FETCHED);
-
-  await br.close();
-  console.log(JSON.stringify(R));
-})();
-JS;
-file_put_contents($work . '/drive.js', $drive);
-$raw2 = shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node ' . escapeshellarg($work . '/drive.js')
-                   . ' ' . escapeshellarg($work) . ' 2>&1');
-$R = json_decode((string)$raw2, true);
-if (!is_array($R)) { echo "  FAIL: the picker probe did not run:\n" . substr((string)$raw2, 0, 900) . "\n"; $F++; }
-else {
-    ok(empty($R['errs']), 'the lifted picker runs with no script errors: ' . json_encode($R['errs']));
-
-    echo "   opening it\n";
-    ok(count($R['openRows']) === 2,
-       'only the two lines with a balance are shown, got ' . count($R['openRows']));
-    ok(str_contains(implode('|', $R['openRows']), 'PC-2026-0031'), '  the purchase line is there');
-    ok(str_contains(implode('|', $R['openRows']), 'JW-2026-0044'), '  the job work line is there');
-    ok(!str_contains(implode('|', $R['openRows']), 'Button'),
-       '  the completed line is not in the way');
-    ok(str_contains((string)$R['xtra'], 'already completed'),
-       '  but it is one click away, not hidden: ' . $R['xtra']);
-    ok(str_contains((string)$R['openTitle'], 'Fine Weaving Mills'),
-       '  and the panel says whose contracts these are');
-
-    echo "   typing\n";
-    ok(str_contains((string)$R['fuzzyTop'], 'JW-2026-0044'),
-       '"jw44" lands on JW-2026-0044, got ' . json_encode($R['fuzzyTop']));
-    ok($R['fuzzyCount'] === 1, '  and nothing else survives, got ' . $R['fuzzyCount']);
-
-    echo "   taking a line\n";
-    ok($R['afterPick']['text'] === 'JW-2026-0044', 'the box shows the contract');
-    ok($R['afterPick']['set'] === true, '  marked as chosen');
-    ok($R['afterPick']['cid'] === '44', '  the contract is stored, got ' . $R['afterPick']['cid']);
-    ok($R['afterPick']['citem'] === '610', '  and the contract LINE, got ' . $R['afterPick']['citem']);
-    ok($R['afterPick']['uom'] === 'MTR', '  the unit came with it');
-    ok($R['afterPick']['rate'] === '18.0000', '  and the agreed rate, got ' . $R['afterPick']['rate']);
-    ok($R['afterPick']['desc'] === 'Send for dyeing', '  and the contract\'s own wording');
-    ok(str_contains((string)$R['afterPick']['focused'], 'qty'),
-       '  and the cursor is in Quantity — nothing else left to say');
-    ok($R['afterPick']['rowH'] <= 50,
-       '  the row did not grow when the contract went in, got ' . $R['afterPick']['rowH'] . 'px');
-
-    echo "   more than the contract says\n";
-    ok($R['over']['qty'] === '2500', 'the quantity is kept exactly as typed — never clamped');
-    ok($R['over']['marked'] === true, '  the box is marked');
-    ok($R['over']['warn'] === true, '  and the strip explains it');
-    ok(str_contains($R['over']['text'], 'allowed'),
-       '  in words that say it is allowed: ' . substr($R['over']['text'], 0, 90));
-    ok(str_contains($R['over']['text'], '2,000'), '  naming the balance it passed');
-    ok($R['under']['marked'] === false && $R['under']['warn'] === false,
-       'and it all clears again when the quantity comes back down');
-
-    echo "   taking it off again\n";
-    ok(str_contains(implode('|', $R['clearOffered']), 'no contract'),
-       'a chosen line offers a way to un-choose, got ' . json_encode($R['clearOffered']));
-    /* Opening the box selects its text, so row 0 is what Enter takes. Put
-       "no contract" there and the reflex of open-Enter wipes the link. */
-    ok($R['clearIsLast'] === true,
-       '  and it is the LAST row, so Enter can never wipe a contract by reflex');
-    ok($R['afterClear']['cid'] === '' && $R['afterClear']['citem'] === '',
-       '  and it clears BOTH halves, not one');
-    ok($R['afterClear']['text'] === '' && $R['afterClear']['set'] === false,
-       '  and the box goes back to empty');
-
-    echo "   half-typed is not a choice\n";
-    ok($R['abandoned']['cid'] === '',
-       'typing then pressing Escape stores nothing, got ' . json_encode($R['abandoned']));
-    ok($R['abandoned']['text'] === '',
-       '  and the box is put back, not left holding a search');
-
-    echo "   the list belongs to the party\n";
-    ok($R['beforeSwitch']['cid'] === '31', 'line 1 starts on the first party\'s contract');
-    ok($R['afterSwitch']['cid'] === '' && $R['afterSwitch']['citem'] === '',
-       'changing the party drops it — it belonged to someone else');
-    ok($R['afterSwitch']['set'] === false && $R['afterSwitch']['text'] === '',
-       '  and the box shows that it is gone');
-    ok($R['afterSwitch']['warn'] === true, '  and it is SAID, not done silently');
-    ok(str_contains($R['afterSwitch']['warnText'], 'cleared'),
-       '  in so many words: ' . substr($R['afterSwitch']['warnText'], 0, 80));
-    ok($R['otherPartyRows'] === 0, 'the new party has no contract lines, so none are offered');
-    ok(str_contains((string)$R['otherPartyEmpty'], 'no draft or active contract'),
-       '  and the panel explains why it is empty: ' . $R['otherPartyEmpty']);
-    $f = implode(' ', $R['fetched']);
-    ok(str_contains($f, 'party_id=9') && str_contains($f, 'party_id=12'),
-       'both parties were asked for by id');
-    ok(!preg_match('/plines(?!.*party_id)/', $f),
-       'and the picker NEVER asks for contract lines without a party');
-}
-
-/* ------------------------------------------------------------------ */
 echo "7. The server endpoint is party-scoped too\n";
 /* The browser filter is a convenience. The endpoint is the rule. */
 ok(str_contains($ig, "=== 'plines'"), 'the endpoint exists');

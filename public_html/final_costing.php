@@ -95,8 +95,8 @@ flash();
 .fc-combo-item mark{background:rgba(217,119,6,.28);color:inherit;border-radius:3px;padding:0 1px}
 .fc-combo-empty{padding:10px;font-size:12px;color:#8a97ab;text-align:center}
 </style>
-<link rel="stylesheet" href="assets/css/lov.css?v=2">
-<script src="assets/js/lov.js?v=2"></script>
+<link rel="stylesheet" href="assets/css/lov.css?v=3">
+<script src="assets/js/lov.js?v=3"></script>
 <script src="assets/js/grid.js?v=2"></script>
 
 <div class="topbar">

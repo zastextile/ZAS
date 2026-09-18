@@ -153,6 +153,9 @@ window.LOV = (function () {
       if (!S.open) return;
       S.rows = rows || []; S.hidden = hidden || 0;
       if (S.idx >= S.rows.length) S.idx = Math.max(0, S.rows.length - 1);
+      /* A list that OPENS with the cursor on its own heading would book
+         nothing on the first Enter. */
+      S.idx = skipIdx(S.idx, 1);
       draw();
       place();
     });
@@ -175,6 +178,14 @@ window.LOV = (function () {
       body.innerHTML = '<div class="lov-none">' + (p.empty ? p.empty(S.f, q) : 'Nothing matches.') + '</div>';
     } else {
       body.innerHTML = S.rows.map(function (r, i) {
+        /* A SECTION HEADING IS A ROW THAT CANNOT BE CHOSEN.
+           One list can now hold two kinds of thing — contract lines and
+           free stock, say — with a heading between them. It carries no
+           data-i, so a click cannot take it; skipIdx() steps the arrow
+           keys past it; and take() refuses it. Three guards, because a
+           list that books a heading as an item would be worse than no
+           heading at all. */
+        if (r && r.__sep) return '<div class="lov-sep">' + esc(r.__sep) + '</div>';
         return '<div class="lov-r' + (i === S.idx ? ' on' : '') + '" data-i="' + i +
           '" style="grid-template-columns:' + cols + '">' +
           p.cols.map(function (c) {
@@ -194,9 +205,25 @@ window.LOV = (function () {
     var on = body.querySelector('.lov-r.on'); if (on) on.scrollIntoView({ block: 'nearest' });
   }
 
+  /* Move the cursor from `from` in direction `step`, stopping on the first
+     row that is not a heading. Returns where it landed, or where it started
+     when there is nowhere to go — so holding an arrow at the end of a list
+     cannot park the cursor on a heading. */
+  function skipIdx(from, step) {
+    var i = from;
+    while (i >= 0 && i < S.rows.length && S.rows[i] && S.rows[i].__sep) i += step;
+    if (i < 0 || i >= S.rows.length) {
+      /* ran off the end — come back the other way rather than stop on a heading */
+      i = from;
+      while (i >= 0 && i < S.rows.length && S.rows[i] && S.rows[i].__sep) i -= step;
+    }
+    return (i >= 0 && i < S.rows.length) ? i : from;
+  }
+
   function take() {
     if (!S.rows.length || !S.f) return;
     var p = PROV[S.kind], row = S.rows[S.idx], f = S.f;
+    if (!row || row.__sep) return;      // a heading is not an answer
     close();
     p.pick(f, row);
   }
@@ -235,10 +262,10 @@ window.LOV = (function () {
     });
     root.addEventListener('keydown', function (e) {
       if (!S.open || e.target !== S.f) return;
-      if (e.key === 'ArrowDown') { e.preventDefault(); S.idx = Math.min(S.idx + 1, S.rows.length - 1); draw(); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); S.idx = Math.max(S.idx - 1, 0); draw(); }
-      else if (e.key === 'Home') { e.preventDefault(); S.idx = 0; draw(); }
-      else if (e.key === 'End') { e.preventDefault(); S.idx = S.rows.length - 1; draw(); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); S.idx = skipIdx(Math.min(S.idx + 1, S.rows.length - 1), 1); draw(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); S.idx = skipIdx(Math.max(S.idx - 1, 0), -1); draw(); }
+      else if (e.key === 'Home') { e.preventDefault(); S.idx = skipIdx(0, 1); draw(); }
+      else if (e.key === 'End') { e.preventDefault(); S.idx = skipIdx(S.rows.length - 1, -1); draw(); }
       else if (e.key === 'Enter') { e.preventDefault(); take(); }
       else if (e.key === 'Tab') { if (S.rows.length) { e.preventDefault(); take(); } else close(); }
       else if (e.key === 'Escape') { e.preventDefault(); close(); if (PROV[S.kind].revert) PROV[S.kind].revert(S.f); }

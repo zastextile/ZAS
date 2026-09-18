@@ -80,7 +80,11 @@ file_put_contents($work . '/frag.php', $tpl);
 $html = (string)shell_exec('php ' . escapeshellarg($work . '/frag.php') . ' 2>&1');
 ok(!str_contains($html, 'Fatal') && !str_contains($html, 'Warning'),
    'the header renders clean: ' . substr(trim($html), 0, 160));
-ok(substr_count($html, '<p ') >= 4, 'it really does carry several hint paragraphs, got ' . substr_count($html, '<p '));
+/* THREE, not four: the contract field carried the fourth and that whole
+   field has since left the header. The number is checked at all only to
+   prove the hints are really there to be hidden — a test that passed
+   against a header with no hints in it would prove nothing. */
+ok(substr_count($html, '<p ') >= 3, 'it really does carry several hint paragraphs, got ' . substr_count($html, '<p '));
 
 preg_match('/<style>(.*?)<\/style>/s', $gate, $sm);
 $pageCss = $sm[1] ?? '';
@@ -152,7 +156,7 @@ if (!is_array($M)) { echo "  FAIL: the probe did not run:\n" . substr((string)$r
 else {
     $p1280 = $M['plain'][1280]; $s1280 = $M['skin'][1280];
 
-    ok($p1280['hintsPresent'] >= 4, 'the hints are in the markup, got ' . $p1280['hintsPresent']);
+    ok($p1280['hintsPresent'] >= 3, 'the hints are in the markup, got ' . $p1280['hintsPresent']);
     ok($p1280['hintsVisible'] === $p1280['hintsPresent'], 'unskinned, every hint is visible and taking space');
     ok($s1280['hintsVisible'] === 0, 'skinned, none of them is taking space until asked for');
 
@@ -165,6 +169,10 @@ else {
        ROW COUNT as well as the height, because the height alone would pass
        for the wrong reason if a field ever shrank. */
     ok($s1280['rows'] === 2, 'the fields sit in two rows, got ' . $s1280['rows']);
+    /* Twelve, down from fourteen: the contract dropdown left the header
+       entirely, and Remarks and the order link folded away with the rest of
+       what is usually empty. */
+    ok($s1280['cells'] === 12, 'twelve header fields, got ' . $s1280['cells']);
     ok($s1280['h'] <= 120,
        'and that is under 120px, got ' . $s1280['h'] . 'px');
     ok($s1280['inputH'] <= 30, 'the fields are 30px or less, got ' . $s1280['inputH'] . 'px');

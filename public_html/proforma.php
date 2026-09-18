@@ -729,7 +729,7 @@ if ($id) {
         <?php endif; ?>
       </div>
     </form>
-    <link rel="stylesheet" href="assets/css/lov.css?v=2">
+    <link rel="stylesheet" href="assets/css/lov.css?v=3">
     <style>
 /* ---- a line that still needs a size ----
    The mark is on the ROW, not just the cell, because on a wide grid a red
@@ -760,7 +760,7 @@ if ($id) {
     .linkchip .cut:hover{background:rgba(224,67,93,.1);border-color:#e0435d}
     table td{vertical-align:top}
     </style>
-    <script src="assets/js/lov.js?v=2"></script>
+    <script src="assets/js/lov.js?v=3"></script>
     <script src="assets/js/grid.js?v=2"></script>
     <script>
     function pfConfirmDelete(){

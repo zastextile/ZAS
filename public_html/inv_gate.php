@@ -494,14 +494,27 @@ flash();
    is the sort of thing nobody can name but everybody can see. It stays at
    the 12.5px every other cell input uses, and the column is sized for
    monospace at that size instead. */
-.ig-tbl td .cline{font-family:ui-monospace,Menlo,Consolas,monospace;
-  text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
-.ig-tbl td .cline::placeholder{font-family:inherit;color:#aab4c4;font-style:italic}
-.ig-tbl td .cline.set{font-weight:700;color:#0b5f8a;border-color:#9fd0e4;background:rgba(14,168,201,.05)}
-/* Over the contract balance. Marked, never refused — the quantity that
-   actually moved through the gate is the truth, and a gate pass that
-   refused to record it would just be a gate pass nobody uses. */
-.ig-tbl td .cline.over{border-color:#e5b45a;background:rgba(217,119,6,.07);color:#7a4d09}
+/* THE CONTRACT IS A TAG NOW, NOT A BOX.
+   It had a whole column and an input of its own, for a value that is chosen
+   once inside the item list and only read afterwards. As a tag it sits on
+   the item it belongs to, costs no column, and adds no height to the row. */
+.ig-tbl td .ctag{display:none}
+/* IT SITS OVER THE ITEM BOX, NOT AFTER IT.
+   Inline, the tag landed on a line of its own under the field and made a
+   line WITH a contract 14px taller than one without — measured at 61px
+   against 47px, which is precisely the two-line row this grid exists to
+   avoid. Taken out of the flow it costs no height at all, and
+   pointer-events:none keeps it from swallowing the click that opens the
+   list underneath it. */
+.ig-tbl td .ctag.set{display:block;position:absolute;right:4px;top:50%;
+  transform:translateY(-50%);pointer-events:none;z-index:2;
+  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;font-weight:700;
+  letter-spacing:.02em;color:#0b5f8a;background:rgba(14,168,201,.12);
+  border:1px solid #9fd0e4;border-radius:4px;padding:0 5px;line-height:15px;white-space:nowrap}
+.ig-tbl td .ctag.set.over{color:#7a4d09;background:rgba(217,119,6,.14);border-color:#e5b45a}
+/* the item text must not run underneath the tag */
+.ig-tbl td .matbox:has(.ctag.set)>.matq,
+.ig-tbl td .matbox:has(.ctag.set)>.matsel{padding-right:76px}
 
 .ig-inp.num{text-align:right;font-family:monospace;font-variant-numeric:tabular-nums}
 .ig-tbl td .lothint{font-size:10px;color:#8a97ab;margin-top:3px;line-height:1.4}
@@ -601,27 +614,22 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       <div><label class="ig-lbl">Vehicle no.</label><input class="ig-inp" name="vehicle_no" value="<?= e($D['vehicle_no'] ?? '') ?>" style="font-family:monospace"></div>
       <div><label class="ig-lbl"><?= $dir === 'in' ? 'Supplier challan / bilty' : 'Challan / reference' ?></label><input class="ig-inp" name="challan_no" value="<?= e($D['challan_no'] ?? '') ?>" style="font-family:monospace"></div>
 
-      <div><label class="ig-lbl">Contract — optional</label>
-        <select class="ig-inp" name="contract_id" id="cSel">
-          <option value="0">— none, direct —</option>
-          <?php
-          /* Rendered flat and complete so the box works with no script at
-             all; the party filter below regroups it once JS is running. */
+      <?php /* THE CONTRACT HAS LEFT THE HEADER.
+               A whole field, a dropdown of every contract in the company and
+               a line of hint text, on the screen used most often in the
+               building — for a choice that belongs to a LINE, not to a pass.
+               One pass can carry lines from two contracts, so a header
+               contract could never be the whole truth anyway; it is now
+               chosen inside the item list, where the operator already is.
+               The hidden field keeps the value a saved pass already has, so
+               nothing posted under the old screen changes meaning.
+
+               $CTLBL stays: the item picker prints the contract type with
+               it, and it was only ever defined here by accident of being
+               where the dropdown was. */
           $CTLBL = ['purchase' => 'Purchase', 'sales' => 'Sales',
-                    'jobwork_out' => 'Job work — we send', 'jobwork_in' => 'Job work — we do'];
-          foreach ($contracts as $c): ?>
-            <option value="<?= (int)$c['id'] ?>"
-              data-party="<?= (int)$c['party_id'] ?>"
-              data-type="<?= e($c['contract_type']) ?>"
-              data-status="<?= e($c['status']) ?>"
-              data-label="<?= e($c['contract_no'] . ' · ' . ($c['pname'] ?: 'no party') . ' · ' . ($CTLBL[$c['contract_type']] ?? $c['contract_type']) . ($c['status'] === 'draft' ? '  — still a draft, activate it first' : '')) ?>"
-              <?= $c['status'] === 'draft' ? 'disabled' : '' ?>
-              <?= (int)($D['contract_id'] ?? 0) === (int)$c['id'] ? 'selected' : '' ?>>
-              <?= e($c['contract_no'] . ' · ' . ($c['pname'] ?: 'no party') . ' · ' . ($CTLBL[$c['contract_type']] ?? $c['contract_type']) . ($c['status'] === 'draft' ? '  — still a draft, activate it first' : '')) ?>
-            </option>
-          <?php endforeach; ?>
-        </select>
-        <p id="cHint" style="font-size:10.5px;color:#8a97ab;margin:5px 0 0"></p></div>
+                    'jobwork_out' => 'Job work — we send', 'jobwork_in' => 'Job work — we do']; ?>
+      <input type="hidden" name="contract_id" id="cSel" value="<?= (int)($D['contract_id'] ?? 0) ?>">
       <div><label class="ig-lbl">Sales tax</label>
         <div style="display:flex;gap:8px;align-items:center">
           <label style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:#5a6b82;cursor:pointer;white-space:nowrap">
@@ -640,12 +648,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                what it actually does on Outward. The material side of an
                order belongs on Consumption, which has its own link. */
       if ($dir === 'out'): ?>
-      <div><label class="ig-lbl">Dispatch against order — optional</label>
-        <select class="ig-inp" name="proforma_id">
-          <option value="0">— none —</option>
-          <?php foreach ($proformas as $pf): ?><option value="<?= (int)$pf['id'] ?>" <?= (int)($D['proforma_id'] ?? 0) === (int)$pf['id'] ? 'selected' : '' ?>><?= e($pf['pi_no']) ?> · <?= e($pf['customer_name']) ?></option><?php endforeach; ?>
-        </select>
-        <p style="font-size:10.5px;color:#8a97ab;margin:5px 0 0">Feeds the dispatched figure on Order Costing Control.</p></div>
+
       <?php else: /* carry whatever an older inward pass already holds, so
                      re-saving it does not quietly change stored data */ ?>
         <input type="hidden" name="proforma_id" value="<?= (int)($D['proforma_id'] ?? 0) ?>">
@@ -655,7 +658,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
           <?php $defLoc = (int)($D['location_id'] ?? inv_setting('default_location', '1'));
           foreach ($locations as $l): ?><option value="<?= (int)$l['id'] ?>" <?= $defLoc === (int)$l['id'] ? 'selected' : '' ?>><?= e($l['name']) ?></option><?php endforeach; ?>
         </select></div>
-      <div class="ig-wide"><label class="ig-lbl">Remarks</label><input class="ig-inp" name="remarks" value="<?= e($D['remarks'] ?? '') ?>"></div>
+
       <div><label class="ig-lbl">Save as</label>
         <select class="ig-inp" name="status">
           <option value="draft" <?= ($D['status'] ?? 'draft') === 'draft' ? 'selected' : '' ?>>Draft</option>
@@ -668,14 +671,21 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
              all empty. A pass that already uses any of them opens the
              section on load, so folding can never hide something that is
              actually filled in. */
+    /* Remarks and "dispatch against order" moved in here from the header.
+       They are optional, they are usually empty, and each was costing a
+       full-width cell on every pass. The test below had to move with them,
+       or a pass carrying a remark would fold it out of sight — which is the
+       one thing this fold must never do. */
     $moreFilled = trim((string)($D['department'] ?? '')) !== ''
                || trim((string)($D['purpose'] ?? '')) !== ''
                || trim((string)($D['verified_by'] ?? '')) !== ''
-               || trim((string)($D['security_by'] ?? '')) !== ''; ?>
+               || trim((string)($D['security_by'] ?? '')) !== ''
+               || trim((string)($D['remarks'] ?? '')) !== ''
+               || (int)($D['proforma_id'] ?? 0) > 0; ?>
     <div style="margin-top:14px">
       <button type="button" id="moreBtn" class="ig-btn sec" style="cursor:pointer;font-size:12.5px">
         <span id="moreCar"><?= $moreFilled ? '▴' : '▾' ?></span> More details
-        <span style="font-weight:600;color:#8a97ab">— department, purpose, verified by, security check</span>
+        <span style="font-weight:600;color:#8a97ab">— remarks, order, department, purpose, verified by</span>
         <?php if ($moreFilled): ?><span style="color:#0b5f8a;font-weight:800">· in use</span><?php endif; ?>
       </button>
       <div id="moreWrap" class="ig-grid" style="margin-top:12px;<?= $moreFilled ? '' : 'display:none' ?>">
@@ -691,6 +701,13 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
         <div style="grid-column:span 2"><label class="ig-lbl">Purpose</label><input class="ig-inp" name="purpose" value="<?= e($D['purpose'] ?? '') ?>"></div>
         <div><label class="ig-lbl">Quality / qty verified by</label><input class="ig-inp" name="verified_by" value="<?= e($D['verified_by'] ?? '') ?>"></div>
         <div><label class="ig-lbl">Security check</label><input class="ig-inp" name="security_by" value="<?= e($D['security_by'] ?? '') ?>"></div>
+      <div style="grid-column:span 2"><label class="ig-lbl">Remarks</label><input class="ig-inp" name="remarks" value="<?= e($D['remarks'] ?? '') ?>"></div>
+      <div><label class="ig-lbl">Dispatch against order — optional</label>
+        <select class="ig-inp" name="proforma_id">
+          <option value="0">— none —</option>
+          <?php foreach ($proformas as $pf): ?><option value="<?= (int)$pf['id'] ?>" <?= (int)($D['proforma_id'] ?? 0) === (int)$pf['id'] ? 'selected' : '' ?>><?= e($pf['pi_no']) ?> · <?= e($pf['customer_name']) ?></option><?php endforeach; ?>
+        </select>
+        <p style="font-size:10.5px;color:#8a97ab;margin:5px 0 0">Feeds the dispatched figure on Order Costing Control.</p></div>
       </div>
     </div>
 
@@ -707,15 +724,14 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                line into two lines of height whether or not it is used,
                which is the opposite of what a compact grid is for. */ ?>
       <colgroup>
-        <col style="width:auto"><col style="width:158px"><col style="width:136px">
+        <col style="width:auto"><col style="width:136px">
         <?php if ($dir === 'out'): ?><col style="width:104px"><?php endif; ?>
         <col style="width:70px"><col style="width:118px"><col style="width:120px">
         <col style="width:124px"><col style="width:40px">
       </colgroup>
       <thead><tr>
-        <th style="min-width:200px">Material</th>
-        <th>Contract</th>
-        <th>Lot / roll</th>
+        <th style="min-width:200px">Item</th>
+        <th>Lot / size</th>
         <?php if ($dir === 'out'): ?><th class="r">Available</th><?php endif; ?>
         <th>UOM</th><th class="r">Quantity</th><th class="r">Rate</th>
         <th class="r">Amount</th><th></th>
@@ -726,6 +742,18 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                   || trim((string)($L['packing'] ?? '')) !== ''
                   || (int)($L['product_id'] ?? 0) > 0; ?>
         <tr data-item="<?= (int)($L['material_id'] ?? 0) ?>">
+          <?php /* WHAT THE TAG SHOWS WHEN A SAVED PASS IS REOPENED.
+                   Computed HERE, above the cell — it used to sit further
+                   down, next to the column that has since gone, and moving
+                   the tag up without moving these left the row rendering a
+                   variable that did not exist yet. PHP would have shown an
+                   empty tag on every saved line and warned about it.
+
+                   A line names a contract, or it does not. The header no
+                   longer carries one to fall back to, so there is no third
+                   state left to draw. */
+            $lcid  = (int)($L['lcid'] ?? 0);
+            $lcTxt = $lcid > 0 ? (string)($L['lcno'] ?? '') : ''; ?>
           <td><div class="matbox">
             <?php /* The text box is what you type in and what the LOV
                      anchors to. The <select> beneath it is still the field
@@ -751,29 +779,17 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
               <option value="">—</option>
               <?php foreach ($stockItems as $m): ?><option value="<?= e($m['key']) ?>" data-uom="<?= e($m['uom']) ?>" data-rate="<?= e((string)$m['rate']) ?>" data-grp="<?= e($m['grp']) ?>" data-kind="<?= e($m['kind']) ?>" <?= $curKey === $m['key'] ? 'selected' : '' ?>><?= e($m['code']) ?> · <?= e($m['name']) ?></option><?php endforeach; ?>
             </select>
-          </div></td>
-          <?php
-            /* What the box shows when the pass is reopened. Three states,
-               and they must read differently or the operator cannot tell
-               a choice from a default:
-                 - the line names a contract        -> its number, plain
-                 - it does not, but the header does -> the header's number,
-                   greyed, and nothing is stored on the line
-                 - neither                          -> empty
-               Only the first writes anything back. */
-            $lcid = (int)($L['lcid'] ?? 0);
-            $lcTxt = $lcid > 0 ? (string)($L['lcno'] ?? '') : '';
-            $hdrNo = (string)($doc['contract_no'] ?? '');
-          ?>
-          <td><div class="cbox">
-            <?php /* The "chosen" look is written by the SERVER, not waited
-                     for from JavaScript. A box that is blue only after a
-                     fetch comes back flickers on every page load, and on a
-                     slow line it reads as unlinked for a second. */ ?>
-            <input class="ig-inp cline lovf<?= $lcid > 0 ? ' set' : '' ?>" type="text" autocomplete="off" spellcheck="false"
-                   data-lov="cline" value="<?= e($lcTxt) ?>"
-                   placeholder="<?= $hdrNo !== '' ? e($hdrNo) : '— none —' ?>"
-                   title="Which contract line this quantity is booked against. Leave it empty and the line follows the contract on the pass header — or nothing, if the header has none.">
+            <?php /* THE CONTRACT LIVES HERE NOW, not in a column of its own.
+                     It had a whole column — 158px on every pass, whether or
+                     not a contract was ever used — for something chosen once
+                     and then only read. It is chosen inside the item list and
+                     read back as a tag on the item itself, so the grid is one
+                     column narrower and the line is no taller.
+
+                     The two hidden fields are unchanged and still carry the
+                     same names, so what the save reads and what an old pass
+                     stored are exactly as they were. */ ?>
+            <span class="ctag<?= $lcid > 0 ? ' set' : '' ?>" title="Booked against this contract line"><?= e($lcTxt) ?></span>
             <input type="hidden" class="cid"   name="line[<?= $i ?>][contract_id]"      value="<?= $lcid > 0 ? $lcid : '' ?>">
             <input type="hidden" class="citem" name="line[<?= $i ?>][contract_item_id]" value="<?= e((string)($L['contract_item_id'] ?? '')) ?>">
           </div></td>
@@ -794,7 +810,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                  own when the line already uses any of it, so folding can
                  never hide something that is filled in. */ ?>
         <tr class="detail<?= $hasDetail ? ' open' : '' ?>">
-          <td colspan="<?= $dir === 'out' ? 9 : 8 ?>">
+          <td colspan="<?= $dir === 'out' ? 8 : 7 ?>">
             <?php /* The title carries the full words for when the compact
                      grid shrinks this to a caret. A control that shrinks to
                      a symbol has to keep its name somewhere. */ ?>
@@ -825,14 +841,17 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
         </tr>
       <?php endforeach; ?>
       </tbody>
-      <?php /* left of Quantity, and left of Amount */
-      $cA = $dir === 'out' ? 5 : 4; $cB = $dir === 'out' ? 7 : 6; ?>
-      <?php /* Columns now: Material, Contract, Lot, [Available], UOM,
-               Quantity, Rate, Amount, ×  — 9 on an outward pass, 8 on an
-               inward one. Every row below must add up to that or the table
-               skews. Contract added one to each, so both spans above moved
-               by one; they are written out rather than left as literals so
-               the next column to arrive has one place to change. */ ?>
+      <?php /* left of Quantity, and left of Amount.
+               Counted from the header, not remembered: Item, Lot/size,
+               [Available], UOM, Quantity, Rate, Amount, × — so 8 on an
+               outward pass and 7 on an inward one. Dropping the Contract
+               column moved every one of these by one, and a totals row one
+               cell wide of its table is exactly the fault this screen's
+               sister already had once. */
+      $cA = $dir === 'out' ? 4 : 3; $cB = $dir === 'out' ? 6 : 5; ?>
+      <?php /* Columns now: Item, Lot/size, [Available], UOM, Quantity,
+               Rate, Amount, ×  — 8 on an outward pass, 7 on an inward one.
+               Every row below must add up to that or the table skews. */ ?>
       <tfoot>
         <tr><td colspan="<?= $cA ?>" style="text-align:right;font-weight:800">Total quantity</td>
             <td class="r" id="gqty" style="font-weight:800">0</td><td></td>
@@ -875,8 +894,8 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
          item, the unit, the agreed rate and the contract's own wording
          come with it, and one pass can span as many contracts as the
          truck did. */ ?>
-<link rel="stylesheet" href="assets/css/lov.css?v=2">
-<script src="assets/js/lov.js?v=2"></script>
+<link rel="stylesheet" href="assets/css/lov.css?v=3">
+<script src="assets/js/lov.js?v=3"></script>
 <script>
 (function(){
   var tb=document.querySelector('#glines tbody');
@@ -969,7 +988,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       if(det) det.querySelectorAll('input,select').forEach(function(el){
         if(el.tagName==='INPUT') el.value=''; else el.selectedIndex=0; });
       var a=tr.querySelector('.amt'); if(a) a.textContent='0.00';
-      var cf=tr.querySelector('.cline'); if(cf) cf.classList.remove('set','over');
+      var cf=tr.querySelector('.ctag'); if(cf){ cf.textContent=''; cf.classList.remove('set','over'); }
     }
     reindex(); tot(); clWarn(); if(LV.open) lovClose();
   });
@@ -998,7 +1017,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     /* The hidden contract fields are inputs, so the loop above already
        emptied them. The classes are not values and have to be taken off
        by hand, or a new line inherits the last one's blue box. */
-    var cf=c.querySelector('.cline'); if(cf) cf.classList.remove('set','over');
+    var cf=c.querySelector('.ctag'); if(cf){ cf.textContent=''; cf.classList.remove('set','over'); }
     var a=c.querySelector('.amt'); if(a) a.textContent='0.00';
     var av=c.querySelector('.avail'); if(av){ av.textContent='—'; av.style.color='#8a97ab'; }
     var lh=c.querySelector('.lothint'); if(lh) lh.textContent='';
@@ -1279,41 +1298,116 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      14,000 buttons is not "more" than 1,840 metres of fabric, and
      ranking that way puts the cheapest item at the top of every list.
      When you type, the best match rises; ties fall back to code. */
+  /* ==================================================================
+     ONE LIST: WHAT THIS PARTY HAS ON CONTRACT, THEN ANYTHING ELSE.
+     ==================================================================
+
+     The contract used to be a field in the header and a column on every
+     line — a choice made in two places, neither of them where the operator
+     actually was. It is made HERE now, in the list they were opening
+     anyway, and the rules are the ones the owner stated:
+
+       against a contract   only that party's OPEN lines, with the item and
+                            the balance the contract really says
+       no contract          any item at all
+       going OUT            only what is actually in stock
+       coming IN            anything, any time
+
+     The two kinds of row are the same shape so one renderer draws both:
+     `cl` is set on a contract row and null on a free one.
+
+     OUT AND CONTRACTS TOGETHER. A contract line whose item has nothing on
+     the floor is still shown, marked, and still pickable — the contract is
+     a fact and hiding it would leave the operator hunting for a line they
+     were told to deliver. What it cannot do is pretend there is stock:
+     Available reads 0 and the over-issue strip says so. That is the one
+     place "only show stock if available" gives way, and it gives way
+     because refusing to show a contract line does not create stock. */
   function itemRowsFor(q, showAll){
     var mode = pickMode(), out = [], hidden = 0;
+
+    /* ---- section 1: this party's open contract lines ---- */
+    var cls = (CLPARTY === clParty() && CLINES) ? CLINES : null;
+    if(cls && cls.length){
+      var crows = [];
+      cls.forEach(function(l){
+        var sc = LOV.score(q, l.contract_no, l.item, (l.description || '') + ' ' + (l.ctype || ''));
+        if(sc <= 0) return;
+        /* A line already delivered in full is not offered; it is counted
+           and reachable behind "show all", like anything else this list
+           holds back. */
+        if(l.complete && !showAll){ hidden++; return; }
+        var it = itemByKey(l.material_id ? ('m' + l.material_id)
+                         : (l.product_id ? ('p' + l.product_id) : ''));
+        crows.push({ cl:l, it:it, sc:sc,
+                     bal: (mode === 'all' || !it) ? null : balOf(it),
+                     rate: l.rate > 0 ? l.rate : (it ? rateFor(it) : 0) });
+      });
+      crows.sort(function(a, b){
+        if(a.sc !== b.sc) return b.sc - a.sc;
+        if(a.cl.contract_no !== b.cl.contract_no) return a.cl.contract_no.localeCompare(b.cl.contract_no);
+        return (a.cl.item || '').localeCompare(b.cl.item || '');
+      });
+      if(crows.length){
+        out.push({ __sep: 'On contract with ' + (partyName() || 'this party') });
+        out = out.concat(crows);
+      }
+    }
+
+    /* ---- section 2: anything else that can be in stock ---- */
+    var frows = [];
     ITEMS.forEach(function(it){
       var sc = LOV.score(q, it.code, it.name, it.grp);
       if(sc <= 0) return;
       var b = mode === 'all' ? null : balOf(it);
       if(mode !== 'all' && !(b > 0.0005)){ if(!showAll){ hidden++; return; } }
-      out.push({ it:it, bal:b, sc:sc, rate:rateFor(it) });
+      frows.push({ cl:null, it:it, bal:b, sc:sc, rate:rateFor(it) });
     });
-    out.sort(function(a, b){
+    frows.sort(function(a, b){
       if(a.sc !== b.sc) return b.sc - a.sc;
       return a.it.code.localeCompare(b.it.code);
     });
+    if(frows.length){
+      /* The heading only earns its line when there is a section above it to
+         be told apart from. */
+      if(out.length) out.push({ __sep: mode === 'all' ? 'Any other item' : 'Any other item in stock' });
+      out = out.concat(frows);
+    }
     return [out, hidden];
   }
 
   LOV.register('item', {
+    /* Both kinds of row are drawn by these same columns. A contract row
+       shows its contract and what is still owed on it; a free row shows a
+       dash in those two places rather than a blank, so an empty cell always
+       means "not applicable" and never "we failed to read it". */
     cols: [
-      { label:'Code',        w:'86px',            cls:'cd', get:function(r,q){ return LOV.hl(r.it.code, q); } },
-      { label:'Description', w:'minmax(130px,1fr)',cls:'nm', get:function(r,q){ return LOV.hl(r.it.name, q); } },
-      { label:'Kind',        w:'68px',            cls:'gg',
-        get:function(r){ return LOV.esc(KINDN[r.it.stage] || r.it.grp); } },
-      { label:'Available',   w:'76px', align:'r', cls:'nu',
+      { label:'Contract', w:'104px', cls:'cd',
+        get:function(r,q){ return r.cl ? LOV.hl(r.cl.contract_no, q)
+                                       : '<span style="color:#b6c0cf">— free —</span>'; } },
+      { label:'Code',     w:'84px',  cls:'cd',
+        get:function(r,q){ return r.it ? LOV.hl(r.it.code, q) : ''; } },
+      { label:'Item',     w:'minmax(130px,1fr)', cls:'nm',
+        get:function(r,q){ return r.it ? LOV.hl(r.it.name, q)
+                                       : LOV.hl((r.cl && (r.cl.item || r.cl.description)) || '', q); } },
+      { label:'On contract', w:'82px', align:'r', cls:'nu',
+        style:function(r){ return r.cl ? 'font-weight:700;color:' + (r.cl.complete ? '#8a97ab' : '#0b5f8a') : ''; },
+        get:function(r){ return r.cl ? LOV.q3(r.cl.balance) + (r.cl.complete ? ' <span style="font-size:9.5px">done</span>' : '')
+                                     : '<span style="color:#b6c0cf">—</span>'; } },
+      { label:'In stock', w:'76px', align:'r', cls:'nu',
         style:function(r){ return 'font-weight:700;color:' + (r.bal === null ? '#8a97ab' : r.bal > 0 ? '#16a34a' : '#c0293f'); },
         get:function(r){ return r.bal === null ? '—' : LOV.q3(r.bal); } },
-      { label:'UOM',         w:'44px',            cls:'gg', get:function(r){ return LOV.esc(r.it.uom); } },
-      { label:'Rate',        w:'68px', align:'r', cls:'nu', get:function(r){ return LOV.m2(r.rate); } }
+      { label:'UOM',      w:'44px',  cls:'gg',
+        get:function(r){ return LOV.esc(r.it ? r.it.uom : (r.cl ? r.cl.uom : '')); } },
+      { label:'Rate',     w:'68px', align:'r', cls:'nu', get:function(r){ return LOV.m2(r.rate); } }
     ],
-    moreLabel: 'not available here',
+    moreLabel: 'not in stock here, or already delivered',
     lessLabel: 'only what is available',
     title: function(){
       var m = pickMode();
-      if(m === 'all') return 'Select item — receiving, all items';
-      if(m === 'atparty') return 'Select item — held by ' + (partyName() || '…');
-      return 'Select item — in stock at ' + locName();
+      if(m === 'all') return 'Receiving — contract lines first, then any item';
+      if(m === 'atparty') return 'Held by ' + (partyName() || '…');
+      return 'Issuing — contract lines first, then what is in stock at ' + locName();
     },
     empty: function(f, q){
       var m = pickMode();
@@ -1324,14 +1418,63 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                                 : 'Nothing is in stock at ' + locName() + '.';
       return 'No item matches that.';
     },
-    rows: function(f, q, showAll, cb){ var r = itemRowsFor(q, showAll); cb(r[0], r[1]); },
+    /* THE CONTRACT LINES ARE FETCHED BEFORE THE LIST IS DRAWN, not hoped
+       for. itemRowsFor() reads whatever clLoad() has already cached, so on
+       the very first opening of the picker — the one that matters — the
+       contract section would simply not be there. clLoad caches per party,
+       so this costs one request the first time and nothing after it. */
+    rows: function(f, q, showAll, cb){
+      clLoad(function(){ var r = itemRowsFor(q, showAll); cb(r[0], r[1]); });
+    },
     revert: function(f){ var box = f.closest('.matbox'); if(box) sync(box); },
     pick: function(f, r){
       var tr = f.closest('tr'), sel = tr.querySelector('.matsel');
+
+      /* THE CONTRACT IS SET OR CLEARED BY WHAT WAS PICKED, every time.
+         Picking a free item after a contract item has to TAKE THE CONTRACT
+         OFF — leaving the old one attached would book the new item against
+         a contract that never mentioned it, and nothing on screen would
+         say so. That is why this runs before anything else here. */
+      var cid = tr.querySelector('.cid'), ci = tr.querySelector('.citem'),
+          tag = tr.querySelector('.ctag');
+      if(r.cl){
+        if(cid) cid.value = r.cl.contract_id;
+        if(ci)  ci.value  = r.cl.id;
+        if(tag){ tag.textContent = r.cl.contract_no; tag.classList.add('set'); tag.classList.remove('over'); }
+        CLMSG = '';
+      } else {
+        if(cid) cid.value = ''; if(ci) ci.value = '';
+        if(tag){ tag.textContent = ''; tag.classList.remove('set','over'); }
+      }
+
+      /* A CONTRACT LINE NAMING SOMETHING THE STOCK LIST DOES NOT CARRY.
+         The contract is still recorded, the description is shown, and it is
+         said out loud — rather than the row filling nothing in silence. */
+      if(!r.it){
+        f.value = (r.cl && (r.cl.item || r.cl.description)) || '';
+        if(sel) sel.value = '';
+        var u0 = tr.querySelector('.uom'); if(u0 && r.cl && r.cl.uom) u0.value = r.cl.uom;
+        var r0 = tr.querySelector('.rate'); if(r0 && r.cl && r.cl.rate > 0) r0.value = Number(r.cl.rate).toFixed(4);
+        CLMSG = 'That contract line names an item that is not on the stock list — '
+              + 'pick the item by hand, or switch it back on in Inventory Setup.';
+        tot(); clWarn();
+        var qx = tr.querySelector('.qty'); if(qx) qx.focus();
+        return;
+      }
+
       sel.value = r.it.key;
       f.value = r.it.code + ' · ' + r.it.name;
       tr.dataset.item = r.it.key;
       sel.dispatchEvent(new Event('change', {bubbles:true}));   // fills uom, rate, description
+
+      /* The contract's own agreed rate outranks the item's standard one —
+         that is the point of naming the contract. Set after the change
+         event above, which fills the standard rate in. */
+      if(r.cl && r.cl.rate > 0){
+        var rr = tr.querySelector('.rate'); if(rr) rr.value = Number(r.cl.rate).toFixed(4);
+      }
+      clWarn();
+
       var lot = tr.querySelector('.lot'); if(lot) lot.value = '';
       /* A FINISHED PRODUCT HAS A SIZE, NOT A LOT.
          The lot box is meaningless on one, and the size box — folded away
@@ -1466,11 +1609,11 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     return (ci && +ci.value) ? clById(+ci.value) : null;
   }
   function clPaint(tr){
-    var f = tr.querySelector('.cline'), cid = tr.querySelector('.cid');
+    var f = tr.querySelector('.ctag'), cid = tr.querySelector('.cid');
     if(!f) return;
     var has = !!(cid && +cid.value), l = clOf(tr);
-    if(l) f.value = l.contract_no;        // the live list is the freshest truth
-    else if(!has) f.value = '';           // nothing stored, so nothing to show
+    if(l) f.textContent = l.contract_no;  // the live list is the freshest truth
+    else if(!has) f.textContent = '';     // nothing stored, so nothing to show
     /* Stored, but not in this party's open list — a contract since closed,
        most often. The server rendered its number and that is still the
        truth about this line, so it is left alone. Blanking it here would
@@ -1478,9 +1621,9 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     f.classList.toggle('set', has);
   }
   function clClear(tr){
-    var cid = tr.querySelector('.cid'), ci = tr.querySelector('.citem'), f = tr.querySelector('.cline');
+    var cid = tr.querySelector('.cid'), ci = tr.querySelector('.citem'), f = tr.querySelector('.ctag');
     if(cid) cid.value = ''; if(ci) ci.value = '';
-    if(f){ f.value = ''; f.classList.remove('set'); f.classList.remove('over'); }
+    if(f){ f.textContent = ''; f.classList.remove('set'); f.classList.remove('over'); }
     clWarn();
   }
 
@@ -1498,7 +1641,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     var box = document.getElementById('cWarn'); if(!box) return;
     var bad = [];
     lines().forEach(function(tr, i){
-      var f = tr.querySelector('.cline'); if(f) f.classList.remove('over');
+      var f = tr.querySelector('.ctag'); if(f) f.classList.remove('over');
       var l = clOf(tr); if(!l) return;
       var q = num((tr.querySelector('.qty') || {}).value);
       if(q > l.balance + 0.0005){
@@ -1519,122 +1662,20 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     box.innerHTML = parts.join('<hr style="border:none;border-top:1px solid rgba(217,119,6,.25);margin:9px 0">');
   }
 
-  function clRows(f, q, showAll, cb){
-    clLoad(function(all){
-      var tr = f.closest('tr'), out = [], hidden = 0;
-      /* Taking the contract off a line has to be as easy as putting it
-         on, and "clear the box and hope" is not a control. So it is a row
-         in the list — but the LAST row, never the first.
 
-         First was the obvious place and it is the wrong one. Opening the
-         box on a line that already has a contract selects its text, so
-         the highlighted row is row 0 and Enter takes it; with the clear
-         row first, the reflex of opening and pressing Enter would WIPE
-         the contract instead of leaving it alone. At the bottom it is
-         still one arrow key away and it cannot be hit by accident. */
-      var cid = tr.querySelector('.cid');
-      var offerClear = !!(cid && +cid.value);
-      all.forEach(function(l){
-        var sc = LOV.score(q, l.contract_no, l.item, l.description + ' ' + l.code + ' ' + l.ctype);
-        if(sc <= 0) return;
-        if(l.complete && !showAll){ hidden++; return; }
-        out.push({ l:l, sc:sc });
-      });
-      out.sort(function(a, b){
-        if(a.sc !== b.sc) return b.sc - a.sc;
-        if(a.l.contract_no !== b.l.contract_no) return a.l.contract_no.localeCompare(b.l.contract_no);
-        return a.l.item.localeCompare(b.l.item);
-      });
-      if(offerClear) out.push({ clear:true });
-      cb(out, hidden);
-    });
-  }
+  /* THE SEPARATE CONTRACT PICKER IS GONE, AND SO IS ITS COLUMN.
+     It was a second list, opened from a second box, to answer half of one
+     question — "which item, and against what?" — while the item list next
+     to it answered the other half. The two could disagree: pick a contract
+     line, then change the item, and the line stayed attached to a contract
+     that never mentioned it.
 
-  LOV.register('cline', {
-    cols: [
-      { label:'Contract', w:'112px', cls:'cd',
-        get:function(r,q){ return r.clear ? '<i>— no contract —</i>' : LOV.hl(r.l.contract_no, q); } },
-      { label:'Type', w:'86px', cls:'gg',
-        get:function(r){ return r.clear ? '' : LOV.esc(CTLBL[r.l.ctype] || r.l.ctype); } },
-      { label:'Item', w:'minmax(150px,1fr)', cls:'nm',
-        get:function(r,q){ return r.clear ? '<span style="color:#8a97ab">follow the contract on the pass header</span>'
-                                          : LOV.hl(r.l.item || r.l.description, q); } },
-      { label:'Balance', w:'84px', align:'r', cls:'nu',
-        style:function(r){ return r.clear ? '' : 'font-weight:700;color:' + (r.l.complete ? '#8a97ab' : '#16a34a'); },
-        get:function(r){ return r.clear ? '' : LOV.q3(r.l.balance) + (r.l.complete ? ' <span style="font-size:9.5px">done</span>' : ''); } },
-      { label:'UOM', w:'46px', cls:'gg', get:function(r){ return r.clear ? '' : LOV.esc(r.l.uom); } },
-      { label:'Rate', w:'70px', align:'r', cls:'nu', get:function(r){ return r.clear ? '' : LOV.m2(r.l.rate); } }
-    ],
-    moreLabel: 'already completed',
-    lessLabel: 'hide completed lines',
-    title: function(){ return 'Contract line — ' + (partyName() || 'choose the party first'); },
-    empty: function(f, q){
-      if(!clParty()) return 'Choose the party first — the list is that party’s contracts.';
-      if(!CLINES || !CLINES.length) return 'This party has no draft or active contract with lines on it.';
-      return q ? 'No contract line of theirs matches that.' : 'Nothing to show.';
-    },
-    rows: clRows,
-    /* Typed something, then tabbed away without choosing: put the box back
-       to what is actually stored. */
-    revert: function(f){ var tr = f.closest('tr'); if(tr) clPaint(tr); },
-    pick: function(f, r){
-      var tr = f.closest('tr');
-      if(r.clear){ clClear(tr); var qc = tr.querySelector('.qty'); if(qc) qc.focus(); return; }
-      var l = r.l, det = detailOf(tr);
-      CLMSG = '';                       // they have acted on it; stop repeating it
-      var cid = tr.querySelector('.cid'), ci = tr.querySelector('.citem');
-      if(cid) cid.value = l.contract_id;
-      if(ci)  ci.value  = l.id;
-      f.value = l.contract_no;
-      f.classList.add('set');
+     Both halves are one list now, in LOV 'item' above: this party's open
+     contract lines first, then anything else. Picking sets the contract;
+     picking a free item takes it off. clRows() went with it — nothing
+     called it any more — while clLoad, clOf, clPaint, clClear and clWarn
+     all stayed, because the contract itself did not go anywhere. */
 
-      /* The contract's own item, wording, unit and agreed rate come with
-         it — that is the point of naming the contract rather than typing
-         the line again. Anything already filled in by hand is left alone;
-         the operator's typing outranks a default. */
-      /* THIS IS WHAT STOPPED A CONTRACT LINE FILLING ANYTHING IN.
-         It set the item select to a bare material id — "12" — from back when
-         that select held material ids. It holds ITEM KEYS now, "m12" or
-         "p7", so assigning "12" matched no option at all and the select was
-         left empty: pick a contract line, and the item, the unit and the
-         rate all stayed blank. Worse on a sale contract for a finished
-         product, where only material_id was ever looked at, so a product
-         line could not fill anything even in principle.
-
-         The key is built the same way inv_stock_items() builds it, so the
-         two cannot disagree about what a row is called. */
-      var key = l.material_id ? ('m' + l.material_id)
-              : (l.product_id ? ('p' + l.product_id) : '');
-      var sel = tr.querySelector('.matsel');
-      if(sel && key && !sel.value){
-        sel.value = key;
-        /* A CONTRACT CAN NAME SOMETHING THE STOCK LIST DOES NOT OFFER — an
-           item made inactive, or a product with nothing in the ledger yet.
-           Assigning a value no <option> carries leaves the select empty and
-           silently drops the line, so it is checked rather than assumed. */
-        if(sel.value === key){
-          tr.dataset.item = key;
-          sel.dispatchEvent(new Event('change', {bubbles:true}));
-          syncAll();
-        } else {
-          var qbox = tr.querySelector('.matq');
-          if(qbox) qbox.value = l.item || l.description || '';
-          CLMSG = 'That contract line names an item that is not on the stock list — '
-                + 'pick the item by hand, or switch it back on in Inventory Setup.';
-        }
-      }
-      var u = tr.querySelector('.uom'); if(u && !u.value && l.uom) u.value = l.uom;
-      var rt = tr.querySelector('.rate'); if(rt && !num(rt.value) && l.rate > 0) rt.value = Number(l.rate).toFixed(4);
-      var d = det ? det.querySelector('.desc') : null;
-      if(d && !d.value && l.description) d.value = l.description;
-
-      /* Straight to the quantity — that is the only thing left to say. */
-      var qty = tr.querySelector('.qty');
-      if(qty){ qty.focus(); if(qty.select) qty.select(); }
-      tot(); clWarn();
-      if(IS_OUT){ refreshRow(tr); stockCheck(); }
-    }
-  });
 
   LOV.attach(tb);
 
@@ -1893,8 +1934,8 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     CLINES = null; CLPARTY = -1;
     var held = [];
     lines().forEach(function(tr, i){
-      var cid = tr.querySelector('.cid'), f = tr.querySelector('.cline');
-      if(cid && +cid.value){ held.push(i + 1 + (f && f.value ? ' (' + f.value + ')' : '')); clClear(tr); }
+      var cid = tr.querySelector('.cid'), f = tr.querySelector('.ctag');
+      if(cid && +cid.value){ held.push(i + 1 + (f && f.textContent ? ' (' + f.textContent + ')' : '')); clClear(tr); }
     });
     CLMSG = held.length
       ? '<b>Contract cleared on ' + held.length + ' line(s): ' + held.join(', ') + '.</b> '
@@ -1961,7 +2002,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      before that it would look at an empty list, find no line, and wipe a
      field the server filled in correctly. */
   lines().forEach(function(tr){
-    var cid = tr.querySelector('.cid'), f = tr.querySelector('.cline');
+    var cid = tr.querySelector('.cid'), f = tr.querySelector('.ctag');
     if(f && cid && +cid.value) f.classList.add('set');
   });
   clLoad(function(){ lines().forEach(clPaint); clWarn(); });

@@ -57,7 +57,7 @@ $owners = function (string $c) use ($pages): array {
     return $o;
 };
 foreach (['ig-card','ig-tbl','ig-btn','ig-inp','ig-pill','ig-grid','ig-note','ig-lbl','ig-kpi',
-          'lothint','dtog','dwrap','cbox','cline'] as $c)
+          'lothint','dtog','dwrap','ctag'] as $c)
     ok(count($owners($c)) <= 1, ".$c is defined by at most one page, got " . json_encode($owners($c)));
 
 /* .matbox IS defined by two pages, on purpose, and that is not the thing
@@ -89,7 +89,7 @@ foreach (['st-draft','st-verified','st-posted','st-reversed'] as $c) {
        "  and there is no bare .zskin .$c rule that could leak");
 }
 /* Same for the bare names the grid owns. */
-foreach (['matbox','lothint','dtog','dwrap','cbox','cline','amt','detail'] as $c)
+foreach (['matbox','lothint','dtog','dwrap','ctag','amt','detail'] as $c)
     ok(!preg_match('/\.zskin \.' . preg_quote($c, '/') . '[\s{,]/', $css),
        ".$c is never mapped bare — it is scoped under .ig-tbl");
 
@@ -162,7 +162,7 @@ const { chromium } = require('playwright');
       const g = el => el ? Math.round(el.getBoundingClientRect().height) : 0;
       const cs = el => el ? getComputedStyle(el) : {};
       const q = rows[0].querySelector('.qty');
-      const cl = rows[0].querySelector('.cline');
+      const cl = rows[0].querySelector('.ctag');
       const th = t.querySelector('thead th');
       const del = rows[0].querySelector('.del');
       return {
@@ -189,6 +189,7 @@ const { chromium } = require('playwright');
         })(),
         clineBg: cs(cl).backgroundColor,
         clineSet: cl.classList.contains('set'),
+        clinePos: cs(cl).position,
         togFont: cs(dets[0].querySelector('.dtog')).fontSize,
         openTogFont: cs(dets[2].querySelector('.dtog')).fontSize,
         openIsOpen: dets[2].classList.contains('open'),
@@ -267,6 +268,11 @@ else {
     ok($s['clineSet'] === true, 'the first line is still marked as linked');
     ok($s['clineBg'] !== 'rgba(0, 0, 0, 0)',
        '  and still paints, got ' . $s['clineBg']);
+    /* OUT OF THE FLOW, which is what lets it sit on the item cell without
+       adding a second line to the row — measured at 61px against 47px when
+       it was inline, and that is the exact fault this grid exists to avoid. */
+    ok($s['clinePos'] === 'absolute',
+       '  and it is taken out of the flow, got ' . $s['clinePos']);
 
     echo "   the fold keeps its name\n";
     /* The rule the skin's own test enforces, and the reason this is 15px

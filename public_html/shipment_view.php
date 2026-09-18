@@ -150,8 +150,8 @@ flash();
 .ztable td{vertical-align:top}
 .savebadge{font-size:11.5px;font-family:monospace;color:#8a97ab;margin-left:auto}
 </style>
-<link rel="stylesheet" href="assets/css/lov.css?v=2">
-<script src="assets/js/lov.js?v=2"></script>
+<link rel="stylesheet" href="assets/css/lov.css?v=3">
+<script src="assets/js/lov.js?v=3"></script>
 <script src="assets/js/grid.js?v=2"></script>
 
 <div class="topbar">

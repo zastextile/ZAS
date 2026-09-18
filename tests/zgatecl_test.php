@@ -25,20 +25,23 @@ $gate = file_get_contents($B . 'inv_gate.php');
 $work = __DIR__ . '/.zgcl';
 @mkdir($work, 0777, true);
 
-echo "1. The key is built the way the stock list builds it\n";
+echo "1. One pick sets the item AND the contract together\n";
 $code = preg_replace('!/\*.*?\*/!s', '', $gate);
-ok(str_contains($code, "var key = l.material_id ? ('m' + l.material_id)"),
-   'the contract pick builds an item key');
-ok(str_contains($code, "(l.product_id ? ('p' + l.product_id) : '')"),
-   '  and a contract line for a PRODUCT builds one too');
-ok(!preg_match('/sel\.value = String\(l\.material_id\)/', $code),
-   'the bare material id is gone');
-/* A select silently refusing a value is the whole class of bug here, so the
-   assignment is checked rather than trusted. */
-ok(str_contains($code, 'if(sel.value === key){'),
-   'and the assignment is CHECKED, because a select drops a value it has no option for');
+/* The old two-picker arrangement could disagree with itself: choose a
+   contract line, then change the item, and the line stayed attached to a
+   contract that never mentioned that item. One pick now decides both. */
+ok(str_contains($code, "if(r.cl){") && str_contains($code, "if(cid) cid.value = r.cl.contract_id;"),
+   'picking a contract row records the contract');
+ok(str_contains($code, "if(cid) cid.value = ''; if(ci) ci.value = '';"),
+   'AND PICKING A FREE ITEM TAKES IT OFF AGAIN');
+ok(str_contains($gate, 'THE CONTRACT IS SET OR CLEARED BY WHAT WAS PICKED'),
+   '  with the reason recorded');
+ok(str_contains($code, "if(r.cl && r.cl.rate > 0){"),
+   "the contract's agreed rate outranks the item's standard one");
+ok(str_contains($code, "if(!r.it){"),
+   'a contract line naming an item the stock list has not got is handled');
 ok(str_contains($gate, 'names an item that is not on the stock list'),
-   '  with something said when it does');
+   '  and said out loud rather than filling nothing in silence');
 
 ok(!str_contains($code, "select[name*=\"[product_id]\"]"),
    'the dead product select the strip no longer has is gone with it');
@@ -57,103 +60,148 @@ ok(!preg_match("/mid \+ '\|' \+ locId\(\)/", $code),
    'and nothing still keys that cache by material id');
 
 /* ------------------------------------------------------------------ */
-echo "3. Driven: pick a contract line, see the item fill\n";
+echo "3. The contract left the header and the grid\n";
+ok(!preg_match('/<select class="ig-inp" name="contract_id"/', $gate),
+   'the header dropdown of every contract in the company is gone');
+ok(str_contains($code, '<input type="hidden" name="contract_id" id="cSel"'),
+   '  but a saved pass keeps the value it was saved with');
+/* SCOPED TO THE ENTRY GRID. The read-only view of a saved pass further down
+   the page has a Contract column of its own, shown only when a line really
+   carries one — that one is a report, not a form, and is not what was asked
+   to change. */
+$ga = strpos($code, '<table class="ig-tbl" id="glines">');
+$gb = strpos($code, '</table>', $ga);
+$entryGrid = substr($code, $ga, $gb - $ga);
+ok(!str_contains($entryGrid, '<th>Contract</th>'), 'the entry grid has no Contract column');
+ok(str_contains($code, '<th>Contract</th>'),
+   '  while the saved-pass view still reports one when a line carries it');
+ok(str_contains($code, 'class="ctag'), '  the contract reads back as a tag on the item');
+ok(str_contains($code, 'class="cid"') && str_contains($code, 'class="citem"'),
+   '  and the two fields the save reads are untouched');
+ok(!str_contains($code, "data-lov=\"cline\""), 'the second picker is gone');
+ok(!str_contains($code, "LOV.register('cline'"), '  and so is its registration');
 
-$a = strpos($gate, '<div style="overflow-x:auto"><table class="ig-tbl"');
-if ($a === false) $a = strpos($gate, '<table class="ig-tbl"');
+/* Remarks and the order link moved into the fold — and the fold must open
+   itself when either is filled, or a pass would hide its own remark. */
+ok(str_contains($code, "|| trim((string)(\$D['remarks'] ?? '')) !== ''"),
+   'a pass carrying a remark opens the fold');
+ok(str_contains($code, "|| (int)(\$D['proforma_id'] ?? 0) > 0"),
+   '  and so does one linked to an order');
+
+echo "4. The picker library can hold a section heading\n";
+$lov = file_get_contents($B . 'assets/js/lov.js');
+ok(str_contains($lov, "if (r && r.__sep) return '<div class=\"lov-sep\">'"), 'a heading renders as a heading');
+ok(str_contains($lov, "if (!row || row.__sep) return;"), 'take() refuses to pick one');
+ok(str_contains($lov, 'function skipIdx('), 'and the arrow keys step past it');
+ok(str_contains($lov, "S.idx = skipIdx(S.idx, 1);"), '  including the cursor the list opens on');
+ok(str_contains($lov, 'A SECTION HEADING IS A ROW THAT CANNOT BE CHOSEN'),
+   'with the three guards written down');
+
+/* ------------------------------------------------------------------ */
+echo "5. Driven: one list, both sections, both directions\n";
+
+$a = strpos($gate, '<div style="overflow-x:auto"><table class="ig-tbl" id="glines">');
 $b = strpos($gate, '</table>', $a);
 ok($a !== false && $b !== false, 'the items grid is where it was');
 $frag = substr($gate, $a, $b - $a + strlen('</table>'));
 
-$tpl = '<?php
+function renderGate(string $frag, string $dir, string $work): string {
+    $tpl = '<?php
 function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
 function inv_num($v){ return (float)$v; }
-$dir = "out"; $IS_OUT = true;
-$gst = false;
+$dir = ' . var_export($dir, true) . ';
 $stockItems = [
   ["key"=>"m12","kind"=>"mat","id"=>12,"code"=>"FAB-012","name"=>"Cotton greige 60s","grp"=>"Fabric",
    "stage"=>"grey","uom"=>"MTR","rate"=>210.5,"bal"=>[0=>900,1=>900],"val"=>[],"sizes"=>[]],
+  ["key"=>"m13","kind"=>"mat","id"=>13,"code"=>"BTN-013","name"=>"Button 4-hole","grp"=>"Accessories",
+   "stage"=>"na","uom"=>"PCS","rate"=>1.25,"bal"=>[0=>0],"val"=>[],"sizes"=>[]],
   ["key"=>"p7","kind"=>"prod","id"=>7,"code"=>"PRD-7","name"=>"Comforter Set 7 Pc","grp"=>"Finished goods",
    "stage"=>"product","uom"=>"SET","rate"=>0,"bal"=>[0=>300,1=>300],"val"=>[],"sizes"=>["King","Queen"]],
 ];
-$materials = [];
 $lines = [["material_id"=>0,"product_id"=>0,"lot_no"=>"","qty"=>"","uom"=>"","rate"=>"",
-           "description"=>"","contract_id"=>0,"contract_item_id"=>0,"size_label"=>""]];
+           "description"=>"","contract_id"=>0,"contract_item_id"=>0,"size_label"=>"","lcid"=>0,"lcno"=>""]];
+$doc = null;
 $D = ["location_id"=>1,"gst_applies"=>0,"gst_pct"=>18];
 ?>' . $frag;
-file_put_contents($work . '/frag.php', $tpl);
-$html = (string)shell_exec('php ' . escapeshellarg($work . '/frag.php') . ' 2>&1');
-ok(!str_contains($html, 'Fatal'), 'the grid renders: ' . substr(trim($html), 0, 200));
-ok(str_contains($html, 'class="ig-inp cline'), '  with a contract box on the line');
-ok(str_contains($html, 'matsel'), '  and an item select');
+    file_put_contents($work . '/frag_' . $dir . '.php', $tpl);
+    return (string)shell_exec('php ' . escapeshellarg($work . '/frag_' . $dir . '.php') . ' 2>&1');
+}
 
-/* The two functions under test, lifted whole. */
-$pa = strpos($gate, "    pick: function(f, r){\n      var tr = f.closest('tr');\n      if(r.clear)");
-$pb = strpos($gate, "\n    }\n  });", $pa);
-/* The closing brace of pick() is part of the anchor below it, so the slice
-   has to put it back — without it the object literal in the harness is
-   unbalanced and nothing on the page parses at all. */
-$pick = substr($gate, $pa, $pb - $pa) . "\n    }";
-ok($pick !== '' && str_contains($pick, "var key = l.material_id"), 'the contract pick lifted');
-ok(substr_count($pick, '{') === substr_count($pick, '}'),
-   '  with balanced braces, got ' . substr_count($pick, '{') . ' open, ' . substr_count($pick, '}') . ' close');
+$G = [];
+foreach (['out', 'in'] as $d) {
+    $G[$d] = renderGate($frag, $d, $work);
+    ok(!str_contains($G[$d], 'Fatal') && !str_contains($G[$d], 'Warning'),
+       "the $d grid renders clean: " . substr(trim($G[$d]), 0, 200));
+    /* "<th" also matches "<thead", which counted the header row itself as a
+       column and made every table look one wider than it is. */
+    $th = preg_match_all('/<th[\s>]/', substr($G[$d], 0, strpos($G[$d], '</thead>')));
+    ok($th === ($d === 'out' ? 8 : 7), "$d has " . ($d === 'out' ? 8 : 7) . " columns, got $th");
+}
+/* A totals row one cell wider than its table is a fault this module has
+   already had once, on the store screen. Counted, not assumed. */
+foreach (['out', 'in'] as $d) {
+    preg_match_all('/<tfoot>(.*?)<\/tfoot>/s', $G[$d], $tf);
+    $foot = $tf[1][0] ?? '';
+    preg_match_all('/<tr>(.*?)<\/tr>/s', $foot, $rows);
+    foreach ($rows[1] as $ri => $row) {
+        $w = 0;
+        preg_match_all('/<td([^>]*)>/', $row, $tds);
+        foreach ($tds[1] as $attr) {
+            $w += preg_match('/colspan="(\d+)"/', $attr, $cm) ? (int)$cm[1] : 1;
+        }
+        ok($w === ($d === 'out' ? 8 : 7),
+           "$d totals row $ri adds up to " . ($d === 'out' ? 8 : 7) . ", got $w");
+    }
+}
+
+$pa = strpos($gate, "  function itemRowsFor(q, showAll){");
+$pb = strpos($gate, "\n  }\n", strpos($gate, "return [out, hidden];", $pa)) + 4;
+$rowsFn = substr($gate, $pa, $pb - $pa);
+ok(str_contains($rowsFn, '__sep'), 'the row builder emits headings');
 
 $CLINES = [
-  ['id'=>501,'contract_id'=>3,'contract_no'=>'SC-2609-0001','ctype'=>'sale',
-   'material_id'=>0,'product_id'=>7,'item'=>'PRD-7 · Comforter Set 7 Pc','item_name'=>'Comforter Set 7 Pc',
-   'description'=>'7 pc comforter set, King','qty'=>500,'done'=>0,'balance'=>500,'over'=>false,
-   'uom'=>'SET','rate'=>4200.00,'complete'=>false],
-  ['id'=>502,'contract_id'=>3,'contract_no'=>'SC-2609-0001','ctype'=>'sale',
-   'material_id'=>12,'product_id'=>0,'item'=>'FAB-012 · Cotton greige 60s','item_name'=>'Cotton greige 60s',
-   'description'=>'','qty'=>900,'done'=>0,'balance'=>900,'over'=>false,
-   'uom'=>'MTR','rate'=>210.50,'complete'=>false],
-  ['id'=>503,'contract_id'=>3,'contract_no'=>'SC-2609-0001','ctype'=>'sale',
-   'material_id'=>99,'product_id'=>0,'item'=>'OLD-99 · Retired item','item_name'=>'Retired item',
-   'description'=>'','qty'=>50,'done'=>0,'balance'=>50,'over'=>false,
-   'uom'=>'PCS','rate'=>10.00,'complete'=>false],
+  ['id'=>501,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales',
+   'material_id'=>0,'product_id'=>7,'item'=>'PRD-7 · Comforter Set 7 Pc','description'=>'',
+   'qty'=>500,'balance'=>500,'uom'=>'SET','rate'=>4200.00,'complete'=>false],
+  ['id'=>502,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales',
+   'material_id'=>13,'product_id'=>0,'item'=>'BTN-013 · Button 4-hole','description'=>'',
+   'qty'=>900,'balance'=>900,'uom'=>'PCS','rate'=>1.25,'complete'=>false],
+  ['id'=>503,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales',
+   'material_id'=>12,'product_id'=>0,'item'=>'FAB-012 · Cotton greige 60s','description'=>'',
+   'qty'=>100,'balance'=>0,'uom'=>'MTR','rate'=>210.50,'complete'=>true],
 ];
+$ITEMS = json_decode('[
+  {"key":"m12","kind":"mat","id":12,"code":"FAB-012","name":"Cotton greige 60s","grp":"Fabric","stage":"grey","uom":"MTR","rate":210.5,"bal":{"0":900,"1":900},"sizes":[]},
+  {"key":"m13","kind":"mat","id":13,"code":"BTN-013","name":"Button 4-hole","grp":"Accessories","stage":"na","uom":"PCS","rate":1.25,"bal":{"0":0},"sizes":[]},
+  {"key":"p7","kind":"prod","id":7,"code":"PRD-7","name":"Comforter Set 7 Pc","grp":"Finished goods","stage":"product","uom":"SET","rate":0,"bal":{"0":300,"1":300},"sizes":["King","Queen"]}
+]', true);
 
 $harness = '<!doctype html><html><head><meta charset="utf-8"></head><body>'
-  . '<select id="pSel"><option value="1" selected>ABRAR AHMED</option></select>'
-  . '<select id="locSel"><option value="1" selected>Main Store</option></select>'
-  /* The fragment is already a whole <table>. Wrapping it in another one
-     made the HTML parser hoist the inner table out of the outer tbody, and
-     the row selector then matched nothing at all. */
-  . $html
   . '<scr' . 'ipt>'
-  . 'var CLMSG = "", CLINES = ' . json_encode($CLINES) . ';'
-  . 'var ONHAND = {}, TOL = 10, ISADMIN = false, IS_OUT = true;'
-  . 'function num(v){ v = parseFloat(String(v==null?"":v).replace(/,/g,"")); return isNaN(v)?0:v; }'
-  . 'function tot(){} function clWarn(){} function refreshRow(){} function stockCheck(){}'
-  . 'function detailOf(tr){ var n = tr.nextElementSibling; return (n && n.classList.contains("detail")) ? n : null; }'
-  . 'function syncAll(){ [].forEach.call(document.querySelectorAll(".matbox"), function(box){'
-  . '  var sel = box.querySelector(".matsel"), q = box.querySelector(".matq");'
-  . '  if(!sel || !q) return;'
-  . '  q.value = (sel.value && sel.options[sel.selectedIndex]) ? sel.options[sel.selectedIndex].text : "";'
-  . '}); }'
-  . 'var LOVPICK = { ' . substr($pick, strpos($pick, 'pick:')) . ' };'
-  . 'window.doPick = function(lineId){'
-  . '  var tr = document.querySelector(".ig-tbl tbody tr:not(.detail)");'
-  . '  var f  = tr.querySelector(".cline");'
-  . '  var l  = null; for (var i=0;i<CLINES.length;i++) if(CLINES[i].id === lineId) l = CLINES[i];'
-  . '  LOVPICK.pick(f, { l: l });'
-  . '  var sel = tr.querySelector(".matsel");'
-  . '  return { sel: sel.value, shown: (tr.querySelector(".matq")||{}).value || "",'
-  . '           uom: (tr.querySelector(".uom")||{}).value || "",'
-  . '           rate: (tr.querySelector(".rate")||{}).value || "",'
-  . '           cid: (tr.querySelector(".cid")||{}).value || "",'
-  . '           citem: (tr.querySelector(".citem")||{}).value || "",'
-  . '           cline: f.value, set: f.classList.contains("set"), msg: CLMSG };'
-  . '};'
-  . 'window.reset = function(){'
-  . '  var tr = document.querySelector(".ig-tbl tbody tr:not(.detail)");'
-  . '  tr.querySelector(".matsel").value = "";'
-  . '  [".uom",".rate",".cid",".citem"].forEach(function(s){ var e = tr.querySelector(s); if(e) e.value = ""; });'
-  . '  var q = tr.querySelector(".matq"); if(q) q.value = "";'
-  . '  CLMSG = "";'
+  . 'var LOV = { score:function(q,a,b,c){ if(!q) return 1;'
+  . '   var h = String((a||"")+" "+(b||"")+" "+(c||"")).toLowerCase();'
+  . '   return h.indexOf(String(q).toLowerCase()) >= 0 ? 2 : 0; } };'
+  . 'var ITEMS = ' . json_encode($ITEMS) . ';'
+  . 'var CLINES = ' . json_encode($CLINES) . ', CLPARTY = 1;'
+  . 'var IS_OUT = true;'
+  . 'function clParty(){ return 1; }'
+  . 'function partyName(){ return "ABRAR AHMED"; }'
+  . 'function itemByKey(k){ for(var i=0;i<ITEMS.length;i++) if(ITEMS[i].key===k) return ITEMS[i]; return null; }'
+  . 'function pickMode(){ return IS_OUT ? "here" : "all"; }'
+  . 'function balOf(it){ if(!it) return 0; var m = it.bal||{}; return m[1] !== undefined ? m[1] : (m[0]||0); }'
+  . 'function rateFor(it){ return it ? it.rate : 0; }'
+  . $rowsFn
+  . 'window.run = function(out, q, showAll){'
+  . '  IS_OUT = out;'
+  . '  var r = itemRowsFor(q||"", !!showAll);'
+  . '  return { rows: r[0].map(function(x){'
+  . '      return x.__sep ? {sep:x.__sep}'
+  . '                     : {cl: x.cl ? x.cl.contract_no : null, key: x.it ? x.it.key : null,'
+  . '                        bal: x.bal, rate: x.rate, cbal: x.cl ? x.cl.balance : null}; }),'
+  . '           hidden: r[1] };'
   . '};'
   . '</scr' . 'ipt></body></html>';
-file_put_contents($work . '/live.html', $harness);
+file_put_contents($work . '/rows.html', $harness);
 
 $drive = <<<'JS'
 const { chromium } = require('playwright');
@@ -161,54 +209,79 @@ const { chromium } = require('playwright');
   const br = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
   const pg = await br.newPage();
   const errs = []; pg.on('pageerror', e => errs.push(String(e)));
-  await pg.goto('file://' + process.argv[2] + '/live.html');
-  await pg.waitForTimeout(150);
+  await pg.goto('file://' + process.argv[2] + '/rows.html');
+  await pg.waitForTimeout(120);
   const R = { errs };
-  R.product  = await pg.evaluate(() => window.doPick(501));
-  await pg.evaluate(() => window.reset());
-  R.material = await pg.evaluate(() => window.doPick(502));
-  await pg.evaluate(() => window.reset());
-  R.missing  = await pg.evaluate(() => window.doPick(503));
+  R.out      = await pg.evaluate(() => window.run(true,  '',    false));
+  R.outAll   = await pg.evaluate(() => window.run(true,  '',    true));
+  R.in       = await pg.evaluate(() => window.run(false, '',    false));
+  R.search   = await pg.evaluate(() => window.run(true,  'button', false));
   await br.close();
   console.log(JSON.stringify(R));
 })();
 JS;
-file_put_contents($work . '/drive.js', $drive);
-$raw = shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node ' . escapeshellarg($work . '/drive.js')
+file_put_contents($work . '/rows.js', $drive);
+$raw = shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node ' . escapeshellarg($work . '/rows.js')
                   . ' ' . escapeshellarg($work) . ' 2>&1');
 $R = json_decode((string)$raw, true);
 
-if (!is_array($R)) { echo "  FAIL: the driver did not run:\n" . substr((string)$raw, 0, 900) . "\n"; $F++; }
+if (!is_array($R)) { echo "  FAIL: the row builder did not run:\n" . substr((string)$raw, 0, 900) . "\n"; $F++; }
 else {
-    ok(empty($R['errs']), 'the contract pick runs clean: ' . json_encode($R['errs']));
+    ok(empty($R['errs']), 'the row builder runs clean: ' . json_encode($R['errs']));
 
-    /* A SALE CONTRACT FOR A FINISHED PRODUCT — the case that could never
-       work, because only material_id was looked at. */
-    $p = $R['product'];
-    ok($p['sel'] === 'p7', 'A CONTRACT LINE FOR A PRODUCT FILLS THE ITEM, got ' . json_encode($p['sel']));
-    ok(str_contains($p['shown'], 'Comforter Set 7 Pc'), '  and the box shows its name, got ' . json_encode($p['shown']));
-    ok($p['uom'] === 'SET', '  the unit comes with it, got ' . json_encode($p['uom']));
-    ok((float)$p['rate'] === 4200.0, '  and the agreed rate, got ' . json_encode($p['rate']));
-    ok($p['cid'] === '3' && $p['citem'] === '501', '  the contract and its line are stored on the row');
-    ok($p['cline'] === 'SC-2609-0001' && $p['set'] === true, '  and the box reads as set');
-    ok($p['msg'] === '', '  with nothing to complain about');
+    /* GOING OUT. Contract section first, then free stock — and free stock
+       is only what is actually on the floor. */
+    $o = $R['out']['rows'];
+    ok(($o[0]['sep'] ?? '') === 'On contract with ABRAR AHMED',
+       'the contract section comes first, got ' . json_encode($o[0]));
+    $seps = array_values(array_filter($o, fn($r) => isset($r['sep'])));
+    ok(count($seps) === 2, 'two sections, got ' . count($seps) . ': ' . json_encode(array_column($seps, 'sep')));
+    ok($seps[1]['sep'] === 'Any other item in stock', '  and the second says stock, going out');
 
-    /* A MATERIAL LINE — the case that used to work by accident and stopped
-       working when the select moved to keys. */
-    $m = $R['material'];
-    ok($m['sel'] === 'm12', 'a contract line for a MATERIAL fills the item, got ' . json_encode($m['sel']));
-    ok(str_contains($m['shown'], 'Cotton greige 60s'), '  and shows its name');
-    ok($m['uom'] === 'MTR' && (float)$m['rate'] === 210.5, '  with its unit and rate');
+    $cl = array_values(array_filter($o, fn($r) => !isset($r['sep']) && $r['cl'] !== null));
+    ok(count($cl) === 2, 'the delivered-in-full contract line is held back, got ' . count($cl) . ' of 3');
+    ok($R['out']['hidden'] >= 1, '  and counted as hidden, got ' . $R['out']['hidden']);
 
-    /* A CONTRACT NAMING SOMETHING THE STOCK LIST DOES NOT CARRY. The select
-       silently refuses the value; the screen must not silently carry on. */
-    $x = $R['missing'];
-    ok($x['sel'] === '', 'an item not on the stock list leaves the select empty, got ' . json_encode($x['sel']));
-    ok(str_contains($x['shown'], 'Retired item'),
-       '  but the name is still shown so the operator knows what was meant');
-    ok(str_contains($x['msg'], 'not on the stock list'),
-       '  AND IT IS SAID OUT LOUD, got ' . json_encode($x['msg']));
-    ok($x['cid'] === '3', '  the contract is still recorded on the line');
+    /* A CONTRACT LINE FOR SOMETHING WITH NO STOCK IS STILL OFFERED, marked
+       at zero. The contract is a fact; hiding it would send the operator
+       hunting for a line they were told to deliver. */
+    $btn = null; foreach ($cl as $r) if ($r['key'] === 'm13') $btn = $r;
+    ok($btn !== null, 'a contract line with no stock is still on the list');
+    ok($btn && $btn['bal'] === 0, '  showing zero in stock, got ' . json_encode($btn['bal'] ?? null));
+    ok($btn && (float)$btn['rate'] === 1.25, '  at the contract rate');
+
+    /* Free stock going out excludes the button, which has none. */
+    $free = array_values(array_filter($o, fn($r) => !isset($r['sep']) && $r['cl'] === null));
+    $fkeys = array_column($free, 'key'); sort($fkeys);
+    ok($fkeys === ['m12', 'p7'],
+       'GOING OUT, FREE ITEMS ARE ONLY WHAT IS IN STOCK, got ' . json_encode($fkeys));
+
+    /* COMING IN. Everything, any time. */
+    $i = $R['in']['rows'];
+    $ifree = array_values(array_filter($i, fn($r) => !isset($r['sep']) && $r['cl'] === null));
+    $ikeys = array_column($ifree, 'key'); sort($ikeys);
+    ok($ikeys === ['m12', 'm13', 'p7'],
+       'COMING IN, EVERY ITEM IS OFFERED, got ' . json_encode($ikeys));
+    $iseps = array_values(array_filter($i, fn($r) => isset($r['sep'])));
+    ok(($iseps[1]['sep'] ?? '') === 'Any other item',
+       '  and the heading does not promise stock, got ' . json_encode($iseps[1] ?? null));
+    ok(array_values(array_filter($i, fn($r) => !isset($r['sep']) && $r['cl'] !== null))[0]['bal'] === null,
+       '  a contract row coming in shows no stock figure at all');
+
+    /* show all brings the finished contract line back */
+    $aRows = $R['outAll']['rows'];
+    $acl = array_values(array_filter($aRows, fn($r) => !isset($r['sep']) && $r['cl'] !== null));
+    ok(count($acl) === 3, '"show all" brings back the completed contract line, got ' . count($acl));
+
+    /* Searching narrows BOTH sections, and a section with nothing left
+       loses its heading rather than standing empty. */
+    $sr = $R['search']['rows'];
+    $snames = array_map(fn($r) => $r['sep'] ?? $r['key'], $sr);
+    ok(in_array('m13', $snames, true), 'searching finds the button on the contract side');
+    ok(!in_array('m12', $snames, true), '  and drops what does not match');
+    ok(count(array_filter($sr, fn($r) => isset($r['sep']))) === 1,
+       'A SECTION WITH NOTHING IN IT LOSES ITS HEADING, got '
+       . json_encode(array_values(array_filter($snames, fn($x) => is_string($x) && strlen($x) > 4))));
 }
 
 echo "\n$P passed, $F failed\n";

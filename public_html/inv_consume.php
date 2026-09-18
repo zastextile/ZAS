@@ -562,8 +562,8 @@ flash();
   </div>
 </div>
 
-<link rel="stylesheet" href="assets/css/lov.css?v=2">
-<script src="assets/js/lov.js?v=2"></script>
+<link rel="stylesheet" href="assets/css/lov.css?v=3">
+<script src="assets/js/lov.js?v=3"></script>
 <script>
 /* Consumption form. Three ideas, in order of importance:
      1. You type a QUANTITY; the lots are chosen for you, oldest first.
