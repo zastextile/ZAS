@@ -393,6 +393,38 @@ function zp_ensure_schema(): void {
         INDEX(op_id), INDEX(created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 
+    /* ---- ASSEMBLY: parts turned into finished sets ----
+       Two tables. The header is one act of assembly; the lines say which
+       parts it consumed and — the point of the whole thing — which ORDER
+       LINE each piece was made on, so a bed sheet cut for PI-2291 can be
+       packed into a set for PI-2304 and still be traceable. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_assembly (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        made_date DATE NOT NULL,
+        product_id INT NOT NULL,
+        size_label VARCHAR(60) NOT NULL,
+        sets_made DECIMAL(12,2) NOT NULL,
+        proforma_item_id INT NULL,
+        note VARCHAR(255) NULL,
+        status VARCHAR(12) NOT NULL DEFAULT 'active',
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        cancelled_by INT NULL,
+        cancelled_at DATETIME NULL,
+        cancel_reason VARCHAR(255) NULL,
+        INDEX(made_date), INDEX(product_id), INDEX(status), INDEX(proforma_item_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_assembly_parts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        assembly_id INT NOT NULL,
+        part_id INT NOT NULL,
+        size_label VARCHAR(60) NOT NULL,
+        from_item_id INT NULL,
+        qty DECIMAL(12,2) NOT NULL,
+        INDEX(assembly_id), INDEX(part_id), INDEX(from_item_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
     /* ---- what a worker has been PAID ----
        The other half of a wage. zp_entries says what was earned; this says
        what was handed over. Nothing else: no accounts, no vouchers, no
@@ -2253,6 +2285,264 @@ function zp_delete_worker(int $id): array {
                   . ' cancelled entr' . ($cancelled === 1 ? 'y was' : 'ies were')
                   . ' removed with them, since a cancelled entry carries no wage.'
                 : 'Worker deleted — they had no entries.'];
+}
+
+/* ============================================================
+   ASSEMBLY — turning finished PARTS into finished SETS
+   ============================================================
+
+   "we have to combine pack the goods as well based on parts produced on
+    floor as to convert stock of parts"
+   "allow parts to be used with any other PO ... we should not waste that
+    leftover but would use it for any po whatever"
+
+   THE POOL IS THE WHOLE IDEA. A finished part is not owned by the order
+   that made it. A King bed sheet is a King bed sheet, and if PI-2291
+   finished with forty spare, PI-2304 should be able to pack them. So
+   parts are pooled by PART and SIZE LABEL, across every order line — and
+   the label, not the size id, because size ids belong to one product and
+   the same part is shared between products.
+
+   WHAT COUNTS AS FINISHED. A part is finished for an order line when it
+   has cleared EVERY operation on that part. So the finished count is the
+   MINIMUM across its operations — 300 cut and 180 stitched is 180
+   finished, not 480 and not 300.
+
+   WHAT IS LEFT. Finished, less what earlier assemblies already took.
+
+   NOTHING HERE TOUCHES THE WAGE LEDGER. Assembling does not unbook
+   anybody's work; it records that pieces were consumed. The two are
+   separate on purpose — a packer's wage is not undone by the packing. */
+
+/* Every finished part piece, pooled.
+   Returns [part_id][size_label] => ['made'=>, 'used'=>, 'left'=>,
+            'by' => [ ['item_id','pi','made','left'] ... oldest first ]] */
+function zp_part_pool(): array {
+    zp_ensure_schema();
+    $prog = zp_progress_map();
+    $pool = [];
+
+    foreach (zp_open_lines() as $l) {
+        $itemId = (int)$l['item_id'];
+        $pid    = (int)$l['product_id'];
+        $sizeId = zp_line_size_id($l);
+        if ($sizeId <= 0) continue;                  // cannot be planned, so cannot be counted
+        $label = '';
+        foreach (zp_sizes($pid) as $sz) if ((int)$sz['id'] === $sizeId) { $label = trim((string)$sz['size_label']); break; }
+        if ($label === '') $label = trim((string)($l['size'] ?? ''));
+        if ($label === '') continue;
+
+        foreach (zp_product_parts($pid) as $p) {
+            $partId = (int)$p['id'];
+            $ops = zp_part_ops($partId, true);
+            if (!$ops) continue;                     // a part with no operations is never "finished"
+            /* THE MINIMUM ACROSS ITS OPERATIONS. An operation nobody has
+               booked yet is a zero, which is right: the part is not done. */
+            $done = null;
+            foreach ($ops as $o) {
+                $q = (float)($prog['op'][$itemId][$partId][(int)$o['id']] ?? 0);
+                $done = ($done === null) ? $q : min($done, $q);
+            }
+            $done = (float)($done ?? 0);
+            if ($done <= 0.0001) continue;
+            if (!isset($pool[$partId][$label]))
+                $pool[$partId][$label] = ['made' => 0.0, 'used' => 0.0, 'left' => 0.0, 'by' => []];
+            $pool[$partId][$label]['made'] += $done;
+            $pool[$partId][$label]['by'][] = [
+                'item_id' => $itemId, 'pi' => short_ref((string)$l['pi_no']),
+                'pi_full' => (string)$l['pi_no'], 'made' => $done, 'used' => 0.0, 'left' => $done,
+            ];
+        }
+    }
+
+    /* WHAT EARLIER ASSEMBLIES ALREADY TOOK, charged back to the very order
+       line it was taken from — so "still left on PI-2291" stays true. */
+    try {
+        foreach (db()->query("SELECT ap.part_id, ap.size_label, ap.from_item_id, COALESCE(SUM(ap.qty),0) q
+                              FROM zp_assembly_parts ap
+                              JOIN zp_assembly a ON a.id = ap.assembly_id
+                              WHERE a.status='active'
+                              GROUP BY ap.part_id, ap.size_label, ap.from_item_id")->fetchAll() as $r) {
+            $pid = (int)$r['part_id']; $lbl = (string)$r['size_label']; $q = (float)$r['q'];
+            if (!isset($pool[$pid][$lbl])) continue;
+            $pool[$pid][$lbl]['used'] += $q;
+            foreach ($pool[$pid][$lbl]['by'] as &$b)
+                if ($b['item_id'] === (int)$r['from_item_id']) { $b['used'] += $q; $b['left'] = round($b['made'] - $b['used'], 2); }
+            unset($b);
+        }
+    } catch (Throwable $e) {}
+
+    foreach ($pool as $pid => &$bySize) {
+        foreach ($bySize as $lbl => &$e) {
+            $e['made'] = round($e['made'], 2);
+            $e['used'] = round($e['used'], 2);
+            $e['left'] = round($e['made'] - $e['used'], 2);
+            /* OLDEST ORDER FIRST. Leftovers are used before new pieces,
+               which is the only order that stops old stock ageing forever. */
+            usort($e['by'], fn($a, $b) => $a['item_id'] <=> $b['item_id']);
+            $e['by'] = array_values(array_filter($e['by'], fn($b) => $b['left'] > 0.0001));
+        }
+        unset($e);
+    }
+    unset($bySize);
+    return $pool;
+}
+
+/* Which sizes a product can be assembled in, and how many sets the pool
+   can already make at each. */
+function zp_assembly_sizes(int $productId): array {
+    zp_ensure_schema();
+    $out = [];
+    foreach (zp_sizes($productId) as $sz) {
+        $lbl = trim((string)$sz['size_label']);
+        if ($lbl === '') continue;
+        $p = zp_assembly_plan($productId, $lbl, 0);
+        $out[] = ['label' => $lbl, 'can' => $p['can'], 'by' => $p['limit_by']];
+    }
+    return $out;
+}
+
+/* WHAT WOULD HAPPEN, worked out and shown before anything is written.
+   $sets = 0 asks only "what could I make?". */
+function zp_assembly_plan(int $productId, string $sizeLabel, float $sets): array {
+    zp_ensure_schema();
+    $sizeLabel = trim($sizeLabel);
+    $out = ['ok' => false, 'error' => '', 'parts' => [], 'can' => 0.0, 'limit_by' => '', 'short' => 0];
+    if ($productId <= 0 || $sizeLabel === '') { $out['error'] = 'Choose a product and a size.'; return $out; }
+
+    $sizeId = 0;
+    foreach (zp_sizes($productId) as $sz)
+        if (mb_strtolower(trim((string)$sz['size_label'])) === mb_strtolower($sizeLabel)) { $sizeId = (int)$sz['id']; break; }
+    if ($sizeId <= 0) { $out['error'] = 'That size is not on this product.'; return $out; }
+
+    $parts = zp_product_parts($productId);
+    if (!$parts) { $out['error'] = 'This product has no parts yet — add them in Product Master.'; return $out; }
+
+    $qty  = zp_qty_map($productId);
+    $pool = zp_part_pool();
+    $can  = null; $by = '';
+
+    foreach ($parts as $p) {
+        $partId = (int)$p['id'];
+        $per    = zp_qty_for($qty, $partId, $sizeId);
+        $e      = $pool[$partId][$sizeLabel] ?? ['made' => 0.0, 'used' => 0.0, 'left' => 0.0, 'by' => []];
+        $need   = round($per * $sets, 2);
+        /* A PART THAT GOES IN TWICE HALVES WHAT ITS PILE IS WORTH. 840
+           pillow cases at 2 per set is 420 sets, not 840. */
+        $c = $per > 0 ? floor($e['left'] / $per) : INF;
+        if ($can === null || $c < $can) { $can = $c; $by = (string)$p['part_name']; }
+        if ($need > $e['left'] + 0.0001) $out['short']++;
+        $out['parts'][] = [
+            'part_id' => $partId, 'name' => (string)$p['part_name'],
+            'per' => $per, 'need' => $need,
+            'left' => $e['left'], 'made' => $e['made'], 'used' => $e['used'],
+            'by' => $e['by'],
+            'shortfall' => max(0.0, round($need - $e['left'], 2)),
+        ];
+    }
+    $out['can'] = ($can === null || $can === INF) ? 0.0 : (float)$can;
+    $out['limit_by'] = $by;
+    $out['ok'] = true;
+    return $out;
+}
+
+/* Write it. Parts are taken OLDEST ORDER FIRST and each piece records the
+   order line it came from.
+
+   REFUSED IF THE POOL CANNOT COVER IT. This is the one place in the whole
+   module that refuses rather than warns, and the reason is narrow:
+   everything else he has asked me to allow is a FACT being written down —
+   goods really did leave the gate, a worker really was paid an advance.
+   Assembling sets that no parts exist for is not a fact. It would invent
+   finished stock, and every figure downstream would be wrong with nothing
+   on any screen to say why. */
+function zp_assembly_save(string $date, int $productId, string $sizeLabel, float $sets,
+                          ?int $proformaItemId, string $note, ?int $userId = null): array {
+    zp_ensure_schema();
+    $date = trim($date) !== '' ? $date : date('Y-m-d');
+    if ($date > date('Y-m-d')) return ['ok' => false, 'error' => 'An assembly cannot be dated in the future.'];
+    if ($sets <= 0)            return ['ok' => false, 'error' => 'How many sets? Nothing was saved.'];
+
+    $plan = zp_assembly_plan($productId, $sizeLabel, $sets);
+    if (!$plan['ok']) return ['ok' => false, 'error' => $plan['error']];
+    if ($sets > $plan['can'] + 0.0001) {
+        $short = [];
+        foreach ($plan['parts'] as $p) if ($p['shortfall'] > 0)
+            $short[] = $p['name'] . ' (' . rtrim(rtrim(number_format($p['shortfall'], 2), '0'), '.') . ' short)';
+        return ['ok' => false, 'error' => 'The pool can only make '
+              . rtrim(rtrim(number_format($plan['can'], 2), '0'), '.') . ' set(s) of ' . $sizeLabel
+              . '. Short on: ' . implode(', ', $short)
+              . '. Assembling more would create finished stock that was never produced.'];
+    }
+
+    db()->beginTransaction();
+    try {
+        db()->prepare("INSERT INTO zp_assembly (made_date, product_id, size_label, sets_made, proforma_item_id, note, created_by)
+                       VALUES (?,?,?,?,?,?,?)")
+            ->execute([$date, $productId, $sizeLabel, $sets, $proformaItemId ?: null, trim($note) ?: null, $userId]);
+        $aid = (int)db()->lastInsertId();
+
+        $ins = db()->prepare("INSERT INTO zp_assembly_parts (assembly_id, part_id, size_label, from_item_id, qty) VALUES (?,?,?,?,?)");
+        foreach ($plan['parts'] as $p) {
+            $want = round($p['need'], 2);
+            if ($want <= 0) continue;
+            /* OLDEST ORDER FIRST, and it is written down which order each
+               piece came from. Without that, "what is still left on
+               PI-2291" could never be answered again. */
+            foreach ($p['by'] as $b) {
+                if ($want <= 0.0001) break;
+                $take = min($want, $b['left']);
+                if ($take <= 0.0001) continue;
+                $ins->execute([$aid, $p['part_id'], $sizeLabel, $b['item_id'], round($take, 2)]);
+                $want = round($want - $take, 2);
+            }
+            if ($want > 0.0001) throw new RuntimeException('Ran out of ' . $p['name'] . ' while writing — nothing saved.');
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'error' => 'Nothing was saved. ' . $e->getMessage()];
+    }
+    return ['ok' => true, 'error' => '', 'id' => $aid];
+}
+
+/* An assembly taken back. Cancelled, never deleted — the parts return to
+   the pool because zp_part_pool() only counts active ones. */
+function zp_assembly_cancel(int $id, string $reason, ?int $userId = null): array {
+    zp_ensure_schema();
+    $reason = trim($reason);
+    if ($reason === '') return ['ok' => false, 'error' => 'Give a reason — a correction with no reason cannot be checked later.'];
+    try {
+        $s = db()->prepare("SELECT status FROM zp_assembly WHERE id=?"); $s->execute([$id]);
+        $st = $s->fetchColumn();
+        if ($st === false)    return ['ok' => false, 'error' => 'That assembly no longer exists.'];
+        if ($st !== 'active') return ['ok' => false, 'error' => 'That assembly was already cancelled.'];
+        db()->prepare("UPDATE zp_assembly SET status='cancelled', cancelled_by=?, cancelled_at=NOW(), cancel_reason=? WHERE id=?")
+            ->execute([$userId, $reason, $id]);
+    } catch (Throwable $e) { return ['ok' => false, 'error' => 'Could not cancel it. ' . $e->getMessage()]; }
+    return ['ok' => true, 'error' => ''];
+}
+
+/* What has been assembled, newest first. */
+function zp_assembly_list(int $limit = 100): array {
+    zp_ensure_schema();
+    $out = [];
+    try {
+        foreach (db()->query("SELECT a.*, p.name product_name
+                              FROM zp_assembly a LEFT JOIN products p ON p.id = a.product_id
+                              ORDER BY a.id DESC LIMIT " . (int)$limit)->fetchAll() as $r) {
+            $r['parts'] = [];
+            $out[(int)$r['id']] = $r;
+        }
+        if ($out) {
+            $in = implode(',', array_map('intval', array_keys($out)));
+            foreach (db()->query("SELECT ap.*, pt.part_name FROM zp_assembly_parts ap
+                                  LEFT JOIN zp_parts pt ON pt.id = ap.part_id
+                                  WHERE ap.assembly_id IN ($in)")->fetchAll() as $r)
+                $out[(int)$r['assembly_id']]['parts'][] = $r;
+        }
+    } catch (Throwable $e) {}
+    return array_values($out);
 }
 
 /* ============================================================
