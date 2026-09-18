@@ -162,6 +162,10 @@ function zas_menu(): array {
             'show'  => $admin,
             'items' => [
                 ['label' => 'Users',            'href' => 'users.php',     'show' => $admin],
+                /* Directly under Users, because it is the other half of
+                   setting a person up: the role goes on Users, everything
+                   they may do goes here. */
+                ['label' => 'User Access',      'href' => 'user_access.php','show' => $admin],
                 ['label' => 'Settings',         'href' => 'settings.php',  'show' => $admin],
                 ['label' => 'Inventory Setup',  'href' => 'inv_setup.php', 'show' => $admin],
                 ['label' => 'Start Again (clear stock)', 'href' => 'inv_reset.php', 'show' => $admin],
