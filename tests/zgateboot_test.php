@@ -51,7 +51,9 @@ function verify_csrf(){}
 function csrf_token(){ return 'testtoken'; }
 function csrf_field(){ return '<input type="hidden" name="_csrf" value="testtoken">'; }
 function is_admin(){ return true; }
-function redirect($u){ exit; }
+/* A REFUSAL IS A REDIRECT WITH A MESSAGE. The test has to be able to read
+   it, so redirect() prints what the page was about to say and stops. */
+function redirect($u){ echo "\n__REDIRECT__ " . $u . " || " . ($_SESSION['error'] ?? '') . "\n"; exit; }
 function flash(){}
 function money($v){ return number_format((float)$v, 2); }
 function page_header($t){ echo "<!doctype html><html><head><meta charset=\"utf-8\"><title>" . e($t) . "</title></head><body>"; }
@@ -221,7 +223,41 @@ foreach (['out' => 'Gate Outward', 'in' => 'Gate Inward'] as $dir => $label) {
     ok(str_contains($html, 'assets/js/lov.js'), 'and the picker library is loaded');
 }
 
-echo "2. Driven in a browser — the box is clicked, like an operator clicks it\n";
+echo "2. A half-filled line is REFUSED, not silently dropped\n";
+/* HIS WORDS: "without qty or without rate do not allow to move next or save."
+   The old insert loop skipped a line with no quantity — the pass saved, said
+   nothing, and came back one line shorter. On a gate out that is a delivery
+   that left the factory and was never written down. */
+function post_gate(string $work, array $lines, string $status = 'draft'): string {
+    $post = ['action' => 'save', 'direction' => 'out', 'txn_type' => 'sale',
+             'gate_date' => date('Y-m-d'), 'party_id' => '1', 'location_id' => '1',
+             'status' => $status, '_csrf' => 'testtoken', 'line' => $lines];
+    $code = '$_GET=["dir"=>"out"];$_POST=' . var_export($post, true) . ';'
+          . '$_SERVER["REQUEST_METHOD"]="POST";require "inv_gate.php";';
+    return (string)shell_exec('cd ' . escapeshellarg($work) . ' && php -d error_reporting=E_ALL -d display_errors=1 -r '
+                              . escapeshellarg($code) . ' 2>&1');
+}
+$full = ['item_key' => 'm13', 'qty' => '10', 'rate' => '1.25'];
+
+$r = post_gate($work, [['item_key' => 'm13', 'qty' => '',  'rate' => '1.25']]);
+ok(str_contains($r, 'line 1 has no quantity'), 'an item with no quantity is refused by name: ' . trim(substr($r, -220)));
+ok(str_contains($r, 'Nothing was saved'), '  and NOTHING is saved');
+
+$r = post_gate($work, [['item_key' => 'm13', 'qty' => '10', 'rate' => '0']]);
+ok(str_contains($r, 'line 1 has no rate'), 'an item with no rate is refused too');
+
+$r = post_gate($work, [['item_key' => 'm13', 'qty' => '0', 'rate' => '0']]);
+ok(str_contains($r, 'has no quantity and no rate'), '  and both missing is said in one sentence');
+
+$r = post_gate($work, [$full, ['item_key' => 'p7', 'qty' => '5', 'rate' => '']]);
+ok(str_contains($r, 'line 2 has no rate'), 'THE LINE NUMBER IS THE ONE ON SCREEN, got: ' . trim(substr($r, -200)));
+
+/* A BLANK ROW IS THE SPARE ONE AT THE BOTTOM and must never be refused —
+   otherwise a row has to be deleted before every save. */
+$r = post_gate($work, [$full, ['item_key' => '', 'qty' => '', 'rate' => '']]);
+ok(!str_contains($r, 'Nothing was saved'), 'a blank spare row is not refused: ' . trim(substr($r, -200)));
+
+echo "3. Driven in a browser — the box is clicked, like an operator clicks it\n";
 $drive = <<<'JS'
 const { chromium } = require('playwright');
 (async () => {
@@ -321,8 +357,21 @@ const { chromium } = require('playwright');
       return { cls: (a.className || '').split(' ').filter(c => ['matq','lot','uom','qty','rate'].includes(c))[0] || a.className,
                row: tr ? rows.indexOf(tr) : -1 };
     });
+    /* ENTER WILL NOT LEAVE AN EMPTY QUANTITY. Pressed three times on the
+       same empty box, the cursor must still be on it — "without qty or
+       without rate do not allow to move next or save". */
     r.walk = [await where()];
-    for (let i = 0; i < 5; i++) { await pg.keyboard.press('Enter'); await pg.waitForTimeout(160); r.walk.push(await where()); }
+    await pg.keyboard.press('Enter'); await pg.waitForTimeout(160);
+    await pg.keyboard.press('Enter'); await pg.waitForTimeout(160);
+    r.stuckOnEmptyQty = await where();
+    r.stuckSaid = await pg.evaluate(() => {
+      const b = document.getElementById('lineWarn');
+      return b && b.style.display !== 'none' ? b.textContent.trim().slice(0, 40) : '';
+    });
+
+    await pg.keyboard.type('10');   await pg.keyboard.press('Enter'); await pg.waitForTimeout(160); r.walk.push(await where());
+    /* rate is filled in by the item, so this one passes straight through */
+    await pg.keyboard.press('Enter'); await pg.waitForTimeout(220); r.walk.push(await where());
 
     r.stateDirty = await pg.textContent('#gState').catch(() => null);
 
@@ -393,9 +442,14 @@ else foreach (['out' => 'Outward', 'in' => 'Inward'] as $d => $label) {
        one if there isn't one. Landing on a fresh item box opens its list,
        so the next Enter chooses and the cycle repeats. That is the whole
        of "go to next field and even line complete so go next line". */
-    $want = ['qty#0', 'rate#0', 'matq#1', 'qty#1', 'rate#1', 'matq#2'];
+    $want = ['qty#0', 'rate#0', 'matq#1'];
     ok($walk === $want,
        "$label: Enter walks the line and starts the next: " . json_encode($walk));
+    $stuck = ($r['stuckOnEmptyQty']['cls'] ?? '?') . '#' . ($r['stuckOnEmptyQty']['row'] ?? '?');
+    ok($stuck === 'qty#0',
+       "$label: AND IT WILL NOT LEAVE AN EMPTY QUANTITY, got " . json_encode($stuck));
+    ok(str_contains((string)($r['stuckSaid'] ?? ''), 'How many'),
+       "$label:   saying why, got " . json_encode($r['stuckSaid'] ?? null));
     ok($r['stateDirty'] !== 'saved', "$label: and typing marks it unsaved, got " . json_encode($r['stateDirty']));
     ok($r['ctrlS'] === true, "$label: CTRL+S SAVES");
 }

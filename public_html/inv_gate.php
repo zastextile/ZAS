@@ -184,6 +184,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        /* ==================================================================
+           A LINE THAT NAMES AN ITEM MUST CARRY A QUANTITY AND A RATE.
+           ==================================================================
+
+           Asked for directly: "without qty or without rate do not allow to
+           move next or save."
+
+           He is right, and the old behaviour was worse than "allowed": the
+           insert loop below reads
+
+               if ($qty <= 0 || ($mid <= 0 && $pid <= 0)) continue;
+
+           so a line with an item and no quantity was SILENTLY DROPPED. The
+           pass saved, said nothing, and came back one line shorter. On a
+           gate out that is a delivery that left the factory and was never
+           written down.
+
+           A COMPLETELY BLANK LINE IS STILL FINE. That is the spare row at
+           the bottom of every pass, and refusing it would mean deleting a
+           row before every save. What is refused is a HALF-FILLED line —
+           an item chosen and nothing behind it.
+
+           This applies to a draft as well as a verified pass. A draft is a
+           work in progress and may be empty, but "in progress" cannot mean
+           "carrying a line that will be thrown away without a word". */
+        $bad = [];
+        foreach ((array)($_POST['line'] ?? []) as $li => $ln) {
+            [$vm, $vp] = inv_split_key((string)($ln['item_key'] ?? ''));
+            if ($vm <= 0 && $vp <= 0) { $vm = (int)($ln['material_id'] ?? 0); $vp = (int)($ln['product_id'] ?? 0); }
+            if ($vm <= 0 && $vp <= 0) continue;                 // a blank line is a spare row
+            $miss = [];
+            if (inv_num($ln['qty'] ?? 0)  <= 0) $miss[] = 'quantity';
+            if (inv_num($ln['rate'] ?? 0) <= 0) $miss[] = 'rate';
+            if ($miss) $bad[] = 'line ' . ((int)$li + 1) . ' has no ' . implode(' and no ', $miss);
+        }
+        if ($bad) {
+            $_SESSION['error'] = 'Nothing was saved — ' . implode('; ', $bad)
+                . '. Fill them in, or clear the item off that line if it was a mistake. '
+                . 'A line with an item but no quantity used to be dropped without a word, '
+                . 'which is how a delivery leaves the gate and is never written down.';
+            redirect('inv_gate.php?dir=' . $dir . ($id > 0 ? '&id=' . $id . '&edit=1' : '&new=1'));
+        }
+
         try {
             $chk = null;
             if ($id > 0) {
@@ -875,6 +918,12 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
              designed to avoid. It says what is over and by how much; it
              never stops the save. */ ?>
     <div id="cWarn" class="ig-note warn" style="margin-top:12px;display:none"></div>
+    <?php /* WHERE A HALF-FILLED LINE IS TOLD ABOUT. Its own strip, on both
+             directions, because the over-issue strip it first borrowed only
+             exists on an outward pass — so on Gate Inward the cursor stopped
+             on an empty quantity and said nothing at all, which reads as a
+             frozen screen. Caught by the test, not by reading. */ ?>
+    <div id="lineWarn" class="ig-note warn" style="margin-top:12px;display:none"></div>
 
     <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="ig-btn sec" id="addg">+ Add line</button>
@@ -2109,35 +2158,142 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
        order they are on screen. An open picker owns Enter first — there it
        means "take this row" — and a button or a textarea keeps its own
        meaning. */
-    /* UOM IS NOT IN THE WALK, and that is not an oversight. It is a derived
-       box carrying tabindex="-1" — deliberately out of the Tab order because
-       the item fills it. Enter following a different path from Tab would be
-       the sort of small inconsistency that makes a form feel unfinished.
+    /* ==================================================================
+       A LINE IS TWO ROWS, AND THAT IS WHAT BROKE GATE OUT.
+       ==================================================================
 
-       LOT IS IN IT, and is usually skipped anyway: choosing an item sends
-       the cursor straight to Quantity from inside the picker, so Lot is
-       only reached by coming back to the item box deliberately — which is
-       right for a field most passes leave as "any lot". */
-    var ORDER = ['.matq', '.lot', '.qty', '.rate'];
+       Every pass line is an item row plus a detail row beneath it. The
+       SIZE box lives in the detail row — and choosing a finished product
+       sends the cursor straight to it, because a product has a size and
+       not a lot.
+
+       The first version of this walk looked for fields in el.closest('tr')
+       and gave up unless that row had a .matbox. The detail row has none.
+       So on gate OUT — the one direction where finished goods are sold —
+       Enter from the size box fell out of this handler, bubbled to the
+       form, and the browser's own "Enter submits a form" took over. THE
+       PASS SAVED WITH NO QUANTITY, and the server then dropped the line
+       without a word. Reported as "after go further without qty even
+       direct", and measured before this was written.
+
+       Gate IN was fine for the only reason that matters: you do not
+       normally receive a finished product, so the size box was never
+       reached and the hole was never stepped in.
+
+       The fields of a line are now collected from BOTH rows, in the order
+       they appear on screen:
+
+         item -> lot -> size -> quantity -> rate -> next line
+
+       LOT IS SKIPPED ON A PRODUCT. A finished product has no lot, the box
+       says so, and stopping on it would be a keystroke spent on nothing.
+       SIZE only appears when the strip is open, which is exactly when it
+       matters. UOM is never in the walk — it is derived and carries
+       tabindex="-1", so Tab skips it and Enter must agree. */
+    /* WHICH ITEM THIS LINE REALLY CARRIES — read off the hidden <select>,
+       which is the field that gets submitted and the one the server reads.
+
+       NOT tr.dataset.item. A spare row is cloned from the one above it and
+       comes out carrying data-item="0" — and "0" is a non-empty string, so
+       every blank row would have claimed to hold an item and then refused
+       to let the cursor past Quantity. Measured, not reasoned: the probe
+       printed row1DataItem: "0" on a row whose item box was empty. */
+    function lineKey(tr){
+      var sel = tr.querySelector('.matsel');
+      return sel ? String(sel.value || '') : '';
+    }
+
+    function lineFields(tr){
+      var det = detailOf(tr), out = [];
+      var isProd = lineKey(tr).charAt(0) === 'p';
+      function add(el){
+        if(el && el.offsetParent !== null && !el.disabled && el.tabIndex !== -1) out.push(el);
+      }
+      add(tr.querySelector('.matq'));
+      if(!isProd) add(tr.querySelector('.lot'));
+      if(det) add(det.querySelector('.szl'));
+      add(tr.querySelector('.qty'));
+      add(tr.querySelector('.rate'));
+      return out;
+    }
+
+    /* WHAT A LINE MAY NOT LEAVE WITHOUT. "without qty or without rate do
+       not allow to move next or save." Only once the line names an item —
+       an empty row is the spare one at the bottom and must stay easy to
+       walk past. */
+    function lineStop(tr, el){
+      if(!lineKey(tr)) return '';          // a blank row is the spare one
+      if(el.matches('.qty') && !(num(el.value) > 0)) return 'How many? A line with an item needs a quantity.';
+      if(el.matches('.rate') && !(num(el.value) > 0)) return 'What rate? Type 0 only if this really moves at no value — otherwise fill it in.';
+      return '';
+    }
+    function sayOn(el, msg){
+      var box = document.getElementById('lineWarn');
+      if(box){ box.innerHTML = '<b>' + msg + '</b>'; box.style.display = ''; }
+      el.focus(); if(el.select) el.select();
+    }
+    /* IT GOES AWAY WHEN IT IS DEALT WITH. A warning that stays on screen
+       after the fix is a warning people learn to read past. */
+    gf.addEventListener('input', function(e){
+      if(!e.target.matches || !e.target.matches('.qty, .rate')) return;
+      var box = document.getElementById('lineWarn');
+      if(box && box.style.display !== 'none' && num(e.target.value) > 0) box.style.display = 'none';
+    });
+
     gf.addEventListener('keydown', function(e){
       if(e.key !== 'Enter' || e.shiftKey) return;
       if(window.LOV && LOV.isOpen && LOV.isOpen()) return;
       var el = e.target;
       if(!el || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON') return;
-      var tr = el.closest('tr'); if(!tr || !tr.querySelector('.matbox')) return;
-      var here = -1;
-      for(var i = 0; i < ORDER.length; i++) if(el.matches(ORDER[i])) { here = i; break; }
+
+      var tr = mainRow(el);
+      if(!tr || !tr.querySelector('.matbox')) return;
+
+      var fields = lineFields(tr), here = fields.indexOf(el);
       if(here < 0) return;
+
+      /* PREVENTED FIRST, ALWAYS. Whatever this key goes on to do, it must
+         not be "submit the form" — which is what it did. */
       e.preventDefault();
-      for(var j = here + 1; j < ORDER.length; j++){
-        var nx = tr.querySelector(ORDER[j]);
-        if(nx && nx.offsetParent !== null){ nx.focus(); if(nx.select) nx.select(); return; }
+
+      var stop = lineStop(tr, el);
+      if(stop){ sayOn(el, stop); return; }
+
+      if(here + 1 < fields.length){
+        var nx = fields[here + 1];
+        nx.focus(); if(nx.select) nx.select();
+        return;
       }
-      /* the line is complete — on to the next one, making it if needed */
+
+      /* THE LINE IS COMPLETE — but only if it really is. Leaving the last
+         box goes past quantity and rate, so both are checked here as well
+         as when the cursor sits on them. */
+      var f2 = lineFields(tr);
+      for(var k = 0; k < f2.length; k++){
+        var why = lineStop(tr, f2[k]);
+        if(why){ sayOn(f2[k], why); return; }
+      }
+
       var all = lines(), at = all.indexOf(tr);
       if(at === all.length - 1){ var b = document.getElementById('addg'); if(b) b.click(); all = lines(); }
       var nrow = all[at + 1];
       if(nrow){ var f = nrow.querySelector('.matq'); if(f) f.focus(); }
+    });
+
+    /* AND THE SAVE IS GUARDED TOO, so the answer is the same whether he
+       presses Enter, Ctrl+S or the button. The server refuses this as well
+       — that is the rule; this is only the faster way to hear about it. */
+    gf.addEventListener('submit', function(e){
+      var bad = null, why = '';
+      lines().forEach(function(tr){
+        if(bad || !lineKey(tr)) return;
+        lineFields(tr).forEach(function(el){
+          if(bad) return;
+          var m = lineStop(tr, el);
+          if(m){ bad = el; why = m; }
+        });
+      });
+      if(bad){ e.preventDefault(); sayOn(bad, why); }
     });
   })();
 
