@@ -27,7 +27,7 @@ window.LOV = (function () {
 
   var PROV = {};
   var el = null;
-  var S = { open: false, f: null, kind: '', rows: [], idx: 0, showAll: false, hidden: 0, busy: false };
+  var S = { open: false, f: null, kind: '', rows: [], idx: 0, showAll: false, hidden: 0, busy: false, hold: false };
 
   /* ---------------------------------------------------------- helpers */
   function esc(s) {
@@ -261,12 +261,59 @@ window.LOV = (function () {
       S.idx = 0; load();
     });
     root.addEventListener('keydown', function (e) {
-      if (!S.open || e.target !== S.f) return;
+      /* ENTER OPENS THE LIST WHEN IT IS SHUT — asked for directly: "I don't
+         want to use the mouse".
+         Focus already opens it, so this is the way back in after Escape, or
+         after a pick, without reaching for the mouse. Down-arrow does the
+         same, because that is what a combo box does everywhere else.
+
+         stopImmediatePropagation because the spreadsheet keys live on this
+         SAME element: without it, Enter would open the list AND move the
+         cursor down a row, and the list would then belong to the cell above.
+         The grid's own guard (window.LOV.isOpen) covers the case where its
+         listener runs first, so between the two the order cannot matter. */
+      if (!S.open) {
+        var t0 = e.target;
+        if ((e.key === 'Enter' || e.key === 'ArrowDown')
+            && t0 && t0.dataset && t0.dataset.lov && PROV[t0.dataset.lov]) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (t0.select) t0.select();
+          open(t0, t0.dataset.lov);
+        }
+        return;
+      }
+      if (e.target !== S.f) return;
       if (e.key === 'ArrowDown') { e.preventDefault(); S.idx = skipIdx(Math.min(S.idx + 1, S.rows.length - 1), 1); draw(); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); S.idx = skipIdx(Math.max(S.idx - 1, 0), -1); draw(); }
       else if (e.key === 'Home') { e.preventDefault(); S.idx = skipIdx(0, 1); draw(); }
       else if (e.key === 'End') { e.preventDefault(); S.idx = skipIdx(S.rows.length - 1, -1); draw(); }
-      else if (e.key === 'Enter') { e.preventDefault(); take(); }
+      else if (e.key === 'Enter') {
+        /* A PROVIDER MAY ASK TO STAY PUT.
+           take() closes the panel BEFORE the page's other keydown handlers
+           run, so a spreadsheet grid on the same element asks "is a list
+           open?", is told no, and moves the cursor down a row as well. For
+           most fields that is wanted — choose, and on to the next line. For
+           a field that holds a LIST, it is not: you have just added one
+           stage and want to add another, and the cursor has left the cell.
+           Measured, not guessed: the cell kept its value and focus was two
+           rows away.
+
+           stopImmediatePropagation alone did NOT fix it — it only silences
+           listeners registered after ours on this same element, and that
+           ordering is not ours to guarantee. So instead the answer to "is a
+           list open?" is held true for the rest of THIS key press. Whoever
+           asks, wherever their listener sits, gets told yes and keeps its
+           hands off the cursor. The hold is released on the next tick. */
+        var pEnter = PROV[S.kind];
+        e.preventDefault();
+        if (pEnter && pEnter.stayOnEnter) {
+          S.hold = true;
+          setTimeout(function () { S.hold = false; }, 0);
+        }
+        take();
+        if (pEnter && pEnter.stayOnEnter) e.stopImmediatePropagation();
+      }
       else if (e.key === 'Tab') { if (S.rows.length) { e.preventDefault(); take(); } else close(); }
       else if (e.key === 'Escape') { e.preventDefault(); close(); if (PROV[S.kind].revert) PROV[S.kind].revert(S.f); }
     });
@@ -302,7 +349,9 @@ window.LOV = (function () {
     register: function (name, p) { PROV[name] = p; },
     attach: attach,
     close: close,
-    isOpen: function () { return S.open; },
+    /* S.hold keeps this true for the rest of a key press in which a
+       stay-put provider just took a row — see the Enter branch. */
+    isOpen: function () { return S.open || S.hold; },
     // exposed so a provider can rank and highlight the same way
     score: score, hl: hl, esc: esc, norm: norm, q3: q3, m2: m2
   };

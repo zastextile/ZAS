@@ -1908,6 +1908,118 @@ function zp_save_worker_stages(int $workerId, array $stageIds): void {
     } catch (Throwable $e) {}
 }
 
+/* ============================================================
+   MANY WORKERS AT ONCE — pasted out of Excel
+   ============================================================
+
+   Three hundred people were being typed in one at a time. A block pasted
+   from a spreadsheet arrives as rows of [code, name, department, stages].
+
+   NOTHING IS WRITTEN UNTIL EVERY ROW PASSES, which is the same rule
+   zp_book() follows and for the same reason: a half-saved sheet is worse
+   than a refused one. You cannot tell which half went in, and pasting it
+   again to be sure creates every worker in that half twice. A refusal names
+   the row and the reason, the sheet stays on screen, and one correction
+   fixes it.
+
+   WHAT REFUSES A ROW, AND WHAT ONLY WARNS:
+
+     no name                 refuses — a worker is their name
+     a code already in use   refuses, naming who has it
+     the same code twice
+       inside the paste      refuses — the second would overwrite the first
+     a stage that matches
+       nothing               refuses, naming it. A typo would otherwise
+                             leave that person on EVERY stage, which is the
+                             widest setting there is and the opposite of
+                             what was meant.
+     a name already on
+       the list              WARNS only. Two Muhammad Aslams on a floor of
+                             three hundred is ordinary, and refusing it
+                             would make the honest case impossible.
+*/
+function zp_import_workers(array $rows): array {
+    zp_ensure_schema();
+    $stages = [];
+    foreach (zp_stage_all(false) as $s) $stages[mb_strtolower(trim($s['name']))] = (int)$s['id'];
+
+    $have = [];   // code => name, as the list stands now
+    $names = [];
+    foreach (zp_workers(false) as $w) {
+        $have[mb_strtoupper(trim((string)$w['worker_code']))] = (string)$w['worker_name'];
+        $names[mb_strtolower(trim((string)$w['worker_name']))] = true;
+    }
+
+    $errors = []; $warn = []; $ready = []; $seen = [];
+    foreach ($rows as $i => $r) {
+        $line = 'Row ' . ($i + 1);
+        $code = mb_strtoupper(trim((string)($r['code'] ?? '')));
+        $name = trim(preg_replace('/\s+/', ' ', (string)($r['name'] ?? '')));
+        $dept = trim(preg_replace('/\s+/', ' ', (string)($r['dept'] ?? '')));
+        $stxt = trim((string)($r['stages'] ?? ''));
+
+        /* A ROW WITH NOTHING ON IT IS NOT A MISTAKE. A pasted block almost
+           always carries a trailing blank line, and refusing the sheet for
+           it would be maddening. */
+        if ($code === '' && $name === '' && $dept === '' && $stxt === '') continue;
+
+        if ($name === '') { $errors[] = "$line: there is no name."; continue; }
+        if (mb_strlen($name) > 120) $name = mb_substr($name, 0, 120);
+        if (mb_strlen($dept) > 60)  $dept = mb_substr($dept, 0, 60);
+
+        if ($code !== '') {
+            if (mb_strlen($code) > 20) { $errors[] = "$line: the code \"$code\" is longer than 20 characters."; continue; }
+            if (isset($have[$code])) { $errors[] = "$line: code $code already belongs to " . $have[$code] . "."; continue; }
+            if (isset($seen[$code])) { $errors[] = "$line: code $code is used twice in this paste (also row " . $seen[$code] . ")."; continue; }
+            $seen[$code] = $i + 1;
+        }
+
+        /* Stages separated by a comma, a slash, a semicolon or a pipe —
+           whichever the spreadsheet happened to use. */
+        $sids = []; $bad = [];
+        foreach (preg_split('/[,\/;|]+/', $stxt) as $bit) {
+            $bit = trim($bit);
+            if ($bit === '') continue;
+            $k = mb_strtolower($bit);
+            if (isset($stages[$k])) $sids[] = $stages[$k];
+            else $bad[] = $bit;
+        }
+        if ($bad) {
+            $errors[] = "$line: no stage is called \"" . implode('", "', $bad) . "\". "
+                      . ($stages ? 'The stages are: ' . implode(', ', array_map(
+                            fn($s) => $s['name'], zp_stage_all(false))) . '.'
+                                 : 'No stages have been set up yet.');
+            continue;
+        }
+
+        if (isset($names[mb_strtolower($name)])) $warn[] = $name;
+        $ready[] = ['code' => $code, 'name' => $name, 'dept' => $dept !== '' ? $dept : null, 'stages' => $sids];
+    }
+
+    if ($errors) return ['ok' => false, 'errors' => $errors, 'saved' => 0, 'warn' => []];
+    if (!$ready)  return ['ok' => false, 'errors' => ['There is nothing to add — every row is empty.'], 'saved' => 0, 'warn' => []];
+
+    $saved = 0;
+    try {
+        db()->beginTransaction();
+        foreach ($ready as $w) {
+            /* zp_save_worker is reused rather than re-implemented: it is what
+               gives a blank code the next free W-number, and it is the only
+               place that rule should live. */
+            $r = zp_save_worker(0, $w['code'], $w['name'], $w['dept'], 1);
+            if (!$r['ok']) throw new RuntimeException($r['error']);
+            if ($w['stages']) zp_save_worker_stages((int)$r['id'], $w['stages']);
+            $saved++;
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        try { db()->rollBack(); } catch (Throwable $e2) {}
+        return ['ok' => false, 'saved' => 0, 'warn' => [],
+                'errors' => ['Nothing was added — the database refused the sheet. ' . $e->getMessage()]];
+    }
+    return ['ok' => true, 'errors' => [], 'saved' => $saved, 'warn' => array_values(array_unique($warn))];
+}
+
 /* A WORKER WITH WAGES IS NEVER DELETED. Their name is on every entry they were
    paid for; removing the row would leave those wages belonging to nobody. */
 function zp_delete_worker(int $id): array {
