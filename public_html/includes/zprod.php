@@ -2620,6 +2620,65 @@ function zp_assembly_cancel(int $id, string $reason, ?int $userId = null): array
     return ['ok' => true, 'error' => ''];
 }
 
+/* ASSEMBLED STOCK — packed sets that exist and have not been consumed yet.
+
+   "where i asked only allow consumption against assembled items instead
+    opened also allow multiple assembled lines as show list of ready packed
+    assembled product so can use stock and keep ledger"
+
+   Consumption used to offer every product in the master, whether or not a
+   single set of it had ever been packed. That is how a consumption gets
+   booked against a product nobody made: the materials leave the store, the
+   sets never existed, and the two sides of the sheet describe different
+   days.
+
+   So the list is what has actually been ASSEMBLED, by product and size,
+   less what earlier consumption sheets already accounted for.
+
+   Returns [ ['product_id','product','size','made','used','left'] ... ],
+   biggest balance first, and only rows with something left. */
+function zp_assembled_stock(): array {
+    zp_ensure_schema();
+    $made = [];
+    try {
+        foreach (db()->query("SELECT a.product_id, a.size_label, COALESCE(SUM(a.sets_made),0) q,
+                                     p.name product_name
+                              FROM zp_assembly a LEFT JOIN products p ON p.id = a.product_id
+                              WHERE a.status='active'
+                              GROUP BY a.product_id, a.size_label, p.name")->fetchAll() as $r) {
+            $k = (int)$r['product_id'] . '|' . (string)$r['size_label'];
+            $made[$k] = ['product_id' => (int)$r['product_id'],
+                         'product' => (string)($r['product_name'] ?? ''),
+                         'size' => (string)$r['size_label'],
+                         'made' => round((float)$r['q'], 2), 'used' => 0.0];
+        }
+    } catch (Throwable $e) { return []; }
+    if (!$made) return [];
+
+    /* WHAT CONSUMPTION HAS ALREADY ACCOUNTED FOR. A cancelled sheet does
+       not count, the same rule every other balance in the app follows. */
+    try {
+        foreach (db()->query("SELECT i.product_id, i.size_label, COALESCE(SUM(i.qty),0) q
+                              FROM inv_consumption_items i
+                              JOIN inv_consumption c ON c.id = i.con_id
+                              WHERE i.side='output' AND i.product_id IS NOT NULL
+                                AND COALESCE(c.status,'draft') <> 'cancelled'
+                              GROUP BY i.product_id, i.size_label")->fetchAll() as $r) {
+            $k = (int)$r['product_id'] . '|' . (string)$r['size_label'];
+            if (isset($made[$k])) $made[$k]['used'] += round((float)$r['q'], 2);
+        }
+    } catch (Throwable $e) {}
+
+    $out = [];
+    foreach ($made as $m) {
+        $m['left'] = round($m['made'] - $m['used'], 2);
+        if ($m['left'] <= 0.0001) continue;
+        $out[] = $m;
+    }
+    usort($out, fn($a, $b) => $b['left'] <=> $a['left']);
+    return $out;
+}
+
 /* What has been assembled, newest first. */
 function zp_assembly_list(int $limit = 100): array {
     zp_ensure_schema();

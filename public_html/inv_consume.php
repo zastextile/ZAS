@@ -89,6 +89,14 @@ if (($_GET['ajax'] ?? '') !== '') {
     exit;
 }
 
+/* WHAT HAS ACTUALLY BEEN PACKED — the only thing a consumption may be
+   booked against. See zp_assembled_stock(): every product+size assembled
+   and not yet accounted for by an earlier sheet. Loaded whether or not the
+   production module is installed, so this page never dies for want of it. */
+$ASSEMBLED = function_exists('zp_assembled_stock') ? zp_assembled_stock() : [];
+$ASMKEY = [];
+foreach ($ASSEMBLED as $a) $ASMKEY[$a['product_id'] . '|' . $a['size']] = $a;
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $act = $_POST['action'] ?? '';
@@ -137,6 +145,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     redirect('inv_consume.php?id=' . $id);
                 }
             }
+            /* ONLY AGAINST WHAT WAS ACTUALLY PACKED — and only as much as was packed.
+   "only allow consumption against assembled items instead opened".
+
+   Checked here, before the transaction, so a refusal writes nothing at
+   all. The sheet being EDITED is allowed to keep the quantity it already
+   has: reopening a saved consumption must not refuse itself just because
+   its own output is counted in the used figure. */
+$asmNow = function_exists('zp_assembled_stock') ? zp_assembled_stock() : [];
+$asmLeft = [];
+foreach ($asmNow as $a) $asmLeft[$a['product_id'] . '|' . $a['size']] = $a['left'];
+if ($id > 0) {
+    try {
+        $sOld = db()->prepare("SELECT product_id, size_label, COALESCE(SUM(qty),0) q
+                               FROM inv_consumption_items WHERE con_id=? AND side='output' AND product_id IS NOT NULL
+                               GROUP BY product_id, size_label");
+        $sOld->execute([$id]);
+        foreach ($sOld->fetchAll() as $r) {
+            $k = (int)$r['product_id'] . '|' . (string)$r['size_label'];
+            $asmLeft[$k] = ($asmLeft[$k] ?? 0) + (float)$r['q'];
+        }
+    } catch (Throwable $e) {}
+}
+$asmBad = [];
+foreach ((array)($_POST['out'] ?? []) as $li => $ln) {
+    $q = inv_num($ln['qty'] ?? 0);
+    $k = trim((string)($ln['asm'] ?? ''));
+    if ($q <= 0) continue;
+    if ($k === '') { $asmBad[] = 'line ' . ((int)$li + 1) . ' has a quantity but no packed set chosen'; continue; }
+    $have = (float)($asmLeft[$k] ?? 0);
+    if ($q > $have + 0.0001) {
+        $nm = explode('|', $k); $nm = ($nm[1] ?? '');
+        $asmBad[] = 'line ' . ((int)$li + 1) . ' asks for ' . rtrim(rtrim(number_format($q, 2), '0'), '.')
+                  . ' but only ' . rtrim(rtrim(number_format($have, 2), '0'), '.') . ' ' . $nm . ' set(s) are packed and unused';
+    }
+}
+if ($asmBad) {
+    $_SESSION['error'] = 'Nothing was saved — ' . implode('; ', $asmBad)
+        . '. Assemble them first on Assembly — Make Sets, or lower the quantity.';
+    redirect('inv_consume.php' . ($id > 0 ? '?id=' . $id : '?new=1'));
+}
+
             db()->beginTransaction();
             if ($id > 0) {
                 $sets = implode(',', array_map(fn($k) => "$k=?", array_keys($f)));
@@ -174,12 +223,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     null]);
             }
             foreach ((array)($_POST['out'] ?? []) as $ln) {
-                $qty = inv_num($ln['qty'] ?? 0); $pid = (int)($ln['product_id'] ?? 0);
+                $qty = inv_num($ln['qty'] ?? 0);
+                /* THE PRODUCT AND THE SIZE TRAVEL TOGETHER, as "7|King" —
+                   the same reason the gate's item key carries its kind. Two
+                   separate boxes could be saved half-filled, and a set with
+                   no size is not a set anybody packed. */
+                [$pid, $szl] = array_pad(explode('|', (string)($ln['asm'] ?? ''), 2), 2, '');
+                $pid = (int)$pid; $szl = trim($szl);
+                if ($pid <= 0) { $pid = (int)($ln['product_id'] ?? 0); $szl = trim((string)($ln['size_label'] ?? '')); }
                 if ($qty <= 0 || $pid <= 0) continue;
                 $rate = inv_num($ln['rate'] ?? 0);
-                $ins->execute([$id, 'output', null, $pid, trim((string)($ln['size_label'] ?? '')) ?: null, null,
+                $ins->execute([$id, 'output', null, $pid, $szl ?: null, null,
                     0, $qty, inv_num($ln['waste_qty'] ?? 0),
-                    trim((string)($ln['uom'] ?? '')) ?: null, $rate, round($qty * $rate, 2), $own, $nOut++,
+                    trim((string)($ln['uom'] ?? '')) ?: 'PCS', $rate, round($qty * $rate, 2), $own, $nOut++,
                     null, null, 0, null,
                     (int)($ln['proforma_item_id'] ?? 0) ?: null]);
             }
@@ -344,7 +400,7 @@ flash();
   <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800"><?= $doc ? 'Edit ' . e($doc['con_no']) : 'New consumption' ?></h2>
   <p style="color:#8a97ab;font-size:12px;margin:0 0 14px">Pick the product and quantity, load the standard materials from its costing, then correct anything that differed.</p>
 
-  <form method="post"><?= csrf_field() ?>
+  <form method="post" id="conForm"><?= csrf_field() ?>
     <input type="hidden" name="action" value="save"><input type="hidden" name="id" value="<?= (int)($D['id'] ?? 0) ?>">
     <div class="ic2-grid">
       <div><label class="ic2-lbl">Document no.</label><input class="ic2-inp" name="con_no" value="<?= e($D['con_no'] ?? '') ?>" placeholder="auto" style="font-family:monospace"></div>
@@ -393,17 +449,36 @@ flash();
       <p id="outHint">Choose an order above and this list becomes that order's own product lines, with the size filled in.
          With no order chosen it stays the full Product Master.</p>
       <div style="overflow-x:auto"><table class="ic2-tbl" id="outT">
-        <thead><tr><th style="min-width:250px">Product</th><th style="min-width:110px">Size</th>
+        <thead><tr><th colspan="2" style="min-width:300px">Packed set &mdash; product and size</th>
           <th class="r" style="width:105px">Produced</th><th style="width:74px">UOM</th>
           <th class="r" style="width:90px">Rejected</th><th class="r" style="width:100px">Cost/unit</th><th style="width:34px"></th></tr></thead>
         <tbody>
         <?php foreach ($outLines as $i => $L): ?>
           <tr>
-            <td><select class="ic2-inp prod" name="out[<?= $i ?>][product_id]">
-              <option value="0">— select product —</option>
-              <?php foreach ($products as $p): ?><option value="<?= (int)$p['id'] ?>" data-uom="<?= e($p['default_unit'] ?: 'PCS') ?>" <?= (int)($L['product_id'] ?? 0) === (int)$p['id'] ? 'selected' : '' ?>><?= e($p['name']) ?></option><?php endforeach; ?>
-            </select></td>
-            <td><input class="ic2-inp osize" name="out[<?= $i ?>][size_label]" value="<?= e($L['size_label'] ?? '') ?>">
+            <?php /* ONLY WHAT HAS BEEN PACKED. One box carries the product AND
+                     the size together, because "Comforter Set" alone is not a
+                     thing you can have consumed — a King set and a Queen set
+                     are different stock and were assembled separately.
+
+                     A line saved before this change keeps its own product and
+                     size even if that combination has since been fully used,
+                     so opening an old sheet never silently empties a row. */
+              $curKey = (int)($L['product_id'] ?? 0) . '|' . (string)($L['size_label'] ?? '');
+              $known  = isset($ASMKEY[$curKey]); ?>
+            <td colspan="2"><select class="ic2-inp prod asmsel" name="out[<?= $i ?>][asm]"
+                    data-uom="PCS">
+              <option value="">— packed sets ready to consume —</option>
+              <?php foreach ($ASSEMBLED as $a): $k = $a['product_id'] . '|' . $a['size']; ?>
+                <option value="<?= e($k) ?>" data-left="<?= e((string)$a['left']) ?>" <?= $k === $curKey ? 'selected' : '' ?>>
+                  <?= e($a['product']) ?> &middot; <?= e($a['size']) ?> — <?= number_format($a['left'], 2) ?> ready
+                </option>
+              <?php endforeach; ?>
+              <?php if (!$known && (int)($L['product_id'] ?? 0) > 0): ?>
+                <option value="<?= e($curKey) ?>" selected>
+                  <?= e($L['product_name'] ?? ('Product #' . (int)$L['product_id'])) ?> &middot; <?= e($L['size_label'] ?? '') ?> — already on this sheet
+                </option>
+              <?php endif; ?>
+            </select>
                 <input type="hidden" class="opfitem" name="out[<?= $i ?>][proforma_item_id]" value="<?= e((string)($L['proforma_item_id'] ?? '')) ?>"></td>
             <td><input class="ic2-inp oqty" name="out[<?= $i ?>][qty]" value="<?= e((string)($L['qty'] ?? '')) ?>" style="text-align:right"></td>
             <td><input class="ic2-inp ouom" name="out[<?= $i ?>][uom]" value="<?= e($L['uom'] ?? '') ?>" style="font-family:monospace"></td>
@@ -507,6 +582,8 @@ flash();
     <div style="margin-top:16px"><label class="ic2-lbl">Remarks</label><input class="ic2-inp" name="remarks" value="<?= e($D['remarks'] ?? '') ?>"></div>
     <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button class="ic2-btn" type="submit">Save</button>
+      <span id="conState" style="font-size:11.5px;color:#8a97ab;margin-left:8px">saved</span>
+      <span style="font-size:11.5px;color:#8a97ab"><b>Ctrl+S</b> saves &middot; <b>Esc</b> goes back &middot; <b>Enter</b> moves to the next box</span>
       <a class="ic2-btn sec" href="inv_consume.php">Back</a>
       <span style="font-size:11.5px;color:#8a97ab">Saving changes nothing. Posting deducts the materials and adds the product together.</span>
     </div>
@@ -564,6 +641,9 @@ flash();
 
 <link rel="stylesheet" href="assets/css/lov.css?v=3">
 <script src="assets/js/lov.js?v=3"></script>
+<?php /* The shared spreadsheet keys: Ctrl+S, Escape, and an honest
+         saved/unsaved word. Same file the gate and the workers grid use. */ ?>
+<script src="assets/js/grid.js?v=3"></script>
 <script>
 /* Consumption form. Three ideas, in order of importance:
      1. You type a QUANTITY; the lots are chosen for you, oldest first.
@@ -623,9 +703,15 @@ flash();
      every item in the business with the wrong ones merely hidden, and no
      balance anywhere. It is now the same List of Values the Gate pass
      uses, from assets/js/lov.js. */
+  /* THE BOX NOW HOLDS "7|King", not 7. The product and its size travel
+     together because a packed King set and a packed Queen set are different
+     stock. Everything below that used to read sel.value as a number goes
+     through here instead. */
+  function asmPid(v){ return +(String(v || '').split('|')[0]) || 0; }
+  function asmSize(v){ var b = String(v || '').split('|'); return b.length > 1 ? b[1] : ''; }
   function currentProductId(){
     var s = outT.querySelector('select.prod');
-    return s ? +s.value : 0;
+    return s ? asmPid(s.value) : 0;
   }
   function standardFor(pid){
     if(!ORDER) return null;
@@ -788,23 +874,29 @@ flash();
       ORDER.lines.forEach(function(l){ if(l.product_id) allowed[l.product_id]=l; else unresolved++; });
       [].slice.call(sel.options).forEach(function(o){
         if(!o.value || o.value==='0'){ o.hidden = false; return; }
-        o.hidden = !(o.value in allowed) && o.value !== keep;
+        o.hidden = !(asmPid(o.value) in allowed) && o.value !== keep;
       });
-      if(!(keep in allowed)){ var first = Object.keys(allowed)[0]; if(first){ sel.value = first; onProductChange(sel); } }
+      /* NOTHING IS CHOSEN FOR HIM WHEN THE ORDER NARROWS THE LIST. The old
+         version jumped to the first allowed product — which, now that the
+         box also carries a SIZE, would pick a size nobody asked for. An
+         empty box he must fill is better than a filled one that is wrong. */
       hint.textContent = Object.keys(allowed).length + " product line(s) on this order."
         + (unresolved ? ' ' + unresolved + " order line(s) do not match a Product Master product and are not listed." : '');
     });
   }
   function onProductChange(sel){
-    var tr = sel.closest('tr'), pid = +sel.value;
+    var tr = sel.closest('tr'), pid = asmPid(sel.value), szl = asmSize(sel.value);
     var o = sel.options[sel.selectedIndex];
-    if(o && o.dataset.uom && !get(tr,'.ouom').value) get(tr,'.ouom').value = o.dataset.uom;
+    if(o && !get(tr,'.ouom').value) get(tr,'.ouom').value = o.dataset.uom || 'PCS';
+    /* THE QUANTITY DEFAULTS TO WHAT IS PACKED AND UNUSED. That is the
+       number on the option itself, and it is nearly always the answer —
+       you packed 300 King sets, you are consuming against 300. */
+    if(o && o.dataset.left && !num(get(tr,'.oqty').value)) get(tr,'.oqty').value = o.dataset.left;
     if(ORDER){
       ORDER.lines.forEach(function(l){
-        if(l.product_id === pid){
-          if(!get(tr,'.osize').value) get(tr,'.osize').value = l.size || '';
-          // default to what the FLOOR can still give us, not what was ordered
-          if(!num(get(tr,'.oqty').value)) get(tr,'.oqty').value = (l.prod ? l.prod.available : l.ordered) || '';
+        /* The order line is matched on product AND size now, because one
+           order can carry the same product in three sizes. */
+        if(l.product_id === pid && (!szl || String(l.size || '') === szl)){
           var h = tr.querySelector('.opfitem'); if(h) h.value = l.item_id;
         }
       });
@@ -1232,6 +1324,58 @@ flash();
   applyMaterialScope();
   loadOrder();
   rows().forEach(paint);
+})();
+
+/* ---- office keys, wired last so a fault here cannot stop the form drawing
+   ----------------------------------------------------------------------
+   Asked for: "I need fast way AG grid enter next move and last enter next
+   line so when CTRL + S will be save an esc quit form and ask same as
+   window / office files".
+
+   Enter walks the boxes of a line and, off the end, starts the next line —
+   in BOTH tables, because a consumption is two grids and the hand does not
+   want to know which one it is in. An open picker owns Enter first: there
+   it means "take this row". */
+(function(){
+  var f = document.getElementById('conForm');
+  if(!f || !window.GRID || !GRID.keys) return;
+
+  var K = GRID.keys(f, { badge:'#conState', what:'consumption sheet',
+                         escapeTo:'inv_consume.php' });
+  f.addEventListener('input',  function(){ K.touch(); });
+  f.addEventListener('change', function(){ K.touch(); });
+
+  function boxesOf(tr){
+    return [].slice.call(tr.querySelectorAll('input,select'))
+      .filter(function(el){
+        return el.type !== 'hidden' && !el.disabled && el.tabIndex !== -1 && el.offsetParent !== null;
+      });
+  }
+  f.addEventListener('keydown', function(e){
+    if(e.key !== 'Enter' || e.shiftKey) return;
+    if(window.LOV && LOV.isOpen && LOV.isOpen()) return;
+    var el = e.target;
+    if(!el || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON') return;
+    var tr = el.closest('tr'); if(!tr) return;
+    /* Only inside the two grids. The header fields above them keep the
+       browser's own behaviour, which is what anybody expects of a header. */
+    if(!tr.closest('#inT') && !tr.closest('#outT')) return;
+    var boxes = boxesOf(tr), at = boxes.indexOf(el);
+    if(at < 0) return;
+    e.preventDefault();                       // never submit from inside a grid
+    if(at + 1 < boxes.length){ var nx = boxes[at+1]; nx.focus(); if(nx.select) nx.select(); return; }
+
+    /* THE LINE IS DONE — on to the next one, making it if this was the last.
+       The two "+ Add" buttons already know how to build a row, so they are
+       pressed rather than the row being cloned a second way. */
+    var rows = [].slice.call(tr.parentNode.children), i = rows.indexOf(tr);
+    if(i === rows.length - 1){
+      var btn = tr.closest('#outT') ? document.getElementById('addo') : document.getElementById('addi');
+      if(btn){ btn.click(); rows = [].slice.call(tr.parentNode.children); }
+    }
+    var nrow = rows[i+1];
+    if(nrow){ var first = boxesOf(nrow)[0]; if(first){ first.focus(); if(first.select) first.select(); } }
+  });
 })();
 </script>
 
