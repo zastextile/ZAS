@@ -256,7 +256,12 @@ ok(str_contains($r['B_sug']['left'], '180'),
 ok(str_contains($r['B_sug']['left'], 'left'), '  and says what that number is');
 ok($r['B_sug']['strong'] === 'PI-2026-014', 'the order it belongs to, got '
    . json_encode($r['B_sug']['strong']));
-ok(str_contains($r['B_sug']['html'], 'Hastens AB'), '  the customer');
+/* THE PRODUCT, NOT THE CUSTOMER — asked for directly by the owner.
+   The buyer's name earned nothing on a floor list: the person booking work
+   knows the style, not who bought it, and on a narrow row the name pushed
+   the product — the thing they DO recognise — off the end. */
+ok(str_contains($r['B_sug']['html'], '7 pcs Bed in Bag'), '  the product');
+ok(!str_contains($r['B_sug']['html'], 'Hastens AB'), '  and NOT the customer');
 ok($r['B_sug']['chips'] === 2, '  the size and the stage as chips, got ' . $r['B_sug']['chips']);
 ok($r['B_sug']['rate'] === true, '  and the rate per piece');
 ok($r['B_sug']['usual'] === true, 'the learned default is marked on this tab too');

@@ -1440,6 +1440,72 @@ function inv_cost_variance(float $materialCost, float $wagePerUnit, bool $wageEs
    lot of that material at that location added together — because "send
    200 m of thread from Main Store" is a legitimate instruction that does
    not care which cone it comes off. */
+/* THE SAME QUESTION, ASKED FOR A FINISHED PRODUCT TOO.
+ *
+ * inv_lot_balances() takes a material id, so every screen built on it could
+ * only ever answer for a material. The item pickers were widened to carry
+ * finished products — keyed "m<id>" or "p<id>" — but this was not, so on a
+ * gate pass the picker would show a product with 300 in stock and the
+ * Available column on the line beside it stayed on a dash, for ever. The
+ * over-issue warning never fired either, because it reads the same number.
+ *
+ * A PRODUCT'S SUB-KEY IS ITS SIZE, NOT A LOT. Rolls of cloth carry lot
+ * numbers; a duvet cover carries "King". They are the same shape of thing —
+ * one item split into named piles at a location — so the size is returned in
+ * the lot_no field and the screens need no second code path. size_label is
+ * carried alongside it for anything that wants to say the right word.
+ */
+function inv_lot_balances_key(string $key, bool $positiveOnly = true): array {
+    [$matId, $prodId] = inv_split_key($key);
+    if ($matId > 0) return inv_lot_balances($matId, $positiveOnly);
+    if ($prodId <= 0) return [];
+    try {
+        $st = db()->prepare("SELECT
+                COALESCE(size_label,'') lot_no, location_id, ownership,
+                COALESCE(SUM(qty_in),0) - COALESCE(SUM(qty_out),0) bal,
+                COALESCE(SUM(value_amount),0) val,
+                MIN(CASE WHEN qty_in > 0 THEN txn_date END) first_in,
+                MAX(txn_date) last_move
+            FROM inv_stock_ledger
+            WHERE product_id = ?
+            GROUP BY COALESCE(size_label,''), location_id, ownership
+            ORDER BY first_in, lot_no");
+        $st->execute([$prodId]);
+        $out = [];
+        foreach ($st->fetchAll() as $r) {
+            $bal = (float)$r['bal'];
+            if ($positiveOnly && $bal <= 0.0005) continue;
+            $out[] = [
+                'lot_no'      => (string)$r['lot_no'],
+                'size_label'  => (string)$r['lot_no'],
+                'location_id' => (int)$r['location_id'],
+                'location'    => inv_location_name((int)$r['location_id']),
+                'ownership'   => $r['ownership'],
+                'bal'         => $bal,
+                'rate'        => $bal > 0 ? round((float)$r['val'] / $bal, 4) : 0.0,
+                'first_in'    => $r['first_in'] ?: $r['last_move'],
+                'last_move'   => $r['last_move'],
+            ];
+        }
+        return $out;
+    } catch (Throwable $e) { return []; }
+}
+
+/* What is on the floor for one item — material or product — optionally
+   narrowed to one lot (a material) or one size (a product). $sub empty means
+   the whole pile, which is the answer an operator wants before they have
+   said which lot they are taking. */
+function inv_available_key(string $key, string $sub, int $locationId, string $ownership = 'own'): float {
+    $bal = 0.0;
+    foreach (inv_lot_balances_key($key, false) as $l) {
+        if ($l['ownership'] !== $ownership) continue;
+        if ($locationId > 0 && $l['location_id'] !== $locationId) continue;
+        if ($sub !== '' && $l['lot_no'] !== $sub) continue;
+        $bal += $l['bal'];
+    }
+    return round($bal, 3);
+}
+
 function inv_available_at(int $materialId, string $lot, int $locationId, string $ownership = 'own'): float {
     $bal = 0.0;
     foreach (inv_lot_balances($materialId, false) as $l) {

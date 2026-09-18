@@ -87,18 +87,24 @@ if (($_GET['ajax'] ?? '') === 'plines') {
 /* What is on hand, for the outward form. Read-only. */
 if (($_GET['ajax'] ?? '') === 'onhand') {
     header('Content-Type: application/json');
-    $mid = (int)($_GET['material_id'] ?? 0);
+    /* BY ITEM KEY, so a finished product can be answered for as well as a
+       material. material_id is still accepted because an older page left
+       open in a browser tab will still be asking that way, and it costs one
+       line to keep it working. */
+    $key = trim((string)($_GET['item_key'] ?? ''));
+    if ($key === '') { $mid = (int)($_GET['material_id'] ?? 0); $key = $mid > 0 ? 'm' . $mid : ''; }
     $loc = (int)($_GET['location_id'] ?? 0);
     $own = ($_GET['own'] ?? 'own') === 'customer' ? 'customer' : 'own';
     $lots = [];
-    foreach (inv_lot_balances($mid, true) as $l) {
+    foreach (inv_lot_balances_key($key, true) as $l) {
         if ($l['ownership'] !== $own) continue;
         if ($loc > 0 && $l['location_id'] !== $loc) continue;
         $lots[] = $l;
     }
     echo json_encode([
         'ok' => true,
-        'available' => inv_available_at($mid, '', $loc, $own),
+        'kind' => str_starts_with($key, 'p') ? 'prod' : 'mat',
+        'available' => inv_available_key($key, '', $loc, $own),
         'lots' => $lots,
         'tolerance_pct' => inv_neg_tolerance_pct(),
         'is_admin' => is_admin(),
@@ -462,6 +468,7 @@ flash();
 .ig-inp{padding:9px 11px;border-radius:9px;border:1px solid #cbd5e3;font-size:12.5px;font-family:inherit;width:100%}
 .ig-lbl{display:block;font-size:10.5px;color:#8a97ab;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}
 .ig-grid{display:grid;gap:13px;grid-template-columns:repeat(4,1fr)}
+.ig-wide{grid-column:span 2}
 @media(max-width:1000px){.ig-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:640px){.ig-grid{grid-template-columns:1fr}}
 .ig-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
@@ -564,7 +571,16 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
         </select>
         <p id="tnote" style="font-size:10.5px;color:#8a97ab;margin:5px 0 0"></p></div>
 
-      <div><label class="ig-lbl" id="plabel"><?= $dir === 'in' ? 'Received from' : 'Party / destination' ?></label>
+      <?php /* "+ Add new party" USED TO OWN A WHOLE COLUMN OF THE HEADER —
+               one button, one grid cell, and a grey sentence under it, for
+               something used perhaps once a week. It sits on the party
+               field's own label line now: same button, same script, no cell.
+               #pNewWrap is kept as the element the script shows and hides,
+               so that logic is untouched — a span's default display is
+               inline, which is exactly what style.display='' restores. */ ?>
+      <div><label class="ig-lbl ig-lblrow" id="plabel"><?= $dir === 'in' ? 'Received from' : 'Party / destination' ?>
+          <span id="pNewWrap" style="display:none"><button type="button" class="ig-mini" id="pNewBtn"
+            title="Adds it to the master so it carries contracts and a ledger.">+ new</button></span></label>
         <select class="ig-inp" name="party_id" id="pSel">
           <option value="0">— not listed —</option>
           <?php foreach ($parties as $p): ?><option value="<?= (int)$p['id'] ?>"
@@ -582,11 +598,6 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                suppliers. The script swaps between the two. */ ?>
       <div id="pTextWrap"><label class="ig-lbl">…or type a name</label>
         <input class="ig-inp" name="party_text" id="pText" value="<?= e($D['party_text'] ?? '') ?>" placeholder="one-off party"></div>
-      <div id="pNewWrap" style="display:none">
-        <label class="ig-lbl">Not on the list?</label>
-        <button type="button" class="ig-btn sec" id="pNewBtn" style="width:100%;cursor:pointer">+ Add new party</button>
-        <p style="font-size:10.5px;color:#8a97ab;margin:5px 0 0">Adds it to the master so it carries contracts and a ledger.</p>
-      </div>
       <div><label class="ig-lbl">Vehicle no.</label><input class="ig-inp" name="vehicle_no" value="<?= e($D['vehicle_no'] ?? '') ?>" style="font-family:monospace"></div>
       <div><label class="ig-lbl"><?= $dir === 'in' ? 'Supplier challan / bilty' : 'Challan / reference' ?></label><input class="ig-inp" name="challan_no" value="<?= e($D['challan_no'] ?? '') ?>" style="font-family:monospace"></div>
 
@@ -644,7 +655,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
           <?php $defLoc = (int)($D['location_id'] ?? inv_setting('default_location', '1'));
           foreach ($locations as $l): ?><option value="<?= (int)$l['id'] ?>" <?= $defLoc === (int)$l['id'] ? 'selected' : '' ?>><?= e($l['name']) ?></option><?php endforeach; ?>
         </select></div>
-      <div style="grid-column:span 2"><label class="ig-lbl">Remarks</label><input class="ig-inp" name="remarks" value="<?= e($D['remarks'] ?? '') ?>"></div>
+      <div class="ig-wide"><label class="ig-lbl">Remarks</label><input class="ig-inp" name="remarks" value="<?= e($D['remarks'] ?? '') ?>"></div>
       <div><label class="ig-lbl">Save as</label>
         <select class="ig-inp" name="status">
           <option value="draft" <?= ($D['status'] ?? 'draft') === 'draft' ? 'selected' : '' ?>>Draft</option>
@@ -887,7 +898,11 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     /* the over-the-balance strip is driven by quantity, so it has to be
        recomputed on the same keystroke that changes one */
     if(e.target.classList.contains('qty')) clWarn();
-    if(IS_OUT){ var tr=e.target.closest('tr'); if(tr) refreshRow(tr); stockCheck(); }
+    /* THE SIZE BOX LIVES ON THE DETAIL ROW, NOT THE LINE.
+       closest('tr') from it returns the strip, which has no Available cell,
+       so typing a size repainted nothing. mainRow() walks back to the line
+       the strip belongs to — the same walk detailOf() makes forwards. */
+    if(IS_OUT){ var tr=mainRow(e.target); if(tr) refreshRow(tr); stockCheck(); }
   });
   document.getElementById('gstOn').addEventListener('change',tot);
   document.getElementById('gstPct').addEventListener('input',tot);
@@ -921,6 +936,18 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   function detailOf(tr){
     var n = tr.nextElementSibling;
     return (n && n.classList.contains('detail')) ? n : null;
+  }
+  /* The line row an element sits on — stepping back off the detail strip
+     onto the line it belongs to, so a field on the strip can still drive
+     the cells on the line above it. */
+  function mainRow(el){
+    var tr = el && el.closest ? el.closest('tr') : null;
+    if(!tr) return null;
+    if(tr.classList.contains('detail')){
+      var p = tr.previousElementSibling;
+      return (p && !p.classList.contains('detail')) ? p : null;
+    }
+    return tr;
   }
 
   tb.addEventListener('click',function(e){
@@ -1011,13 +1038,30 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     return sel ? String(sel.value || '') : '';
   }
 
+  /* WHAT NARROWS THE BALANCE ON THIS ROW.
+     A material is narrowed by its lot; a finished product by its SIZE, which
+     lives on the detail strip. Asking a product for a lot number was why the
+     Available cell on a product line never moved off its dash. */
+  function subOf(tr){
+    var k = keyOfRow(tr);
+    if(k.charAt(0) === 'p'){
+      var det = detailOf(tr), sz = det ? det.querySelector('.szl') : null;
+      return sz ? String(sz.value || '').trim() : '';
+    }
+    var lot = tr.querySelector('.lot');
+    return lot ? String(lot.value || '').trim() : '';
+  }
+
   function loadOnHand(tr){
     if(!IS_OUT) return;
-    var mid = matIdOf(tr);
-    if(!mid){ paintAvail(tr, null); return; }
-    var key = mid + '|' + locId() + '|' + ownOf();
+    /* BY ITEM KEY, NOT MATERIAL ID. matIdOf() returns 0 for a finished
+       product, so this used to give up before it asked — the picker showed
+       300 in stock and the column beside it stayed on a dash. */
+    var ik = keyOfRow(tr);
+    if(!ik){ paintAvail(tr, null); return; }
+    var key = ik + '|' + locId() + '|' + ownOf();
     if(ONHAND[key]){ paintAvail(tr, ONHAND[key]); return; }
-    fetch('inv_gate.php?ajax=onhand&material_id=' + mid + '&location_id=' + locId() + '&own=' + ownOf())
+    fetch('inv_gate.php?ajax=onhand&item_key=' + encodeURIComponent(ik) + '&location_id=' + locId() + '&own=' + ownOf())
       .then(function(r){ return r.json(); })
       .then(function(d){
         if(!d.ok) return;
@@ -1037,20 +1081,24 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
        a second line of text under one cell sets the height of the whole
        row — but hiding a warning is not the same as not needing it, so the
        words move onto the field rather than disappearing. */
+    /* A product is split into SIZES, a material into lots. Calling a size a
+       lot in the one sentence the operator reads is how a screen teaches
+       somebody the wrong word for their own stock. */
+    var word = d.kind === 'prod' ? 'size' : 'lot';
     var msg = (d.lots && d.lots.length)
-      ? d.lots.length + ' lot(s) here — leave blank to take from any'
-      : 'no lot of this item is at ' + (d.location || 'this location');
+      ? d.lots.length + ' ' + word + '(s) here — leave blank to take from any'
+      : 'no ' + word + ' of this item is at ' + (d.location || 'this location');
     if(hint) hint.textContent = msg;
     var lotBox = tr.querySelector('.lot'); if(lotBox) lotBox.title = msg;
     refreshRow(tr);
   }
   function availFor(tr){
-    var mid = matIdOf(tr); if(!mid) return null;
-    var d = ONHAND[mid + '|' + locId() + '|' + ownOf()]; if(!d) return null;
-    var lot = (tr.querySelector('.lot') || {}).value || '';
-    if(lot.trim() === '') return d.available;
+    var ik = keyOfRow(tr); if(!ik) return null;
+    var d = ONHAND[ik + '|' + locId() + '|' + ownOf()]; if(!d) return null;
+    var sub = subOf(tr);
+    if(sub === '') return d.available;
     var bal = 0;
-    (d.lots || []).forEach(function(l){ if((l.lot_no || '') === lot.trim()) bal += l.bal; });
+    (d.lots || []).forEach(function(l){ if((l.lot_no || '') === sub) bal += l.bal; });
     return bal;
   }
   function q3(v){ return Number(v).toLocaleString('en-US',{maximumFractionDigits:3}); }

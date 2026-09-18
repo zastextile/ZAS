@@ -600,9 +600,14 @@ table.zp-t tbody tr:hover{background:#fafcff}
 
   /* a unit of work, described once — everything a person needs to decide */
   function zeWorkOpt(w, click, ev){
+    /* THE ORDER NUMBER AND THE PRODUCT, and nothing else on that line.
+       The customer name used to sit here too. On a floor list it earns
+       nothing — the person booking work knows the style, not the buyer —
+       and it pushed the product, which is what they DO recognise, off the
+       end of a narrow row. Asked for directly. */
     return { v:w.k, click:click, ev:ev,
              title: w.pn + ' → ' + w.on, strong: w.pi,
-             bits: [w.cust, w.prod].filter(Boolean),
+             bits: [w.prod].filter(Boolean),
              chips:[w.size, w.st].filter(Boolean),
              rate: w.rate, left: w.left };
   }

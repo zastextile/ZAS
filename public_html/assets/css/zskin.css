@@ -892,7 +892,54 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
    ways, rather than assumed. */
 .zskin .ig-grid{gap:8px !important;
   grid-template-columns:repeat(auto-fit,minmax(176px,1fr)) !important}
-@media(max-width:560px){.zskin .ig-grid{grid-template-columns:1fr !important}}
+/* TWO COLUMNS ON A PHONE, NOT ONE — and that is a correction.
+   This used to force a single column below 560px, which made the header
+   TALLER than the unskinned page, because the page itself drops to two.
+   Measured at 560: one column is 692px of header, two is about half that.
+   One column is kept only for a genuinely narrow screen, where a label and
+   a field side by side would have nowhere to go. */
+@media(max-width:560px){.zskin .ig-grid{grid-template-columns:repeat(2,1fr) !important}}
+@media(max-width:400px){.zskin .ig-grid{grid-template-columns:1fr !important}}
+
+/* THE HINTS WERE SETTING THE HEIGHT OF THE HEADER.
+   Six of these fields carry a grey sentence under them — "1 customer(s) on
+   file", "Feeds the dispatched figure on Order Costing Control", and so on.
+   Each is one or two lines, and a grid row is as tall as its tallest cell,
+   so six sentences were adding roughly half the header's height to EVERY
+   row, on every pass, for ever.
+
+   They are not deleted — they are taken out of the layout and shown over
+   it when the field they belong to has focus, which is the only moment
+   they are worth reading. The row height is then the field, and nothing
+   else. Same trick already used on the lot hint inside the grid.
+
+   The inline `style` on these paragraphs is why every property here has to
+   shout; the markup sets margin and colour itself. */
+.zskin .ig-grid>div{position:relative}
+.zskin .ig-grid>div>p{
+  position:absolute !important;left:0;right:0;top:100%;
+  margin:3px 0 0 !important;padding:5px 8px !important;
+  background:var(--panel) !important;border:1px solid var(--bd);border-radius:5px;
+  box-shadow:0 8px 20px rgba(15,35,65,.14);
+  font-size:11px !important;line-height:1.5 !important;
+  z-index:40;opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity var(--t)}
+.zskin .ig-grid>div:focus-within>p{opacity:1;visibility:visible}
+.zskin .ig-grid>div>p:empty{display:none}
+
+/* REMARKS GAVE THE HEADER A THIRD ROW ALL BY ITSELF.
+   It spans two columns on the unskinned page. Fourteen fields fit exactly
+   two rows across seven auto-fit columns — but a two-column span makes
+   fifteen track slots, and the fifteenth starts a row of its own with six
+   empty cells beside it. Packed, it is one cell like the rest. */
+.zskin .ig-wide{grid-column:auto !important}
+
+/* the label line can carry a control on its right without growing */
+.zskin .ig-lblrow{display:flex !important;align-items:center;justify-content:space-between;gap:8px}
+.zskin .ig-mini{border:1px solid var(--bd);background:var(--sub);color:var(--acc);
+  border-radius:4px;padding:0 6px;height:16px;line-height:1;cursor:pointer;
+  font:inherit;font-size:10px;font-weight:700;letter-spacing:0;text-transform:none}
+.zskin .ig-mini:hover{border-color:var(--acc)}
 
 /* header fields: still real form controls, just not oversized ones */
 .zskin .ig-inp{box-sizing:border-box;height:28px;padding:0 8px !important;border-radius:5px !important;
