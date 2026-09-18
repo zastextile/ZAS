@@ -113,6 +113,12 @@ function zp_save_worker(int $id, string $c, string $n, ?string $d, int $act): ar
 function zp_save_worker_stages(int $wid, array $sids): void {
     global $STAGED; $STAGED[$wid] = $sids;
 }
+/* ZP_CODE_MAX IS LIFTED, NOT GUESSED. The import reads it, so the test has
+   to have the real one — inventing a number here would let the test agree
+   with itself while the app used a different limit. */
+preg_match('/const ZP_CODE_MAX = (\d+);/', $zp, $mx);
+ok(!empty($mx[1]), 'ZP_CODE_MAX found in the engine');
+if (!defined('ZP_CODE_MAX')) define('ZP_CODE_MAX', (int)$mx[1]);
 eval($imp);
 
 echo "4. A good sheet goes in\n";
@@ -136,7 +142,10 @@ foreach ([
     [['code' => '', 'name' => '', 'dept' => 'x', 'stages' => ''], 'there is no name'],
     [['code' => 'W001', 'name' => 'Someone', 'dept' => '', 'stages' => ''], 'already belongs to Rashid Ali'],
     [['code' => '', 'name' => 'Someone', 'dept' => '', 'stages' => 'Stiching'], 'no stage is called'],
-    [['code' => str_repeat('X', 25), 'name' => 'Someone', 'dept' => '', 'stages' => ''], 'longer than 20'],
+    /* Longer than the real limit, whatever it is — so this case keeps
+       testing the rule and not a number that has since moved. */
+    [['code' => str_repeat('X', ZP_CODE_MAX + 5), 'name' => 'Someone', 'dept' => '', 'stages' => ''],
+     'longer than ' . ZP_CODE_MAX],
 ] as [$row, $expect]) {
     $SAVED = [];
     $r2 = zp_import_workers([['code' => '', 'name' => 'Good One', 'dept' => '', 'stages' => ''], $row]);
@@ -169,7 +178,12 @@ $ga = strpos($pw, '<table class="zp-t" id="impTbl">');
 $gb = strpos($pw, '</table>', $ga);
 $frag = substr($pw, $ga, $gb - $ga + strlen('</table>'));
 
+/* ZP_CODE_MAX GOES INTO THE TEMPLATE TOO. The fragment is rendered by a
+   separate php process, so a constant defined in this one does not reach
+   it — the grid rendered "Undefined constant" straight into the HTML and
+   the browser step then had nothing to drive. Lifted, not invented. */
 $tpl = '<?php
+const ZP_CODE_MAX = ' . ZP_CODE_MAX . ';
 function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
 $stages   = [["id"=>1,"name"=>"Cutting"],["id"=>2,"name"=>"Stitching"],["id"=>3,"name"=>"Packing"]];
 $impRows  = array_fill(0, 3, ["code"=>"","name"=>"","dept"=>"","stages"=>""]);

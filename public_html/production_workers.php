@@ -213,6 +213,9 @@ table.zp-t td{padding:7px 8px;border-bottom:1px solid #f1f4f9}
 table.zp-t tbody tr:hover{background:#fafcff}
 .num{text-align:right;font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace}
 .code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:#5a6b82}
+/* A long employee number wraps inside its own cell instead of pushing
+   every other column off the screen. */
+.wrapcode{max-width:170px;word-break:break-all;line-height:1.3}
 .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10.5px;font-weight:800}
 .pill.on{background:rgba(22,163,74,.13);color:#15803d}
 .pill.off{background:#eef1f6;color:#8a97ab}
@@ -281,7 +284,11 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
            person pressing the button knows them without asking. */ ?>
   <div class="zp-card" id="hr">
     <h2>Workers from the HR app</h2>
-    <p class="sub">Employee number, name and department come from HR. Stages stay yours.</p>
+    <p class="sub">Employee number, name and department come from HR. Stages stay yours.
+      The employee number becomes the worker code here, exactly as HR spells it —
+      that is what matches a person between the two systems, so it is never
+      shortened or cut. Up to <?= ZP_CODE_MAX ?> characters; anything longer is
+      refused by name rather than silently trimmed.</p>
 
     <?php if (!zp_hr_configured()): ?>
       <div class="note info" style="margin-bottom:11px">
@@ -406,7 +413,7 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
       <div class="fgrid" style="margin-top:12px">
         <div>
           <span class="lab">Code</span>
-          <input class="zin code" name="worker_code" maxlength="20" autocomplete="off"
+          <input class="zin code" name="worker_code" maxlength="<?= ZP_CODE_MAX ?>" autocomplete="off"
                  value="<?= e($edit['worker_code'] ?? '') ?>" placeholder="leave blank"
                  title="Leave it blank and the next free code is used. You never have to invent one.">
         </div>
@@ -492,7 +499,7 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
         <?php foreach ($impRows as $ix => $ir): ?>
           <tr>
             <td class="code"><?= $ix + 1 ?></td>
-            <td><input class="zin code" data-c="code" name="w_code[]" maxlength="20" autocomplete="off"
+            <td><input class="zin code" data-c="code" name="w_code[]" maxlength="<?= ZP_CODE_MAX ?>" autocomplete="off"
                        placeholder="auto" value="<?= e((string)($ir['code'] ?? '')) ?>"></td>
             <td><input class="zin" data-c="name" name="w_name[]" maxlength="120" autocomplete="off"
                        value="<?= e((string)($ir['name'] ?? '')) ?>"></td>
@@ -541,7 +548,12 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
       <?php foreach ($workers as $i => $w): $wid = (int)$w['id']; $e2 = $earned[$wid] ?? ['n' => 0, 'amt' => 0]; ?>
         <tr>
           <td class="code"><?= $i + 1 ?></td>
-          <td class="code"><b><?= e($w['worker_code']) ?></b></td>
+          <?php /* SHOWN WHOLE, ALWAYS. A reference like PI-260908-786 can be
+                   shortened because its tail identifies it; an employee number
+                   cannot, because two people's numbers may differ only in the
+                   part that would be dropped. So a long code wraps rather than
+                   being cut, and the column is allowed to grow a little. */ ?>
+          <td class="code wrapcode"><b><?= e($w['worker_code']) ?></b></td>
           <td><?= e($w['worker_name']) ?></td>
           <td style="color:#5a6b82"><?= e($w['department'] ?: '—') ?></td>
           <?php /* A stage that has since been renamed still reads correctly here

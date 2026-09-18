@@ -204,6 +204,23 @@ function zp_ensure_schema(): void {
         UNIQUE KEY uniq_worker_code (worker_code),
         INDEX(worker_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    /* A WORKER CODE IS AN EMPLOYEE NUMBER FROM SOMEWHERE ELSE, and somewhere
+       else does not ask us how long its numbers may be. VARCHAR(20) was
+       chosen when the only codes were the W001 this screen gives out; a real
+       HR employee number is longer, and 20 characters is a trap rather than
+       a limit:
+
+         MySQL outside strict mode CUTS a long value to fit and says nothing.
+         Two people whose numbers differ only after the twentieth character
+         then become the same code — and the unique key means the second one
+         simply fails to import, with a message blaming a collision that the
+         truncation itself created.
+
+       Widened to 40, which is longer than any employee number anybody has
+       ever shown me, and ZP_CODE_MAX below refuses anything longer rather
+       than trusting the database to complain. utf8mb4 VARCHAR(40) is 160
+       bytes of index, nowhere near any limit. */
+    try { db()->exec("ALTER TABLE zp_workers MODIFY worker_code VARCHAR(40) NOT NULL"); } catch (Throwable $e) {}
 
     /* ============================================================
        SET WORK — the jobs done to the whole set, not to any one part
@@ -1821,10 +1838,22 @@ function zp_workers(bool $activeOnly = false): array {
     try { return db()->query($sql)->fetchAll(); } catch (Throwable $e) { return []; }
 }
 
+/* How long a worker code may be. One number, in one place, read by the
+   save, by the paste grid, by the HR sync and by the two boxes on screen —
+   so they cannot disagree about what will be accepted. */
+const ZP_CODE_MAX = 40;
+
 function zp_save_worker(int $id, string $code, string $name, ?string $dept, int $active): array {
     zp_ensure_schema();
     $code = strtoupper(trim($code));
     $name = trim($name);
+    /* REFUSED HERE, NOT TRUNCATED BY THE DATABASE. A code that is cut down
+       to fit is a different person's code, and nothing on any screen would
+       ever say so. */
+    if (mb_strlen($code) > ZP_CODE_MAX)
+        return ['ok' => false, 'id' => 0, 'error' => 'The code "' . $code . '" is '
+              . mb_strlen($code) . ' characters — longer than the ' . ZP_CODE_MAX
+              . ' this app stores. Shorten it, or tell me and I will widen the column.'];
     $dept = ($dept === null || trim($dept) === '') ? null : trim($dept);
     if ($name === '') return ['ok' => false, 'id' => 0, 'error' => 'Worker name is required.'];
     if ($code === '') {
@@ -1968,7 +1997,7 @@ function zp_import_workers(array $rows): array {
         if (mb_strlen($dept) > 60)  $dept = mb_substr($dept, 0, 60);
 
         if ($code !== '') {
-            if (mb_strlen($code) > 20) { $errors[] = "$line: the code \"$code\" is longer than 20 characters."; continue; }
+            if (mb_strlen($code) > ZP_CODE_MAX) { $errors[] = "$line: the code \"$code\" is longer than " . ZP_CODE_MAX . " characters."; continue; }
             if (isset($have[$code])) { $errors[] = "$line: code $code already belongs to " . $have[$code] . "."; continue; }
             if (isset($seen[$code])) { $errors[] = "$line: code $code is used twice in this paste (also row " . $seen[$code] . ")."; continue; }
             $seen[$code] = $i + 1;

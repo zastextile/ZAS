@@ -238,7 +238,48 @@ ok($rb['ok'] === false, 'one bad row refuses the whole sync');
 ok($rb['added'] === 0 && $rb['changed'] === 0, '  and reports nothing as done, got ' . json_encode($rb));
 ok(in_array('ROLLBACK', $DB->log, true), '  AND IT ROLLED BACK — no half-applied list');
 
-echo "7. The screen\n";
+echo "7. A long employee number\n";
+/* HIS PROBLEM, IN HIS WORDS: "for worker we have long code so what to do".
+   The column was VARCHAR(20), chosen when the only codes were the W001 this
+   screen gives out. A real employee number is longer, and 20 was a trap
+   rather than a limit — MySQL outside strict mode CUTS a long value and says
+   nothing, so two people whose numbers differ only after the twentieth
+   character become one code. */
+$zpC = preg_replace('!/\*.*?\*/!s', '', $zp);
+ok(str_contains($zpC, 'MODIFY worker_code VARCHAR(40) NOT NULL'),
+   'the column is widened to 40, the same way every other column here arrives');
+ok(str_contains($zpC, 'const ZP_CODE_MAX = 40;'), 'and the limit is one named number');
+ok(!str_contains($zpC, 'is longer than 20 characters'),
+   '  with no hard-coded 20 left behind to disagree with it');
+ok(str_contains($pw, 'maxlength="<?= ZP_CODE_MAX ?>"'),
+   'the boxes on screen follow the same number, not a copy of it');
+ok(substr_count($pw, 'maxlength="<?= ZP_CODE_MAX ?>"') === 2, '  both of them');
+
+/* REFUSED, NOT TRUNCATED. The two numbers below are 24 characters and differ
+   only at the very end — exactly the pair that a 20-character cut would turn
+   into the same person. */
+$long1 = 'ZES-2024-0000000000012345';
+ok(mb_strlen($long1) > 20, 'the test code really is longer than the old limit');
+
+$tooLong = str_repeat('X', 41);
+$realSave = (function (string $src) {
+    $a = strpos($src, 'function zp_save_worker(int $id');
+    $b = strpos($src, "\n}\n", $a);
+    return substr($src, $a, $b - $a + 3);
+})($zp);
+/* run the real save with a database that would happily truncate */
+/* The constant is lifted from the file too, so the test cannot pass by
+   agreeing with a number it invented itself. */
+preg_match('/const ZP_CODE_MAX = (\d+);/', $zp, $mx);
+ok(!empty($mx[1]), 'ZP_CODE_MAX found in the engine');
+if (!defined('ZP_CODE_MAX')) define('ZP_CODE_MAX', (int)$mx[1]);
+eval(str_replace('function zp_save_worker(', 'function zp_save_worker_real(', $realSave));
+$r1 = zp_save_worker_real(0, $tooLong, 'Too Long', null, 1);
+ok($r1['ok'] === false, 'a code over the limit is REFUSED, not cut to fit');
+ok(str_contains($r1['error'], '41 characters'), '  and the message says how long it actually is: ' . $r1['error']);
+ok(str_contains($r1['error'], 'I will widen the column'), '  and what to do about it');
+
+echo "8. The screen\n";
 ok(str_contains($pw, "value=\"hrcheck\""), 'there is an Update from HR button');
 ok(str_contains($pw, "value=\"hrapply\""), 'and a separate Apply, so nothing writes on a look');
 ok(str_contains($pw, '$f = zp_hr_fetch();' ) && substr_count($pw, 'zp_hr_fetch()') >= 2,
