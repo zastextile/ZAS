@@ -76,6 +76,7 @@ function zas_menu(): array {
                 ['label' => 'Daily Production Entry','href' => 'production_entry.php',     'show' => $prod || $admin],
                 ['label' => 'Production Reports',    'href' => 'production_reports.php',   'show' => $prod || $admin],
                 ['label' => 'Production Workers',    'href' => 'production_workers.php',   'show' => $admin],
+                ['label' => 'Worker Pay',            'href' => 'production_pay.php',       'show' => $admin],
                 /* One order pays more for one operation — a tighter hem, a
                    quality parameter in the contract. Amended there, not on the
                    product, so no other order moves. A colleague may read it;

@@ -392,6 +392,26 @@ function zp_ensure_schema(): void {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         INDEX(op_id), INDEX(created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- what a worker has been PAID ----
+       The other half of a wage. zp_entries says what was earned; this says
+       what was handed over. Nothing else: no accounts, no vouchers, no
+       double entry. "just deal financie for workers only against production
+       so simple pay cash system very simple worker ledger". */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_pay (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        pay_date DATE NOT NULL,
+        worker_id INT NOT NULL,
+        amount DECIMAL(14,2) NOT NULL,
+        note VARCHAR(255) NULL,
+        status VARCHAR(12) NOT NULL DEFAULT 'active',
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        cancelled_by INT NULL,
+        cancelled_at DATETIME NULL,
+        cancel_reason VARCHAR(255) NULL,
+        INDEX(pay_date), INDEX(worker_id), INDEX(status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 }
 
 /* ============================================================
@@ -2233,6 +2253,194 @@ function zp_delete_worker(int $id): array {
                   . ' cancelled entr' . ($cancelled === 1 ? 'y was' : 'ies were')
                   . ' removed with them, since a cancelled entry carries no wage.'
                 : 'Worker deleted — they had no entries.'];
+}
+
+/* ============================================================
+   PAYING A WORKER — earned, paid, balance. Nothing else.
+   ============================================================
+
+   "just deal financie for workers only against production so simple pay
+    cash system very simple worker ledger etc"
+
+   So this is not an accounting system and deliberately never becomes one.
+   There is no chart of accounts, no cash account, no voucher, no double
+   entry. There are two numbers about one person:
+
+     EARNED   the sum of what production booked to them (zp_entries.amount,
+              active rows only — a cancelled entry was never earned)
+     PAID     the sum of what was handed to them (zp_pay, active rows only)
+
+   and the only thing anybody wants to know, which is the difference.
+
+   A PAYMENT IS NEVER DELETED, it is cancelled — the same rule the wage
+   entries follow, and for the same reason: a correction has to stay
+   readable or an argument about money cannot be settled. */
+
+/* [worker_id => earned] — one query for the whole floor. */
+function zp_earned_map(): array {
+    zp_ensure_schema();
+    $out = [];
+    try {
+        foreach (db()->query("SELECT worker_id, COALESCE(SUM(amount),0) a
+                              FROM zp_entries WHERE status='active' GROUP BY worker_id")->fetchAll() as $r)
+            $out[(int)$r['worker_id']] = round((float)$r['a'], 2);
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* [worker_id => paid] */
+function zp_paid_map(): array {
+    zp_ensure_schema();
+    $out = [];
+    try {
+        foreach (db()->query("SELECT worker_id, COALESCE(SUM(amount),0) a
+                              FROM zp_pay WHERE status='active' GROUP BY worker_id")->fetchAll() as $r)
+            $out[(int)$r['worker_id']] = round((float)$r['a'], 2);
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* Every worker with what they have earned, been paid and are owed.
+   ACTIVE WORKERS, PLUS ANYONE STILL OWED MONEY. Somebody switched off with
+   a balance outstanding must not vanish from the screen that pays them —
+   that is how a wage gets forgotten. */
+function zp_worker_balances(): array {
+    zp_ensure_schema();
+    $earned = zp_earned_map(); $paid = zp_paid_map();
+    $out = [];
+    foreach (zp_workers(false) as $w) {
+        $id = (int)$w['id'];
+        $e = $earned[$id] ?? 0.0; $p = $paid[$id] ?? 0.0;
+        $bal = round($e - $p, 2);
+        if (!(int)$w['is_active'] && abs($bal) < 0.005 && $e == 0.0) continue;
+        $out[] = [
+            'id' => $id, 'code' => (string)$w['worker_code'], 'name' => (string)$w['worker_name'],
+            'dept' => (string)($w['department'] ?? ''), 'active' => (int)$w['is_active'],
+            'earned' => $e, 'paid' => $p, 'balance' => $bal,
+        ];
+    }
+    usort($out, fn($a, $b) => $b['balance'] <=> $a['balance']);
+    return $out;
+}
+
+/* $rows = [ ['worker_id' => int, 'amount' => float, 'note' => string], ... ]
+
+   ALL OF THEM OR NONE, like every other import in this module. Paying half
+   a floor and being told nothing is how a worker is paid twice. */
+function zp_pay_save(string $date, array $rows, ?int $userId = null): array {
+    zp_ensure_schema();
+    $date = trim($date) !== '' ? $date : date('Y-m-d');
+    if ($date > date('Y-m-d')) return ['ok' => false, 'saved' => 0, 'total' => 0.0, 'errors' => ['A payment cannot be dated in the future.']];
+
+    $known = []; foreach (zp_workers(false) as $w) $known[(int)$w['id']] = (string)$w['worker_name'];
+    $bal = []; foreach (zp_worker_balances() as $b) $bal[$b['id']] = $b['balance'];
+
+    $clean = []; $errors = []; $seen = [];
+    foreach ($rows as $i => $r) {
+        $wid = (int)($r['worker_id'] ?? 0);
+        $amt = round((float)str_replace(',', '', (string)($r['amount'] ?? 0)), 2);
+        if ($wid <= 0 && $amt == 0.0) continue;                   // a blank line is a spare row
+        $line = 'Line ' . ((int)$i + 1);
+        if ($wid <= 0)            { $errors[] = "$line: no worker chosen."; continue; }
+        if (!isset($known[$wid])) { $errors[] = "$line: that worker is not on the list."; continue; }
+        if ($amt <= 0)            { $errors[] = "$line: " . $known[$wid] . " has no amount."; continue; }
+        /* THE SAME PERSON TWICE IN ONE SHEET is almost always a slip, and
+           the second line would quietly double their pay. */
+        if (isset($seen[$wid]))   { $errors[] = "$line: " . $known[$wid] . " is on this sheet twice."; continue; }
+        $seen[$wid] = true;
+        $clean[] = ['worker_id' => $wid, 'amount' => $amt, 'note' => trim((string)($r['note'] ?? ''))];
+    }
+    if ($errors) return ['ok' => false, 'saved' => 0, 'total' => 0.0, 'errors' => $errors, 'warn' => []];
+    if (!$clean) return ['ok' => false, 'saved' => 0, 'total' => 0.0, 'errors' => ['Nothing to pay — every line is empty.'], 'warn' => []];
+
+    /* PAYING MORE THAN IS OWED IS A WARNING, NOT A REFUSAL. An advance
+       before the week is booked is ordinary, and refusing it would send
+       people back to paying cash off the books. It is said, and the
+       balance simply goes negative, which is the truth. */
+    $warn = [];
+    foreach ($clean as $c) {
+        $owed = $bal[$c['worker_id']] ?? 0.0;
+        if ($c['amount'] > $owed + 0.005)
+            $warn[] = $known[$c['worker_id']] . ' — paid ' . number_format($c['amount'], 2)
+                    . ' against ' . number_format(max(0, $owed), 2) . ' owed';
+    }
+
+    db()->beginTransaction();
+    try {
+        $ins = db()->prepare("INSERT INTO zp_pay (pay_date, worker_id, amount, note, created_by) VALUES (?,?,?,?,?)");
+        foreach ($clean as $c) $ins->execute([$date, $c['worker_id'], $c['amount'], $c['note'] ?: null, $userId]);
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'saved' => 0, 'total' => 0.0, 'errors' => ['Nothing was saved. ' . $e->getMessage()], 'warn' => []];
+    }
+    return ['ok' => true, 'saved' => count($clean),
+            'total' => round(array_sum(array_column($clean, 'amount')), 2),
+            'errors' => [], 'warn' => $warn];
+}
+
+/* A payment taken back. Never deleted — see the note at the top. */
+function zp_pay_cancel(int $id, string $reason, ?int $userId = null): array {
+    zp_ensure_schema();
+    $reason = trim($reason);
+    if ($reason === '') return ['ok' => false, 'error' => 'Give a reason — a correction with no reason cannot be checked later.'];
+    try {
+        $s = db()->prepare("SELECT status FROM zp_pay WHERE id=?"); $s->execute([$id]);
+        $st = $s->fetchColumn();
+        if ($st === false)     return ['ok' => false, 'error' => 'That payment no longer exists.'];
+        if ($st !== 'active')  return ['ok' => false, 'error' => 'That payment was already cancelled.'];
+        db()->prepare("UPDATE zp_pay SET status='cancelled', cancelled_by=?, cancelled_at=NOW(), cancel_reason=? WHERE id=?")
+            ->execute([$userId, $reason, $id]);
+    } catch (Throwable $e) { return ['ok' => false, 'error' => 'Could not cancel it. ' . $e->getMessage()]; }
+    return ['ok' => true, 'error' => ''];
+}
+
+/* ONE WORKER'S LEDGER — what they earned and what they were paid, in date
+   order, with the balance after every line. This is the whole "worker
+   ledger" he asked for and there is nothing else in it.
+
+   Work is summed PER DAY rather than listed per operation: a stitcher has
+   forty entries in a week and the question being answered here is "what do
+   I owe you", not "what did you do at 11am". The daily total is the line
+   somebody can argue with. */
+function zp_worker_ledger(int $workerId, int $limit = 400): array {
+    zp_ensure_schema();
+    if ($workerId <= 0) return [];
+    $rows = [];
+    try {
+        foreach (db()->query("SELECT entry_date d, COALESCE(SUM(amount),0) a, COUNT(*) n
+                              FROM zp_entries WHERE status='active' AND worker_id=" . (int)$workerId . "
+                              GROUP BY entry_date")->fetchAll() as $r)
+            $rows[] = ['date' => (string)$r['d'], 'kind' => 'earned', 'id' => 0,
+                       'what' => (int)$r['n'] . ' job' . ((int)$r['n'] === 1 ? '' : 's') . ' booked',
+                       'in' => round((float)$r['a'], 2), 'out' => 0.0, 'note' => ''];
+    } catch (Throwable $e) {}
+    try {
+        foreach (db()->query("SELECT id, pay_date d, amount a, note, status
+                              FROM zp_pay WHERE worker_id=" . (int)$workerId)->fetchAll() as $r) {
+            /* A CANCELLED PAYMENT IS SHOWN, STRUCK THROUGH, AND COUNTS FOR
+               NOTHING. Hiding it would make the balance look like it moved
+               on its own. */
+            $live = (string)$r['status'] === 'active';
+            $rows[] = ['date' => (string)$r['d'], 'kind' => $live ? 'paid' : 'cancelled', 'id' => (int)$r['id'],
+                       'what' => $live ? 'Cash paid' : 'Cash paid — cancelled',
+                       'in' => 0.0, 'out' => $live ? round((float)$r['a'], 2) : 0.0,
+                       'shown' => round((float)$r['a'], 2),
+                       'note' => (string)($r['note'] ?? '')];
+        }
+    } catch (Throwable $e) {}
+
+    usort($rows, function ($a, $b) {
+        if ($a['date'] !== $b['date']) return strcmp($a['date'], $b['date']);
+        /* Earned before paid on the same day — you cannot be paid for work
+           that is not booked yet, and the running balance reads wrong if
+           the payment lands first. */
+        return ($a['kind'] === 'earned' ? 0 : 1) <=> ($b['kind'] === 'earned' ? 0 : 1);
+    });
+    $run = 0.0;
+    foreach ($rows as &$r) { $run = round($run + $r['in'] - $r['out'], 2); $r['balance'] = $run; }
+    unset($r);
+    return array_slice($rows, -$limit);
 }
 
 /* ============================================================
