@@ -2404,10 +2404,11 @@ function zp_assembly_sizes(int $productId): array {
 
 /* WHAT WOULD HAPPEN, worked out and shown before anything is written.
    $sets = 0 asks only "what could I make?". */
-function zp_assembly_plan(int $productId, string $sizeLabel, float $sets): array {
+function zp_assembly_plan(int $productId, string $sizeLabel, float $sets, ?array $want = null): array {
     zp_ensure_schema();
     $sizeLabel = trim($sizeLabel);
-    $out = ['ok' => false, 'error' => '', 'parts' => [], 'can' => 0.0, 'limit_by' => '', 'short' => 0];
+    $out = ['ok' => false, 'error' => '', 'parts' => [], 'can' => 0.0, 'limit_by' => '',
+            'short' => 0, 'offrecipe' => []];
     if ($productId <= 0 || $sizeLabel === '') { $out['error'] = 'Choose a product and a size.'; return $out; }
 
     $sizeId = 0;
@@ -2415,25 +2416,73 @@ function zp_assembly_plan(int $productId, string $sizeLabel, float $sets): array
         if (mb_strtolower(trim((string)$sz['size_label'])) === mb_strtolower($sizeLabel)) { $sizeId = (int)$sz['id']; break; }
     if ($sizeId <= 0) { $out['error'] = 'That size is not on this product.'; return $out; }
 
-    $parts = zp_product_parts($productId);
-    if (!$parts) { $out['error'] = 'This product has no parts yet — add them in Product Master.'; return $out; }
+    $parts  = zp_product_parts($productId);
+    $qty    = zp_qty_map($productId);
+    $pool   = zp_part_pool();
+    $can    = null; $by = '';
 
-    $qty  = zp_qty_map($productId);
-    $pool = zp_part_pool();
-    $can  = null; $by = '';
+    /* THE RECIPE IS THE DEFAULT, NOT THE LAW.
+       ========================================
 
+       Asked for after the first version shipped: "in case if I wana easy to
+       make sets any product from leftover ... we will open to use with any
+       finish products as selected to pack as set", and in the same breath
+       "po wise completion automated is not so important".
+
+       So the product's own parts still fill the table in and still do all
+       the typing — that is the normal case and it should cost nothing. But
+       $want, when given, is the operator's OWN list: a part dropped, a
+       quantity changed, or a part this product never had, pulled out of the
+       pool because that is what is on the floor tonight.
+
+       Anything off-recipe is COUNTED AND NAMED, never refused. A set that
+       does not match the recipe is his decision to make; a set built out of
+       parts that do not exist is not, and that is the only thing refused. */
+    $rows = [];
+    $inRecipe = [];
     foreach ($parts as $p) {
         $partId = (int)$p['id'];
-        $per    = zp_qty_for($qty, $partId, $sizeId);
+        $inRecipe[$partId] = true;
+        $per = zp_qty_for($qty, $partId, $sizeId);
+        $rows[$partId] = ['name' => (string)$p['part_name'], 'per' => $per,
+                          'need' => round($per * $sets, 2), 'recipe' => true];
+    }
+    if ($want !== null) {
+        /* Start again from what he actually typed. A recipe part he cleared
+           is a part he means to leave out. */
+        $names = [];
+        foreach (zp_parts(false) as $p) $names[(int)$p['id']] = (string)$p['part_name'];
+        $rows = [];
+        foreach ($want as $partId => $q) {
+            $partId = (int)$partId; $q = round((float)$q, 2);
+            if ($partId <= 0 || $q <= 0) continue;
+            $per = isset($inRecipe[$partId]) ? zp_qty_for($qty, $partId, $sizeId) : 0.0;
+            $rows[$partId] = ['name' => $names[$partId] ?? ('Part #' . $partId),
+                              'per' => $per, 'need' => $q, 'recipe' => isset($inRecipe[$partId])];
+            if (!isset($inRecipe[$partId])) $out['offrecipe'][] = ($names[$partId] ?? ('Part #' . $partId)) . ' is not in this product';
+        }
+        foreach ($inRecipe as $partId => $_)
+            if (!isset($rows[$partId]) && zp_qty_for($qty, $partId, $sizeId) > 0)
+                $out['offrecipe'][] = (string)($names[$partId] ?? 'A part') . ' is in this product but left out';
+    }
+    if (!$rows && $want === null) { $out['error'] = 'This product has no parts yet — add them in Product Master.'; return $out; }
+
+    foreach ($rows as $partId => $row) {
+        $per    = $row['per'];
         $e      = $pool[$partId][$sizeLabel] ?? ['made' => 0.0, 'used' => 0.0, 'left' => 0.0, 'by' => []];
-        $need   = round($per * $sets, 2);
+        $need   = round($row['need'], 2);
         /* A PART THAT GOES IN TWICE HALVES WHAT ITS PILE IS WORTH. 840
            pillow cases at 2 per set is 420 sets, not 840. */
-        $c = $per > 0 ? floor($e['left'] / $per) : INF;
-        if ($can === null || $c < $can) { $can = $c; $by = (string)$p['part_name']; }
+        /* The ceiling is only meaningful for parts the RECIPE names — a
+           part added by hand has no "per set" and cannot say how many sets
+           the product makes. */
+        if ($row['recipe'] && $per > 0) {
+            $c = floor($e['left'] / $per);
+            if ($can === null || $c < $can) { $can = $c; $by = $row['name']; }
+        }
         if ($need > $e['left'] + 0.0001) $out['short']++;
         $out['parts'][] = [
-            'part_id' => $partId, 'name' => (string)$p['part_name'],
+            'part_id' => $partId, 'name' => $row['name'], 'recipe' => $row['recipe'],
             'per' => $per, 'need' => $need,
             'left' => $e['left'], 'made' => $e['made'], 'used' => $e['used'],
             'by' => $e['by'],
@@ -2443,6 +2492,45 @@ function zp_assembly_plan(int $productId, string $sizeLabel, float $sets): array
     $out['can'] = ($can === null || $can === INF) ? 0.0 : (float)$can;
     $out['limit_by'] = $by;
     $out['ok'] = true;
+    return $out;
+}
+
+/* EVERY FINISHED PART YOU COULD REACH FOR, this product's own first.
+
+   "during make sets we can see list of parts as close to selecting also on
+    priority but we will open to use with any finish products as selected
+    to pack as set"
+
+   So: the parts this product is made of come first and are marked, because
+   nine times out of ten that is what is wanted and it should be under the
+   cursor. Everything else with stock at this size follows — a part from
+   another product, a leftover nobody planned for — because the tenth time
+   is the whole reason he asked.
+
+   Only parts with something LEFT are offered. A list that shows things you
+   cannot take is a list you learn to distrust. */
+function zp_pool_offer(int $productId, string $sizeLabel, array $already = []): array {
+    zp_ensure_schema();
+    $sizeLabel = trim($sizeLabel);
+    if ($sizeLabel === '') return [];
+    $pool = zp_part_pool();
+    $mine = [];
+    foreach (zp_product_parts($productId) as $p) $mine[(int)$p['id']] = true;
+
+    $out = [];
+    foreach (zp_parts(false) as $p) {
+        $id = (int)$p['id'];
+        if (isset($already[$id])) continue;                 // already on the sheet
+        $e = $pool[$id][$sizeLabel] ?? null;
+        if (!$e || $e['left'] <= 0.0001) continue;          // nothing to take
+        $out[] = ['id' => $id, 'name' => (string)$p['part_name'],
+                  'left' => $e['left'], 'mine' => isset($mine[$id]),
+                  'by' => $e['by']];
+    }
+    usort($out, function ($a, $b) {
+        if ($a['mine'] !== $b['mine']) return $b['mine'] <=> $a['mine'];   // this product first
+        return strnatcasecmp($a['name'], $b['name']);
+    });
     return $out;
 }
 
@@ -2457,22 +2545,29 @@ function zp_assembly_plan(int $productId, string $sizeLabel, float $sets): array
    finished stock, and every figure downstream would be wrong with nothing
    on any screen to say why. */
 function zp_assembly_save(string $date, int $productId, string $sizeLabel, float $sets,
-                          ?int $proformaItemId, string $note, ?int $userId = null): array {
+                          ?int $proformaItemId, string $note, ?int $userId = null,
+                          ?array $want = null): array {
     zp_ensure_schema();
     $date = trim($date) !== '' ? $date : date('Y-m-d');
     if ($date > date('Y-m-d')) return ['ok' => false, 'error' => 'An assembly cannot be dated in the future.'];
     if ($sets <= 0)            return ['ok' => false, 'error' => 'How many sets? Nothing was saved.'];
 
-    $plan = zp_assembly_plan($productId, $sizeLabel, $sets);
+    $plan = zp_assembly_plan($productId, $sizeLabel, $sets, $want);
     if (!$plan['ok']) return ['ok' => false, 'error' => $plan['error']];
-    if ($sets > $plan['can'] + 0.0001) {
-        $short = [];
-        foreach ($plan['parts'] as $p) if ($p['shortfall'] > 0)
-            $short[] = $p['name'] . ' (' . rtrim(rtrim(number_format($p['shortfall'], 2), '0'), '.') . ' short)';
-        return ['ok' => false, 'error' => 'The pool can only make '
-              . rtrim(rtrim(number_format($plan['can'], 2), '0'), '.') . ' set(s) of ' . $sizeLabel
-              . '. Short on: ' . implode(', ', $short)
-              . '. Assembling more would create finished stock that was never produced.'];
+    if (!$plan['parts']) return ['ok' => false, 'error' => 'No parts on the sheet — nothing to make a set out of.'];
+
+    /* THE ONLY REFUSAL: a part that is not there.
+       Measured per part rather than against the set ceiling, because with
+       a hand-written list there may be no ceiling to measure — a part he
+       added by hand has no "per set" to divide by. Short is short either
+       way, and this says exactly which. */
+    $short = [];
+    foreach ($plan['parts'] as $p) if ($p['shortfall'] > 0)
+        $short[] = $p['name'] . ' (' . rtrim(rtrim(number_format($p['shortfall'], 2), '0'), '.') . ' short)';
+    if ($short) {
+        return ['ok' => false, 'error' => 'Not enough parts at ' . $sizeLabel . '. Short on: '
+              . implode(', ', $short)
+              . '. Assembling anyway would create finished stock that was never produced.'];
     }
 
     db()->beginTransaction();
@@ -2503,7 +2598,9 @@ function zp_assembly_save(string $date, int $productId, string $sizeLabel, float
         db()->rollBack();
         return ['ok' => false, 'error' => 'Nothing was saved. ' . $e->getMessage()];
     }
-    return ['ok' => true, 'error' => '', 'id' => $aid];
+    /* OFF-RECIPE IS NEWS, NOT AN ERROR. It is handed back so the screen can
+       say it once, after the set is safely made. */
+    return ['ok' => true, 'error' => '', 'id' => $aid, 'offrecipe' => $plan['offrecipe']];
 }
 
 /* An assembly taken back. Cancelled, never deleted — the parts return to

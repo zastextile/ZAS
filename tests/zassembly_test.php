@@ -51,7 +51,21 @@ function zp_open_lines(): array { global $LINES; return $LINES; }
 function zp_progress_map(): array { global $PROG; return $PROG; }
 function zp_line_size_id(array $l): int { return (int)($l['product_size_id'] ?? 0); }
 function zp_sizes(int $p): array { return [['id'=>51,'size_label'=>'King'], ['id'=>52,'size_label'=>'Queen']]; }
-function zp_product_parts(int $p): array { global $PARTS; return $PARTS; }
+function zp_products(bool $a = true): array { return [['id'=>7,'name'=>'7pc'], ['id'=>9,'name'=>'Gift pack']]; }
+/* PRODUCT-AWARE, because that is the only way a part can be "not in this
+   product". Product 7 is the 7pc set; product 9 is a gift pack whose only
+   part is the Gift box. */
+function zp_product_parts(int $p): array {
+    global $PARTS;
+    return $p === 9 ? [['id'=>26,'part_name'=>'Gift box']] : $PARTS;
+}
+/* EVERY part in the library, not just this product's — that is what makes
+   packing a leftover from another product possible. 26 is deliberately not
+   in the 7pc recipe. */
+function zp_parts(bool $a = false): array {
+    global $PARTS;
+    return array_merge($PARTS, [['id'=>26,'part_name'=>'Gift box']]);
+}
 function zp_part_ops(int $id, bool $a = true): array { global $OPS; return $OPS[$id] ?? []; }
 function zp_qty_map(int $p): array { global $QTY; return $QTY; }
 function zp_qty_for(array $m, int $pt, int $sz): float { return isset($m[$pt][$sz]) ? (float)$m[$pt][$sz] : 1.0; }
@@ -185,18 +199,89 @@ ok($r6['ok'] === true && $r6['can'] === 0.0, 'a size with no parts finished can 
 $r7 = zp_assembly_plan(7, 'Emperor', 0);
 ok($r7['ok'] === false && str_contains($r7['error'], 'not on this product'), 'a size the product does not have is refused');
 
-echo "7. Cancelling puts the parts back\n";
+echo "7. The recipe is the default, not the law\n";
+eval(lift($zp, 'function zp_pool_offer('));
+
+/* A SECOND PRODUCT, so there is a part the 7pc set has never had. The gift
+   pack's own order finished 500 gift boxes at King; they sit in the pool
+   belonging to nobody, which is the whole point.
+
+   THE POOL ONLY EVER HOLDS PARTS SOME PRODUCT ACTUALLY MAKES — it is built
+   by walking each order line's product parts. An early version of this
+   test bolted the gift box onto product 7 and then took it away again,
+   which emptied the pool of it too and read as a missing feature. It was a
+   missing SECOND PRODUCT. */
+$LINES[] = ['item_id'=>890,'proforma_id'=>13,'product_id'=>9,'product_name'=>'Gift pack','ordered_qty'=>500,
+            'size'=>'King','product_size_id'=>51,'pi_no'=>'PI-260910-2400','customer_name'=>'Al Noor'];
+$OPS[26] = [['id'=>307]];
+$PROG['op'][890] = [26 => [307 => 500]];
+
+/* A CLEAN FLOOR for this section. The runs above consumed the pool, and a
+   shortage there would read as a fault here. */
+$TAKEN = [];
+
+$poolG = zp_part_pool();
+ok(($poolG[26]['King']['left'] ?? 0) === 500.0,
+   'a part from ANOTHER product is in the pool, got ' . ($poolG[26]['King']['left'] ?? 'null'));
+
+$offer = zp_pool_offer(7, 'King', []);
+$names = array_column($offer, 'name');
+ok(in_array('Gift box', $names, true), 'and it IS offered — "open to use with any finish products"');
+$mine = array_values(array_filter($offer, fn($o) => $o['mine']));
+ok($mine && $offer[0]['mine'] === true,
+   "THIS PRODUCT'S OWN PARTS COME FIRST — 'as close to selecting also on priority'");
+$last = $offer[count($offer) - 1];
+ok($last['mine'] === false, '  and the outsiders sort after them, got ' . $last['name']);
+$offer2 = zp_pool_offer(7, 'King', [21 => true]);
+ok(!in_array('Comforter', array_column($offer2, 'name'), true),
+   'a part already on the sheet is not offered twice');
+
+/* MAKING A SET THAT IS NOT THE STANDARD SET. Two comforters, no neck roll,
+   and a gift box that belongs to no product — exactly the leftover case. */
+$INSERTED = [];
+$hand = [21 => 20, 22 => 10, 26 => 10];
+$planH = zp_assembly_plan(7, 'King', 10, $hand);
+ok($planH['ok'] === true, 'a hand-written sheet plans: ' . $planH['error']);
+ok(count($planH['parts']) === 3, '  with only the three parts he typed, got ' . count($planH['parts']));
+$needH = []; foreach ($planH['parts'] as $pp) $needH[$pp['name']] = $pp['need'];
+ok(($needH['Comforter'] ?? null) === 20.0, '  at HIS quantity, not the recipe, got ' . ($needH['Comforter'] ?? 'null'));
+ok(count($planH['offrecipe']) > 0, 'and the differences are NAMED: ' . json_encode($planH['offrecipe']));
+ok(str_contains(implode(' ', $planH['offrecipe']), 'Gift box'), '  the part that is not in the product');
+ok(str_contains(implode(' ', $planH['offrecipe']), 'left out'), '  and the recipe parts left out');
+
+$r8 = zp_assembly_save('2026-09-18', 7, 'King', 10, null, '', 1, $hand);
+ok($r8['ok'] === true, 'AND IT IS ALLOWED, not refused: ' . $r8['error']);
+ok(!empty($r8['offrecipe']), '  with the news handed back to be said after the fact');
+$gift = array_values(array_filter($INSERTED, fn($x) => (int)$x[1] === 26));
+ok(count($gift) === 1 && (float)$gift[0][4] === 10.0, '  and the gift box really was taken: ' . json_encode($gift));
+
+/* THE ONE REFUSAL STILL BITES on a hand-written sheet. */
+$INSERTED = [];
+$r9 = zp_assembly_save('2026-09-18', 7, 'King', 10, null, '', 1, [23 => 99999]);
+ok($r9['ok'] === false && str_contains($r9['error'], 'Short on:'),
+   'asking for parts that are not there is still refused: ' . $r9['error']);
+ok($INSERTED === [], '  and nothing is written');
+$r10 = zp_assembly_save('2026-09-18', 7, 'King', 10, null, '', 1, []);
+ok($r10['ok'] === false, 'an empty sheet makes nothing');
+
+echo "8. Cancelling puts the parts back\n";
 $canc = lift($zp, 'function zp_assembly_cancel(');
 ok(str_contains($canc, "UPDATE zp_assembly SET status='cancelled'"), 'cancelling marks it');
 ok(!preg_match('/DELETE\s+FROM\s+zp_assembly/i', $zp), '  nothing deletes an assembly');
 ok(str_contains($zp, "WHERE a.status='active'"),
    'and the pool only counts ACTIVE ones, so a cancelled assembly returns its parts by itself');
 
-echo "8. The screen\n";
-ok(str_contains($pa, 'zp_assembly_plan($pid, $size, $sets)'), 'the page shows the plan before writing');
+echo "9. The screen\n";
+ok(str_contains($pa, 'zp_assembly_plan($pid, $size, $sets, $want)'), 'the page shows the plan before writing');
 ok(str_contains($pa, 'name="proforma_item_id"'), 'crediting to an order is on the form');
 ok(str_contains($pa, '— no order, to stock —'), '  and OPTIONAL, which is the leftover rule working');
 ok(str_contains($pa, 'Where the pieces are'), 'the row says which POs the parts come from');
+ok(str_contains($pa, 'name="want[<?= (int)$p[\'part_id\'] ?>]"'),
+   'THE TAKE COLUMN IS A BOX — the recipe fills it in, you can change it');
+ok(str_contains($pa, 'name="addpart"'), 'and there is a list of every other finished part at that size');
+ok(str_contains($pa, 'not in this product'), '  with the outsiders marked');
+ok(str_contains($pa, 'Back to the standard set'), 'and one click back to the recipe');
+ok(str_contains($pa, 'This is not the standard'), 'an off-recipe sheet is said, not refused');
 ok(str_contains($pa, 'pool allows'), 'the size list says how many sets each size can make');
 ok(str_contains($pa, 'refused rather than warned about'), 'and the one refusal explains itself');
 ok(str_contains($pa, "onsubmit=\"var r=prompt("), 'cancelling asks for a reason');

@@ -34,15 +34,34 @@ $pid   = (int)($_GET['p'] ?? $_POST['product_id'] ?? 0);
 $size  = trim((string)($_GET['s'] ?? $_POST['size_label'] ?? ''));
 $sets  = (float)str_replace(',', '', (string)($_GET['n'] ?? $_POST['sets'] ?? 0));
 
+/* THE SHEET AS HE TYPED IT. Absent on a fresh look, so the recipe fills the
+   table in and he types nothing in the normal case. Present the moment he
+   changes a quantity or adds a part off the pool. */
+$want = null;
+if (isset($_REQUEST['want']) && is_array($_REQUEST['want'])) {
+    $want = [];
+    foreach ($_REQUEST['want'] as $k => $v) {
+        $q = (float)str_replace(',', '', (string)$v);
+        if ((int)$k > 0 && $q > 0) $want[(int)$k] = $q;
+    }
+    /* A part just chosen from the pool joins the sheet with nothing on it
+       yet — one row for him to type into, rather than a second trip. */
+    $add = (int)($_REQUEST['addpart'] ?? 0);
+    if ($add > 0 && !isset($want[$add])) $want[$add] = 0.0;
+    if (!$want) $want = null;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $a = $_POST['action'] ?? '';
     if ($a === 'make') {
         $r = zp_assembly_save((string)($_POST['made_date'] ?? ''), $pid, $size, $sets,
                               (int)($_POST['proforma_item_id'] ?? 0) ?: null,
-                              (string)($_POST['note'] ?? ''), (int)(current_user()['id'] ?? 0));
+                              (string)($_POST['note'] ?? ''), (int)(current_user()['id'] ?? 0), $want);
         if ($r['ok']) {
-            $_SESSION['zp_msg'] = rtrim(rtrim(number_format($sets, 2), '0'), '.') . ' set(s) of ' . $size . ' assembled.';
+            $_SESSION['zp_msg'] = rtrim(rtrim(number_format($sets, 2), '0'), '.') . ' set(s) of ' . $size . ' assembled.'
+                . (!empty($r['offrecipe']) ? ' Off the recipe: ' . implode('; ', array_slice($r['offrecipe'], 0, 4))
+                    . (count($r['offrecipe']) > 4 ? ' and ' . (count($r['offrecipe']) - 4) . ' more.' : '.') : '');
             redirect('production_assembly.php?p=' . $pid . '&s=' . urlencode($size));
         }
         $err = $r['error'];
@@ -58,7 +77,11 @@ if (!empty($_SESSION['error']))  { $err = $_SESSION['error'];  unset($_SESSION['
 
 $products = zp_products(true);
 $sizes    = $pid > 0 ? zp_assembly_sizes($pid) : [];
-$plan     = ($pid > 0 && $size !== '') ? zp_assembly_plan($pid, $size, $sets) : null;
+$plan     = ($pid > 0 && $size !== '') ? zp_assembly_plan($pid, $size, $sets, $want) : null;
+/* What else is on the floor at this size, this product's parts first. */
+$onSheet  = [];
+if ($plan && $plan['ok']) foreach ($plan['parts'] as $pp) $onSheet[(int)$pp['part_id']] = true;
+$offer    = ($pid > 0 && $size !== '') ? zp_pool_offer($pid, $size, $onSheet) : [];
 $recent   = zp_assembly_list(40);
 
 /* Orders this could be credited to — optional, and it stays optional:
@@ -150,7 +173,14 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
 </div>
 
 <?php if ($plan && $plan['ok']): ?>
-  <?php $can = $plan['can']; $tooMany = $sets > $can + 0.0001; ?>
+  <?php
+    $can = $plan['can'];
+    /* WHAT BLOCKS THE SAVE IS A PART THAT IS NOT THERE, not the recipe
+       ceiling. Once a sheet can be typed by hand there may be no ceiling to
+       measure against — a part added off the pool has no "per set" to
+       divide by. Short is short either way, and the server agrees. */
+    $tooMany = $plan['short'] > 0;
+  ?>
   <div class="zp-card">
     <h2>The parts this set is made of</h2>
     <p class="sub">Per set comes from Product Master, at this size. Available is every finished piece at this size <b>across all orders</b>, less what earlier assemblies took.</p>
@@ -166,26 +196,58 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
     </div>
 
     <?php if ($tooMany): ?>
-      <div class="note bad"><b>The pool cannot make <?= nq($sets) ?> sets — only <?= nq($can) ?>.</b>
-        <?= $plan['limit_by'] !== '' ? e($plan['limit_by']) . ' runs out first. ' : '' ?>
-        Assembling more would create finished stock out of parts that were never produced, so this one is refused rather than warned about.</div>
+      <?php $shortNames = [];
+            foreach ($plan['parts'] as $sp) if ($sp['shortfall'] > 0)
+                $shortNames[] = e($sp['name']) . ' (' . nq($sp['shortfall']) . ' short)'; ?>
+      <div class="note bad"><b>Not enough parts.</b>
+        Short on: <?= implode(', ', $shortNames) ?>.
+        <?php if ($can > 0 && $plan['limit_by'] !== ''): ?>
+          The standard set can be made <?= nq($can) ?> time(s) — <?= e($plan['limit_by']) ?> runs out first.
+        <?php endif; ?>
+        Assembling anyway would create finished stock out of parts that were never produced, so this is the one thing refused rather than warned about.</div>
     <?php elseif ($sets > 0): ?>
       <div class="note">Parts are taken <b>oldest order first</b> across every PO at this size — leftovers from a finished order are used before new pieces, and each piece records which order it came from.</div>
     <?php endif; ?>
 
+    <?php if ($plan['offrecipe']): ?>
+      <div class="note" style="background:#fffbeb;border-color:#e8d08a;color:#7a5a12">
+        <b>This is not the standard <?= e($size) ?> set.</b>
+        <?= e(implode('; ', $plan['offrecipe'])) ?>.
+        That is allowed — you said finishing a PO exactly is not the point — and it is recorded as it really is.
+      </div>
+    <?php endif; ?>
+
+    <?php /* ==================================================================
+             THE RECIPE TYPES IT IN. YOU CAN CHANGE ANY OF IT.
+             ==================================================================
+             The Need column is a box, not a number. Leave it alone and you
+             are making the standard set. Clear one and that part is left
+             out. Type over one and you are packing what you actually have.
+
+             Everything on this form is a GET so changing a quantity just
+             re-reads the sheet — no save, nothing written, and the pool
+             figures update as you go. */ ?>
+    <form method="get" id="sheet">
+    <input type="hidden" name="p" value="<?= (int)$pid ?>">
+    <input type="hidden" name="s" value="<?= e($size) ?>">
+    <input type="hidden" name="n" value="<?= e(nq($sets)) ?>">
     <div style="overflow-x:auto">
     <table class="zp-t"><thead><tr>
       <th style="width:26px">#</th><th>Part</th><th class="r" style="width:70px">Per set</th>
-      <th class="r" style="width:88px">Need</th><th class="r" style="width:96px">Available</th>
+      <th class="r" style="width:104px">Take</th><th class="r" style="width:96px">Available</th>
       <th class="r" style="width:92px">Short</th><th>Where the pieces are</th>
     </tr></thead><tbody>
     <?php foreach ($plan['parts'] as $i => $p): ?>
       <tr>
         <td style="color:#8a97ab;font-size:11px"><?= $i + 1 ?></td>
-        <td style="font-weight:600"><?= e($p['name']) ?></td>
-        <td class="r"><?= nq($p['per']) ?></td>
-        <td class="r"><?= nq($p['need']) ?></td>
-        <td class="r <?= $p['left'] >= $p['need'] && $p['left'] > 0 ? 'okv' : ($p['left'] <= 0 ? 'short' : 'short') ?>"><?= nq($p['left']) ?></td>
+        <td style="font-weight:600"><?= e($p['name']) ?>
+          <?php if (!$p['recipe']): ?>
+            <span style="font-size:9.5px;font-weight:800;color:#7a5a12;background:#fffbeb;border:1px solid #e8d08a;border-radius:20px;padding:1px 6px;margin-left:4px">added</span>
+          <?php endif; ?></td>
+        <td class="r"><?= $p['per'] > 0 ? nq($p['per']) : '<span style="color:#b6c0cf">—</span>' ?></td>
+        <td><input class="zin num" name="want[<?= (int)$p['part_id'] ?>]" value="<?= e(nq($p['need'])) ?>"
+                   onchange="document.getElementById('sheet').submit()"></td>
+        <td class="r <?= $p['left'] >= $p['need'] && $p['left'] > 0 ? 'okv' : 'short' ?>"><?= nq($p['left']) ?></td>
         <td class="r"><?= $p['shortfall'] > 0 ? '<span class="short">' . nq($p['shortfall']) . '</span>' : '<span style="color:#b6c0cf">—</span>' ?></td>
         <td class="src">
           <?php if (!$p['by']): ?><span class="short">nothing finished at this size</span>
@@ -195,6 +257,29 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
     <?php endforeach; ?>
     </tbody></table></div>
 
+    <?php /* EVERY OTHER FINISHED PART ON THE FLOOR AT THIS SIZE, this
+             product's own first and marked. Asked for in these words: "we
+             can see list of parts as close to selecting also on priority
+             but we will open to use with any finish products". Only parts
+             with something LEFT are offered — a list showing things you
+             cannot take is a list you learn to distrust. */ ?>
+    <?php if ($offer): ?>
+      <div style="margin-top:12px;display:flex;gap:9px;align-items:flex-end;flex-wrap:wrap">
+        <div style="min-width:320px"><label class="lab">Pack something else in as well</label>
+          <select class="zin" name="addpart" onchange="document.getElementById('sheet').submit()">
+            <option value="0">— every other finished part at <?= e($size) ?> —</option>
+            <?php $seen = false; foreach ($offer as $o): ?>
+              <?php if (!$o['mine'] && !$seen): $seen = true; ?>
+                <option disabled>──────── not in this product ────────</option>
+              <?php endif; ?>
+              <option value="<?= (int)$o['id'] ?>"><?= e($o['name']) ?> — <?= nq($o['left']) ?> free<?= $o['mine'] ? '' : '  (other product)' ?></option>
+            <?php endforeach; ?>
+          </select></div>
+        <a class="zp-b" href="production_assembly.php?p=<?= (int)$pid ?>&s=<?= urlencode($size) ?>&n=<?= e(nq($sets)) ?>">Back to the standard set</a>
+      </div>
+    <?php endif; ?>
+    </form>
+
     <?php if ($sets > 0 && !$tooMany): ?>
       <form method="post" style="margin-top:13px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
         <?= csrf_field() ?>
@@ -203,6 +288,13 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
         <input type="hidden" name="size_label" value="<?= e($size) ?>">
         <input type="hidden" name="sets" value="<?= e(nq($sets)) ?>">
         <input type="hidden" name="made_date" value="<?= e(date('Y-m-d')) ?>">
+        <?php /* THE SHEET AS IT IS ON SCREEN goes with the save. Without
+                 this the button would quietly make the STANDARD set while
+                 the table in front of him said something else — which is
+                 the worst kind of wrong, because it looks right. */ ?>
+        <?php foreach ($plan['parts'] as $pp): ?>
+          <input type="hidden" name="want[<?= (int)$pp['part_id'] ?>]" value="<?= e(nq($pp['need'])) ?>">
+        <?php endforeach; ?>
         <?php /* OPTIONAL ON PURPOSE. Assembling to stock with no order at
                  all is the leftover rule working — you make the sets, you
                  sell them later. */ ?>
