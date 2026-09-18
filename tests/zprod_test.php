@@ -330,8 +330,26 @@ t('  it checks products AND booked wages',
   && str_contains($del, "FROM zp_entries WHERE part_id=? AND status='active'"));
 t('  and tells the user which happened',
   str_contains($src, 'deactivated instead of deleted'));
-t('the wage ledger has no DELETE at all — a correction is visible, not erased',
-  !preg_match('/DELETE\s+FROM\s+zp_entries/i', $code));
+/* THE RULE, SAID EXACTLY. "No DELETE anywhere in the file" was a proxy for
+   the thing that actually matters: A CANCELLATION MUST NEVER BE A DELETION.
+   A correction has to stay readable — who booked it, who cancelled it, and
+   why — or a wage dispute cannot be settled.
+
+   That rule is untouched, and it is what is checked below: zp_cancel_entry
+   marks the row and nothing in this file deletes a LIVE one.
+
+   There is now exactly one DELETE, in zp_delete_worker, and it removes only
+   rows with status<>'active' and only for a worker being removed who has no
+   live entries at all. Asked for directly: "i entered production but later
+   deleted production so if not active production and any payment so then
+   please allow delete". Leaving those rows behind would point them at a
+   worker who no longer exists — a wage row that can name nobody is worse
+   than one that is gone and was counted out loud in the message. */
+t('the wage ledger deletes no LIVE entry — a correction is visible, not erased',
+  !preg_match('/DELETE\s+FROM\s+zp_entries(?![^;]*status<>)/i', code_only($src)));
+t('  and the one DELETE there is belongs to removing a worker',
+  str_contains(code_only(lift($src, 'zp_delete_worker')),
+               "DELETE FROM zp_entries WHERE worker_id=? AND status<>'active'"));
 t('  cancelling keeps the row and records who and why',
   str_contains($src, 'cancelled_by') && str_contains($src, 'cancel_reason'));
 

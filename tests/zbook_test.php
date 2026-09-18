@@ -226,7 +226,25 @@ t('the reason is written down', str_contains($src, 'Change the rate tomorrow and
 head('A CORRECTION IS VISIBLE, NEVER INVISIBLE');
 $canc = code_only(lift($src, 'zp_cancel_entry'));
 t('cancelling marks the row', str_contains($canc, "UPDATE zp_entries SET status='cancelled'"));
-t('  it does not delete it', !preg_match('/DELETE\s+FROM\s+zp_entries/i', code_only($src)));
+/* THE RULE, SAID EXACTLY. "No DELETE anywhere in the file" was a proxy for
+   the thing that actually matters: A CANCELLATION MUST NEVER BE A DELETION.
+   A correction has to stay readable — who booked it, who cancelled it, and
+   why — or a wage dispute cannot be settled.
+
+   That rule is untouched, and it is what is checked below: zp_cancel_entry
+   marks the row and nothing in this file deletes a LIVE one.
+
+   There is now exactly one DELETE, in zp_delete_worker, and it removes only
+   rows with status<>'active' and only for a worker being removed who has no
+   live entries at all. Asked for directly: "i entered production but later
+   deleted production so if not active production and any payment so then
+   please allow delete". Leaving those rows behind would point them at a
+   worker who no longer exists — a wage row that can name nobody is worse
+   than one that is gone and was counted out loud in the message. */
+t('  it does not delete it', !preg_match('/DELETE\s+FROM\s+zp_entries/i', $canc));
+t('  and no live entry is deleted anywhere in the file',
+  !preg_match('/DELETE\s+FROM\s+zp_entries(?![^;]*status<>)/i', code_only($src)),
+  'a DELETE that is not scoped to cancelled rows');
 t('  and records who and why', str_contains($canc, 'cancelled_by=?') && str_contains($canc, 'cancel_reason=?'));
 t('a reason is required', str_contains($src, 'a correction with no reason cannot be checked later'));
 t('cancelling twice is refused', str_contains($src, 'already cancelled'));

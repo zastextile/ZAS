@@ -2051,20 +2051,72 @@ function zp_import_workers(array $rows): array {
 
 /* A WORKER WITH WAGES IS NEVER DELETED. Their name is on every entry they were
    paid for; removing the row would leave those wages belonging to nobody. */
+/* WHAT STOPS A WORKER BEING DELETED IS MONEY, NOT HISTORY.
+   ========================================================
+
+   The rule was "any entry at all keeps them", and he found the hole in it:
+
+     "i entered production but later deleted production so if not active
+      production and any payment so then please allow delete"
+
+   He is right. This counted EVERY row in zp_entries, cancelled ones
+   included. So a worker entered by mistake, given one test entry, and then
+   corrected by cancelling that entry, could never be removed — the app
+   pointed at a cancelled entry as its reason, which is to say at nothing.
+   Wages are the `amount` on an ACTIVE entry; a cancelled entry carries no
+   money, by definition, because cancelling it is how money is taken back.
+
+   So the test is ACTIVE entries only.
+
+     any active entry     kept, set inactive. Their name is on wages that
+                          were really paid and must stay readable forever.
+     only cancelled ones  deleted, and the cancelled rows go with them —
+                          left behind they would point at a worker who no
+                          longer exists, and a name that cannot be looked
+                          up is worse than a row that is gone. The message
+                          says how many went, so nothing disappears quietly.
+     nothing at all       deleted, as before. */
 function zp_delete_worker(int $id): array {
     zp_ensure_schema();
-    $c = db()->prepare("SELECT COUNT(*) FROM zp_entries WHERE worker_id=?");
-    $c->execute([$id]);
-    if ((int)$c->fetchColumn() > 0) {
+
+    $a = db()->prepare("SELECT COUNT(*) FROM zp_entries WHERE worker_id=? AND status='active'");
+    $a->execute([$id]);
+    $active = (int)$a->fetchColumn();
+
+    if ($active > 0) {
         db()->prepare("UPDATE zp_workers SET is_active=0 WHERE id=?")->execute([$id]);
         return ['ok' => true, 'deleted' => false,
-                'msg' => 'That worker has production entries against their name, so they have been set inactive instead of deleted. Every wage they were paid keeps their name on it.'];
+                'msg' => 'That worker has ' . number_format($active) . ' live production entr'
+                       . ($active === 1 ? 'y' : 'ies') . ' against their name, so they have been set '
+                       . 'inactive instead of deleted. Every wage they were paid keeps their name on it. '
+                       . 'Cancel those entries first if they were entered by mistake, and then this '
+                       . 'worker can be deleted.'];
     }
-    db()->prepare("DELETE FROM zp_workers WHERE id=?")->execute([$id]);
-    /* The allotment goes with them. Left behind it would silently re-attach
-       itself to whoever next took that auto-increment id. */
-    try { db()->prepare("DELETE FROM zp_worker_stage WHERE worker_id=?")->execute([$id]); } catch (Throwable $e) {}
-    return ['ok' => true, 'deleted' => true, 'msg' => 'Worker deleted — they had no entries.'];
+
+    $c = db()->prepare("SELECT COUNT(*) FROM zp_entries WHERE worker_id=? AND status<>'active'");
+    $c->execute([$id]);
+    $cancelled = (int)$c->fetchColumn();
+
+    db()->beginTransaction();
+    try {
+        if ($cancelled > 0) db()->prepare("DELETE FROM zp_entries WHERE worker_id=? AND status<>'active'")->execute([$id]);
+        db()->prepare("DELETE FROM zp_workers WHERE id=?")->execute([$id]);
+        /* The allotment goes with them. Left behind it would silently re-attach
+           itself to whoever next took that auto-increment id. */
+        db()->prepare("DELETE FROM zp_worker_stage WHERE worker_id=?")->execute([$id]);
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'deleted' => false,
+                'msg' => 'Nothing was deleted. ' . $e->getMessage()];
+    }
+
+    return ['ok' => true, 'deleted' => true,
+            'msg' => $cancelled > 0
+                ? 'Worker deleted. They had no live production — the ' . number_format($cancelled)
+                  . ' cancelled entr' . ($cancelled === 1 ? 'y was' : 'ies were')
+                  . ' removed with them, since a cancelled entry carries no wage.'
+                : 'Worker deleted — they had no entries.'];
 }
 
 /* ============================================================
