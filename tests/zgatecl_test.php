@@ -174,13 +174,13 @@ $rowsFn = substr($gate, $pa, $pb - $pa);
 ok(str_contains($rowsFn, '__sep'), 'the row builder emits headings');
 
 $CLINES = [
-  ['id'=>501,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales',
+  ['id'=>501,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales','status'=>'active',
    'material_id'=>0,'product_id'=>7,'item'=>'PRD-7 · Comforter Set 7 Pc','description'=>'',
    'qty'=>500,'balance'=>500,'uom'=>'SET','rate'=>4200.00,'complete'=>false],
-  ['id'=>502,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales',
+  ['id'=>502,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales','status'=>'active',
    'material_id'=>13,'product_id'=>0,'item'=>'BTN-013 · Button 4-hole','description'=>'',
    'qty'=>900,'balance'=>900,'uom'=>'PCS','rate'=>1.25,'complete'=>false],
-  ['id'=>503,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales',
+  ['id'=>503,'contract_id'=>3,'contract_no'=>'SC-0001','ctype'=>'sales','status'=>'active',
    'material_id'=>12,'product_id'=>0,'item'=>'FAB-012 · Cotton greige 60s','description'=>'',
    'qty'=>100,'balance'=>0,'uom'=>'MTR','rate'=>210.50,'complete'=>true],
 ];
@@ -200,6 +200,10 @@ $harness = '<!doctype html><html><head><meta charset="utf-8"></head><body>'
   . 'var IS_OUT = true;'
   . 'function clParty(){ return 1; }'
   . 'function partyName(){ return "ABRAR AHMED"; }'
+  /* THE PASS'S CONTRACT TYPE. itemRowsFor() reads it to keep a Sale from
+     offering a purchase contract. The page defines it from
+     inv_gate_types(); here it is a sales pass throughout. */
+  . 'function ctypeOf(){ return "sales"; }'
   . 'function itemByKey(k){ for(var i=0;i<ITEMS.length;i++) if(ITEMS[i].key===k) return ITEMS[i]; return null; }'
   . 'function pickMode(){ return IS_OUT ? "here" : "all"; }'
   . 'function balOf(it){ if(!it) return 0; var m = it.bal||{}; return m[1] !== undefined ? m[1] : (m[0]||0); }'

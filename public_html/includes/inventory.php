@@ -1100,6 +1100,12 @@ function inv_party_contract_lines(int $partyId): array {
                 'contract_id' => (int)$l['contract_id'],
                 'contract_no' => (string)$l['contract_no'],
                 'ctype'       => (string)$l['contract_type'],
+                /* DRAFT AND ACTIVE BOTH COME BACK, and the caller decides.
+                   Filtering drafts out here would leave the gate unable to
+                   say "there are two more, still in draft" — and a line
+                   that is absent without a reason is the thing that sends
+                   people hunting through Contracts. */
+                'status'      => (string)$l['status'],
                 'material_id' => (int)$l['material_id'],
                 'product_id'  => (int)$l['product_id'],
                 'item'        => $item,

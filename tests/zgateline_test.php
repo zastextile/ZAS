@@ -303,8 +303,13 @@ ok(!str_contains($igc, 'function clRows('), '  nor is its row builder still sitt
    section existed for. */
 ok(str_contains($igc, 'clLoad(function(){ var r = itemRowsFor(q, showAll); cb(r[0], r[1]); });'),
    'the item list loads this PARTY\'s contract lines before it draws');
-ok(str_contains($igc, "var cls = (CLPARTY === clParty() && CLINES) ? CLINES : null;"),
+ok(str_contains($igc, "var cls = (want && CLPARTY === clParty() && CLINES) ? CLINES : null;"),
    '  and reads them only when they belong to the party now on the pass');
+/* The header dropdown used to be where "a Sale never offers a purchase
+   contract" was enforced. Deleting it must not delete the rule, so the
+   rule moved down here with the choice it governs. */
+ok(str_contains($igc, 'var want = ctypeOf();'),
+   '  and only the contract type this transaction type may use');
 
 
 echo "7. The server endpoint is party-scoped too\n";

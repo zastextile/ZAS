@@ -1326,13 +1326,37 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   function itemRowsFor(q, showAll){
     var mode = pickMode(), out = [], hidden = 0;
 
-    /* ---- section 1: this party's open contract lines ---- */
-    var cls = (CLPARTY === clParty() && CLINES) ? CLINES : null;
+    /* ---- section 1: this party's open contract lines ----
+
+       TWO FILTERS, AND BOTH ARE THE OWNER'S RULE, NOT TIDINESS.
+
+       By contract TYPE: "if using contract list then only show their
+       relevant active list". Raising a Sale must not offer you a purchase
+       contract from the same party — booking against it moves quantity off
+       a balance nobody is watching, and nothing on screen would say so.
+       Every transaction type already declares its contract type in
+       inv_gate_types(); ctypeOf() reads it. A sample, a transfer or a
+       write-off declares none, and then there is no contract section at
+       all — which is correct, not a failure.
+
+       By STATUS: a draft contract is not a contract yet. It is not
+       offered — but it IS counted, and the heading says how many, because
+       a line that is missing for a reason must say the reason. Hunting for
+       a contract line that is silently absent is exactly what wasted a
+       morning here before. */
+    /* Called straight, not behind a typeof guard. A guard here would turn a
+       missing dependency into a silently empty contract section — which is
+       the exact shape of the fault that made this screen look broken for a
+       week. If ctypeOf ever goes missing, it should be loud. */
+    var want = ctypeOf();
+    var cls = (want && CLPARTY === clParty() && CLINES) ? CLINES : null;
     if(cls && cls.length){
-      var crows = [];
+      var crows = [], drafts = 0;
       cls.forEach(function(l){
+        if((l.ctype || '') !== want) return;          // another kind of contract entirely
         var sc = LOV.score(q, l.contract_no, l.item, (l.description || '') + ' ' + (l.ctype || ''));
         if(sc <= 0) return;
+        if((l.status || 'active') !== 'active'){ drafts++; return; }
         /* A line already delivered in full is not offered; it is counted
            and reachable behind "show all", like anything else this list
            holds back. */
@@ -1343,13 +1367,21 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                      bal: (mode === 'all' || !it) ? null : balOf(it),
                      rate: l.rate > 0 ? l.rate : (it ? rateFor(it) : 0) });
       });
+      /* SORTED BY WHAT THE OPERATOR CAN SEE. Within one contract the tie
+         was broken on `item`, which is empty on a line that names only a
+         description — so "Gift box printing" sorted above "7pc Comforter
+         Set" on an invisible empty string, and the order on screen looked
+         arbitrary. It breaks on the text the Item column actually prints. */
+      function shown(l){ return l.item || l.description || ''; }
       crows.sort(function(a, b){
         if(a.sc !== b.sc) return b.sc - a.sc;
         if(a.cl.contract_no !== b.cl.contract_no) return a.cl.contract_no.localeCompare(b.cl.contract_no);
-        return (a.cl.item || '').localeCompare(b.cl.item || '');
+        return shown(a.cl).localeCompare(shown(b.cl));
       });
-      if(crows.length){
-        out.push({ __sep: 'On contract with ' + (partyName() || 'this party') });
+      if(crows.length || drafts){
+        var head = 'On contract with ' + (partyName() || 'this party');
+        if(drafts) head += ' — ' + drafts + ' more still in draft, activate them in Contracts';
+        out.push({ __sep: head });
         out = out.concat(crows);
       }
     }
@@ -1403,11 +1435,16 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     ],
     moreLabel: 'not in stock here, or already delivered',
     lessLabel: 'only what is available',
+    /* The heading says what this list IS, including when there is no
+       contract to put first. A sample or a transfer is under no contract
+       at all, and promising "contract lines first" above a list that has
+       none reads as a fault in the screen rather than the truth about the
+       transaction. */
     title: function(){
-      var m = pickMode();
-      if(m === 'all') return 'Receiving — contract lines first, then any item';
+      var m = pickMode(), c = ctypeOf() ? 'contract lines first, then ' : '';
       if(m === 'atparty') return 'Held by ' + (partyName() || '…');
-      return 'Issuing — contract lines first, then what is in stock at ' + locName();
+      if(m === 'all') return 'Receiving — ' + c + 'any item';
+      return 'Issuing — ' + c + 'what is in stock at ' + locName();
     },
     empty: function(f, q){
       var m = pickMode();
@@ -1722,110 +1759,49 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     var dr = b.closest('tr'); if(dr) dr.classList.toggle('open', !open);
   });
 
-  /* ---- contracts: this party, this movement, nothing else ----------
-     Two faults were fixed here. The list used to fetch only status
-     'active', so a contract saved five minutes ago — which saves as
-     DRAFT — was simply absent with nothing to say why. And it GROUPED
-     rather than removed, by direction rather than by transaction type,
-     so raising a Sale offered you a purchase contract from a supplier.
-
-     Every transaction type already declares the contract type it belongs
-     to, in inv_gate_types(). The form now reads it. A Sale can only ever
-     be against a sales contract; a Purchase return against a purchase
-     contract; a Sample against nothing at all. */
-  /* cSel USED TO BE DECLARED INSIDE THE PULL-FROM-CONTRACT BLOCK.
-     Deleting that block took the declaration with it and left ten uses
-     below pointing at nothing — a ReferenceError that would have killed
-     the whole contract section of this form. It belongs here, with the
-     code that actually uses it, which is where it should have been all
-     along. */
-  var cSel  = document.getElementById('cSel');
+  /* ---- contracts: this party, this movement, nothing else ---------- */
   var pSel  = document.querySelector('select[name="party_id"]');
-  var cHint = document.getElementById('cHint');
-  var CONTRACTS = (function(){
-    if(!cSel) return [];
-    return [].slice.call(cSel.options).filter(function(o){ return o.value && o.value !== '0'; })
-      .map(function(o){
-        return { id:o.value, label:o.dataset.label || o.text.trim(),
-                 party:+(o.dataset.party || 0), type:o.dataset.type || '',
-                 status:o.dataset.status || '' };
-      });
-  })();
+
+  /* ==================================================================
+     THE HEADER CONTRACT DROPDOWN IS GONE, AND SO IS THE CODE THAT DROVE IT.
+     ==================================================================
+
+     This is the fault the owner kept hitting and I kept not finding, so
+     it is written down in full.
+
+     When the contract moved out of the header and into the item list, the
+     <select id="cSel"> became <input type="hidden" id="cSel"> — it still
+     carries the value an older pass saved, and nothing more. Eighty lines
+     of code that drove it as a dropdown were left behind, and the very
+     first of them ran at page load:
+
+         [].slice.call(cSel.options)
+
+     An <input> has no .options. Array.prototype.slice.call(undefined)
+     throws a TypeError, and a TypeError at the top level of a <script>
+     stops that script dead. Everything below it never ran — the party
+     cascade, the held-goods fetch, the totals, More details, and
+     syncAll().
+
+     syncAll() is what hides the plain <select> on each item line and
+     shows the search box the picker attaches to. Without it the line kept
+     the fallback dropdown and the list never opened. So the whole screen
+     looked like "the item list is broken", when the item list was fine
+     and had simply never been switched on.
+
+     The lesson is not "delete dead code for tidiness". It is that code
+     left pointing at an element that changed shape is not dead — it runs,
+     it throws, and it takes the rest of the file with it. Nothing below
+     line 1745 of this file worked. The fix is the deletion. */
+
+  /* WHICH CONTRACT TYPE THIS PASS MAY USE. Kept from the deleted block,
+     because the rule it encodes is the owner's and still stands — "if
+     using contract list then only show their relevant active list". A
+     Sale can only ever be against a sales contract; a Purchase return
+     against a purchase contract; a Sample against nothing at all. It is
+     applied in itemRowsFor() now, which is where the contract is chosen. */
   var CTYPE = <?= json_encode(array_map(fn($t) => $t['contract'], inv_gate_types($dir))) ?>;
   function ctypeOf(){ return CTYPE[ts.value] || ''; }
-
-  function fillContracts(){
-    if(!cSel) return;
-    var keep = cSel.value, want = ctypeOf(), party = pSel ? +pSel.value : 0;
-
-    /* Not under contract at all — say so and take the box out of play,
-       rather than offering a list that cannot be right. */
-    if(!want){
-      cSel.innerHTML = '<option value="0">— not under contract —</option>';
-      cSel.value = '0'; cSel.disabled = true;
-      if(cHint){ cHint.textContent = 'A sample, transfer or write-off is never under a contract.';
-                 cHint.style.color = '#8a97ab'; }
-      return;
-    }
-    cSel.disabled = false;
-
-    var mine = CONTRACTS.filter(function(c){
-      return c.type === want && (!party || c.party === party);
-    });
-
-    var html = '<option value="0">— none, direct —</option>';
-    /* A contract already on this pass is never filtered away — that is
-       how the party box used to lose its value, and the same trap is
-       here. It is listed first, marked, and stays selected. */
-    var kept = keep && keep !== '0' ? keep : '';
-    if(kept && !mine.some(function(c){ return String(c.id) === String(kept); })){
-      var was = CONTRACTS.filter(function(c){ return String(c.id) === String(kept); })[0];
-      html += '<optgroup label="On this pass"><option value="' + kept + '">'
-            + (was ? was.label : 'Contract #' + kept) + '</option></optgroup>';
-    }
-    html += mine.map(function(c){
-      return '<option value="' + c.id + '"' + (c.status === 'draft' ? ' disabled' : '') + '>'
-           + c.label + '</option>';
-    }).join('');
-    cSel.innerHTML = html;
-    cSel.value = keep;
-
-    if(!cHint) return;
-    var drafts = mine.filter(function(c){ return c.status === 'draft'; }).length;
-    var live   = mine.length - drafts;
-    var word   = want.replace('_', ' ');
-    if(!party){
-      cHint.textContent = 'Choose the party — only their ' + word + ' contracts will be offered.';
-      cHint.style.color = '#8a97ab';
-    } else if(drafts && !live){
-      cHint.innerHTML = drafts + ' ' + word + ' contract(s) exist for this party but are still '
-        + '<b>drafts</b>, so they cannot be chosen. Open <a href="inv_contracts.php" target="_blank" '
-        + 'style="color:#9a3412;font-weight:800">Contracts</a>, press Activate, and come back.';
-      cHint.style.color = '#9a3412';
-    } else if(live){
-      cHint.textContent = live + ' ' + word + ' contract(s) for this party'
-        + (drafts ? ', and ' + drafts + ' still in draft' : '') + '. Nothing else is offered.';
-      cHint.style.color = '#0b5f8a';
-    } else {
-      cHint.textContent = 'No ' + word + ' contract on file for this party — direct is fine.';
-      cHint.style.color = '#8a97ab';
-    }
-  }
-
-  /* Picking the contract fills the party in, when the party box is still
-     empty. The two facts belong together and only one of them should have
-     to be typed. */
-  function partyFromContract(){
-    if(!cSel || !pSel || !cSel.value || cSel.value === '0') return;
-    if(+pSel.value) return;
-    var c = CONTRACTS.filter(function(x){ return x.id === cSel.value; })[0];
-    if(c && c.party && [].slice.call(pSel.options).some(function(o){ return +o.value === c.party; })){
-      pSel.value = c.party;
-      fillContracts();
-    }
-  }
-
-  if(cSel) cSel.addEventListener('change', partyFromContract);
 
   /* ---- the cascade: type decides party, party decides the rest ------ */
   /* Each transaction type already declares, in inv_gate_types(), which
@@ -1962,11 +1938,21 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   }
 
   if(pSel) pSel.addEventListener('change', function(){
-    fillContracts(); clRecheck();
+    clRecheck();
     loadHeld(function(){ syncAll(); refreshAll(); });
   });
+  /* CHANGING THE TRANSACTION TYPE CAN INVALIDATE A CONTRACT ALREADY ON A
+     LINE. Switch a pass from Sale to Purchase return and the sales
+     contract those lines point at is no longer one this pass may use. The
+     lines are rechecked — and clRecheck() says out loud which ones it
+     cleared, because a link that vanishes in silence is worse than one
+     that was never made. Only when the contract TYPE actually changes:
+     Sale to Sale return is still 'sales', and nothing needs clearing. */
+  var lastCT = ctypeOf();
   ts.addEventListener('change', function(){
-    fillParties(); fillContracts();
+    fillParties();
+    var nowCT = ctypeOf();
+    if(nowCT !== lastCT){ lastCT = nowCT; clRecheck(); }
     loadHeld(function(){ syncAll(); refreshAll(); });
   });
 
@@ -1989,7 +1975,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
         ALLP.sort(function(a,b){ return a.name.localeCompare(b.name); });
         fillParties();
         pSel.value = String(d.id);
-        fillContracts();
+        clRecheck();
         if(pHint){
           pHint.textContent = d.existing ? (d.note || 'Already existed — selected it.')
                                          : d.name + ' added as ' + d.code + '.';
@@ -2007,7 +1993,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     if(moreCar) moreCar.textContent = open ? '▾' : '▴';
   });
 
-  fillParties(); fillContracts();
+  fillParties();
   note(); taxRule(); tot(); syncAll();
   /* The Contract boxes were rendered by PHP with the right text already,
      so nothing has to wait for this fetch to be readable. It runs because
