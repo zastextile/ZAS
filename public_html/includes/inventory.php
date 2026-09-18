@@ -3053,6 +3053,49 @@ function inv_parties(string $type = '', bool $activeOnly = true): array {
    costing_item_aliases dictionary. Returns what it would create; only
    writes when $apply is true. Re-running never duplicates, because the
    generated code is derived from the normalised name. */
+/* The same flattening the alias dictionary uses, so "Cotton Fabric-60s"
+   and "cotton fabric 60 s" are one word to both of them. */
+function inv_seed_norm(string $s): string {
+    return mb_strtolower(trim(preg_replace('/[^a-z0-9]+/i', ' ', $s)));
+}
+
+/* THE CLOSEST ITEM ALREADY IN THE MASTER, or null when nothing is close.
+
+   Deliberately conservative. A wrong suggestion here is worse than none:
+   it invites one press that merges two genuinely different cloths, and
+   there is no screen that would ever show the mistake. So it only offers a
+   match when one name CONTAINS the other, or when the two share at least
+   70% of their letter-pairs — the same measure the item picker uses to
+   turn "thred" into THREAD. */
+function inv_seed_nearest(string $name, array $master): ?array {
+    $q = inv_seed_norm($name);
+    if ($q === '' || !$master) return null;
+    $best = null; $bestScore = 0.0;
+    foreach ($master as $m) {
+        if ($m['n'] === '') continue;
+        $sc = 0.0;
+        /* THE SAME NAME WITH DIFFERENT PUNCTUATION IS THE DUPLICATE MOST
+           WORTH CATCHING, not one to skip. "Button 4-hole" in a costing and
+           "Button 4 hole" in the master are not an exact match — the seed's
+           exists check compares the raw names — so without this they would
+           quietly become two items for the same button. An early draft
+           skipped this case as "not really near". It is the nearest there
+           is. */
+        if ($m['n'] === $q) {
+            $sc = 1.0;
+        } elseif (str_contains($m['n'], $q) || str_contains($q, $m['n'])) {
+            $sc = 0.95;
+        } else {
+            similar_text($q, $m['n'], $pct);
+            $sc = $pct / 100;
+        }
+        if ($sc > $bestScore) { $bestScore = $sc; $best = $m; }
+    }
+    if (!$best || $bestScore < 0.70) return null;
+    return ['id' => $best['id'], 'code' => $best['code'], 'name' => $best['name'],
+            'score' => (int)round($bestScore * 100)];
+}
+
 function inv_seed_materials_preview(bool $apply = false): array {
     $found = [];
     try {
@@ -3069,9 +3112,14 @@ function inv_seed_materials_preview(bool $apply = false): array {
         }
     } catch (Throwable $e) {}
 
-    $existing = [];
-    try { foreach (db()->query("SELECT LOWER(name) n FROM inv_materials")->fetchAll() as $m) $existing[$m['n']] = true; }
-    catch (Throwable $e) {}
+    $existing = []; $master = [];
+    try {
+        foreach (db()->query("SELECT id, code, name FROM inv_materials WHERE is_active=1")->fetchAll() as $m) {
+            $existing[mb_strtolower($m['name'])] = true;
+            $master[] = ['id' => (int)$m['id'], 'code' => (string)$m['code'], 'name' => (string)$m['name'],
+                         'n' => inv_seed_norm((string)$m['name'])];
+        }
+    } catch (Throwable $e) {}
 
     // Packing folds into Accessories — inv_group_norm() is the only place
     // that mapping is written, so the seed can never disagree with a screen
@@ -3091,10 +3139,18 @@ function inv_seed_materials_preview(bool $apply = false): array {
         }
         $key = strtolower($name);
         if (isset($seen[$key])) { $seen[$key]['uses'] += (int)$r['uses']; continue; }
+        $isThere = isset($existing[$key]);
         $seen[$key] = [
             'name' => $name, 'item_group' => $group, 'uom' => $unit !== '' ? strtoupper(substr($unit, 0, 20)) : 'PCS',
             'std_rate' => round((float)$r['avg_rate'], 4), 'uses' => (int)$r['uses'],
-            'exists' => isset($existing[$key]),
+            'exists' => $isThere,
+            'raw'  => $rawName,
+            /* THE NEAREST THING ALREADY IN THE MASTER — the whole point.
+               "COTTON FABRIC 60s" and "Cotton fabrc 60" are the same cloth
+               and two rows here, and pressing Create makes them two items
+               forever. Offering the near match at the moment of creation is
+               the only cheap time to stop it. Suggested, never applied. */
+            'near' => $isThere ? null : inv_seed_nearest($name, $master),
         ];
     }
     $found = array_values($seen);

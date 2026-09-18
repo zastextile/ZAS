@@ -148,6 +148,11 @@ try { db()->query("SELECT inv_view FROM users LIMIT 1")->fetchColumn(); } catch 
 $locations = $installed ? inv_locations(false) : [];
 $seedPreview = $installed ? inv_seed_materials_preview(false) : [];
 $seedNew = array_values(array_filter($seedPreview, fn($s) => !$s['exists']));
+/* THE ONES WORTH LOOKING AT BEFORE PRESSING ANYTHING. A name that is not in
+   the master but is very close to something that IS will become a second
+   item for the same cloth the moment Create is pressed — and no screen ever
+   shows that mistake afterwards. */
+$seedNear = array_values(array_filter($seedNew, fn($s) => !empty($s['near'])));
 
 $users = [];
 try { $users = db()->query("SELECT id,name,email,role,inv_view,inv_gate,inv_store,inv_consume,inv_post,inv_adjust,inv_master FROM users WHERE is_active=1 AND role <> 'customer' ORDER BY role,name")->fetchAll(); }
@@ -364,8 +369,36 @@ uasort($deptStray, fn($a, $b) => $b <=> $a);
     <div class="iv-note ok" style="margin-bottom:14px">
       Found <b><?= count($seedPreview) ?></b> distinct item(s) in your costings — <b><?= count($seedNew) ?></b> would be created, <?= count($seedPreview) - count($seedNew) ?> already exist. Rates shown are the average used across your costings and can be edited afterwards.
     </div>
+
+    <?php /* ==================================================================
+             THE DUPLICATE WARNING — the cheapest moment to stop one
+             ==================================================================
+             "i want to corect that old costing but if i go manual one by one
+              take time ... change item which already availble instead saving
+              dublicate nmaes as separate"
+
+             A costing that says "COTTON FABRIC 60s" and a master item called
+             "Cotton Fabric 60S" are the same cloth. Pressing Create makes
+             them two items, for ever, and nothing on any screen afterwards
+             says they are the same. Once created, every stock figure for that
+             cloth is split in two and neither half is right.
+
+             So the near-matches are counted and named BEFORE the button, and
+             the page that settles them is one click away. Nothing here is
+             applied automatically: a wrong merge is worse than a duplicate,
+             because a duplicate is visible and a wrong merge is not. */ ?>
+    <?php if ($seedNear): ?>
+      <div class="iv-note warn" style="margin-bottom:14px">
+        <b><?= count($seedNear) ?> of these look like something you already have.</b>
+        Creating them makes a second item for the same thing, and from then on your stock for it
+        is split between two names. Settle them first in
+        <a href="costing_items_link.php" style="font-weight:800">Link costing items</a> — that page
+        points an old costing name at an existing item and writes it down, so the seed folds them
+        together instead of duplicating. Look at the <b>Looks like</b> column below.
+      </div>
+    <?php endif; ?>
     <div style="overflow-x:auto;max-height:340px;overflow-y:auto"><table class="iv-tbl">
-      <thead><tr><th>Item</th><th>Group</th><th>UOM</th><th class="r">Avg rate</th><th class="r">Used in</th><th>Status</th></tr></thead>
+      <thead><tr><th>Item</th><th>Group</th><th>UOM</th><th class="r">Avg rate</th><th class="r">Used in</th><th>Looks like</th><th>Status</th></tr></thead>
       <tbody>
       <?php foreach (array_slice($seedPreview, 0, 120) as $s): ?>
         <tr>
@@ -373,8 +406,26 @@ uasort($deptStray, fn($a, $b) => $b <=> $a);
           <td><?= e($s['item_group']) ?></td>
           <td style="font-family:monospace"><?= e($s['uom']) ?></td>
           <td class="r" style="font-variant-numeric:tabular-nums"><?= number_format($s['std_rate'], 2) ?></td>
-          <td class="r"><?= (int)$s['uses'] ?> costing(s)</td>
-          <td><?= $s['exists'] ? '<span class="iv-pill iv-ok">already in master</span>' : '<span class="iv-pill iv-warn">will be created</span>' ?></td>
+          <?php /* THE COUNT IS A LINK. "if i go manual one by one take time"
+                   — from here one click opens the page that settles this very
+                   name against an existing item, instead of hunting for the
+                   costings that used it. */ ?>
+          <td class="r"><a href="costing_items_link.php?q=<?= urlencode($s['raw'] ?? $s['name']) ?>"
+                 title="Open Link costing items and settle this name"><?= (int)$s['uses'] ?> costing(s)</a></td>
+          <td>
+            <?php if (!empty($s['near'])): ?>
+              <a href="costing_items_link.php?q=<?= urlencode($s['raw'] ?? $s['name']) ?>"
+                 style="color:#9a5710;font-weight:700"><?= e($s['near']['code']) ?> · <?= e($s['near']['name']) ?></a>
+              <span style="color:#8a97ab;font-size:10.5px"><?= (int)$s['near']['score'] ?>%</span>
+            <?php else: ?>
+              <span style="color:#c9d3e0">—</span>
+            <?php endif; ?>
+          </td>
+          <td><?= $s['exists']
+                ? '<span class="iv-pill iv-ok">already in master</span>'
+                : (!empty($s['near'])
+                    ? '<span class="iv-pill iv-warn">would be a DUPLICATE</span>'
+                    : '<span class="iv-pill iv-warn">will be created</span>') ?></td>
         </tr>
       <?php endforeach; ?>
       </tbody>
@@ -382,7 +433,11 @@ uasort($deptStray, fn($a, $b) => $b <=> $a);
     <?php if (count($seedPreview) > 120): ?><p style="font-size:11.5px;color:#8a97ab;margin:10px 0 0">Showing the first 120. All of them will be created.</p><?php endif; ?>
     <?php if ($seedNew): ?>
       <form method="post" style="margin-top:16px"><?= csrf_field() ?><input type="hidden" name="action" value="seed_materials">
-        <button class="iv-btn" type="submit">Create <?= count($seedNew) ?> material(s)</button>
+        <button class="iv-btn" type="submit"
+          <?= $seedNear ? 'onclick="return confirm(\'' . (int)count($seedNear)
+              . ' of these look like items you already have. Creating them now makes a second item for the same thing.\\n\\nSettle them in Link costing items first?\\n\\nOK = create anyway, Cancel = go back\');"' : '' ?>>
+          Create <?= count($seedNew) ?> material(s)</button>
+        <a class="iv-btn sec" href="costing_items_link.php" style="margin-left:8px">Settle old names first</a>
       </form>
     <?php endif; ?>
   <?php endif; ?>
