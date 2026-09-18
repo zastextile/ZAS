@@ -1051,6 +1051,48 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   function locId(){ var el = document.querySelector('select[name="location_id"]'); return el ? +el.value : 0; }
   function ownOf(){ var o = ts.options[ts.selectedIndex]; return (o && o.dataset.own === 'customer') ? 'customer' : 'own'; }
 
+  /* ==================================================================
+     locName() AND partyName() WERE CALLED SEVEN TIMES AND DEFINED NOWHERE.
+     ==================================================================
+
+     This is the SECOND crash on this screen and it is why the item list
+     was still dead on Gate Outward after the first one was fixed.
+
+     Both are called from the item picker — from its title, from its empty
+     line, and from the "On contract with …" heading. The picker calls them
+     while it is DRAWING, so the ReferenceError lands inside the draw and
+     the panel is left with no rows in it. To the operator the box opens an
+     empty list, or looks like it does nothing at all. Nothing in the page
+     says a word, because the throw happens inside a callback.
+
+     It only bit OUTWARD. On an inward pass the title reads "Receiving —
+     any item" and never asks where the stock is standing, so the same code
+     drew perfectly. That is exactly the shape of the report: inward fine,
+     outward dead.
+
+     Measured, not reasoned: the whole page is now booted in a browser by
+     tests/zgateboot_test.php, which clicks this box and fails on any
+     javascript error at all. Both crashes would have been caught the first
+     day by that test, and neither was catchable by reading. */
+  function locName(){
+    var el = document.querySelector('select[name="location_id"]');
+    if(!el || el.selectedIndex < 0) return '';
+    var o = el.options[el.selectedIndex];
+    return o ? o.text.trim() : '';
+  }
+  /* The party is a dropdown OR a typed one-off name, and both are the
+     party. Reading only the dropdown would print "Held by …" against a
+     one-off supplier whose name is on screen two fields away. */
+  function partyName(){
+    var el = document.querySelector('select[name="party_id"]');
+    if(el && el.selectedIndex >= 0 && +el.value){
+      var o = el.options[el.selectedIndex];
+      if(o) return o.text.trim();
+    }
+    var t = document.getElementById('pText');
+    return t ? t.value.trim() : '';
+  }
+
   /* The two AJAX endpoints on this page are about MATERIAL lots and
      material balances. A finished product has neither — it is counted by
      size, not by roll — so these return the material id only, and 0 for a
