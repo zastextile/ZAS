@@ -71,6 +71,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $rows[] = [
                 'item_id'   => $_POST['r_item'][$i]   ?? 0,
                 'op_id'     => $_POST['r_op'][$i]     ?? 0,
+                /* WHICH TABLE op_id POINTS AT. A part operation, a product's
+                   set job and an order line's own set job each number from 1,
+                   so the id alone stopped being unique the moment set work
+                   existed. Defaulting to 'part' means an older page left open
+                   in a tab still books part work correctly. */
+                'op_kind'   => $_POST['r_kind'][$i]   ?? 'part',
                 'worker_id' => $_POST['r_worker'][$i] ?? 0,
                 'qty'       => $_POST['r_qty'][$i]    ?? 0,
                 'note'      => $_POST['r_note'][$i]   ?? '',
@@ -1064,7 +1070,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
       var work   = (tab === 'A') ? picked : other(r.v);
       var worker = (tab === 'A') ? other(r.v) : picked;
       if (!work || !worker) return;
-      sheet.push({ item:work.item, op:work.op, worker:worker.id, qty:v, rate:work.rate,
+      /* kind rides on the staged row, not looked up again at save time — the
+         work list can be rebuilt between staging and saving, and a row that
+         re-derived its own kind then could book against the wrong table. */
+      sheet.push({ item:work.item, op:work.op, kind:work.kind || 'part',
+                   worker:worker.id, qty:v, rate:work.rate,
                    what:work.pn + ' → ' + work.on, who:worker.name, pi:work.pi });
     });
     zeReset();
@@ -1104,7 +1114,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
     var f = ev.target;
     [].slice.call(f.querySelectorAll('.zePost')).forEach(function(e){ e.remove(); });
     sheet.forEach(function(x){
-      [['r_item',x.item],['r_op',x.op],['r_worker',x.worker],['r_qty',x.qty],['r_note','']]
+      [['r_item',x.item],['r_op',x.op],['r_kind',x.kind||'part'],['r_worker',x.worker],
+       ['r_qty',x.qty],['r_note','']]
         .forEach(function(kv){
           var h = document.createElement('input');
           h.type = 'hidden'; h.className = 'zePost'; h.name = kv[0] + '[]'; h.value = kv[1];

@@ -242,7 +242,15 @@ head('A CANCELLED ROW STOPS HOLDING ITS LIMIT DOWN');
 $pm2 = code_only(lift($src, 'zp_progress_map'));
 t('progress counts only active rows', str_contains($pm2, "WHERE status='active'"));
 t('  decided in ONE place', substr_count($pm2, "status='active'") === 1);
-t('it is one grouped query, not one per line', str_contains($pm2, 'GROUP BY proforma_item_id, part_id, op_id, stage'));
+/* op_kind joined the grouping when set work arrived — a booking now says
+   which of three tables its op id belongs to, and rolling two tables' id 4
+   into one figure would move a ceiling for a reason nobody could see. The
+   assertion's point is unchanged: ONE grouped query for the whole screen,
+   never one per line. */
+t('it is one grouped query, not one per line',
+  str_contains($pm2, 'GROUP BY proforma_item_id, part_id, op_id, op_kind, stage'));
+t('  and the grouping tells the two kinds of work apart',
+  str_contains($pm2, "op_kind"));
 
 head('THE LIST NEVER HIDES A WAGE IT IS STILL COUNTING');
 $ent = code_only(lift($src, 'zp_entries'));

@@ -63,6 +63,13 @@ function zp_part_ops(int $id, bool $a = false): array { return $GLOBALS['ZP_OPS'
    the ordinary case — one rate for every size — exactly as before. Section 13
    fills it to prove the extra rows are written. */
 function zp_op_rate_map(int $p, bool $fresh = false): array { return $GLOBALS['ZP_OP_RATES'] ?? []; }
+/* SET WORK NOW REACHES COSTING TOO, so the bridge asks for it. Stubbed empty
+   by default — every assertion below is about PART work, and a set job
+   appearing in those counts would be measuring the wrong thing. The set-work
+   mirror has its own test. */
+function zp_set_ops(int $p, bool $a = true): array { return $GLOBALS['ZP_SET_OPS'] ?? []; }
+function zp_set_rate_map(int $p): array { return $GLOBALS['ZP_SET_RATES'] ?? []; }
+function zp_stage_name(int $id): string { return $GLOBALS['ZP_STAGE_NAMES'][$id] ?? ''; }
 function zp_qty_map(int $p): array { return $GLOBALS['ZP_QTY']; }
 function zp_qty_for(array $m, int $part, int $size): float { return (float)($m[$part][$size] ?? 1.0); }
 

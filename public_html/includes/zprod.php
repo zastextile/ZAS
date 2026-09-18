@@ -205,6 +205,87 @@ function zp_ensure_schema(): void {
         INDEX(worker_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 
+    /* ============================================================
+       SET WORK — the jobs done to the whole set, not to any one part
+       ============================================================
+
+       Folding, matching, poly bag, hangtag, carton, tape. It is work on the
+       SET, and until now an operation could only belong to a PART, so that
+       pay was either never booked or stuck onto some part it was never done
+       to — and Costing priced a set on part work alone, which understated
+       every quote by the whole of its packing labour.
+
+       THE PRODUCT GIVES THE LIST; AN ORDER MAY TAKE ITS OWN COPY.
+
+       zp_set_ops       what this product normally needs. Typed once.
+       zp_line_set_ops  one order LINE's own version of that list, and it
+                        exists ONLY for the lines somebody pressed the button
+                        on. No rows means the line follows the product, which
+                        is why nothing has to be migrated and why nine orders
+                        in ten need no typing at all.
+
+       WHY THE COPY IS PER LINE AND NOT PER ORDER. One proforma can carry a
+       comforter set and a sheet set. Set work belongs to a product, so a
+       list hung on the order would have to guess which of them it meant. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_set_ops (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id INT NOT NULL,
+        seq INT NOT NULL DEFAULT 0,
+        stage_id INT NULL DEFAULT NULL,
+        operation_name VARCHAR(120) NOT NULL,
+        rate DECIMAL(12,2) NOT NULL DEFAULT 0,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX(product_id), INDEX(stage_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* set_op_id says where a line came from:
+         a number — it came from the product's list, kept, possibly re-rated,
+                    possibly switched off with is_active=0
+         NULL     — it was added for this order and exists nowhere else
+       SWITCHED OFF, NEVER DELETED. Dropping the row would make the line
+       follow the product again on the next read, which is the opposite of
+       what "not on this order" means. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_line_set_ops (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        proforma_item_id INT NOT NULL,
+        set_op_id INT NULL DEFAULT NULL,
+        seq INT NOT NULL DEFAULT 0,
+        stage_id INT NULL DEFAULT NULL,
+        operation_name VARCHAR(120) NOT NULL,
+        rate DECIMAL(12,2) NOT NULL DEFAULT 0,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX(proforma_item_id), INDEX(set_op_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* A RATE THAT IS DIFFERENT FOR ONE SIZE, for set work.
+       Same shape as zp_op_rate for parts — and it has to be its OWN table
+       rather than a `kind` column on that one, because zp_part_ops.id and
+       zp_set_ops.id are two independent id spaces. One row keyed (product,
+       op, size) with no way to tell which op it meant is the kind of
+       collision that pays the wrong rate and is never traced. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_set_op_rate (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id INT NOT NULL,
+        set_op_id INT NOT NULL,
+        size_id INT NOT NULL,
+        rate DECIMAL(12,2) NOT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uniq_sor (product_id, set_op_id, size_id),
+        INDEX(product_id), INDEX(size_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* WHICH TABLE op_id POINTS AT.
+       zp_part_ops, zp_set_ops and zp_line_set_ops each number their rows
+       from 1, so op_id alone stopped being unique the moment set work
+       existed. 'part' is the default, so EVERY row already in the ledger
+       keeps exactly the meaning it has today and nothing needs migrating. */
+    try { db()->exec("ALTER TABLE zp_entries ADD COLUMN op_kind VARCHAR(8) NOT NULL DEFAULT 'part' AFTER op_id"); } catch (Throwable $e) {}
+    try { db()->exec("CREATE INDEX idx_opkind ON zp_entries (op_kind, op_id)"); } catch (Throwable $e) {}
+
     /* ---- WHICH STAGES A WORKER ACTUALLY WORKS ----
        On a floor of three hundred people, offering all three hundred for a
        piping job is not a list, it is a haystack. A worker may be allotted any
@@ -1183,14 +1264,38 @@ function zp_open_lines(): array {
    made — so a cancelled entry can never still be holding a limit down. */
 function zp_progress_map(): array {
     zp_ensure_schema();
-    $out = ['op' => [], 'stage' => []];
+    $out = ['op' => [], 'stage' => [], 'set' => []];
+    /* ONE QUERY, WRITTEN OUT IN FULL, and that is deliberate on two counts.
+       Cancelled rows are excluded HERE and nowhere else, so a cancelled entry
+       can never still be holding a limit down. And nothing in it is built
+       from a variable — the first draft interpolated the WHERE clause to
+       share it with a fallback query, and this module's own security test
+       caught it. A rule worth having is worth not making an exception to.
+
+       op_kind is added by zp_ensure_schema() on the line above, the same way
+       every other column and table in this module arrives. There is no
+       fallback for it missing, for the same reason there is none for
+       zp_entries missing: if the schema cannot be written the app has to say
+       so, not half-work. */
     try {
-        $rows = db()->query("SELECT proforma_item_id, COALESCE(part_id,0) part_id, op_id, stage, SUM(qty) q
+        $rows = db()->query("SELECT proforma_item_id, COALESCE(part_id,0) part_id, op_id,
+                                    COALESCE(op_kind,'part') op_kind, stage, SUM(qty) q
                              FROM zp_entries WHERE status='active'
-                             GROUP BY proforma_item_id, part_id, op_id, stage")->fetchAll();
+                             GROUP BY proforma_item_id, part_id, op_id, op_kind, stage")->fetchAll();
     } catch (Throwable $e) { return $out; }
     foreach ($rows as $r) {
-        $it = (int)$r['proforma_item_id']; $pt = (int)$r['part_id'];
+        $it = (int)$r['proforma_item_id'];
+        $kind = (string)$r['op_kind'];
+        /* SET WORK IS COUNTED IN A PLACE OF ITS OWN, and that is the point.
+           It is measured in SETS, part work in pieces. Adding them into one
+           bucket would let 200 folds look like 200 cushion covers, and the
+           ceiling on every part would move for a reason nobody could see. */
+        if ($kind === 'set' || $kind === 'line') {
+            $op = (int)$r['op_id'];
+            $out['set'][$it][$kind][$op] = ((float)($out['set'][$it][$kind][$op] ?? 0)) + (float)$r['q'];
+            continue;
+        }
+        $pt = (int)$r['part_id'];
         $out['op'][$it][$pt][(int)$r['op_id']] = (float)$r['q'];
         $key = zp_is_cutting($r['stage']) ? 'cut' : 'stitched';
         $out['stage'][$it][$pt][$key] = ((float)($out['stage'][$it][$pt][$key] ?? 0)) + (float)$r['q'];
@@ -1418,6 +1523,296 @@ function zp_rate_source(int $opId, array $map, array $sizeMap = [], int $sizeId 
 }
 
 /* ============================================================
+   SET WORK — the product's list, and an order line's own copy
+   ============================================================ */
+
+/* The jobs this product normally needs doing to a finished set. */
+function zp_set_ops(int $productId, bool $activeOnly = true): array {
+    zp_ensure_schema();
+    if ($productId <= 0) return [];
+    try {
+        $sql = "SELECT * FROM zp_set_ops WHERE product_id=?"
+             . ($activeOnly ? " AND is_active=1" : "") . " ORDER BY seq, id";
+        $st = db()->prepare($sql); $st->execute([$productId]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* Replaces the product's whole list with what was typed.
+   $rows = [ ['id','stage_id','operation_name','rate'], ... ] in screen order.
+
+   A ROW THAT DISAPPEARS IS SWITCHED OFF, NOT DELETED. Its id is on every
+   wage already booked against it; deleting it would leave those wages
+   pointing at nothing and no report could ever explain the gap. Exactly the
+   rule zp_save_part_ops() follows, for exactly the same reason. */
+function zp_save_set_ops(int $productId, array $rows, ?int $userId = null): array {
+    zp_ensure_schema();
+    if ($productId <= 0) return ['ok' => false, 'error' => 'No product.'];
+    $keep = []; $seq = 0; $clean = [];
+    foreach ($rows as $r) {
+        $name = trim((string)($r['operation_name'] ?? ''));
+        if ($name === '') continue;                     // a blank line is not an operation
+        $clean[] = [
+            'id'      => (int)($r['id'] ?? 0),
+            'stage'   => (int)($r['stage_id'] ?? 0) ?: null,
+            'name'    => mb_substr($name, 0, 120),
+            'rate'    => round((float)($r['rate'] ?? 0), 2),
+            'seq'     => ++$seq,
+        ];
+    }
+    try {
+        db()->beginTransaction();
+        $ins = db()->prepare("INSERT INTO zp_set_ops (product_id,seq,stage_id,operation_name,rate,is_active)
+                              VALUES (?,?,?,?,?,1)");
+        $upd = db()->prepare("UPDATE zp_set_ops SET seq=?,stage_id=?,operation_name=?,rate=?,is_active=1
+                              WHERE id=? AND product_id=?");
+        foreach ($clean as $c) {
+            if ($c['id'] > 0) {
+                $upd->execute([$c['seq'], $c['stage'], $c['name'], $c['rate'], $c['id'], $productId]);
+                $keep[] = $c['id'];
+            } else {
+                $ins->execute([$productId, $c['seq'], $c['stage'], $c['name'], $c['rate']]);
+                $keep[] = (int)db()->lastInsertId();
+            }
+        }
+        if ($keep) {
+            $in = implode(',', array_fill(0, count($keep), '?'));
+            $st = db()->prepare("UPDATE zp_set_ops SET is_active=0 WHERE product_id=? AND id NOT IN ($in)");
+            $st->execute(array_merge([$productId], $keep));
+        } else {
+            db()->prepare("UPDATE zp_set_ops SET is_active=0 WHERE product_id=?")->execute([$productId]);
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        try { db()->rollBack(); } catch (Throwable $e2) {}
+        return ['ok' => false, 'error' => 'Could not save the set work.'];
+    }
+    return ['ok' => true, 'error' => '', 'saved' => count($clean)];
+}
+
+/* ------------------------------------------- the per-size rate, for set work */
+function zp_set_rate_map(int $productId): array {
+    zp_ensure_schema();
+    $out = [];
+    if ($productId <= 0) return $out;
+    try {
+        $st = db()->prepare("SELECT set_op_id, size_id, rate FROM zp_set_op_rate WHERE product_id=?");
+        $st->execute([$productId]);
+        foreach ($st->fetchAll() as $r) $out[(int)$r['set_op_id']][(int)$r['size_id']] = (float)$r['rate'];
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* NO ROW MEANS THE OPERATION'S OWN RATE — the same rule the part rates
+   follow, so a blank size cell means "the rate on the left" on both grids. */
+function zp_set_rate_for(int $setOpId, float $standard, array $map, int $sizeId): float {
+    if ($sizeId > 0 && isset($map[$setOpId][$sizeId])) return (float)$map[$setOpId][$sizeId];
+    return $standard;
+}
+
+function zp_save_set_rates(int $productId, array $rows, ?int $userId = null): void {
+    zp_ensure_schema();
+    if ($productId <= 0) return;
+    try {
+        $del = db()->prepare("DELETE FROM zp_set_op_rate WHERE product_id=? AND set_op_id=? AND size_id=?");
+        $ins = db()->prepare("INSERT INTO zp_set_op_rate (product_id,set_op_id,size_id,rate,created_by)
+                              VALUES (?,?,?,?,?)
+                              ON DUPLICATE KEY UPDATE rate=VALUES(rate), updated_at=NOW()");
+        foreach ($rows as $r) {
+            $op = (int)($r['set_op_id'] ?? 0); $sz = (int)($r['size_id'] ?? 0);
+            if ($op <= 0 || $sz <= 0) continue;
+            $raw = trim((string)($r['rate'] ?? ''));
+            /* A CLEARED CELL IS NOT A ZERO. Blank means "follow the operation's
+               own rate", so the override is removed; writing 0.00 would pay
+               nothing for that size and look deliberate. */
+            if ($raw === '') { $del->execute([$productId, $op, $sz]); continue; }
+            $ins->execute([$productId, $op, $sz, round((float)$raw, 2), $userId]);
+        }
+    } catch (Throwable $e) {}
+}
+
+/* ------------------------------------------------ an order line's own copy */
+
+/* Does this line have its own list? Rows here, of any kind, mean yes. */
+function zp_line_has_own_set(int $proformaItemId): bool {
+    zp_ensure_schema();
+    if ($proformaItemId <= 0) return false;
+    try {
+        $st = db()->prepare("SELECT COUNT(*) FROM zp_line_set_ops WHERE proforma_item_id=?");
+        $st->execute([$proformaItemId]);
+        return (int)$st->fetchColumn() > 0;
+    } catch (Throwable $e) { return false; }
+}
+
+/* Takes the product's list and writes it onto the line, once.
+   Refuses if a copy already exists — otherwise pressing the button twice
+   would quietly throw away everything typed the first time. */
+function zp_line_take_set_copy(int $proformaItemId, int $productId, int $sizeId = 0): array {
+    zp_ensure_schema();
+    if ($proformaItemId <= 0 || $productId <= 0) return ['ok' => false, 'error' => 'No order line.'];
+    if (zp_line_has_own_set($proformaItemId))
+        return ['ok' => false, 'error' => 'This line already has its own set work.'];
+    $ops = zp_set_ops($productId, true);
+    if (!$ops) return ['ok' => false, 'error' => 'This product has no set work to copy yet.'];
+    $rates = zp_set_rate_map($productId);
+    try {
+        $ins = db()->prepare("INSERT INTO zp_line_set_ops
+            (proforma_item_id,set_op_id,seq,stage_id,operation_name,rate,is_active) VALUES (?,?,?,?,?,?,1)");
+        $seq = 0;
+        foreach ($ops as $o) {
+            /* THE COPY TAKES THE RATE THIS LINE WOULD ACTUALLY HAVE PAID,
+               size override included. Copying the standard rate instead would
+               silently re-price every size that had one the moment somebody
+               pressed the button. */
+            $rate = zp_set_rate_for((int)$o['id'], (float)$o['rate'], $rates, $sizeId);
+            $ins->execute([$proformaItemId, (int)$o['id'], ++$seq,
+                           $o['stage_id'] !== null ? (int)$o['stage_id'] : null,
+                           (string)$o['operation_name'], $rate]);
+        }
+    } catch (Throwable $e) { return ['ok' => false, 'error' => 'Could not copy the set work.']; }
+    return ['ok' => true, 'error' => '', 'copied' => count($ops)];
+}
+
+/* Throws the copy away so the line follows the product again. Only safe
+   while nothing has been booked against a line that exists here and nowhere
+   else — the caller checks that and this says so if it cannot. */
+function zp_line_drop_set_copy(int $proformaItemId): array {
+    zp_ensure_schema();
+    if ($proformaItemId <= 0) return ['ok' => false, 'error' => 'No order line.'];
+    try {
+        $st = db()->prepare("SELECT COUNT(*) FROM zp_entries e
+                             JOIN zp_line_set_ops o ON o.id = e.op_id
+                             WHERE e.op_kind='line' AND e.status='active'
+                               AND o.proforma_item_id = ? AND o.set_op_id IS NULL");
+        $st->execute([$proformaItemId]);
+        if ((int)$st->fetchColumn() > 0)
+            return ['ok' => false, 'error' => 'Work has already been booked against a job that only exists on this order. '
+                . 'Dropping the copy would leave those wages pointing at nothing.'];
+        db()->prepare("DELETE FROM zp_line_set_ops WHERE proforma_item_id=?")->execute([$proformaItemId]);
+    } catch (Throwable $e) { return ['ok' => false, 'error' => 'Could not drop the copy.']; }
+    return ['ok' => true, 'error' => ''];
+}
+
+/* THE ONE ANSWER TO "WHAT SET WORK DOES THIS LINE NEED?"
+ *
+ * Every screen asks this — the order form, Daily Entry, Assembly, Costing —
+ * so the choice between the product's list and the line's own copy is made
+ * HERE and nowhere else. A screen that decided it for itself would be the
+ * one that disagrees.
+ *
+ * Each row carries `kind`, which is what zp_entries.op_kind must be set to
+ * when work is booked against it, and `from` so a screen can say where the
+ * row came from without working it out again. */
+function zp_line_set_work(int $proformaItemId, int $productId, int $sizeId = 0): array {
+    zp_ensure_schema();
+    $out = [];
+    if ($proformaItemId > 0 && zp_line_has_own_set($proformaItemId)) {
+        try {
+            $st = db()->prepare("SELECT * FROM zp_line_set_ops WHERE proforma_item_id=? AND is_active=1 ORDER BY seq, id");
+            $st->execute([$proformaItemId]);
+            foreach ($st->fetchAll() as $r) {
+                $out[] = [
+                    'id'    => (int)$r['id'],
+                    'kind'  => 'line',
+                    'from'  => $r['set_op_id'] !== null ? 'product' : 'added',
+                    'set_op_id' => $r['set_op_id'] !== null ? (int)$r['set_op_id'] : 0,
+                    'stage_id'  => (int)($r['stage_id'] ?? 0),
+                    'name'  => (string)$r['operation_name'],
+                    'rate'  => (float)$r['rate'],
+                ];
+            }
+        } catch (Throwable $e) {}
+        return $out;
+    }
+    $rates = zp_set_rate_map($productId);
+    foreach (zp_set_ops($productId, true) as $o) {
+        $out[] = [
+            'id'    => (int)$o['id'],
+            'kind'  => 'set',
+            'from'  => 'product',
+            'set_op_id' => (int)$o['id'],
+            'stage_id'  => (int)($o['stage_id'] ?? 0),
+            'name'  => (string)$o['operation_name'],
+            'rate'  => zp_set_rate_for((int)$o['id'], (float)$o['rate'], $rates, $sizeId),
+        ];
+    }
+    return $out;
+}
+
+/* What one set of this product costs in set work, at one size. Costing reads
+   this; a set used to be priced on part work alone. */
+function zp_set_work_cost(int $productId, int $sizeId = 0): float {
+    $t = 0.0;
+    foreach (zp_line_set_work(0, $productId, $sizeId) as $r) $t += (float)$r['rate'];
+    return round($t, 2);
+}
+
+/* Saves an order line's own list, in screen order.
+   $rows = [ ['id','set_op_id','stage_id','operation_name','rate','off'], ... ]
+   A row marked off is kept and switched off — see the table comment. */
+function zp_save_line_set_ops(int $proformaItemId, array $rows): array {
+    zp_ensure_schema();
+    if ($proformaItemId <= 0) return ['ok' => false, 'error' => 'No order line.'];
+    try {
+        db()->beginTransaction();
+        $keep = [];
+        $ins = db()->prepare("INSERT INTO zp_line_set_ops
+            (proforma_item_id,set_op_id,seq,stage_id,operation_name,rate,is_active) VALUES (?,?,?,?,?,?,?)");
+        $upd = db()->prepare("UPDATE zp_line_set_ops SET seq=?,stage_id=?,operation_name=?,rate=?,is_active=?
+                              WHERE id=? AND proforma_item_id=?");
+        $seq = 0;
+        foreach ($rows as $r) {
+            $name = trim((string)($r['operation_name'] ?? ''));
+            if ($name === '') continue;
+            $seq++;
+            $stage = (int)($r['stage_id'] ?? 0) ?: null;
+            $rate  = round((float)($r['rate'] ?? 0), 2);
+            $on    = empty($r['off']) ? 1 : 0;
+            $id    = (int)($r['id'] ?? 0);
+            if ($id > 0) {
+                $upd->execute([$seq, $stage, mb_substr($name, 0, 120), $rate, $on, $id, $proformaItemId]);
+                $keep[] = $id;
+            } else {
+                $sop = (int)($r['set_op_id'] ?? 0) ?: null;
+                $ins->execute([$proformaItemId, $sop, $seq, $stage, mb_substr($name, 0, 120), $rate, $on]);
+                $keep[] = (int)db()->lastInsertId();
+            }
+        }
+        /* Anything the screen did not send back is switched off, not deleted —
+           the same rule, so a row can always be put back with the ↩. */
+        if ($keep) {
+            $in = implode(',', array_fill(0, count($keep), '?'));
+            $st = db()->prepare("UPDATE zp_line_set_ops SET is_active=0
+                                 WHERE proforma_item_id=? AND id NOT IN ($in)");
+            $st->execute(array_merge([$proformaItemId], $keep));
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        try { db()->rollBack(); } catch (Throwable $e2) {}
+        return ['ok' => false, 'error' => 'Could not save the set work for this order.'];
+    }
+    return ['ok' => true, 'error' => ''];
+}
+
+/* HAS THE PRODUCT'S LIST MOVED SINCE THIS COPY WAS TAKEN?
+   A copy is a copy and never follows the master — but it must never go quiet
+   about it either. Returns the product's active jobs that this line's copy
+   has never heard of. */
+function zp_line_set_drift(int $proformaItemId, int $productId): array {
+    if (!zp_line_has_own_set($proformaItemId)) return [];
+    $mine = [];
+    try {
+        $st = db()->prepare("SELECT set_op_id FROM zp_line_set_ops WHERE proforma_item_id=? AND set_op_id IS NOT NULL");
+        $st->execute([$proformaItemId]);
+        foreach ($st->fetchAll() as $r) $mine[(int)$r['set_op_id']] = true;
+    } catch (Throwable $e) { return []; }
+    $new = [];
+    foreach (zp_set_ops($productId, true) as $o)
+        if (!isset($mine[(int)$o['id']])) $new[] = $o;
+    return $new;
+}
+
+/* ============================================================
    WORKERS
    ============================================================ */
 function zp_workers(bool $activeOnly = false): array {
@@ -1570,6 +1965,63 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
 
         $line = $lines[$itemId];
 
+        /* ============ SET WORK — a job done to the whole set ============
+           Folding, bagging, boxing. It belongs to no part, so everything
+           below about parts is skipped and a much simpler set of rules
+           applies: the operation must be one this line really has, and the
+           ceiling is the ORDER QUANTITY. Not what the parts have reached —
+           folding and bagging happen as parts arrive, and making the floor
+           wait for the slowest part would be wrong.
+
+           op_kind travels with the row because zp_part_ops, zp_set_ops and
+           zp_line_set_ops each number from 1, so the id alone stopped being
+           unique the moment set work existed. */
+        $kind = (string)($r['op_kind'] ?? 'part');
+        if ($kind === 'set' || $kind === 'line') {
+            $work = zp_line_set_work($itemId, (int)$line['product_id'], zp_line_size_id($line));
+            $found = null;
+            foreach ($work as $w) if ((int)$w['id'] === $opId && $w['kind'] === $kind) { $found = $w; break; }
+            if (!$found) { $errors[] = "$label: that set job is not on this order line any more."; continue; }
+
+            $wSt = db()->prepare("SELECT * FROM zp_workers WHERE id=? AND is_active=1");
+            $wSt->execute([$wid]);
+            if (!$wSt->fetch()) { $errors[] = "$label: that worker is not on the active list."; continue; }
+
+            $key   = $itemId . ':set:' . $kind . ':' . $opId;
+            $taken = $batch[$key] ?? 0.0;
+            $done  = (float)($prog['set'][$itemId][$kind][$opId] ?? 0);
+            $left  = (float)$line['ordered_qty'] - $done - $taken;
+            if ($qty > $left + 0.0001) {
+                $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
+                $errors[] = "$label: only {$num} sets left for {$found['name']} on this order.";
+                continue;
+            }
+            $batch[$key] = $taken + $qty;
+
+            /* An order amendment re-rates by op id, and a set op id is not a
+               part op id — so the amendment map is NOT consulted here. The
+               rate a set job pays is the one on the line's own list, which
+               is exactly where an order-specific rate is typed. */
+            $rate = (float)$found['rate'];
+            $sid  = (int)$found['stage_id'];
+            $ready[] = [
+                'entry_date' => $date, 'worker_id' => $wid,
+                'proforma_id' => (int)$line['proforma_id'], 'proforma_item_id' => $itemId,
+                'product_id' => (int)$line['product_id'],
+                /* NO PART. The wage ledger has always allowed this; it is the
+                   reason set work needed no change to that table. */
+                'part_id' => null,
+                'op_id' => $opId, 'op_kind' => $kind,
+                'stage_id' => $sid ?: null,
+                'stage' => $sid > 0 ? zp_stage_name($sid) : null,
+                'qty' => $qty,
+                'rate_applied' => $rate, 'amount' => round($qty * $rate, 2),
+                'note' => mb_substr(trim((string)($r['note'] ?? '')), 0, 255) ?: null,
+                'created_by' => $userId,
+            ];
+            continue;
+        }
+
         $opSt = db()->prepare("SELECT o.*, p.part_name FROM zp_part_ops o
                                JOIN zp_parts p ON p.id = o.part_id
                                WHERE o.id=? AND o.is_active=1");
@@ -1639,12 +2091,13 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
     db()->beginTransaction();
     try {
         $ins = db()->prepare("INSERT INTO zp_entries
-            (entry_date, worker_id, proforma_id, proforma_item_id, product_id, part_id, op_id,
+            (entry_date, worker_id, proforma_id, proforma_item_id, product_id, part_id, op_id, op_kind,
              stage_id, stage, qty, rate_applied, amount, note, created_by)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         foreach ($ready as $e) {
             $ins->execute([$e['entry_date'], $e['worker_id'], $e['proforma_id'], $e['proforma_item_id'],
-                           $e['product_id'], $e['part_id'], $e['op_id'], $e['stage_id'], $e['stage'], $e['qty'],
+                           $e['product_id'], $e['part_id'], $e['op_id'], $e['op_kind'] ?? 'part',
+                           $e['stage_id'], $e['stage'], $e['qty'],
                            $e['rate_applied'], $e['amount'], $e['note'], $e['created_by']]);
         }
         db()->commit();
@@ -2247,6 +2700,13 @@ function zp_bridge_sizes(int $productId): array {
  *
  * Costing therefore needs no change at all: pc_workmanship_rate_for_version()
  * already prefers a size-scoped row over the All Sizes one. */
+/* Set operation ids are mirrored into production_operations.zp_op_id at
+   this offset, because zp_part_ops and zp_set_ops each number from 1 and
+   that one column has to be able to name both. Ten million is far above any
+   part op id this business will ever reach, and a marker is not a foreign
+   key — nothing joins on it, the bridge only reads back what it wrote. */
+const ZP_SET_OP_BASE = 10000000;
+
 function zp_bridge_ops(int $productId): array {
     zp_bridge_schema();
     $wrote = 0; $deactivated = 0;
@@ -2264,6 +2724,29 @@ function zp_bridge_ops(int $productId): array {
             }
         }
 
+        /* SET WORK GOES INTO COSTING TOO, AND IT HAS TO.
+           A set was priced on part work alone, which left the folding, the
+           poly bag and the carton out of every quote — real labour, given
+           away. It is mirrored beside the part operations, under the
+           component name "(whole set)" so a costing sheet says plainly which
+           lines are not part work.
+
+           THE OFFSET IS THE POINT OF THIS BLOCK. production_operations marks
+           our rows with zp_op_id, and zp_part_ops and zp_set_ops each number
+           from 1 — so set op 4 and part op 4 would fight over one marker and
+           the bridge would rewrite one as the other on every save. Set ops
+           are marked at ZP_SET_OP_BASE + id, far above any real part op id,
+           which keeps one column able to name two tables. */
+        foreach (zp_set_ops($productId, true) as $o) {
+            $want[ZP_SET_OP_BASE + (int)$o['id']] = [
+                'component' => '(whole set)',
+                'operation' => (string)$o['operation_name'],
+                'stage'     => zp_bridge_stage((int)($o['stage_id'] ?? 0) > 0
+                                 ? zp_stage_name((int)$o['stage_id']) : ''),
+                'rate'      => (float)$o['rate'],
+            ];
+        }
+
         /* RULE 2: a legacy row next to a mirrored one would DOUBLE the cost.
            Switched off, never deleted — the rate and its history stay on disk. */
         if ($want) {
@@ -2277,6 +2760,11 @@ function zp_bridge_ops(int $productId): array {
            product_size_id NULL is the fallback costing uses when the version is
            not tied to exactly one size; a size row wins when it is. */
         $sizeRates = zp_op_rate_map($productId);
+        /* Set work keeps its per-size rates in a table of its own, so they are
+           looked up under the same offset the ops were mirrored at — read from
+           the right table, written under the right marker. */
+        foreach (zp_set_rate_map($productId) as $sopId => $bySize)
+            $sizeRates[ZP_SET_OP_BASE + (int)$sopId] = $bySize;
         $want2 = [];
         foreach ($want as $zid => $w) {
             $want2[$zid . '|0'] = $w + ['size' => null];        // the All Sizes row
@@ -2463,6 +2951,10 @@ function zp_work_index(): array {
                     'k'    => (int)$l['item_id'] . ':' . $opId,
                     'item' => (int)$l['item_id'],
                     'op'   => $opId,
+                    /* Which table `op` points at. Stated on every row, not
+                       only on the set ones, so the browser posts it back
+                       without ever having to assume a default. */
+                    'kind' => 'part',
                     'part' => $partId,
                     'pi'   => (string)$l['pi_no'],
                     'cust' => (string)($l['customer_name'] ?? ''),
@@ -2481,6 +2973,40 @@ function zp_work_index(): array {
                               ]))),
                 ];
             }
+        }
+
+        /* ---- and the jobs done to the whole set ----
+           Same row shape, so the picker, the keyboard, the search and the
+           in-row list need no special case. Two things differ and both are
+           on the row: the part name is "(whole set)", and LEFT is counted in
+           SETS against the order quantity — folding happens as parts arrive,
+           so it must not wait on the slowest part. */
+        foreach (zp_line_set_work((int)$l['item_id'], $pid, $szId) as $w) {
+            $done = (float)($prog['set'][(int)$l['item_id']][$w['kind']][(int)$w['id']] ?? 0);
+            $left = max(0.0, (float)$l['ordered_qty'] - $done);
+            $stage = (int)$w['stage_id'] > 0 ? zp_stage_name((int)$w['stage_id']) : '';
+            $out[] = [
+                'k'    => (int)$l['item_id'] . ':' . $w['kind'] . ':' . (int)$w['id'],
+                'item' => (int)$l['item_id'],
+                'op'   => (int)$w['id'],
+                'kind' => $w['kind'],          // 'set' or 'line' — which table op points at
+                'part' => 0,
+                'pi'   => (string)$l['pi_no'],
+                'cust' => (string)($l['customer_name'] ?? ''),
+                'prod' => (string)$l['product_name'],
+                'size' => (string)($l['size'] ?? ''),
+                'pn'   => '(whole set)',
+                'on'   => (string)$w['name'],
+                'st'   => $stage,
+                'sid'  => (int)$w['stage_id'],
+                'rate' => round((float)$w['rate'], 2),
+                'left' => round($left, 2),
+                'done' => $left <= 0.0001 ? 1 : 0,
+                'hay'  => mb_strtolower(trim(implode(' ', [
+                              $l['pi_no'], $l['customer_name'] ?? '', $l['product_name'],
+                              $l['size'] ?? '', 'whole set', $w['name'], $stage,
+                          ]))),
+            ];
         }
     }
     return $out;

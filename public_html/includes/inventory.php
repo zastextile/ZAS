@@ -2790,6 +2790,38 @@ function inv_std_materials(int $productId, ?int $costingVersionId = null): array
     } catch (Throwable $e) { return []; }
 }
 
+/* EVERY DEPARTMENT ANYONE HAS EVER TYPED.
+ *
+ * A department is not a master record in this system — it is free text on a
+ * gate pass, a store issue and a consumption. So the only honest list is the
+ * one the documents themselves have written, gathered from all three and
+ * de-duplicated on the trimmed spelling.
+ *
+ * THAT IS ALSO ITS WEAKNESS, AND IT IS WORTH SAYING OUT LOUD: "Stitching
+ * Floor", "stitching floor" and "Stitching Flr" are three departments to this
+ * list, because they are three departments to the database. Making it a
+ * master list — typed once in Inventory Setup and chosen from a box — is a
+ * small change and the right one; until then this at least shows what is
+ * really on the documents rather than pretending there is a tidy list. */
+function inv_departments(): array {
+    $out = [];
+    $ask = function (string $table) use (&$out) {
+        try {
+            $rows = db()->query("SELECT DISTINCT TRIM(department) d FROM $table
+                                 WHERE department IS NOT NULL AND TRIM(department) <> ''")->fetchAll();
+            foreach ($rows as $r) { $d = (string)$r['d']; if ($d !== '') $out[$d] = true; }
+        } catch (Throwable $e) {}
+    };
+    $ask('inv_store_move');
+    $ask('inv_consumption');
+    $ask('inv_gate');
+    $list = array_keys($out);
+    /* Case-insensitive sort, so "packing" does not land miles from
+       "Packing" in the dropdown the operator is scanning. */
+    usort($list, fn($a, $b) => strcasecmp($a, $b));
+    return $list;
+}
+
 /* ------------------------------------------------------------- lookups */
 function inv_locations(bool $activeOnly = true): array {
     try {

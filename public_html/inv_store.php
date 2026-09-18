@@ -166,23 +166,57 @@ if ($showForm && !$lines) $lines = [[]];
 
 /* ------------------------------------------------------- floor balance */
 $floor = [];
+$depts = [];
+$fDept = trim((string)($_GET['dept'] ?? ''));
 if ($tab === 'bal') {
+    $depts = inv_departments();
+    /* A department that no longer appears on any document would leave the
+       filter stuck on an option that can never match again. If the one in
+       the URL is not on the list, it is dropped and the report opens on
+       everything — rather than on an empty table with no explanation. */
+    if ($fDept !== '' && !in_array($fDept, $depts, true)) $fDept = '';
     try {
-        // Issued to, and returned from, each non-store location, against
-        // what consumption has taken out of it.
-        $floor = db()->query("SELECT l.location_id, m.id mid, m.code, m.name, m.uom,
+        /* Issued to, and returned from, each non-store location, against
+           what consumption has taken out of it.
+
+           THE DEPARTMENT COMES FROM THE DOCUMENT THAT MOVED THE GOODS.
+           The ledger does not carry one — it carries which document each
+           row came from, and the document carries the department. So both
+           kinds are joined back and the first one that has a department
+           wins. This heading has always said "what is out with each
+           DEPARTMENT" while the table showed only a location and never a
+           department at all; now it shows one.
+
+           Filtering narrows the MOVEMENTS, not the rows: ask for Stitching
+           and every figure on the line is what Stitching issued, consumed
+           and returned. That is the question the filter is for — "what is
+           out with Stitching" — and it is a different number from "this
+           line's total, which Stitching happens to have touched". */
+        $sql = "SELECT l.location_id, m.id mid, m.code, m.name, m.uom,
                 COALESCE(SUM(CASE WHEN l.source_type='store' THEN l.qty_in ELSE 0 END),0) issued,
                 COALESCE(SUM(CASE WHEN l.source_type='store' THEN l.qty_out ELSE 0 END),0) returned,
                 COALESCE(SUM(CASE WHEN l.source_type='consumption' THEN l.qty_out ELSE 0 END),0) consumed,
                 COALESCE(SUM(l.qty_in),0)-COALESCE(SUM(l.qty_out),0) bal,
-                MAX(l.txn_date) last_move
+                MAX(l.txn_date) last_move,
+                GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(sm.department, cn.department)),'')
+                             SEPARATOR ', ') depts
             FROM inv_stock_ledger l
             JOIN inv_materials m ON m.id=l.material_id
             JOIN inv_locations lo ON lo.id=l.location_id AND lo.kind IN ('floor','other')
-            WHERE l.ownership='own'
-            GROUP BY l.location_id, m.id
-            HAVING ABS(bal) > 0.0005
-            ORDER BY bal DESC")->fetchAll();
+            LEFT JOIN inv_store_move  sm ON l.source_type='store'       AND sm.id = l.source_id
+            LEFT JOIN inv_consumption cn ON l.source_type='consumption' AND cn.id = l.source_id
+            WHERE l.ownership='own'";
+        $args = [];
+        if ($fDept !== '') {
+            $sql .= " AND TRIM(COALESCE(sm.department, cn.department)) = ?";
+            $args[] = $fDept;
+        }
+        $sql .= " GROUP BY l.location_id, m.id
+                  HAVING ABS(bal) > 0.0005
+                  ORDER BY bal DESC";
+        $st = db()->prepare($sql);
+        $st->execute($args);
+        $floor = $st->fetchAll();
     } catch (Throwable $e) { $floor = []; }
 }
 
@@ -261,19 +295,48 @@ flash();
 
 <?php if ($tab === 'bal' && !$doc && !$isNew): ?>
   <div class="iss-card">
-    <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800">What is out with each department right now</h2>
-    <p style="color:#8a97ab;font-size:12px;margin:0 0 14px">Issued, less what consumption has used, less what came back. Anything left is physically on that floor.</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <div>
+        <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800">What is out with each department right now</h2>
+        <p style="color:#8a97ab;font-size:12px;margin:0">Issued, less what consumption has used, less what came back. Anything left is physically on that floor.</p>
+      </div>
+      <?php if ($depts): ?>
+      <form method="get" style="display:flex;gap:6px;align-items:center">
+        <input type="hidden" name="tab" value="bal">
+        <label class="iss-lbl" style="margin:0">Department</label>
+        <select class="iss-inp" name="dept" style="min-width:170px" onchange="this.form.submit()">
+          <option value="">All departments</option>
+          <?php foreach ($depts as $d): ?>
+            <option value="<?= e($d) ?>" <?= $fDept === $d ? 'selected' : '' ?>><?= e($d) ?></option>
+          <?php endforeach; ?>
+        </select>
+        <noscript><button class="iss-btn">Show</button></noscript>
+      </form>
+      <?php endif; ?>
+    </div>
+    <?php if ($fDept !== ''): ?>
+      <div class="iss-note info" style="margin:0 0 12px">Showing only what <b><?= e($fDept) ?></b> issued, consumed and returned. Every figure on a line is that department's own.
+        <a href="?tab=bal" style="margin-left:6px">Show all departments</a></div>
+    <?php endif; ?>
     <?php if (!$floor): ?>
-      <div class="iss-note info">Nothing is currently out with a department. Balances appear here once an issue has been posted to a floor location.</div>
+      <div class="iss-note info"><?= $fDept !== ''
+        ? 'Nothing is out with <b>' . e($fDept) . '</b> right now.'
+        : 'Nothing is currently out with a department. Balances appear here once an issue has been posted to a floor location.' ?></div>
     <?php else: ?>
     <div style="overflow-x:auto"><table class="iss-tbl">
-      <thead><tr><th>Location</th><th>Material</th><th class="r">Issued in</th><th class="r">Consumed</th><th class="r">Returned</th><th class="r">Still on floor</th><th>UOM</th><th>Last move</th><th></th></tr></thead>
+      <thead><tr><th>Location</th><th>Department</th><th>Material</th><th class="r">Issued in</th><th class="r">Consumed</th><th class="r">Returned</th><th class="r">Still on floor</th><th>UOM</th><th>Last move</th><th></th></tr></thead>
       <tbody>
       <?php foreach ($floor as $f):
         $age = $f['last_move'] ? (int)floor((time() - strtotime((string)$f['last_move'])) / 86400) : 0;
         $stale = $age > 14 && (float)$f['bal'] > 0; ?>
         <tr<?= $stale ? ' style="background:rgba(217,119,6,.06)"' : '' ?>>
           <td style="font-weight:600"><?= e(inv_location_name((int)$f['location_id'])) ?></td>
+          <?php /* A dash, not a blank. A movement with no department typed on
+                   it is a real thing that happened and the report should say
+                   so plainly rather than leave a hole somebody reads as an
+                   error. Several departments on one line are all listed. */ ?>
+          <td style="color:#5a6b82;font-size:12px"><?= trim((string)($f['depts'] ?? '')) !== ''
+              ? e((string)$f['depts']) : '<span style="color:#b6c0cf">not stated</span>' ?></td>
           <td><b><?= e($f['code']) ?></b> · <?= e($f['name']) ?></td>
           <td class="r" style="color:#16a34a"><?= number_format((float)$f['issued'], 2) ?></td>
           <td class="r" style="color:#c0293f"><?= number_format((float)$f['consumed'], 2) ?></td>
@@ -323,7 +386,16 @@ flash();
           <?php foreach ($openIssues as $oi): ?><option value="<?= (int)$oi['id'] ?>" <?= (int)($D['against_move_id'] ?? 0) === (int)$oi['id'] ? 'selected' : '' ?>><?= e($oi['move_no']) ?> · <?= e($oi['move_date']) ?></option><?php endforeach; ?>
         </select></div>
       <?php else: ?>
-      <div><label class="iss-lbl">Department</label><input class="iss-inp" name="department" value="<?= e($D['department'] ?? '') ?>"></div>
+      <?php /* A LIST OF WHAT HAS BEEN TYPED BEFORE, not a master record.
+               It is still free text — this only offers the spellings already
+               on the documents, so "Stitching Floor" stops becoming three
+               departments by accident. A real master list belongs in
+               Inventory Setup and is the proper fix. */
+        $deptList = inv_departments(); ?>
+      <div><label class="iss-lbl">Department</label>
+        <input class="iss-inp" name="department" list="deptSeen" autocomplete="off" value="<?= e($D['department'] ?? '') ?>">
+        <datalist id="deptSeen"><?php foreach ($deptList as $d): ?><option value="<?= e($d) ?>"><?php endforeach; ?></datalist>
+      </div>
       <?php endif; ?>
       <div><label class="iss-lbl"><?= $type === 'issue' ? 'Issued by' : 'Returned by' ?></label><input class="iss-inp" name="issued_by" value="<?= e($D['issued_by'] ?? '') ?>"></div>
       <div style="grid-column:span 3"><label class="iss-lbl">Remarks</label><input class="iss-inp" name="remarks" value="<?= e($D['remarks'] ?? '') ?>"></div>

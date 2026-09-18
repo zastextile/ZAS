@@ -204,6 +204,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
+                /* ---- SET WORK — the jobs done to the whole set ----
+                   Folding, bagging, boxing. Saved before the bridge below,
+                   because Costing's workmanship figure is part work PLUS set
+                   work and the bridge is what feeds it.
+
+                   The rows arrive in screen order, so the order they are sent
+                   in IS the order they happen in; zp_save_set_ops numbers them
+                   from that rather than trusting a sequence the browser could
+                   have got wrong. */
+                if (isset($_POST['setop'])) {
+                    $so = [];
+                    foreach ((array)$_POST['setop'] as $row) {
+                        if (!is_array($row)) continue;
+                        $so[] = [
+                            'id'             => (int)($row['id'] ?? 0),
+                            'stage_id'       => (int)($row['stage_id'] ?? 0),
+                            'operation_name' => (string)($row['operation_name'] ?? ''),
+                            'rate'           => (string)($row['rate'] ?? '0'),
+                        ];
+                    }
+                    $sres = zp_save_set_ops($pid, $so, $userId ?? 0);
+                    if (!$sres['ok']) $_SESSION['zp_err'] = $sres['error'];
+                    else $note .= ' ' . $sres['saved'] . ' set job' . ($sres['saved'] === 1 ? '' : 's') . '.';
+
+                    /* The per-size rates go in AFTER the operations, because a
+                       brand-new job has no id until the line above gave it one
+                       — and a rate keyed on id 0 belongs to nothing. So the
+                       rows are re-read and matched back by position. */
+                    if ($sres['ok'] && isset($_POST['setrate'])) {
+                        $live2 = zp_set_ops($pid, true);
+                        $byPos = [];
+                        foreach ($live2 as $ix => $o) $byPos[$ix] = (int)$o['id'];
+                        $sr = [];
+                        foreach ((array)$_POST['setrate'] as $pos => $bySize) {
+                            $opId = $byPos[(int)$pos] ?? 0;
+                            if ($opId <= 0 || !is_array($bySize)) continue;
+                            foreach ($bySize as $sizeId => $v) {
+                                if (!isset($live[(int)$sizeId])) continue;
+                                $sr[] = ['set_op_id' => $opId, 'size_id' => (int)$sizeId,
+                                         'rate' => is_scalar($v) ? trim((string)$v) : ''];
+                            }
+                        }
+                        if ($sr) zp_save_set_rates($pid, $sr, $userId ?? 0);
+                    }
+                }
+
                 /* FEED COSTING. product_costing.php reads the OLD tables —
                    product_sizes for its size list, production_operations for
                    the Workmanship rate — and it is not alone: fifteen files do.
@@ -821,6 +867,106 @@ table.zp-t tbody tr:hover{background:#fafcff}
       <?php endif; ?>
     </div>
 
+    <!-- ============ 3b. set work — the jobs done to the whole set ============ -->
+    <?php if ($editId): ?>
+    <?php
+    /* WORK ON THE SET, NOT ON ANY ONE PART.
+       Folding, matching, poly bag, hangtag, carton, tape. Until this existed
+       an operation could only belong to a part, so that pay was either never
+       booked or stuck onto some part it was never done to — and Costing
+       priced a set on part work alone, which understated every quote by the
+       whole of its packing labour.
+
+       Same grid shape as the part operations above it, same per-size rate
+       columns, same rule that a blank size cell means "the rate on the left".
+       It is INSIDE the form, so the one Save writes it with everything else. */
+    $setOps   = zp_set_ops($editId, true);
+    $setRates = zp_set_rate_map($editId);
+    $stageAll = zp_stage_all(true);
+    $setCols  = 3 + ($sizes ? count($sizes) : 0) + 1;
+    /* ONE EMPTY ROW WHEN THERE ARE NONE. "+ Add a job" clones the last row so
+       it always carries this product's real size columns — with no rows there
+       is nothing to clone and the first job could never be typed. A blank row
+       saves as nothing, because a blank operation name is skipped. */
+    $setRows  = $setOps ?: [['id' => 0, 'stage_id' => 0, 'operation_name' => '', 'rate' => 0]];
+    ?>
+    <div class="zp-card">
+      <h2>3b &nbsp;Set work &mdash; done to the whole set</h2>
+      <p style="margin:3px 0 13px;font-size:12.5px;color:#8a97ab;line-height:1.5">
+        Folding, matching, bagging, cartoning. It belongs to the <b>product</b>, not to any part &mdash; and
+        unlike a part, it is this product's own, so changing it changes nothing else.
+        An order can take its own copy and change it for one buyer.</p>
+
+      <?php if (!$stageAll): ?>
+        <div class="note info">No stages are set up yet. Add them on
+          <a href="production_stages.php">Production Stages</a> &mdash; "Set Assembly" and "Packing" are the
+          usual two &mdash; and they will appear in the box here.</div>
+      <?php else: ?>
+      <div style="overflow-x:auto">
+      <table class="zp-t" id="setTbl">
+        <thead><tr>
+          <th style="width:32px">#</th>
+          <th style="min-width:140px">Stage</th>
+          <th style="min-width:190px">Operation</th>
+          <th class="num" style="width:86px">Rate</th>
+          <?php foreach ($sizes as $s): ?><th class="num" style="width:78px"><?= e($s['size_label']) ?></th><?php endforeach; ?>
+          <th style="width:32px"></th>
+        </tr></thead>
+        <tbody>
+        <?php foreach ($setRows as $ix => $o): $oid = (int)$o['id']; ?>
+          <tr>
+            <td class="code"><?= $ix + 1 ?></td>
+            <td><input type="hidden" name="setop[<?= $ix ?>][id]" value="<?= $oid ?>">
+              <select class="zin" name="setop[<?= $ix ?>][stage_id]">
+                <option value="0">— none —</option>
+                <?php foreach ($stageAll as $st): ?>
+                  <option value="<?= (int)$st['id'] ?>" <?= (int)($o['stage_id'] ?? 0) === (int)$st['id'] ? 'selected' : '' ?>><?= e($st['name']) ?></option>
+                <?php endforeach; ?>
+              </select></td>
+            <td><input class="zin" name="setop[<?= $ix ?>][operation_name]" maxlength="120"
+                       value="<?= e((string)$o['operation_name']) ?>"></td>
+            <td><input class="zin num setr" name="setop[<?= $ix ?>][rate]" inputmode="decimal"
+                       value="<?= e(rtrim(rtrim(number_format((float)$o['rate'], 2, '.', ''), '0'), '.')) ?>"></td>
+            <?php foreach ($sizes as $s): $sid = (int)$s['id'];
+              $ov = $setRates[$oid][$sid] ?? null; ?>
+              <?php /* BLANK MEANS "THE RATE ON THE LEFT", and it has to stay
+                       blank rather than be filled in with that rate — a filled
+                       cell is an override, and an override that copied the
+                       standard would stop following it the next time the
+                       standard moved. */ ?>
+              <td><input class="zin num sets" name="setrate[<?= $ix ?>][<?= $sid ?>]" inputmode="decimal"
+                         placeholder="—" data-size="<?= $sid ?>"
+                         value="<?= $ov === null ? '' : e(rtrim(rtrim(number_format((float)$ov, 2, '.', ''), '0'), '.')) ?>"></td>
+            <?php endforeach; ?>
+            <td><button type="button" class="zp-b sm red" tabindex="-1" onclick="zpSetDrop(this)">&times;</button></td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+        <tfoot><tr>
+          <td colspan="3" style="text-align:right;font-weight:800">Set work per set</td>
+          <td class="num" id="setTot" style="font-weight:800">0.00</td>
+          <?php foreach ($sizes as $s): ?><td class="num setTotS" data-size="<?= (int)$s['id'] ?>" style="font-weight:800">0.00</td><?php endforeach; ?>
+          <td></td>
+        </tr></tfoot>
+      </table>
+      </div>
+      <div style="display:flex;gap:9px;margin-top:11px;flex-wrap:wrap;align-items:center">
+        <button type="button" class="zp-b" onclick="zpSetAdd()">+ Add a job</button>
+        <span style="font-size:11.5px;color:#8a97ab">
+          A blank size cell means the rate on the left. Emptying a row's operation name removes it on Save &mdash;
+          it is switched off, never deleted, so wages already booked against it keep their name.</span>
+      </div>
+      <?php if (!$setOps): ?>
+        <div class="note info" style="margin-top:12px">
+          <b>Nothing here yet, and that is why Costing is reading low.</b>
+          A set is being priced on cutting and stitching alone. Add the folding, bagging and cartoning
+          and the workmanship on the costing sheet becomes the real one.
+        </div>
+      <?php endif; ?>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
     <!-- ============ one Save, for all of it ============ -->
     <div class="zp-card" style="position:sticky;bottom:0;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button class="zp-b ok" name="do" value="save" style="padding:9px 20px;font-size:13.5px">Save</button>
@@ -971,6 +1117,94 @@ table.zp-t tbody tr:hover{background:#fafcff}
 
 <script>
 /* ---- sizes: add a row, and let Enter do it ---- */
+/* ---- set work: add a row, drop a row, keep the totals honest ----
+   The row is cloned from the last one rather than built from a template
+   string, so it carries whatever size columns this product actually has and
+   cannot drift out of step with the header. */
+(function(){
+  var tbl = document.getElementById('setTbl');
+  if(!tbl) return;
+  var body = tbl.tBodies[0];
+
+  function num(v){ v = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(v) ? 0 : v; }
+
+  /* The names carry a row index. After adding or dropping a row those
+     indexes have to be closed up, or PHP receives setop[0], setop[2] and
+     the per-size rates — which are matched back BY POSITION — land on the
+     wrong job. */
+  function renumber(){
+    [].forEach.call(body.rows, function(tr, i){
+      var c = tr.cells[0]; if(c) c.textContent = i + 1;
+      [].forEach.call(tr.querySelectorAll('[name]'), function(el){
+        el.name = el.name
+          .replace(/^setop\[\d+\]/, 'setop[' + i + ']')
+          .replace(/^setrate\[\d+\]/, 'setrate[' + i + ']');
+      });
+    });
+  }
+
+  function tot(){
+    var std = 0, per = {};
+    [].forEach.call(body.rows, function(tr){
+      var r = num((tr.querySelector('.setr') || {}).value);
+      std += r;
+      [].forEach.call(tr.querySelectorAll('.sets'), function(c){
+        var sid = c.dataset.size, v = String(c.value || '').trim();
+        /* A BLANK CELL COSTS THE STANDARD, not nothing. That is what the
+           blank means everywhere else on this page, and a total that read it
+           as zero would quietly under-price every size nobody overrode. */
+        per[sid] = (per[sid] || 0) + (v === '' ? r : num(v));
+      });
+    });
+    var t = document.getElementById('setTot');
+    if(t) t.textContent = std.toFixed(2);
+    [].forEach.call(document.querySelectorAll('.setTotS'), function(td){
+      td.textContent = (per[td.dataset.size] || 0).toFixed(2);
+    });
+  }
+
+  window.zpSetAdd = function(){
+    var last = body.rows[body.rows.length - 1], tr;
+    if(last){
+      tr = last.cloneNode(true);
+      [].forEach.call(tr.querySelectorAll('input'), function(el){
+        /* The id must NOT come with the clone, or saving would overwrite the
+           row it was copied from instead of adding a new one. */
+        el.value = '';
+      });
+      var sel = tr.querySelector('select'); if(sel) sel.selectedIndex = 0;
+    } else {
+      return;   // nothing to clone from; the page renders at least one row when there are any
+    }
+    body.appendChild(tr);
+    renumber(); tot();
+    var f = tr.querySelector('input[name*="[operation_name]"]'); if(f) f.focus();
+  };
+
+  window.zpSetDrop = function(btn){
+    var tr = btn.closest('tr'); if(!tr) return;
+    /* THE ROW IS EMPTIED, NOT REMOVED, when it is one the database knows —
+       an empty operation name is what tells the save to switch it off, and a
+       row simply deleted from the page would never be sent at all and the
+       save would switch it off anyway. Emptying it keeps the two honest and
+       lets the operator see what they just did before pressing Save. */
+    var id = tr.querySelector('input[name*="[id]"]');
+    if(id && +id.value > 0){
+      [].forEach.call(tr.querySelectorAll('input'), function(el){
+        if(el.name.indexOf('[id]') < 0) el.value = '';
+      });
+      tr.style.opacity = '.45';
+      tr.querySelector('input[name*="[operation_name]"]').placeholder = 'removed on Save';
+    } else {
+      tr.remove();
+    }
+    renumber(); tot();
+  };
+
+  tbl.addEventListener('input', tot);
+  tot();
+})();
+
 window.zpAddSize = function(){
   var wrap = document.getElementById('sizeRows');
   if (!wrap) return;
