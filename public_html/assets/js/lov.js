@@ -89,6 +89,26 @@ window.LOV = (function () {
     }
     return out;
   }
+  /* THE SHORT NAME OF A DOCUMENT — the twin of short_ref() in
+     includes/helpers.php, and it must stay the twin. A picker row drawn by
+     PHP on page load and redrawn by JS as you type has to read the same
+     both times; two spellings of the same reference on one screen is how
+     people stop trusting a number.
+
+     PI-260908-786 -> PI-786. Keep the prefix, keep what is after the last
+     dash, drop the date stamp in the middle. Anything with fewer than
+     three parts is returned whole. */
+  function sref(v) {
+    v = String(v == null ? '' : v).trim();
+    if (!v) return '';
+    var sep = v.indexOf('-') >= 0 ? '-' : (v.indexOf('/') >= 0 ? '/' : '');
+    if (!sep) return v;
+    var b = v.split(sep);
+    if (b.length < 3) return v;
+    var f = b[0].trim(), l = b[b.length - 1].trim();
+    return (f && l) ? f + sep + l : v;
+  }
+
   function q3(v) { return Number(v).toLocaleString('en-US', { maximumFractionDigits: 3 }); }
   function m2(v) { return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
@@ -274,10 +294,43 @@ window.LOV = (function () {
          listener runs first, so between the two the order cannot matter. */
       if (!S.open) {
         var t0 = e.target;
-        if ((e.key === 'Enter' || e.key === 'ArrowDown')
-            && t0 && t0.dataset && t0.dataset.lov && PROV[t0.dataset.lov]) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
+        if (!(t0 && t0.dataset && t0.dataset.lov && PROV[t0.dataset.lov])) return;
+
+        /* DOWN ALWAYS OPENS. That is what a combo box does everywhere, and
+           it never means anything else. */
+        if (e.key === 'ArrowDown') {
+          e.preventDefault(); e.stopImmediatePropagation();
+          if (t0.select) t0.select();
+          open(t0, t0.dataset.lov);
+          return;
+        }
+
+        /* ENTER OPENS AN EMPTY BOX, AND MOVES ON FROM A FULL ONE.
+           Two things were asked for, and they both want Enter:
+
+             "I dont want to use mouse so allow here simple enter and list open"
+             "when enter so go to next field and even line complete so go
+              next line automatically"
+
+           They only collide on a box that already holds an answer. There,
+           opening the list again is the wrong reading — the question has
+           been answered and Enter means "next". On an empty box there is
+           nothing to move on from, so Enter means "show me the list".
+
+           Moving on is NOT done here. The key is simply left alone to
+           carry on to whatever the page uses for moving between fields;
+           this library knows about lists, not about form layout. */
+        if (e.key === 'Enter') {
+          /* A FIELD THAT HOLDS A LIST IS NEVER "ANSWERED".
+             The stages box on a worker reads "Packing" and the next thing
+             wanted is "and Cutting too" — so text in it is not a finished
+             answer and Enter must still open the list. A provider says so
+             by declaring stayOnEnter, which is the same fact: taking a row
+             leaves you in this box because there may be another to add. */
+          var pShut = PROV[t0.dataset.lov];
+          if (!(pShut && pShut.stayOnEnter)
+              && String(t0.value || '').trim() !== '') return;   // answered — let it bubble
+          e.preventDefault(); e.stopImmediatePropagation();
           if (t0.select) t0.select();
           open(t0, t0.dataset.lov);
         }
@@ -306,13 +359,26 @@ window.LOV = (function () {
            asks, wherever their listener sits, gets told yes and keeps its
            hands off the cursor. The hold is released on the next tick. */
         var pEnter = PROV[S.kind];
+
+        /* AN EMPTY LIST IS NOT AN ANSWER. With nothing to choose, Enter has
+           to mean what it means everywhere else on the form — close this and
+           move on — or the operator is stuck on a box with no way forward
+           but the mouse. Deliberately NOT stopped, so the page's own
+           next-field handler sees the same key press and does its job. */
+        if (!S.rows.length) { close(); return; }
+
         e.preventDefault();
-        if (pEnter && pEnter.stayOnEnter) {
-          S.hold = true;
-          setTimeout(function () { S.hold = false; }, 0);
-        }
+        /* THE KEY THAT MAKES A CHOICE DOES NOTHING ELSE.
+           take() closes the panel before the rest of the page sees the key,
+           so anything asking "is a list open?" was told no and ALSO moved
+           the cursor — the choice landed in one box and the cursor in
+           another. For the rest of this key press the answer is yes, to
+           whoever asks and wherever their listener sits. Where the cursor
+           goes next is the provider's business, in pick(). */
+        S.hold = true;
+        setTimeout(function () { S.hold = false; }, 0);
         take();
-        if (pEnter && pEnter.stayOnEnter) e.stopImmediatePropagation();
+        e.stopImmediatePropagation();
       }
       else if (e.key === 'Tab') { if (S.rows.length) { e.preventDefault(); take(); } else close(); }
       else if (e.key === 'Escape') { e.preventDefault(); close(); if (PROV[S.kind].revert) PROV[S.kind].revert(S.f); }
@@ -353,6 +419,6 @@ window.LOV = (function () {
        stay-put provider just took a row — see the Enter branch. */
     isOpen: function () { return S.open || S.hold; },
     // exposed so a provider can rank and highlight the same way
-    score: score, hl: hl, esc: esc, norm: norm, q3: q3, m2: m2
+    score: score, hl: hl, esc: esc, norm: norm, q3: q3, m2: m2, sref: sref
   };
 })();

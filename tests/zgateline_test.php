@@ -88,6 +88,21 @@ ok(strlen($pageCss) > 2000, 'the page stylesheet came out whole');
 function renderGrid(string $frag, string $dir, array $lines, array $doc): string {
     $tpl = '<?php
 function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
+/* short_ref() IS LIFTED FROM includes/helpers.php, not copied. The gate
+   line prints the SHORT form of a contract number, so a fragment harness
+   that lacks the real helper dies with "undefined function" — which is how
+   this was found. */
+function short_ref($r){
+    $r = trim((string)$r);
+    if ($r === "") return "";
+    $sep = strpos($r, "-") !== false ? "-" : (strpos($r, "/") !== false ? "/" : "");
+    if ($sep === "") return $r;
+    $b = explode($sep, $r);
+    if (count($b) < 3) return $r;
+    $f = trim($b[0]); $l = trim($b[count($b)-1]);
+    return ($f === "" || $l === "") ? $r : $f . $sep . $l;
+}
+
 $dir = ' . var_export($dir, true) . ';
 $lines = ' . var_export($lines, true) . ';
 $doc = ' . var_export($doc, true) . ';
@@ -176,6 +191,7 @@ const { chromium } = require('playwright');
         qtyTop: qty ? Math.round(qty.getBoundingClientRect().top) : 0,
         clineW: cline ? Math.round(cline.getBoundingClientRect().width) : 0,
         clineVal: cline ? cline.textContent.trim() : null,
+        clineTitle: cline ? (cline.getAttribute('title') || '') : null,
         clineSet: cline ? cline.classList.contains('set') : false,
         row2Val: rows[1].querySelector('.ctag').textContent.trim(),
         row2Set: rows[1].querySelector('.ctag').classList.contains('set'),
@@ -259,7 +275,14 @@ else {
        . $M['in']['clineW'] . 'px');
 
     echo "5. Two states now, not three\n";
-    ok($M['in']['clineVal'] === 'PC-2026-0031', 'a line with a contract shows it');
+    /* SHORT ON THE LINE, WHOLE IN THE TOOLTIP. Asked for directly: "only
+       use last digit of contract or proforma ... instead long long
+       reference like PI-260908-786". The full number is one hover away and
+       is what the database and every print still carry. */
+    ok($M['in']['clineVal'] === 'PC-0031',
+       'a line with a contract shows it, SHORT, got ' . json_encode($M['in']['clineVal']));
+    ok($M['in']['clineTitle'] === 'PC-2026-0031',
+       '  and the whole number is still there to read, got ' . json_encode($M['in']['clineTitle']));
     ok($M['in']['clineSet'] === true, '  and is marked as chosen');
     ok($M['in']['row2Val'] === '', 'a line without one shows nothing');
     ok($M['in']['row2Set'] === false, '  and is not marked');

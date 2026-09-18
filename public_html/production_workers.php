@@ -91,6 +91,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $err = implode(' | ', array_slice($r['errors'], 0, 8))
              . (count($r['errors']) > 8 ? ' … and ' . (count($r['errors']) - 8) . ' more' : '');
         $impRows = $rows;
+    } elseif ($a === 'hrsave') {
+        /* ONLY AN ADMIN SETS THE ADDRESS AND THE TOKEN. Everyone who can
+           reach this screen may press Update; nobody but an admin may point
+           it somewhere else. */
+        if (!is_admin()) { $err = 'Only an admin can change the HR connection.'; }
+        else {
+            $r = zp_hr_save_settings((string)($_POST['hr_url'] ?? ''), (string)($_POST['hr_token'] ?? ''));
+            if ($r['ok']) { $_SESSION['zp_msg'] = 'HR connection saved.'; redirect('production_workers.php#hr'); }
+            $err = $r['error'];
+        }
+    } elseif ($a === 'hrcheck') {
+        /* CHECK READS AND SHOWS. It writes nothing at all — the plan goes on
+           screen and he decides. A sync that acts first and reports after is
+           a sync nobody trusts twice. */
+        $f = zp_hr_fetch();
+        if (!$f['ok']) $err = $f['error'];
+        else { $hrPlan = zp_hr_plan($f['rows']); $hrTotal = count($f['rows']); }
+    } elseif ($a === 'hrapply') {
+        /* APPLY RE-READS. It does not trust a plan posted back from the
+           browser: between the check and the click, HR may have changed and
+           the form could be made to say anything. The plan is worked out
+           again here, from the live answer, and that is what is written. */
+        $f = zp_hr_fetch();
+        if (!$f['ok']) $err = $f['error'];
+        else {
+            $plan = zp_hr_plan($f['rows']);
+            $r = zp_hr_apply($plan);
+            if (!$r['ok']) $err = implode(' | ', array_slice($r['errors'], 0, 6));
+            else {
+                $parts = [];
+                if ($r['added'])   $parts[] = $r['added'] . ' new worker' . ($r['added'] === 1 ? '' : 's') . ' added';
+                if ($r['changed']) $parts[] = $r['changed'] . ' updated';
+                if (!$parts)       $parts[] = 'Nothing changed — the list already matches HR';
+                if ($plan['gone']) $parts[] = count($plan['gone']) . ' no longer in HR (left here untouched — see the list)';
+                $_SESSION['zp_msg'] = implode('. ', $parts) . '.';
+                redirect('production_workers.php#hr');
+            }
+        }
     } elseif ($a === 'delete') {
         $r = zp_delete_worker((int)($_POST['worker_id'] ?? 0));
         $_SESSION['zp_msg'] = $r['msg'];
@@ -98,6 +136,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 if (!empty($_SESSION['zp_msg'])) { $msg = $_SESSION['zp_msg']; unset($_SESSION['zp_msg']); }
+
+/* THE ALERT IS NOT ONLY SHOWN RIGHT AFTER A SYNC. Somebody who has left HR
+   but is still on this list is a standing fact, not a one-off message, so
+   the last known list is kept and shown every time the screen opens. He
+   asked for an alert, and an alert you have to press a button to see is a
+   report. */
+$hrPlan  = $hrPlan  ?? null;
+$hrTotal = $hrTotal ?? 0;
 
 $workers = zp_workers();
 $edit = null;
@@ -150,6 +196,7 @@ page_header('Production Workers');
 .zp-b:hover{border-color:#0ea8c9;color:#0b7f99}
 .zp-b.pri{background:#1d76e2;border-color:#1d76e2;color:#fff}.zp-b.pri:hover{background:#1667c9;color:#fff}
 .zp-b.red{background:#e0435d;border-color:#e0435d;color:#fff}.zp-b.red:hover{background:#c9384f;color:#fff}
+.zp-b.ok{background:#16a34a;border-color:#16a34a;color:#fff}.zp-b.ok:hover{background:#12823b;color:#fff}
 .zp-b.sm{padding:4px 10px;font-size:11.5px}
 .zp-card{background:#fff;border:1px solid #e6ebf2;border-radius:13px;padding:16px 17px;margin-bottom:16px;
          box-shadow:0 1px 2px rgba(20,35,60,.04)}
@@ -173,6 +220,13 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .flash.ok{background:#effaf3;border:1px solid #c9ecd7;color:#1c6b40}
 .flash.bad{background:#fdeef1;border:1px solid #f6cdd5;color:#9c2740}
 .note{padding:11px 13px;border-radius:10px;font-size:12.5px;line-height:1.55;background:#eef6ff;border:1px solid #cfe3fb;color:#28527d}
+/* Three kinds of news on the HR card: what will change, what went well,
+   and who has left HR but is still here. Only the last one is a warning. */
+.note.info{background:#eef6ff;border-color:#cfe3fb;color:#28527d}
+.note.ok{background:#f4fbf6;border-color:#cfe9d8;color:#1d6b46}
+.note.warn{background:#fff7f8;border-color:#f3ccd4;color:#9a2740}
+.zp-card p.sub{margin:0 0 11px;font-size:11.5px;color:#8a97ab}
+table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nums}
 .empty{padding:24px;text-align:center;color:#8a97ab;font-size:12.5px;line-height:1.6}
 /* A chip IS a checkbox. The box itself is hidden and the label carries the
    look, so the form posts with no JavaScript and the keyboard still works —
@@ -215,6 +269,134 @@ table.zp-t tbody tr:hover{background:#fafcff}
 
   <?php if ($msg): ?><div class="flash ok"><?= e($msg) ?></div><?php endif; ?>
   <?php if ($err): ?><div class="flash bad"><?= e($err) ?></div><?php endif; ?>
+
+  <?php /* ==================================================================
+           THE HR APP IS THE MASTER LIST OF PEOPLE
+           ==================================================================
+           One button. It reads the HR app, works out what WOULD change, and
+           prints it. Nothing is written until Apply is pressed.
+
+           Nobody is ever removed from here, and no stage allotment is ever
+           touched — both of those are his rules, stated on screen so the
+           person pressing the button knows them without asking. */ ?>
+  <div class="zp-card" id="hr">
+    <h2>Workers from the HR app</h2>
+    <p class="sub">Employee number, name and department come from HR. Stages stay yours.</p>
+
+    <?php if (!zp_hr_configured()): ?>
+      <div class="note info" style="margin-bottom:11px">
+        Not connected yet<?= is_admin() ? ' — put the address and the token in below.' : '. Ask an admin to set it up.' ?>
+      </div>
+    <?php else: ?>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:11px">
+        <form method="post" style="display:inline"><?= csrf_field() ?>
+          <input type="hidden" name="action" value="hrcheck">
+          <button class="zp-b pri" type="submit">Update from HR</button></form>
+        <span style="font-size:11.5px;color:#8a97ab">
+          <?= e(zp_hr_url()) ?> · token <?= e(zp_hr_token_masked()) ?>
+          <?php $last = zp_meta_get('hr_last_sync'); if ($last): ?>
+            · last applied <?= e($last) ?>
+          <?php endif; ?>
+        </span>
+      </div>
+    <?php endif; ?>
+
+    <?php if ($hrPlan !== null):
+        $nAdd = count($hrPlan['add']); $nChg = count($hrPlan['change']); $nGone = count($hrPlan['gone']); ?>
+      <div class="note <?= ($nAdd || $nChg) ? 'info' : 'ok' ?>" style="margin-bottom:11px">
+        <b>HR answered with <?= (int)$hrTotal ?> employee(s).</b>
+        <?php if (!$nAdd && !$nChg): ?>
+          Nothing to change — the list here already matches.
+        <?php else: ?>
+          <?= $nAdd ?> to add, <?= $nChg ?> to update, <?= (int)$hrPlan['same'] ?> already correct.
+        <?php endif; ?>
+      </div>
+
+      <?php if ($nAdd): ?>
+        <h3 style="font-size:12.5px;margin:12px 0 5px;color:#152033">New people — these will be added</h3>
+        <table class="zp-t"><thead><tr><th style="width:110px">Employee no.</th><th>Name</th><th>Department</th></tr></thead>
+          <tbody><?php foreach ($hrPlan['add'] as $r): ?>
+            <tr><td class="code"><?= e($r['code']) ?></td><td><?= e($r['name']) ?></td>
+                <td><?= $r['dept'] !== '' ? e($r['dept']) : '<span style="color:#b6c0cf">not stated</span>' ?></td></tr>
+          <?php endforeach; ?></tbody></table>
+      <?php endif; ?>
+
+      <?php if ($nChg): ?>
+        <h3 style="font-size:12.5px;margin:12px 0 5px;color:#152033">Changed in HR — these will be updated here</h3>
+        <table class="zp-t"><thead><tr><th style="width:110px">Employee no.</th><th>What changes</th></tr></thead>
+          <tbody><?php foreach ($hrPlan['change'] as $c): ?>
+            <tr><td class="code"><?= e($c['code']) ?></td><td>
+              <?php foreach ($c['diff'] as $field => $pair): ?>
+                <div><?= $field === 'name' ? 'Name' : 'Department' ?>:
+                  <span style="color:#8a97ab;text-decoration:line-through"><?= $pair[0] !== '' ? e($pair[0]) : '(blank)' ?></span>
+                  &rarr; <b><?= $pair[1] !== '' ? e($pair[1]) : '(blank)' ?></b></div>
+              <?php endforeach; ?>
+            </td></tr>
+          <?php endforeach; ?></tbody></table>
+      <?php endif; ?>
+
+      <?php /* THE ALERT HE ASKED FOR, IN SO MANY WORDS: "if any id or worker
+               removed so you do not remove here even if its started job
+               somewhere but give me alert". Nothing below is touched. */ ?>
+      <?php if ($nGone): ?>
+        <div class="note warn" style="margin-top:12px">
+          <b><?= $nGone ?> worker(s) here are no longer in the HR app.</b>
+          Nothing has been done to them — they are still active, still on every
+          picker, and every wage already booked keeps their name on it. Switch
+          anyone off by hand below if they have really left.
+        </div>
+        <table class="zp-t"><thead><tr><th style="width:110px">Employee no.</th><th>Name</th>
+          <th>Department</th><th class="r" style="width:120px">Entries booked</th></tr></thead>
+          <tbody><?php foreach ($hrPlan['gone'] as $g): ?>
+            <tr><td class="code"><?= e($g['code']) ?></td><td><?= e($g['name']) ?></td>
+                <td><?= e($g['dept']) ?></td>
+                <td class="r"><?= $g['entries'] > 0
+                    ? '<b style="color:#9a2740">' . number_format($g['entries']) . '</b>'
+                    : '<span style="color:#b6c0cf">none</span>' ?></td></tr>
+          <?php endforeach; ?></tbody></table>
+      <?php endif; ?>
+
+      <?php if ($nAdd || $nChg): ?>
+        <form method="post" style="margin-top:12px"><?= csrf_field() ?>
+          <input type="hidden" name="action" value="hrapply">
+          <button class="zp-b ok" type="submit">Apply — add <?= $nAdd ?>, update <?= $nChg ?></button>
+          <span style="font-size:11.5px;color:#8a97ab;margin-left:8px">
+            Nobody is removed. No stage allotment is touched.</span>
+        </form>
+      <?php endif; ?>
+    <?php endif; ?>
+
+    <?php if (is_admin()): ?>
+      <details style="margin-top:13px"<?= zp_hr_configured() ? '' : ' open' ?>>
+        <summary style="cursor:pointer;font-size:12px;color:#5a6b82">Connection settings</summary>
+        <form method="post" style="margin-top:9px"><?= csrf_field() ?>
+          <input type="hidden" name="action" value="hrsave">
+          <div class="fgrid">
+            <div style="grid-column:span 3">
+              <span class="lab">Address of the employee list</span>
+              <input class="zin" name="hr_url" value="<?= e(zp_hr_url()) ?>"
+                     placeholder="http://portal.example.com/zes/emp.php" autocomplete="off">
+            </div>
+            <div style="grid-column:span 2">
+              <span class="lab">Token</span>
+              <?php /* THE TOKEN IS NEVER PRINTED BACK. The box shows a mask,
+                       and saving with the mask still in it leaves the stored
+                       token alone — see zp_hr_save_settings(). */ ?>
+              <input class="zin" name="hr_token" type="text" autocomplete="off"
+                     placeholder="<?= zp_hr_token() !== '' ? e(zp_hr_token_masked()) . ' — leave blank to keep it' : 'paste the bearer token' ?>">
+            </div>
+          </div>
+          <button class="zp-b" type="submit" style="margin-top:9px">Save connection</button>
+          <p style="font-size:11px;color:#8a97ab;margin:8px 0 0">
+            The token is stored in this app's own settings, never in a file that
+            gets uploaded, and it is never shown in full again. If the address
+            starts with <b>http://</b> rather than https, the token travels
+            across your network in clear text — that is a matter for your network,
+            not something this screen can fix, but you should know it.</p>
+        </form>
+      </details>
+    <?php endif; ?>
+  </div>
 
   <div class="zp-card">
     <h2><?= $edit ? 'Edit ' . e($edit['worker_name']) : 'Add a worker' ?></h2>

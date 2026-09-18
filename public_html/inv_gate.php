@@ -567,7 +567,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800"><?= $doc ? 'Edit ' . e($doc['gate_no']) : 'New ' . e($dirLabel) . ' pass' ?></h2>
   <p style="color:#8a97ab;font-size:12px;margin:0 0 14px">The number is generated on save. Draft and verified do not touch stock.</p>
 
-  <form method="post"><?= csrf_field() ?>
+  <form method="post" id="gForm"><?= csrf_field() ?>
     <input type="hidden" name="action" value="save">
     <input type="hidden" name="id" value="<?= (int)($D['id'] ?? 0) ?>">
     <input type="hidden" name="direction" value="<?= e($dir) ?>">
@@ -789,7 +789,10 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                      The two hidden fields are unchanged and still carry the
                      same names, so what the save reads and what an old pass
                      stored are exactly as they were. */ ?>
-            <span class="ctag<?= $lcid > 0 ? ' set' : '' ?>" title="Booked against this contract line"><?= e($lcTxt) ?></span>
+            <?php /* Short on the line, whole in the tooltip — and drawn the same
+               way here as clPaint() draws it in the browser, so the tag does
+               not change spelling the moment the page becomes interactive. */ ?>
+      <span class="ctag<?= $lcid > 0 ? ' set' : '' ?>" title="<?= $lcTxt !== '' ? e($lcTxt) : 'Booked against this contract line' ?>"><?= e(short_ref($lcTxt)) ?></span>
             <input type="hidden" class="cid"   name="line[<?= $i ?>][contract_id]"      value="<?= $lcid > 0 ? $lcid : '' ?>">
             <input type="hidden" class="citem" name="line[<?= $i ?>][contract_item_id]" value="<?= e((string)($L['contract_item_id'] ?? '')) ?>">
           </div></td>
@@ -877,7 +880,11 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       <button type="button" class="ig-btn sec" id="addg">+ Add line</button>
       <button class="ig-btn" type="submit">Save pass</button>
       <a class="ig-btn sec" href="inv_gate.php?dir=<?= e($dir) ?>">Back to register</a>
-      <span style="font-size:11.5px;color:#8a97ab">Saving does not move stock. Post it from the pass afterwards.</span>
+      <?php /* THE OFFICE KEYS, NAMED ON SCREEN. A shortcut nobody is told
+               about is a shortcut nobody uses. */ ?>
+      <span id="gState" style="font-size:11.5px;color:#8a97ab">saved</span>
+      <span style="font-size:11.5px;color:#8a97ab">Saving does not move stock. Post it from the pass afterwards.
+        <b>Ctrl+S</b> saves, <b>Esc</b> goes back, <b>Enter</b> moves to the next box.</span>
     </div>
   </form>
 </div>
@@ -896,6 +903,12 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
          truck did. */ ?>
 <link rel="stylesheet" href="assets/css/lov.css?v=3">
 <script src="assets/js/lov.js?v=3"></script>
+<?php /* GRID.keys() brings the three keys every office program has: Ctrl+S
+         to save, Escape to leave (asking first if there is unsaved work),
+         and an honest saved/unsaved word next to the button. The gate's
+         item table is not a GRID.attach grid — it has its own cascade — so
+         only the keys are taken, not the spreadsheet navigation. */ ?>
+<script src="assets/js/grid.js?v=3"></script>
 <script>
 (function(){
   var tb=document.querySelector('#glines tbody');
@@ -1365,6 +1378,16 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      Available reads 0 and the over-issue strip says so. That is the one
      place "only show stock if available" gives way, and it gives way
      because refusing to show a contract line does not create stock. */
+  /* The GST percent this pass will actually charge, or 0 when it charges
+     none. One place, so the list, the line and the total cannot disagree
+     about what is included in a number. */
+  function gstNow(){
+    var on = document.getElementById('gstOn'), pc = document.getElementById('gstPct');
+    if(!on || !on.checked) return 0;
+    var v = num(pc ? pc.value : 0);
+    return v > 0 ? v : 0;
+  }
+
   function itemRowsFor(q, showAll){
     var mode = pickMode(), out = [], hidden = 0;
 
@@ -1456,8 +1479,13 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
        dash in those two places rather than a blank, so an empty cell always
        means "not applicable" and never "we failed to read it". */
     cols: [
-      { label:'Contract', w:'104px', cls:'cd',
-        get:function(r,q){ return r.cl ? LOV.hl(r.cl.contract_no, q)
+      /* THE SHORT NAME, because this column is for recognising a contract,
+         not for quoting it. PI-260908-786 reads as PI-786 here and the
+         column stops overflowing. SEARCHING STILL USES THE WHOLE NUMBER —
+         rows() scores against contract_no, so typing either the long form
+         or the short one finds it. */
+      { label:'Contract', w:'92px', cls:'cd',
+        get:function(r,q){ return r.cl ? LOV.hl(LOV.sref(r.cl.contract_no), q)
                                        : '<span style="color:#b6c0cf">— free —</span>'; } },
       { label:'Code',     w:'84px',  cls:'cd',
         get:function(r,q){ return r.it ? LOV.hl(r.it.code, q) : ''; } },
@@ -1473,7 +1501,21 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
         get:function(r){ return r.bal === null ? '—' : LOV.q3(r.bal); } },
       { label:'UOM',      w:'44px',  cls:'gg',
         get:function(r){ return LOV.esc(r.it ? r.it.uom : (r.cl ? r.cl.uom : '')); } },
-      { label:'Rate',     w:'68px', align:'r', cls:'nu', get:function(r){ return LOV.m2(r.rate); } }
+      /* RATE, AND WHAT IT ACTUALLY COSTS.
+         Asked for directly: "add rate column in list if gst so show incl
+         price and show included also if no gst then show simple rate".
+         The pass already knows whether GST applies and at what percent —
+         the tick and the box in the header — so the list reads them rather
+         than making the operator do the sum in their head at the gate.
+         GST off, or zero percent: the plain rate and nothing else, because
+         an "incl" tag on a number that includes nothing is noise. */
+      { label:'Rate', w:'86px', align:'r', cls:'nu',
+        get:function(r){
+          var g = gstNow();
+          if(!g) return LOV.m2(r.rate);
+          return LOV.m2(r.rate * (1 + g / 100))
+               + '<span style="font-size:9px;color:#8a97ab;margin-left:3px">incl</span>';
+        } }
     ],
     moreLabel: 'not in stock here, or already delivered',
     lessLabel: 'only what is available',
@@ -1519,7 +1561,8 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       if(r.cl){
         if(cid) cid.value = r.cl.contract_id;
         if(ci)  ci.value  = r.cl.id;
-        if(tag){ tag.textContent = r.cl.contract_no; tag.classList.add('set'); tag.classList.remove('over'); }
+        if(tag){ tag.textContent = SREF(r.cl.contract_no); tag.title = r.cl.contract_no;
+                 tag.classList.add('set'); tag.classList.remove('over'); }
         CLMSG = '';
       } else {
         if(cid) cid.value = ''; if(ci) ci.value = '';
@@ -1677,6 +1720,11 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      The list is every open line the PARTY has, never every contract in
      the company. Balance is what is left after posted gate passes only;
      drafts are not deliveries. */
+  /* ONE SPELLING OF A REFERENCE ON THIS PAGE. lov.js owns the rule; this
+     is the name the rest of the file calls it by, with a plain fallback so
+     a line still reads correctly if the picker library is ever absent. */
+  function SREF(v){ return (window.LOV && LOV.sref) ? LOV.sref(v) : String(v == null ? '' : v); }
+
   var CTLBL = <?= json_encode($CTLBL ?? []) ?>;
   var CLINES = null, CLPARTY = -1;
 
@@ -1706,7 +1754,9 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     var f = tr.querySelector('.ctag'), cid = tr.querySelector('.cid');
     if(!f) return;
     var has = !!(cid && +cid.value), l = clOf(tr);
-    if(l) f.textContent = l.contract_no;  // the live list is the freshest truth
+    /* Short on screen, whole in the tooltip — so it can still be read out
+       in full without leaving the line. */
+    if(l){ f.textContent = SREF(l.contract_no); f.title = l.contract_no; }
     else if(!has) f.textContent = '';     // nothing stored, so nothing to show
     /* Stored, but not in this party's open list — a contract since closed,
        most often. The server rendered its number and that is still the
@@ -1740,7 +1790,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       var q = num((tr.querySelector('.qty') || {}).value);
       if(q > l.balance + 0.0005){
         if(f) f.classList.add('over');
-        bad.push('line ' + (i + 1) + ' — ' + l.contract_no + ' has '
+        bad.push('line ' + (i + 1) + ' — ' + SREF(l.contract_no) + ' has '
                + Number(l.balance).toLocaleString('en-US',{maximumFractionDigits:3})
                + ' left, this pass takes '
                + q.toLocaleString('en-US',{maximumFractionDigits:3}));
@@ -2036,6 +2086,61 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   });
 
   fillParties();
+  /* ---- Ctrl+S, Escape, and Enter across the line -------------------
+     Wired here, at the end, so a fault in it can never stop the form
+     drawing — which is the lesson this file has already taught twice. */
+  (function(){
+    var gf = document.getElementById('gForm');
+    if(!gf || !window.GRID || !GRID.keys) return;
+    var K = GRID.keys(gf, {
+      badge: '#gState',
+      what: 'gate pass',
+      escapeTo: 'inv_gate.php?dir=<?= e($dir) ?>',
+      addRow: function(){ var b = document.getElementById('addg'); if(b) b.click(); }
+    });
+    /* ANY change anywhere on the pass counts, not only the item lines —
+       a changed vehicle number is unsaved work too. */
+    gf.addEventListener('input',  function(){ K.touch(); });
+    gf.addEventListener('change', function(){ K.touch(); });
+
+    /* ENTER MOVES TO THE NEXT BOX, and past the last box on a line it
+       starts the next line. The item table is not a GRID.attach grid, so
+       the rule is applied here to the boxes this form actually has, in the
+       order they are on screen. An open picker owns Enter first — there it
+       means "take this row" — and a button or a textarea keeps its own
+       meaning. */
+    /* UOM IS NOT IN THE WALK, and that is not an oversight. It is a derived
+       box carrying tabindex="-1" — deliberately out of the Tab order because
+       the item fills it. Enter following a different path from Tab would be
+       the sort of small inconsistency that makes a form feel unfinished.
+
+       LOT IS IN IT, and is usually skipped anyway: choosing an item sends
+       the cursor straight to Quantity from inside the picker, so Lot is
+       only reached by coming back to the item box deliberately — which is
+       right for a field most passes leave as "any lot". */
+    var ORDER = ['.matq', '.lot', '.qty', '.rate'];
+    gf.addEventListener('keydown', function(e){
+      if(e.key !== 'Enter' || e.shiftKey) return;
+      if(window.LOV && LOV.isOpen && LOV.isOpen()) return;
+      var el = e.target;
+      if(!el || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON') return;
+      var tr = el.closest('tr'); if(!tr || !tr.querySelector('.matbox')) return;
+      var here = -1;
+      for(var i = 0; i < ORDER.length; i++) if(el.matches(ORDER[i])) { here = i; break; }
+      if(here < 0) return;
+      e.preventDefault();
+      for(var j = here + 1; j < ORDER.length; j++){
+        var nx = tr.querySelector(ORDER[j]);
+        if(nx && nx.offsetParent !== null){ nx.focus(); if(nx.select) nx.select(); return; }
+      }
+      /* the line is complete — on to the next one, making it if needed */
+      var all = lines(), at = all.indexOf(tr);
+      if(at === all.length - 1){ var b = document.getElementById('addg'); if(b) b.click(); all = lines(); }
+      var nrow = all[at + 1];
+      if(nrow){ var f = nrow.querySelector('.matq'); if(f) f.focus(); }
+    });
+  })();
+
   note(); taxRule(); tot(); syncAll();
   /* The Contract boxes were rendered by PHP with the right text already,
      so nothing has to wait for this fetch to be readable. It runs because

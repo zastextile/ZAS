@@ -78,6 +78,21 @@ final class BDb {
 }
 function db(){ static $d = null; if (!$d) $d = new BDb(); return $d; }
 PHP;
+/* short_ref() IS LIFTED TOO, not stubbed. The real bootstrap loads
+   helpers.php before anything else, so the page has it; this harness has to
+   as well, and lifting it means the page is tested with the real rule for
+   shortening a reference rather than a copy of it.
+
+   It was added by NOT being here: the first run after short_ref() went into
+   the page died with "Call to undefined function", which is exactly the
+   class of fault this whole test exists to catch. */
+$helper = (function (string $src) {
+    $a = strpos($src, 'function short_ref(');
+    $b = strpos($src, "\n}\n", $a);
+    return substr($src, $a, $b - $a + 3);
+})(file_get_contents($B . 'includes/helpers.php'));
+$bootstrap .= "\n" . $helper;
+
 file_put_contents($work . '/includes/bootstrap.php', $bootstrap);
 
 /* inv_gate_types() IS LIFTED, NOT STUBBED. The whole contract rule on this
@@ -287,6 +302,39 @@ const { chromium } = require('playwright');
       r.titleAtFg = await pg.evaluate(() => (document.querySelector('.lov .ttl') || {}).textContent || '');
     }
 
+    /* ---- the office keys, on the real page ---- */
+    await pg.goto('file://' + process.argv[2] + '/page_' + dir + '.html');
+    await pg.waitForTimeout(300);
+    r.stateAtRest = await pg.textContent('#gState').catch(() => null);
+
+    /* ENTER WALKS THE LINE: item -> lot -> uom -> qty -> rate -> next line */
+    await pg.click(box);
+    await pg.waitForTimeout(250);
+    await pg.keyboard.type('button');
+    await pg.waitForTimeout(250);
+    await pg.keyboard.press('Enter');          // takes the row from the picker
+    await pg.waitForTimeout(250);
+    const where = async () => pg.evaluate(() => {
+      const a = document.activeElement; if (!a) return null;
+      const tr = a.closest('tr'), body = tr && tr.closest('tbody');
+      const rows = body ? [...body.querySelectorAll('tr')].filter(x => x.querySelector('.matbox')) : [];
+      return { cls: (a.className || '').split(' ').filter(c => ['matq','lot','uom','qty','rate'].includes(c))[0] || a.className,
+               row: tr ? rows.indexOf(tr) : -1 };
+    });
+    r.walk = [await where()];
+    for (let i = 0; i < 5; i++) { await pg.keyboard.press('Enter'); await pg.waitForTimeout(160); r.walk.push(await where()); }
+
+    r.stateDirty = await pg.textContent('#gState').catch(() => null);
+
+    /* CTRL+S SUBMITS — caught at the form rather than letting it navigate */
+    r.ctrlS = await pg.evaluate(() => new Promise(res => {
+      const f = document.getElementById('gForm');
+      f.addEventListener('submit', e => { e.preventDefault(); res(true); }, { once: true });
+      const old = f.submit; f.submit = () => { f.dispatchEvent(new Event('submit', {cancelable:true})); };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+      setTimeout(() => res(false), 600);
+    }));
+
     R[dir] = r;
     await pg.close();
   }
@@ -331,6 +379,25 @@ else foreach (['out' => 'Outward', 'in' => 'Inward'] as $d => $label) {
        "$label: typing narrows it to the button: " . json_encode($r['typedRows']));
     ok(($r['afterPick']['box'] ?? '') !== '' && ($r['afterPick']['key'] ?? '') !== '',
        "$label: choosing fills the line: " . json_encode($r['afterPick']));
+
+    echo "   .. the office keys\n";
+    ok($r['stateAtRest'] === 'saved', "$label: it opens saying 'saved', got " . json_encode($r['stateAtRest']));
+    /* ENTER WALKS ACROSS THE LINE AND THEN DOWN TO THE NEXT ONE.
+       "when enter so go to next field and even line complete so go next
+       line automatically" — the walk below is that sentence, measured. */
+    $walk = array_map(fn($w) => ($w['cls'] ?? '?') . '#' . ($w['row'] ?? '?'), (array)$r['walk']);
+    /* WHAT THE WALK ACTUALLY IS, measured rather than assumed.
+       Choosing an item sends the cursor to Quantity from inside the picker,
+       so Lot and the derived UOM are passed over; Quantity goes to Rate;
+       and Rate — the last box on the line — starts the NEXT LINE, making
+       one if there isn't one. Landing on a fresh item box opens its list,
+       so the next Enter chooses and the cycle repeats. That is the whole
+       of "go to next field and even line complete so go next line". */
+    $want = ['qty#0', 'rate#0', 'matq#1', 'qty#1', 'rate#1', 'matq#2'];
+    ok($walk === $want,
+       "$label: Enter walks the line and starts the next: " . json_encode($walk));
+    ok($r['stateDirty'] !== 'saved', "$label: and typing marks it unsaved, got " . json_encode($r['stateDirty']));
+    ok($r['ctrlS'] === true, "$label: CTRL+S SAVES");
 }
 
 echo "\n$P passed, $F failed\n";

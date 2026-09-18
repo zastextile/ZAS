@@ -122,6 +122,21 @@ $frag = substr($gate, $a, $b - $a + strlen('</table>'));
 function renderGate(string $frag, string $dir, string $work): string {
     $tpl = '<?php
 function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
+/* short_ref() IS LIFTED FROM includes/helpers.php, not copied. The gate
+   line prints the SHORT form of a contract number, so a fragment harness
+   that lacks the real helper dies with "undefined function" — which is how
+   this was found. */
+function short_ref($r){
+    $r = trim((string)$r);
+    if ($r === "") return "";
+    $sep = strpos($r, "-") !== false ? "-" : (strpos($r, "/") !== false ? "/" : "");
+    if ($sep === "") return $r;
+    $b = explode($sep, $r);
+    if (count($b) < 3) return $r;
+    $f = trim($b[0]); $l = trim($b[count($b)-1]);
+    return ($f === "" || $l === "") ? $r : $f . $sep . $l;
+}
+
 function inv_num($v){ return (float)$v; }
 $dir = ' . var_export($dir, true) . ';
 $stockItems = [

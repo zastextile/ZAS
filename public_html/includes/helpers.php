@@ -122,3 +122,51 @@ function get_setting_model_text(): string {
 function lov_norm(string $s): string {
     return preg_replace('/[^a-z0-9]/', '', strtolower($s));
 }
+
+/* ============================================================
+   THE SHORT NAME OF A DOCUMENT — PI-260908-786 becomes PI-786
+   ============================================================
+
+   Asked for in his words: "please only use last digit of contract or
+   proforma in every stage in / out or production instead long long
+   reference like PI-260908-786 so use only Pi-786 as use last digit after
+   dash so can easily pick it for discussion as well".
+
+   The middle block is a date stamp. Nobody says it out loud, nobody
+   remembers it, and on a picker row it pushes the part that identifies the
+   document off the edge of the column.
+
+   THIS IS A DISPLAY NAME AND NOTHING ELSE. The full number stays in the
+   database, on every print, on the invoice and on the gate pass — it is
+   the document's legal identity and shortening it there would be a
+   different and much worse change. What this does is put the short form on
+   the screens where a person is CHOOSING and TALKING: pickers, list
+   columns, headings.
+
+   The rule is exactly his: keep the prefix, keep what is after the LAST
+   dash, drop the middle.
+
+     PI-260908-786    -> PI-786
+     SC-0001          -> SC-0001      (only one dash, nothing to drop)
+     GO-250901-0004   -> GO-0004
+     78621            -> 78621        (no dash, left alone)
+
+   ANYTHING IT DOES NOT UNDERSTAND IS RETURNED WHOLE. A helper that
+   half-guesses at a reference is worse than one that does nothing, because
+   the wrong short name and the right one look equally plausible on a
+   screen. */
+function short_ref(?string $ref): string {
+    $ref = trim((string)$ref);
+    if ($ref === '') return '';
+    /* THE SEPARATOR THE DOCUMENT USES IS THE SEPARATOR IT KEEPS. An early
+       draft rebuilt everything with a dash and turned CI/26/0099 into
+       CI-0099 — a reference nobody in the office has ever seen. */
+    $sep = strpos($ref, '-') !== false ? '-' : (strpos($ref, '/') !== false ? '/' : '');
+    if ($sep === '') return $ref;
+    $bits = explode($sep, $ref);
+    if (count($bits) < 3) return $ref;                // nothing in the middle to drop
+    $first = trim($bits[0]);
+    $last  = trim($bits[count($bits) - 1]);
+    if ($first === '' || $last === '') return $ref;
+    return $first . $sep . $last;
+}

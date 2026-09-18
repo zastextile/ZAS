@@ -2039,6 +2039,224 @@ function zp_delete_worker(int $id): array {
 }
 
 /* ============================================================
+   THE HR APP IS THE MASTER LIST OF PEOPLE
+   ============================================================
+
+   Asked for in his words:
+     "use my this token key to get exact production_workers.php as update
+      button on this page ... let department also save into system as it as
+      well stage i will manual edit easily one by one ... if any id or
+      worker removed so you do not remove here even if its started job
+      somewhere but give me alert ... if add some worker with new ids name
+      and department so add easily same way and tell me only that adding
+      new simple alert msg"
+
+   THE RULES, AND THEY ARE HIS, NOT MINE:
+
+     EMPNO IS THE PERSON.  Matched against worker_code. Not the name — two
+     people share a name, and a name is the thing most likely to be
+     re-typed. The employee number is what HR guarantees.
+
+     NEW PEOPLE ARE ADDED.  Code, name and department, exactly as HR spells
+     them. Reported by name so he can see who arrived.
+
+     NAMES AND DEPARTMENTS ARE FOLLOWED.  HR owns those two facts; when
+     they change there, they change here, and every change is listed.
+
+     STAGES ARE NEVER TOUCHED.  "stage i will manual edit easily one by
+     one." A sync that reset stage allotments would undo an afternoon's
+     work every time it ran, and would do it silently.
+
+     NOBODY IS EVER REMOVED.  Not deactivated either. A worker who has left
+     HR may still have unpaid wages, a half-finished bundle on the floor, or
+     an entry booked this morning. They are REPORTED — never touched. That
+     is the difference between a sync and a wrecking ball, and he asked for
+     it explicitly.
+
+   THE TOKEN IS NOT IN THIS FILE. It lives in zp_meta, set once from the
+   screen, and it is never printed back in full — the same rule as the
+   Redis password. It is also sent over plain http to that portal, which is
+   his network's decision, not something this code can fix; the screen says
+   so once rather than pretending otherwise. */
+
+function zp_hr_url(): string   { return trim(zp_meta_get('hr_url')); }
+function zp_hr_token(): string { return trim(zp_meta_get('hr_token')); }
+function zp_hr_configured(): bool { return zp_hr_url() !== '' && zp_hr_token() !== ''; }
+
+/* Enough to recognise it, never enough to use it. */
+function zp_hr_token_masked(): string {
+    $t = zp_hr_token();
+    if ($t === '') return '';
+    return str_repeat('•', 8) . mb_substr($t, -3);
+}
+
+function zp_hr_save_settings(string $url, string $token): array {
+    $url = trim($url);
+    if ($url !== '' && !preg_match('~^https?://~i', $url))
+        return ['ok' => false, 'error' => 'The address must start with http:// or https://'];
+    zp_meta_set('hr_url', $url);
+    /* A BLANK TOKEN MEANS "LEAVE IT ALONE", not "erase it". The box on
+       screen shows a mask, and saving the form with the mask still in it
+       must not overwrite the real token with dots. */
+    $token = trim($token);
+    if ($token !== '' && strpos($token, '•') === false) zp_meta_set('hr_token', $token);
+    return ['ok' => true, 'error' => ''];
+}
+
+/* Read the list of people out of the HR app.
+   Returns ['ok'=>bool, 'rows'=>[['code','name','dept'], ...], 'error'=>string]. */
+function zp_hr_fetch(): array {
+    if (!zp_hr_configured())
+        return ['ok' => false, 'rows' => [], 'error' => 'The HR address and token are not set yet.'];
+
+    $ctx = stream_context_create(['http' => [
+        'method'        => 'GET',
+        'header'        => "Authorization: Bearer " . zp_hr_token() . "\r\nAccept: application/json\r\n",
+        'timeout'       => 120,
+        'ignore_errors' => true,          // read the body of a 401 as well, to report it
+    ]]);
+    $body = @file_get_contents(zp_hr_url(), false, $ctx);
+    $code = 0;
+    foreach ((array)($http_response_header ?? []) as $h)
+        if (preg_match('~^HTTP/\S+\s+(\d{3})~', $h, $m)) $code = (int)$m[1];
+
+    if ($body === false)
+        return ['ok' => false, 'rows' => [], 'error' => 'Could not reach the HR app. Check the address, and that this server is allowed to call it.'];
+    if ($code >= 400)
+        return ['ok' => false, 'rows' => [], 'error' => 'The HR app answered ' . $code
+                . ($code === 401 || $code === 403 ? ' — the token was refused.' : '.')];
+
+    $j = json_decode($body, true);
+    if (!is_array($j))
+        return ['ok' => false, 'rows' => [], 'error' => 'The HR app did not answer with JSON.'];
+
+    /* A BARE ARRAY IS WHAT HIS POWER QUERY EXPECTS — Table.FromRecords on
+       the document itself. Some gateways wrap it, so one level of wrapper
+       is unwrapped rather than failing on a shape that means the same. */
+    $list = $j;
+    if (!isset($j[0])) {
+        foreach (['data', 'rows', 'employees', 'result', 'records'] as $k)
+            if (isset($j[$k]) && is_array($j[$k])) { $list = $j[$k]; break; }
+    }
+    if (!isset($list[0]) || !is_array($list[0]))
+        return ['ok' => false, 'rows' => [], 'error' => 'The HR app answered, but not with a list of employees.'];
+
+    /* ORACLE MAY SHOUT OR WHISPER ITS COLUMN NAMES. EMPNO, empno and EmpNo
+       are the same column, and a sync that broke on letter case would be a
+       silly way to lose a morning. */
+    $pick = function (array $row, array $names) {
+        foreach ($row as $k => $v)
+            foreach ($names as $n)
+                if (strcasecmp(trim((string)$k), $n) === 0) return trim((string)$v);
+        return '';
+    };
+
+    $rows = [];
+    foreach ($list as $r) {
+        if (!is_array($r)) continue;
+        $code2 = $pick($r, ['EMPNO', 'EMP_NO', 'EMPLOYEE_NO', 'EMP_ID', 'EMPID']);
+        $name  = $pick($r, ['ENAME', 'EMP_NAME', 'EMPLOYEE_NAME', 'NAME']);
+        $dept  = $pick($r, ['DEPARTMENT', 'DEPT', 'DEPT_NAME', 'DEPTNAME']);
+        if ($code2 === '' || $name === '') continue;   // a person with no number is not a person we can track
+        $rows[] = ['code' => strtoupper($code2), 'name' => $name, 'dept' => $dept];
+    }
+    if (!$rows) return ['ok' => false, 'rows' => [], 'error' => 'The HR app answered, but no employee had both a number and a name.'];
+
+    return ['ok' => true, 'rows' => $rows, 'error' => ''];
+}
+
+/* WHAT WOULD HAPPEN — worked out and shown BEFORE anything is written.
+   Returns four lists, and writes nothing. The screen prints this, he reads
+   it, and only then is anything saved. A sync that acts first and reports
+   afterwards is a sync nobody trusts twice. */
+function zp_hr_plan(array $hrRows): array {
+    zp_ensure_schema();
+    $mine = [];
+    foreach (zp_workers(false) as $w) $mine[strtoupper(trim((string)$w['worker_code']))] = $w;
+
+    $plan = ['add' => [], 'change' => [], 'gone' => [], 'same' => 0];
+    $seen = [];
+
+    foreach ($hrRows as $r) {
+        $code = strtoupper(trim($r['code']));
+        $seen[$code] = true;
+        if (!isset($mine[$code])) { $plan['add'][] = $r; continue; }
+
+        $w = $mine[$code];
+        $was  = ['name' => trim((string)$w['worker_name']), 'dept' => trim((string)($w['department'] ?? ''))];
+        $now  = ['name' => trim($r['name']),                'dept' => trim($r['dept'])];
+        $diff = [];
+        if ($was['name'] !== $now['name']) $diff['name'] = [$was['name'], $now['name']];
+        if ($was['dept'] !== $now['dept']) $diff['dept'] = [$was['dept'], $now['dept']];
+        if ($diff) $plan['change'][] = ['id' => (int)$w['id'], 'code' => $code,
+                                        'name' => $now['name'], 'dept' => $now['dept'],
+                                        'was' => $was, 'diff' => $diff];
+        else $plan['same']++;
+    }
+
+    /* GONE FROM HR — REPORTED, NEVER TOUCHED. The entry count is carried
+       because "they have 40 entries against their name" is what turns this
+       from a list into something he can act on. */
+    foreach ($mine as $code => $w) {
+        if (isset($seen[$code])) continue;
+        $n = 0;
+        try {
+            $s = db()->prepare("SELECT COUNT(*) FROM zp_entries WHERE worker_id=? AND status='active'");
+            $s->execute([(int)$w['id']]); $n = (int)$s->fetchColumn();
+        } catch (Throwable $e) {}
+        /* (string) IS NOT DECORATION. An array key that looks like a number
+           IS a number in PHP, so an employee number of "1001" came back out
+           of this loop as the integer 1001 — and then compared unequal to
+           the string it went in as. Worker codes are text: W001 and 1001
+           are the same kind of thing. */
+        $plan['gone'][] = ['id' => (int)$w['id'], 'code' => (string)$code,
+                           'name' => (string)$w['worker_name'],
+                           'dept' => (string)($w['department'] ?? ''),
+                           'entries' => $n, 'active' => (int)$w['is_active']];
+    }
+    return $plan;
+}
+
+/* Write the plan. Adds and changes only — nothing is ever removed, and no
+   stage allotment is touched. One transaction, like every other import in
+   this module: a half-applied sync is worse than none. */
+function zp_hr_apply(array $plan): array {
+    zp_ensure_schema();
+    $added = 0; $changed = 0; $errors = [];
+
+    db()->beginTransaction();
+    try {
+        foreach ($plan['add'] as $r) {
+            $res = zp_save_worker(0, $r['code'], $r['name'], $r['dept'] !== '' ? $r['dept'] : null, 1);
+            if (!$res['ok']) { $errors[] = $r['code'] . ' ' . $r['name'] . ' — ' . $res['error']; continue; }
+            $added++;
+        }
+        foreach ($plan['change'] as $c) {
+            /* is_active IS READ AND WRITTEN BACK UNCHANGED. HR does not own
+               it — he does, from this screen — and a sync that quietly
+               reactivated somebody he had switched off would be a fault
+               nobody would think to look for. */
+            $act = 1;
+            try {
+                $s = db()->prepare("SELECT is_active FROM zp_workers WHERE id=?");
+                $s->execute([$c['id']]); $act = (int)$s->fetchColumn();
+            } catch (Throwable $e) {}
+            $res = zp_save_worker($c['id'], $c['code'], $c['name'],
+                                  $c['dept'] !== '' ? $c['dept'] : null, $act);
+            if (!$res['ok']) { $errors[] = $c['code'] . ' — ' . $res['error']; continue; }
+            $changed++;
+        }
+        if ($errors) { db()->rollBack(); return ['ok' => false, 'added' => 0, 'changed' => 0, 'errors' => $errors]; }
+        db()->commit();
+    } catch (Throwable $e) {
+        db()->rollBack();
+        return ['ok' => false, 'added' => 0, 'changed' => 0, 'errors' => ['Nothing was saved. ' . $e->getMessage()]];
+    }
+    zp_meta_set('hr_last_sync', date('Y-m-d H:i:s'));
+    return ['ok' => true, 'added' => $added, 'changed' => $changed, 'errors' => []];
+}
+
+/* ============================================================
    BOOKING THE DAY'S WORK
    ============================================================
 
@@ -3068,7 +3286,11 @@ function zp_work_index(): array {
                        without ever having to assume a default. */
                     'kind' => 'part',
                     'part' => $partId,
-                    'pi'   => (string)$l['pi_no'],
+                    /* SHORT ON SCREEN, WHOLE FOR SEARCHING. `pi` is what the
+                       row prints; `hay` below still holds the full number,
+                       so typing either form finds the job. */
+                    'pi'   => short_ref((string)$l['pi_no']),
+                    'pifull' => (string)$l['pi_no'],
                     'cust' => (string)($l['customer_name'] ?? ''),
                     'prod' => (string)$l['product_name'],
                     'size' => (string)($l['size'] ?? ''),
@@ -3103,7 +3325,8 @@ function zp_work_index(): array {
                 'op'   => (int)$w['id'],
                 'kind' => $w['kind'],          // 'set' or 'line' — which table op points at
                 'part' => 0,
-                'pi'   => (string)$l['pi_no'],
+                'pi'   => short_ref((string)$l['pi_no']),
+                'pifull' => (string)$l['pi_no'],
                 'cust' => (string)($l['customer_name'] ?? ''),
                 'prod' => (string)$l['product_name'],
                 'size' => (string)($l['size'] ?? ''),

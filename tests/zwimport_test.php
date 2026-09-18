@@ -30,8 +30,14 @@ $work = __DIR__ . '/.zwimp';
 @mkdir($work, 0777, true);
 
 echo "1. Enter opens the list, everywhere in the app\n";
-ok(str_contains($lov, "if ((e.key === 'Enter' || e.key === 'ArrowDown')"),
-   'Enter and Down open a picker that is shut');
+/* THE RULE SPLIT IN TWO, because Enter had to do two jobs. Down always
+   opens. Enter opens an EMPTY box and moves on from a full one — except on
+   a field that holds a LIST, where there is always another one to add. */
+ok(str_contains($lov, "if (e.key === 'ArrowDown') {"), 'Down opens a picker that is shut');
+ok(str_contains($lovF, 'A FIELD THAT HOLDS A LIST IS NEVER "ANSWERED"'),
+   'and Enter opens one too, on an empty box or on a list field');
+ok(str_contains($lov, 'if (!(pShut && pShut.stayOnEnter)'),
+   '  which is what stayOnEnter marks');
 ok(str_contains($lov, 'e.stopImmediatePropagation();'),
    'AND THE KEY STOPS THERE — the spreadsheet keys live on the same element');
 ok(str_contains($lovF, 'Enter would open the list AND move the cursor down a row'),
