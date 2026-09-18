@@ -205,6 +205,28 @@ function zp_ensure_schema(): void {
         INDEX(worker_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 
+    /* ---- WHICH STAGES A WORKER ACTUALLY WORKS ----
+       On a floor of three hundred people, offering all three hundred for a
+       piping job is not a list, it is a haystack. A worker may be allotted any
+       number of stages and the entry screen then offers those people first.
+
+       NO ROW MEANS EVERY STAGE, NOT NO STAGE. This is the whole reason the
+       table is safe to add: the day it ships it is empty, so every worker is
+       offered exactly as they are today, and the short list appears person by
+       person as you fill it in. The opposite default would hide your entire
+       floor the moment the file was uploaded.
+
+       The stage is held by id, like everywhere else in this module, so
+       renaming a stage never loses an allotment. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_worker_stage (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        worker_id INT NOT NULL,
+        stage_id INT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_ws (worker_id, stage_id),
+        INDEX(worker_id), INDEX(stage_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
     /* ---- the wage ledger ----
        rate_applied IS A SNAPSHOT AND IS NEVER RECALCULATED. The rate that was
        in force the moment this was booked is frozen onto the row. Change a rate
@@ -1438,6 +1460,59 @@ function zp_save_worker(int $id, string $code, string $name, ?string $dept, int 
     return ['ok' => true, 'id' => (int)db()->lastInsertId(), 'error' => ''];
 }
 
+/* ---------------------------------------- which stages a worker works */
+
+/* EVERY worker's allotment in one query, not one query per worker.
+   [worker_id => [stage_id, stage_id, ...]]. A worker with nothing allotted is
+   simply absent from the map, and absent means EVERY stage — see
+   zp_worker_does_stage() below, which is the only place that is decided. */
+function zp_worker_stage_map(): array {
+    zp_ensure_schema();
+    $out = [];
+    try {
+        foreach (db()->query("SELECT worker_id, stage_id FROM zp_worker_stage")->fetchAll() as $r)
+            $out[(int)$r['worker_id']][] = (int)$r['stage_id'];
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+function zp_worker_stages(int $workerId): array {
+    return zp_worker_stage_map()[$workerId] ?? [];
+}
+
+/* THE ONE RULE, STATED ONCE.
+   Nothing allotted = available for everything. This is what keeps the whole
+   feature additive: an empty table behaves exactly as the app did before it
+   existed. Every screen asks this function rather than testing in_array
+   itself, so no screen can drift into hiding people. */
+function zp_worker_does_stage(array $map, int $workerId, int $stageId): bool {
+    $mine = $map[$workerId] ?? [];
+    if (!$mine) return true;                  // not allotted = anywhere
+    if ($stageId <= 0) return true;           // an operation with no stage asks nobody to prove anything
+    return in_array($stageId, $mine, true);
+}
+
+/* Replaces a worker's allotment with exactly what was ticked.
+   An empty list is a legitimate answer — it puts the worker back to "any
+   stage" — so this deletes first and only then inserts. Unknown stage ids are
+   dropped rather than refused: a stage removed while the form was open should
+   not cost somebody their other five ticks. */
+function zp_save_worker_stages(int $workerId, array $stageIds): void {
+    zp_ensure_schema();
+    if ($workerId <= 0) return;
+    $valid = [];
+    foreach (zp_stage_all(false) as $s) $valid[(int)$s['id']] = true;
+    $want = [];
+    foreach ($stageIds as $sid) { $sid = (int)$sid; if ($sid > 0 && isset($valid[$sid])) $want[$sid] = true; }
+    try {
+        db()->prepare("DELETE FROM zp_worker_stage WHERE worker_id=?")->execute([$workerId]);
+        if ($want) {
+            $ins = db()->prepare("INSERT INTO zp_worker_stage (worker_id, stage_id) VALUES (?,?)");
+            foreach (array_keys($want) as $sid) $ins->execute([$workerId, $sid]);
+        }
+    } catch (Throwable $e) {}
+}
+
 /* A WORKER WITH WAGES IS NEVER DELETED. Their name is on every entry they were
    paid for; removing the row would leave those wages belonging to nobody. */
 function zp_delete_worker(int $id): array {
@@ -1450,6 +1525,9 @@ function zp_delete_worker(int $id): array {
                 'msg' => 'That worker has production entries against their name, so they have been set inactive instead of deleted. Every wage they were paid keeps their name on it.'];
     }
     db()->prepare("DELETE FROM zp_workers WHERE id=?")->execute([$id]);
+    /* The allotment goes with them. Left behind it would silently re-attach
+       itself to whoever next took that auto-increment id. */
+    try { db()->prepare("DELETE FROM zp_worker_stage WHERE worker_id=?")->execute([$id]); } catch (Throwable $e) {}
     return ['ok' => true, 'deleted' => true, 'msg' => 'Worker deleted — they had no entries.'];
 }
 
@@ -2375,7 +2453,12 @@ function zp_work_index(): array {
                    only OFFERS open work, but it can now say which it is. */
                 $done = $left <= 0.0001;
                 $rate  = zp_rate_for($opId, (float)$o['rate'], $rates, $szRates, $szId);
-                $stage = zp_stage_name((int)($o['stage_id'] ?: zp_stage_id_for((string)$o['stage'])));
+                /* THE STAGE ID TRAVELS WITH THE ROW, not just its spelling.
+                   The worker list is narrowed by stage, and matching on a name
+                   would break the first time a stage is renamed — which is the
+                   exact bug the whole module moved to stage_id to avoid. */
+                $stageId = (int)($o['stage_id'] ?: zp_stage_id_for((string)$o['stage']));
+                $stage = zp_stage_name($stageId);
                 $out[] = [
                     'k'    => (int)$l['item_id'] . ':' . $opId,
                     'item' => (int)$l['item_id'],
@@ -2388,6 +2471,7 @@ function zp_work_index(): array {
                     'pn'   => (string)$p['part_name'],
                     'on'   => (string)$o['operation_name'],
                     'st'   => $stage,
+                    'sid'  => $stageId,
                     'rate' => round($rate, 2),
                     'left' => round($left, 2),
                     'done' => $done ? 1 : 0,

@@ -122,6 +122,19 @@ $SIZE_PROBLEMS = [];
 $WORK = zp_work_index();
 $HABIT = zp_worker_habit();
 
+/* EACH WORKER CARRIES THE STAGES THEY ARE ALLOTTED, and the stage NAMES go
+   into their search text too — so typing "packing" finds the packing hall even
+   on the tab where no operation has been chosen yet. An empty list means every
+   stage; that rule is stated once, in wFits() below.
+
+   PREPARED HERE, NOT INSIDE THE <script> BLOCK. Everything in that block is
+   JavaScript with <?= holes punched in it; a <?php ... ?> block of setup in
+   the middle of it is PHP that the page's own test harness cannot lift out,
+   and it broke that harness the first time I wrote it there. */
+$wsMap = zp_worker_stage_map();
+$stNm  = [];
+foreach (zp_stage_all(false) as $s) $stNm[(int)$s['id']] = (string)$s['name'];
+
 /* an unplannable line is reported, not hidden — collected above */
 foreach ($lines as $l) {
     $bad = zp_size_problem($l);
@@ -512,11 +525,18 @@ table.zp-t tbody tr:hover{background:#fafcff}
    ==================================================================== */
 (function(){
   var WORK    = <?= json_encode($WORK) ?>;
-  var WORKERS = <?= json_encode(array_map(fn($w) => [
-      'id' => (int)$w['id'], 'code' => (string)$w['worker_code'], 'name' => (string)$w['worker_name'],
-      'dept' => (string)($w['department'] ?? ''),
-      'hay' => mb_strtolower(trim($w['worker_code'] . ' ' . $w['worker_name'] . ' ' . ($w['department'] ?? ''))),
-  ], $workers)) ?>;
+  var WORKERS = <?= json_encode(array_map(function ($w) use ($wsMap, $stNm) {
+      $sg = $wsMap[(int)$w['id']] ?? [];
+      $sn = [];
+      foreach ($sg as $sid) if (isset($stNm[$sid])) $sn[] = $stNm[$sid];
+      return [
+        'id' => (int)$w['id'], 'code' => (string)$w['worker_code'], 'name' => (string)$w['worker_name'],
+        'dept' => (string)($w['department'] ?? ''),
+        'sg'  => array_values(array_map('intval', $sg)),
+        'hay' => mb_strtolower(trim($w['worker_code'] . ' ' . $w['worker_name'] . ' '
+                 . ($w['department'] ?? '') . ' ' . implode(' ', $sn))),
+      ];
+  }, $workers)) ?>;
   var HABIT   = <?= json_encode($HABIT) ?>;
   var MONEY   = <?= $showMoney ? 'true' : 'false' ?>;
 
@@ -586,6 +606,17 @@ table.zp-t tbody tr:hover{background:#fafcff}
              chips:[w.size, w.st].filter(Boolean),
              rate: w.rate, left: w.left };
   }
+  /* DOES THIS PERSON WORK THIS STAGE?
+     Stated once, on the browser side, exactly as zp_worker_does_stage() states
+     it on the server: NOTHING ALLOTTED MEANS EVERY STAGE. The table ships
+     empty, so on day one this returns true for everybody and the screen
+     behaves precisely as it did before the allotment existed. */
+  function wFits(w, sid){
+    if (!sid) return true;
+    if (!w.sg || !w.sg.length) return true;
+    return w.sg.indexOf(sid) >= 0;
+  }
+
   /* a person, described once */
   function zeWorkerOpt(w, opId, click, ev){
     return { v:w.id, click:click, ev:ev,
@@ -628,7 +659,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
     box.innerHTML = show.map(function(o, i){ return zeRowHtml(o, t, i === curIx); }).join('')
       + (list.length > show.length
          ? '<div class="ze-none">' + (list.length - show.length) + ' more &mdash; keep typing to narrow it.</div>'
-         : '');
+         : '')
+      /* A note the LIST carries about itself — today, "these are only the
+         people on this stage". It is a plain div, not a .ze-row, so the arrow
+         keys and Enter step straight past it and cannot pick it. */
+      + (list.foot ? '<div class="ze-none">' + list.foot + '</div>' : '');
     var c = box.querySelector('[data-cur="1"]'); if (c) c.scrollIntoView({block:'nearest'});
   }
 
@@ -773,12 +808,41 @@ table.zp-t tbody tr:hover{background:#fafcff}
     var click = function(){ return ''; };
     if (tab === 'A') {
       var opId = picked ? picked.op : 0;
-      /* THE LEARNED DEFAULT. Whoever actually does this operation comes first;
-         everybody else is still one keystroke away, because nobody is fixed to
-         anything. */
-      return WORKERS.filter(function(w){ return hit(w.hay, t); })
-        .slice().sort(function(a,b){ return score(b.id, opId) - score(a.id, opId); })
+      /* THE STAGE NARROWS AN EMPTY BOX, AND ONLY AN EMPTY BOX.
+         Three hundred names under the cursor is not a list. So with nothing
+         typed, only the people allotted to this job's stage are offered — on
+         a packing job that is twenty-six names instead of three hundred.
+         The moment anything IS typed the search goes back over everybody,
+         because typing a name means you have already decided who you want and
+         no filter of mine should be able to say "that person is not here".
+         Somebody standing in at another stage for a day is therefore always
+         reachable, and the entry saves exactly as it always did. */
+      var all = WORKERS.filter(function(w){ return hit(w.hay, t); });
+      var sid = picked ? (picked.sid || 0) : 0;
+      var use = all, narrowed = 0;
+      if (sid && !t.length) {
+        /* NARROW ONLY WHEN SOMEBODY IS REALLY ON THIS STAGE.
+           Testing "is the short list non-empty" was not enough and the test
+           caught it: workers allotted NOTHING pass wFits for every stage, so a
+           stage nobody has been put on yet still produced a list — of just
+           those few — and three hundred people vanished behind a footnote.
+           So the count is of people who NAME this stage. None of them means
+           the stage means nothing yet, and the whole floor is offered. */
+        var onStage = 0;
+        var fit = all.filter(function(w){
+          if (w.sg && w.sg.length && w.sg.indexOf(sid) >= 0) onStage++;
+          return wFits(w, sid);
+        });
+        if (onStage) { narrowed = all.length - fit.length; use = fit; }
+      }
+      var outw = use.slice().sort(function(a,b){ return score(b.id, opId) - score(a.id, opId); })
         .map(function(w){ return zeWorkerOpt(w, opId, click(), ''); });
+      /* The cut is SAID, like every other cut on this screen. A list that
+         silently stops short reads as "that person does not exist". */
+      outw.foot = narrowed
+        ? narrowed + ' more not on ' + esc(picked.st) + ' — type a name or code to reach them.'
+        : '';
+      return outw;
     }
     var wid = picked ? picked.id : 0;
     return WORK.filter(function(w){ return !w.done && hit(w.hay, t); })

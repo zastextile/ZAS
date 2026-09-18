@@ -4,10 +4,10 @@
   ================================================
 
   Deliberately the smallest screen in the module: a code, a name, a department,
-  active or not. Everything else about a worker — what they made, what they were
-  paid — lives in the entries and is read from there.
+  the stages they work, active or not. Everything else about a worker — what
+  they made, what they were paid — lives in the entries and is read from there.
 
-  TWO RULES.
+  THREE RULES.
 
   1. A CODE IS GIVEN, NOT DEMANDED. Ask a data-entry clerk to invent a unique
      code for 200 workers and you get W1, w1 and W01 for the same person. Leave
@@ -17,6 +17,14 @@
      were paid for. Removing the row would leave those wages belonging to
      nobody, and no report could ever explain the gap. They go inactive
      instead — off every picker, still on every payslip that already exists.
+
+  3. NO STAGE TICKED MEANS EVERY STAGE. Three hundred people on the floor and
+     a piping job offers all three hundred — that is the problem the stage
+     allotment solves. But the table ships EMPTY, and empty has to mean
+     "available for everything", or the day this file is uploaded the entry
+     screen offers nobody. You narrow the list person by person, at your own
+     speed. The rule itself lives in zp_worker_does_stage() so that no screen
+     can decide it differently.
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
@@ -42,7 +50,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (string)($_POST['department'] ?? ''),
             isset($_POST['is_active']) ? 1 : 0
         );
-        if ($r['ok']) { $_SESSION['zp_msg'] = 'Worker saved.'; redirect('production_workers.php'); }
+        if ($r['ok']) {
+            /* SAVED AGAINST THE ID THE SAVE RETURNED, not the one that was
+               posted — on a new worker the posted id is 0 and the ticks would
+               be written against nobody. */
+            zp_save_worker_stages((int)$r['id'], (array)($_POST['stage'] ?? []));
+            $_SESSION['zp_msg'] = 'Worker saved.';
+            redirect('production_workers.php');
+        }
         $err = $r['error'];
         $editId = (int)($_POST['worker_id'] ?? 0);
     } elseif ($a === 'delete') {
@@ -68,6 +83,19 @@ try {
 $depts = [];
 foreach ($workers as $w) if (trim((string)$w['department']) !== '' && !in_array($w['department'], $depts, true)) $depts[] = $w['department'];
 sort($depts);
+
+/* The stage list and every worker's allotment — two queries for the whole
+   screen, not two per row. */
+$stages   = zp_stage_all(true);
+$wsMap    = zp_worker_stage_map();
+$editWs   = $editId > 0 ? ($wsMap[$editId] ?? []) : [];
+$stageNm  = [];
+foreach (zp_stage_all(false) as $s) $stageNm[(int)$s['id']] = (string)$s['name'];
+/* How many people are on each stage — the number that tells you whether the
+   allotment is worth anything yet. A stage nobody is on narrows nothing. */
+$stageCount = [];
+foreach ($wsMap as $wid => $sids) foreach ($sids as $sid) $stageCount[$sid] = ($stageCount[$sid] ?? 0) + 1;
+$anyStage = count(array_filter($workers, fn($w) => empty($wsMap[(int)$w['id']])));
 
 page_header('Production Workers');
 ?>
@@ -102,6 +130,23 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .flash.bad{background:#fdeef1;border:1px solid #f6cdd5;color:#9c2740}
 .note{padding:11px 13px;border-radius:10px;font-size:12.5px;line-height:1.55;background:#eef6ff;border:1px solid #cfe3fb;color:#28527d}
 .empty{padding:24px;text-align:center;color:#8a97ab;font-size:12.5px;line-height:1.6}
+/* A chip IS a checkbox. The box itself is hidden and the label carries the
+   look, so the form posts with no JavaScript and the keyboard still works —
+   tab to it, space to tick. :has() paints the ticked state live; browsers
+   without it fall back to the .on class PHP already put there, which is
+   correct on load and only stops updating until the page is saved. */
+.zw-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.zw-chip{display:inline-flex;align-items:center;height:28px;padding:0 11px;border-radius:14px;
+         border:1px solid #d9e0ea;background:#fff;font-size:12px;font-weight:700;color:#5a6b82;
+         cursor:pointer;white-space:nowrap;user-select:none;text-decoration:none;line-height:1}
+.zw-chip input{position:absolute;opacity:0;width:0;height:0}
+.zw-chip.on,.zw-chip:has(input:checked){background:#0b2a4a;border-color:#0b2a4a;color:#fff}
+.zw-chip:has(input:focus-visible){box-shadow:0 0 0 3px rgba(14,168,201,.3)}
+.zw-chip.add{border-style:dashed;color:#8a97ab;font-weight:600}
+.zw-hint{margin-top:6px;font-size:11.5px;color:#8a97ab}
+.zw-tag{display:inline-block;padding:1px 8px;margin:1px 3px 1px 0;border-radius:10px;font-size:11px;
+        font-weight:700;background:#eef4ff;border:1px solid #cfe0fb;color:#1d4ea8}
+.zw-tag.any{background:#f4f6fa;border-color:#e6ebf2;color:#8a97ab;font-style:italic;font-weight:600}
 </style>
 <?php /* THE SKIN, OPTED IN. Every rule in assets/css/zskin.css is scoped
          under .zskin, so this one attribute is the whole of the restyle and
@@ -156,6 +201,34 @@ table.zp-t tbody tr:hover{background:#fafcff}
             Active</label>
         </div>
       </div>
+
+      <?php /* THE STAGES THIS PERSON WORKS.
+               Checkboxes dressed as chips — a real <input type="checkbox">
+               under each one, so the form posts without a line of JavaScript
+               and works with the keyboard. Nothing ticked is a valid answer
+               and it means every stage, which is what the strip below says. */ ?>
+      <div style="margin-top:13px">
+        <span class="lab">Stages this person works &mdash; tick any number</span>
+        <?php if (!$stages): ?>
+          <div class="note">No stages are set up yet. Add them on
+            <a href="production_stages.php">Production Stages</a> and they will appear here.</div>
+        <?php else: ?>
+        <div class="zw-chips">
+          <?php foreach ($stages as $s): $sid = (int)$s['id']; $on = in_array($sid, $editWs, true); ?>
+            <label class="zw-chip<?= $on ? ' on' : '' ?>">
+              <input type="checkbox" name="stage[]" value="<?= $sid ?>" <?= $on ? 'checked' : '' ?>>
+              <span><?= e($s['name']) ?></span>
+            </label>
+          <?php endforeach; ?>
+          <a class="zw-chip add" href="production_stages.php">+ add a stage</a>
+        </div>
+        <div class="zw-hint">
+          <?= $editWs ? 'Untick them all to put ' . e($edit['worker_name'] ?? 'this worker') . ' back on every stage.'
+                      : 'Nothing ticked = offered on every stage, exactly as today.' ?>
+        </div>
+        <?php endif; ?>
+      </div>
+
       <div style="display:flex;gap:9px;margin-top:13px;flex-wrap:wrap">
         <button class="zp-b pri"><?= $edit ? 'Save Changes' : 'Add Worker' ?></button>
         <?php if ($edit): ?><a class="zp-b" href="production_workers.php">New worker instead</a><?php endif; ?>
@@ -174,7 +247,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
     <table class="zp-t">
       <thead><tr>
         <th style="width:40px">#</th><th style="width:76px">Code</th><th>Name</th>
-        <th style="width:170px">Department</th><th style="width:80px">Status</th>
+        <th style="width:150px">Department</th><th style="min-width:200px">Stages</th><th style="width:80px">Status</th>
         <th class="num" style="width:70px">Entries</th><th class="num" style="width:110px">Earned (PKR)</th>
         <th style="width:150px">Action</th>
       </tr></thead>
@@ -185,6 +258,14 @@ table.zp-t tbody tr:hover{background:#fafcff}
           <td class="code"><b><?= e($w['worker_code']) ?></b></td>
           <td><?= e($w['worker_name']) ?></td>
           <td style="color:#5a6b82"><?= e($w['department'] ?: '—') ?></td>
+          <?php /* A stage that has since been renamed still reads correctly here
+                   because the allotment is held by id; a stage that was deleted
+                   outright is skipped rather than printed as a bare number. */ ?>
+          <td><?php $mine = $wsMap[$wid] ?? []; if (!$mine): ?>
+              <span class="zw-tag any">any stage</span>
+            <?php else: foreach ($mine as $sid): if (!isset($stageNm[$sid])) continue; ?>
+              <span class="zw-tag"><?= e($stageNm[$sid]) ?></span>
+            <?php endforeach; endif; ?></td>
           <td><?= $w['is_active'] ? '<span class="pill on">Active</span>' : '<span class="pill off">Inactive</span>' ?></td>
           <td class="num"><?= number_format($e2['n']) ?></td>
           <td class="num"><?= number_format($e2['amt'], 2) ?></td>
@@ -201,6 +282,26 @@ table.zp-t tbody tr:hover{background:#fafcff}
       <?php endforeach; ?>
       </tbody>
     </table>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($stages): ?>
+    <div class="note" style="margin-top:14px">
+      <b>The stage narrows the list on Daily Entry — it never blocks anybody.</b>
+      Book a job and the people allotted to that stage are offered first; everyone else is one click
+      away behind <b>show all</b>, and the entry saves normally. A filter that refused work which really
+      happened would be worse than no filter.
+      <?php if ($anyStage): ?>
+        <br><br><?= $anyStage === count($workers)
+          ? 'Nothing is allotted yet, so every list still shows all ' . count($workers) . ' — exactly as before. Tick stages on the people you are sure about and the lists shorten as you go.'
+          : '<b>' . $anyStage . '</b> of ' . count($workers) . ' have no stage ticked and are still offered everywhere.' ?>
+      <?php endif; ?>
+      <?php if ($stageCount): ?>
+        <br><br><?php $bits = [];
+          foreach ($stages as $s) { $sid = (int)$s['id'];
+            $bits[] = e($s['name']) . ' <b>' . (int)($stageCount[$sid] ?? 0) . '</b>'; }
+          echo 'On each stage: ' . implode(' &middot; ', $bits); ?>
+      <?php endif; ?>
     </div>
     <?php endif; ?>
 
