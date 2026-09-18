@@ -883,7 +883,16 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
 
 .zskin .ig-lbl{font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
   color:var(--fg-4) !important;margin-bottom:3px !important}
-.zskin .ig-grid{gap:8px !important}
+/* THE HEADER PACKS ITSELF NOW.
+   It was a fixed four columns, so eleven fields made three rows with an
+   empty cell left at the end — 203px of header before the first item
+   line. auto-fit lays out as many as the width allows and collapses the
+   tracks nothing lands in, which puts the same eleven fields in two rows
+   on a normal screen and keeps one column on a phone. Measured, both
+   ways, rather than assumed. */
+.zskin .ig-grid{gap:8px !important;
+  grid-template-columns:repeat(auto-fit,minmax(176px,1fr)) !important}
+@media(max-width:560px){.zskin .ig-grid{grid-template-columns:1fr !important}}
 
 /* header fields: still real form controls, just not oversized ones */
 .zskin .ig-inp{box-sizing:border-box;height:28px;padding:0 8px !important;border-radius:5px !important;
@@ -1340,7 +1349,9 @@ body:has(.zskin){background:var(--bg,#f6f7f8)}
   padding:11px 13px !important;margin-bottom:10px !important}
 .zskin .iss-lbl{font-size:10px !important;font-weight:600 !important;letter-spacing:.05em !important;
   color:var(--fg-4) !important;margin-bottom:3px !important}
-.zskin .iss-grid{gap:8px !important}
+.zskin .iss-grid{gap:8px !important;
+  grid-template-columns:repeat(auto-fit,minmax(176px,1fr)) !important}
+@media(max-width:560px){.zskin .iss-grid{grid-template-columns:1fr !important}}
 
 /* the tabs become a segmented control: one border, one accent, no tray */
 .zskin .iss-tabs{background:var(--sub) !important;border:1px solid var(--bd) !important;

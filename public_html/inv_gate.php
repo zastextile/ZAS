@@ -168,8 +168,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (($f['status'] ?? 'draft') === 'verified') {
             $real = 0;
             foreach ((array)($_POST['line'] ?? []) as $ln) {
-                if (inv_num($ln['qty'] ?? 0) > 0
-                    && ((int)($ln['material_id'] ?? 0) > 0 || (int)($ln['product_id'] ?? 0) > 0)) $real++;
+                [$vm, $vp] = inv_split_key((string)($ln['item_key'] ?? ''));
+                if ($vm <= 0 && $vp <= 0) { $vm = (int)($ln['material_id'] ?? 0); $vp = (int)($ln['product_id'] ?? 0); }
+                if (inv_num($ln['qty'] ?? 0) > 0 && ($vm > 0 || $vp > 0)) $real++;
             }
             if ($real === 0) {
                 $_SESSION['error'] = 'Add at least one item before marking this pass Verified. Save it as a Draft instead — a draft may be empty.';
@@ -207,14 +208,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                what keeps every pass ever saved before today reading
                exactly as it did — those rows are all NULL. */
             $ins = db()->prepare("INSERT INTO inv_gate_items
-                (gate_id,material_id,product_id,description,article,lot_no,qty,uom,rate,packing,ownership,sort_order,contract_id,contract_item_id,amount)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                (gate_id,material_id,product_id,size_label,description,article,lot_no,qty,uom,rate,packing,ownership,sort_order,contract_id,contract_item_id,amount)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             $own = $TYPES[$type]['own'];
             $n = 0;
             foreach ((array)($_POST['line'] ?? []) as $ln) {
                 $qty = inv_num($ln['qty'] ?? 0);
-                $mid = (int)($ln['material_id'] ?? 0);
-                $pid = (int)($ln['product_id'] ?? 0);
+                /* One box now picks from two tables, so the kind travels
+                   with the id as "m12" or "p7". The old material_id and
+                   product_id fields are still read as a fallback, because
+                   a form left open in a browser before this change would
+                   otherwise post a line that silently vanished. */
+                [$mid, $pid] = inv_split_key((string)($ln['item_key'] ?? ''));
+                if ($mid <= 0 && $pid <= 0) {
+                    $mid = (int)($ln['material_id'] ?? 0);
+                    $pid = (int)($ln['product_id'] ?? 0);
+                }
                 if ($qty <= 0 || ($mid <= 0 && $pid <= 0)) continue;
                 $rate = inv_num($ln['rate'] ?? 0);
                 /* A contract line without its contract, or a contract
@@ -225,6 +234,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($cLine && !$cHead) $cHead = inv_contract_of_line($cLine);
                 if (!$cHead) $cLine = null;
                 $ins->execute([$id, $mid ?: null, $pid ?: null,
+                    /* a size belongs to a finished product and to nothing
+                       else; storing one against a material would put a
+                       value in a column no material report reads */
+                    $pid > 0 ? (trim((string)($ln['size_label'] ?? '')) ?: null) : null,
                     trim((string)($ln['description'] ?? '')) ?: null,
                     trim((string)($ln['article'] ?? '')) ?: null,
                     trim((string)($ln['lot_no'] ?? '')) ?: null,
@@ -330,6 +343,13 @@ $showForm = $canEdit && ($isNew || ($doc && isset($_GET['edit']) && in_array($do
 $readOnly = $doc && in_array($doc['status'], ['posted','reversed'], true);
 
 $materials = ($showForm || $doc) ? inv_materials(true) : [];
+
+/* EVERY STOCKABLE THING — materials AND finished products, each with its
+   own balance per location. This is what the item picker is built from
+   now. It replaces two half-lists that could never meet: a materials-only
+   select, and a materials-only stock map. A finished product with a real
+   ledger balance was invisible to both. */
+$stockItems = ($showForm || $doc) ? inv_stock_items('own') : [];
 
 /* Balances for the item picker. Only an outward pass needs them — an
    inward pass can name anything, because receiving is what puts a thing
@@ -695,9 +715,22 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                      dropdown comes back and the screen still works. */ ?>
             <input class="ig-inp matq lovf" type="text" autocomplete="off" spellcheck="false"
                    data-lov="item" placeholder="click here — the list opens" style="display:none">
-            <select class="ig-inp matsel" name="line[<?= $i ?>][material_id]">
-              <option value="0">—</option>
-              <?php foreach ($materials as $m): ?><option value="<?= (int)$m['id'] ?>" data-uom="<?= e($m['uom']) ?>" data-rate="<?= e((string)$m['std_rate']) ?>" data-grp="<?= e($m['item_group'] ?? '') ?>" <?= (int)($L['material_id'] ?? 0) === (int)$m['id'] ? 'selected' : '' ?>><?= e($m['code']) ?> · <?= e($m['name']) ?></option><?php endforeach; ?>
+            <?php /* ONE LIST FOR EVERYTHING THAT CAN BE IN STOCK.
+                     It used to be materials only, so a finished product
+                     could be received, could sit in the ledger with a real
+                     balance, and could never be picked here — you could not
+                     sell it or move it. Raw material and finished goods are
+                     now the same list.
+
+                     The value carries the KIND with the id — "m12" or "p7"
+                     — because a material and a product can share an id and
+                     the save must never have to guess which table a number
+                     came from. */
+              $curKey = (int)($L['material_id'] ?? 0) > 0 ? 'm' . (int)$L['material_id']
+                      : ((int)($L['product_id'] ?? 0) > 0 ? 'p' . (int)$L['product_id'] : ''); ?>
+            <select class="ig-inp matsel" name="line[<?= $i ?>][item_key]">
+              <option value="">—</option>
+              <?php foreach ($stockItems as $m): ?><option value="<?= e($m['key']) ?>" data-uom="<?= e($m['uom']) ?>" data-rate="<?= e((string)$m['rate']) ?>" data-grp="<?= e($m['grp']) ?>" data-kind="<?= e($m['kind']) ?>" <?= $curKey === $m['key'] ? 'selected' : '' ?>><?= e($m['code']) ?> · <?= e($m['name']) ?></option><?php endforeach; ?>
             </select>
           </div></td>
           <?php
@@ -753,11 +786,17 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
                        placeholder="defaults to the item name"></div>
               <div><label class="ig-lbl">Packing</label>
                 <input class="ig-inp" name="line[<?= $i ?>][packing]" value="<?= e($L['packing'] ?? '') ?>"></div>
-              <div><label class="ig-lbl">…or finished product</label>
-                <select class="ig-inp" name="line[<?= $i ?>][product_id]">
-                  <option value="0">—</option>
-                  <?php foreach ($products as $pr): ?><option value="<?= (int)$pr['id'] ?>" <?= (int)($L['product_id'] ?? 0) === (int)$pr['id'] ? 'selected' : '' ?>><?= e($pr['name']) ?></option><?php endforeach; ?>
-                </select></div>
+              <?php /* The "…or finished product" dropdown that used to sit
+                       here is gone. It was the only way to put a finished
+                       item on a pass, and it was folded away where nobody
+                       found it — which is why finished goods never appeared
+                       in stock. Products are in the main item list now, so
+                       a second, hidden way to choose one would be two
+                       places to look and two places to get wrong. */ ?>
+              <div><label class="ig-lbl">Size — finished goods only</label>
+                <input class="ig-inp szl" name="line[<?= $i ?>][size_label]"
+                       value="<?= e($L['size_label'] ?? '') ?>"
+                       placeholder="only if the item is a finished product"></div>
               <?php /* contract_item_id used to be a hidden field down here,
                        set only by the "Pull lines from contract" button. It
                        has moved up into the Contract column, where it is
@@ -798,7 +837,6 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
 
     <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="ig-btn sec" id="addg">+ Add line</button>
-      <button type="button" class="ig-btn sec" id="pullC">Pull lines from contract</button>
       <button class="ig-btn" type="submit">Save pass</button>
       <a class="ig-btn sec" href="inv_gate.php?dir=<?= e($dir) ?>">Back to register</a>
       <span style="font-size:11.5px;color:#8a97ab">Saving does not move stock. Post it from the pass afterwards.</span>
@@ -806,27 +844,18 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   </form>
 </div>
 
-<!-- pull lines from the chosen contract -->
-<div id="cScrim" style="position:fixed;inset:0;background:rgba(8,14,24,.55);display:none;align-items:flex-start;justify-content:center;padding:26px 16px;overflow:auto;z-index:60">
-  <div class="ig-card" style="width:100%;max-width:980px;margin:0">
-    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
-      <div><h2 id="cTitle" style="font-size:15px;margin:0;font-weight:800">Lines on the contract</h2>
-        <p id="cSub" style="font-size:11.5px;color:#8a97ab;margin:3px 0 0"></p></div>
-      <button type="button" class="ig-btn sec" id="cClose">Close</button>
-    </div>
-    <div style="overflow-x:auto;margin-top:14px"><table class="ig-tbl">
-      <thead><tr><th style="width:32px"></th><th>Item</th><th>Description on the contract</th>
-        <th class="r">Contracted</th><th class="r">Done</th><th class="r">Balance</th>
-        <th class="r">Rate</th><th class="r" style="width:120px">Take now</th></tr></thead>
-      <tbody id="cBody"></tbody>
-    </table></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid #e3e9f2">
-      <button type="button" class="ig-btn sec" id="cCancel">Cancel</button>
-      <button type="button" class="ig-btn" id="cAdd">Add the ticked lines</button>
-    </div>
-  </div>
-</div>
+<?php /* THE "PULL LINES FROM CONTRACT" DIALOG IS GONE.
+         It existed because the contract lived on the pass HEADER: you
+         named one contract, opened a dialog, ticked its lines and they
+         were copied in. Now that every item line carries its own
+         contract, the dialog is a second way to do the same thing —
+         slower, and one that could only ever reach the single contract
+         named on the header.
 
+         Type the contract in the line's own Contract box instead: the
+         item, the unit, the agreed rate and the contract's own wording
+         come with it, and one pass can span as many contracts as the
+         truck did. */ ?>
 <link rel="stylesheet" href="assets/css/lov.css?v=2">
 <script src="assets/js/lov.js?v=2"></script>
 <script>
@@ -864,7 +893,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   document.getElementById('gstPct').addEventListener('input',tot);
 
   tb.addEventListener('change',function(e){
-    var s=e.target; if(s.tagName!=='SELECT'||s.name.indexOf('[material_id]')<0) return;
+    var s=e.target; if(s.tagName!=='SELECT'||s.name.indexOf('[item_key]')<0) return;
     var o=s.options[s.selectedIndex]; if(!o) return;
     var tr=s.closest('tr'), det=detailOf(tr);
     var u=tr.querySelector('.uom'), r=tr.querySelector('.rate');
@@ -875,7 +904,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
        Both stay editable — dashed, so you can see they were filled in. */
     if(u&&!u.value&&o.dataset.uom) u.value=o.dataset.uom;
     if(r&&!num(r.value)){
-      var it=itemById(o.value);
+      var it=itemByKey(o.value);
       var rt=it?rateFor(it):num(o.dataset.rate);
       if(rt>0) r.value=Number(rt).toFixed(4);
     }
@@ -955,107 +984,10 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     if(f) f.focus();
   });
 
-  /* ---- pull the lines from the contract -------------------------- */
-  var cSel=document.getElementById('cSel'), scrim=document.getElementById('cScrim'), CL=[];
-  function openPull(){
-    var id=cSel?+cSel.value:0;
-    if(!id){ alert('Choose the contract first, in the Contract box above.'); return; }
-    document.getElementById('cBody').innerHTML='<tr><td colspan="8" style="padding:22px;text-align:center;color:#8a97ab">Loading…</td></tr>';
-    scrim.style.display='flex';
-    fetch('inv_gate.php?ajax=contract&contract_id='+id).then(function(r){return r.json()}).then(function(d){
-      if(!d.ok){ document.getElementById('cBody').innerHTML='<tr><td colspan="8" style="padding:22px;text-align:center;color:#8a97ab">That contract could not be read.</td></tr>'; return; }
-      CL=d.lines||[];
-      document.getElementById('cTitle').textContent='Lines on '+(d.contract.contract_no||'');
-      var un=d.unassigned||{};
-      document.getElementById('cSub').innerHTML=
-        (CL.length? CL.length+' line(s). Balance counts only POSTED gate passes booked against each line.' : 'This contract has no lines.')
-        + (un.lines? ' <b style="color:#b45309">'+un.lines+' posted gate line(s) name this contract but no particular line ('
-            + Number(un.qty).toLocaleString()+' qty) — those are not counted in the balances below.</b>' : '');
-      if(d.contract.gst_applicable && !document.getElementById('gstOn').checked){
-        document.getElementById('gstOn').checked=true;
-        if(d.contract.gst_pct) document.getElementById('gstPct').value=d.contract.gst_pct;
-        tot();
-      }
-      renderC();
-    }).catch(function(){
-      document.getElementById('cBody').innerHTML='<tr><td colspan="8" style="padding:22px;text-align:center;color:#8a97ab">Could not reach the server.</td></tr>';
-    });
-  }
-  function renderC(){
-    var tbc=document.getElementById('cBody');
-    if(!CL.length){ tbc.innerHTML='<tr><td colspan="8" style="padding:22px;text-align:center;color:#8a97ab">No lines on this contract.</td></tr>'; return; }
-    tbc.innerHTML=CL.map(function(l,i){
-      var done=l.balance<=0.0005;
-      return '<tr'+(done?' style="opacity:.55"':'')+'>'
-        + '<td><input type="checkbox" class="cTick" data-i="'+i+'" '+(done?'disabled':'')+'></td>'
-        + '<td><b>'+l.item+'</b></td>'
-        + '<td style="color:#5a6b82">'+(l.description||'—')+'</td>'
-        + '<td class="r">'+Number(l.qty).toLocaleString('en-US',{maximumFractionDigits:3})+'</td>'
-        + '<td class="r">'+Number(l.done).toLocaleString('en-US',{maximumFractionDigits:3})+'</td>'
-        + '<td class="r" style="font-weight:700'+(l.over?';color:#c0293f':'')+'">'
-          + Number(l.balance).toLocaleString('en-US',{maximumFractionDigits:3})
-          + (l.over?'<div style="font-size:10px;font-weight:700">over-delivered</div>':'')+'</td>'
-        + '<td class="r">'+money(l.rate)+'</td>'
-        + '<td class="r"><input class="ig-inp cQty" data-i="'+i+'" style="width:100px;text-align:right" '
-          + (done?'disabled':'value="'+l.balance+'"')+'></td></tr>';
-    }).join('');
-  }
-  function addFromContract(){
-    var picked=[];
-    [].slice.call(document.querySelectorAll('.cTick')).forEach(function(cb){
-      if(!cb.checked) return;
-      var i=+cb.dataset.i, q=0;
-      var qi=document.querySelector('.cQty[data-i="'+i+'"]'); if(qi) q=num(qi.value);
-      if(q>0) picked.push({l:CL[i], qty:q});
-    });
-    if(!picked.length){ alert('Tick at least one line and give it a quantity.'); return; }
-    /* Drop a single empty starter line so the pulled lines are not
-       stranded below it. Both of its rows go — entry and detail. */
-    if(lines().length===1){
-      var first=lines()[0], m=first.querySelector('select[name*="[material_id]"]');
-      if(m && (!m.value||m.value==='0') && !num((first.querySelector('.qty')||{}).value)){
-        var fd=detailOf(first); if(fd) fd.remove();
-        first.remove();
-      }
-    }
-    picked.forEach(function(p){
-      var pair=blankRow(), tr=pair[0], det=pair[1];
-      var sel=tr.querySelector('select[name*="[material_id]"]');
-      if(sel && p.l.material_id){ sel.value=String(p.l.material_id); tr.dataset.item=String(p.l.material_id); }
-      var psel=det?det.querySelector('select[name*="[product_id]"]'):null;
-      if(psel && p.l.product_id) psel.value=String(p.l.product_id);
-      var set=function(root,cls,v){ if(!root) return; var el=root.querySelector(cls); if(el) el.value=v; };
-      // the contract's own wording and its agreed rate both win here —
-      // that is the whole point of pulling instead of typing
-      set(det,'.desc', p.l.description || p.l.item_name || '');
-      set(tr,'.qty', p.qty);
-      set(tr,'.uom', p.l.uom || '');
-      set(tr,'.rate', p.l.rate || '');
-      /* The hidden link used to live in the detail strip. It is in the
-         Contract column now, so the pull button writes it there — and
-         writes the contract beside the line, and shows the number, so a
-         pulled line and a line picked by hand end up identical. */
-      var ci=tr.querySelector('.citem'); if(ci) ci.value=p.l.id;
-      var cid=tr.querySelector('.cid'); if(cid) cid.value=(cSel?cSel.value:'')||'';
-      var cf=tr.querySelector('.cline');
-      if(cf){
-        var co=cSel&&cSel.selectedIndex>=0?cSel.options[cSel.selectedIndex]:null;
-        cf.value=co?String(co.text).split(' · ')[0]:'';
-        cf.classList.add('set');
-      }
-      if(det && (p.l.description || p.l.product_id)){
-        var w=det.querySelector('.dwrap'); if(w) w.style.display='';
-        var t=det.querySelector('.dtog'); if(t) t.textContent='▴ Description, packing, finished product · in use';
-      }
-      tb.appendChild(tr); if(det) tb.appendChild(det);
-    });
-    reindex(); syncAll(); tot(); clWarn(); refreshAll(); scrim.style.display='none';
-  }
-  var pb=document.getElementById('pullC'); if(pb) pb.addEventListener('click', openPull);
-  document.getElementById('cClose').onclick=function(){ scrim.style.display='none'; };
-  document.getElementById('cCancel').onclick=function(){ scrim.style.display='none'; };
-  document.getElementById('cAdd').onclick=addFromContract;
-  document.addEventListener('keydown',function(e){ if(e.key==='Escape') scrim.style.display='none'; });
+  /* The pull-from-contract dialog and everything that drove it were
+     removed with it — about a hundred lines of JavaScript that fetched a
+     contract, drew its lines in a modal and copied the ticked ones in.
+     The per-line Contract picker does the same job on the line itself. */
 
   /* ---- what is actually on hand ---------------------------------- */
   var IS_OUT = <?= $dir === 'out' ? 'true' : 'false' ?>;
@@ -1065,10 +997,23 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   function locId(){ var el = document.querySelector('select[name="location_id"]'); return el ? +el.value : 0; }
   function ownOf(){ var o = ts.options[ts.selectedIndex]; return (o && o.dataset.own === 'customer') ? 'customer' : 'own'; }
 
+  /* The two AJAX endpoints on this page are about MATERIAL lots and
+     material balances. A finished product has neither — it is counted by
+     size, not by roll — so these return the material id only, and 0 for a
+     product, which every caller treats as "nothing to ask about". */
+  function matIdOf(tr){
+    var sel = tr.querySelector('select[name*="[item_key]"]');
+    var k = sel ? String(sel.value || '') : '';
+    return (k && k.charAt(0) === 'm') ? parseInt(k.slice(1), 10) || 0 : 0;
+  }
+  function keyOfRow(tr){
+    var sel = tr.querySelector('select[name*="[item_key]"]');
+    return sel ? String(sel.value || '') : '';
+  }
+
   function loadOnHand(tr){
     if(!IS_OUT) return;
-    var sel = tr.querySelector('select[name*="[material_id]"]');
-    var mid = sel ? +sel.value : 0;
+    var mid = matIdOf(tr);
     if(!mid){ paintAvail(tr, null); return; }
     var key = mid + '|' + locId() + '|' + ownOf();
     if(ONHAND[key]){ paintAvail(tr, ONHAND[key]); return; }
@@ -1100,8 +1045,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     refreshRow(tr);
   }
   function availFor(tr){
-    var sel = tr.querySelector('select[name*="[material_id]"]');
-    var mid = sel ? +sel.value : 0; if(!mid) return null;
+    var mid = matIdOf(tr); if(!mid) return null;
     var d = ONHAND[mid + '|' + locId() + '|' + ownOf()]; if(!d) return null;
     var lot = (tr.querySelector('.lot') || {}).value || '';
     if(lot.trim() === '') return d.available;
@@ -1128,7 +1072,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       var av = availFor(tr); if(av === null) return;
       var want = num((tr.querySelector('.qty') || {}).value); if(want <= 0) return;
       var over = want - av; if(over <= 0.0005) return;
-      var sel = tr.querySelector('select[name*="[material_id]"]');
+      var sel = tr.querySelector('select[name*="[item_key]"]');
       var name = sel ? (sel.options[sel.selectedIndex].text || 'item') : 'item';
       var lim = Math.max(0, av) * TOL / 100;
       if(over > lim + 0.0005){ hard++; msgs.push('<b>' + name + '</b> — ' + q3(av) + ' here, taking ' + q3(over) + ' more (beyond ' + TOL + '%)'); }
@@ -1187,25 +1131,22 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      every other piece of script on this page reads — it is only hidden
      from view. If this script fails for any reason the plain dropdown
      comes back and the screen still works. */
-  var STOCK  = <?= json_encode($stockMap ?: new stdClass()) ?>;
-  var VALMAP = <?= json_encode($valueMap ?: new stdClass()) ?>;
-  var CSRF   = <?= json_encode(csrf_token()) ?>;
+  var CSRF = <?= json_encode(csrf_token()) ?>;
 
-  // built once from the select that is already on the page
-  var ITEMS = (function(){
-    var out = [], s = tb.querySelector('.matsel');
-    if(!s) return out;
-    [].slice.call(s.options).forEach(function(o){
-      if(!o.value || o.value === '0') return;
-      var txt = o.text || '', dot = txt.indexOf('·');
-      out.push({ id:o.value, text:txt,
-                 code: dot > 0 ? txt.slice(0, dot).trim() : txt,
-                 name: dot > 0 ? txt.slice(dot + 1).trim() : txt,
-                 grp: o.dataset.grp || '', uom: o.dataset.uom || '',
-                 rate: o.dataset.rate || 0 });
-    });
-    return out;
-  })();
+  /* EVERY STOCKABLE THING, WITH ITS BALANCE — materials and finished
+     products together, straight from inv_stock_items().
+
+     This used to be two half-lists that could not meet: a STOCK map of
+     material balances, and an ITEMS list scraped out of the <select>'s
+     option text. Finished products were in neither, so a product with a
+     real balance in the ledger simply did not exist as far as this screen
+     was concerned.
+
+     Each row carries its own bal[location] and val[location], so the
+     picker does not have to look anything up in a second structure that
+     might be keyed differently. bal[0] is the company-wide total. */
+  var ITEMS = <?= json_encode($stockItems ?: [], JSON_UNESCAPED_UNICODE) ?>;
+  var KINDN = {grey:'Grey', raw:'Raw', finished:'Finished', product:'Product', na:''};
 
   /* Which stock the picker is restricted to, for the type on screen.
 
@@ -1224,19 +1165,22 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     var d = HELD[holdKind() + '|' + pid];
     return d ? (d.items || {}) : null;
   }
-  function balOf(id){
+  function itemByKey(k){
+    for(var i = 0; i < ITEMS.length; i++) if(ITEMS[i].key === k) return ITEMS[i];
+    return null;
+  }
+  /* held[] is keyed by material id, because a job worker only ever holds
+     raw material — there is no such thing as sending a finished product
+     out for processing and getting it back as the same product. */
+  function balOf(it){
+    if(!it) return 0;
     if(pickMode() === 'atparty'){
-      var hi = heldItems(); if(!hi) return 0;
-      return hi[id] ? hi[id].qty : 0;
+      var hi = heldItems(); if(!hi || it.kind !== 'mat') return 0;
+      return hi[it.id] ? hi[it.id].qty : 0;
     }
-    var m = STOCK[id]; if(!m) return 0;
-    var l = locId();
+    var l = locId(), m = it.bal || {};
     var v = l > 0 ? m[l] : m[0];
     return v === undefined ? 0 : v;
-  }
-  function itemById(id){
-    for(var i = 0; i < ITEMS.length; i++) if(String(ITEMS[i].id) === String(id)) return ITEMS[i];
-    return null;
   }
 
   /* The rate this item should carry on THIS pass.
@@ -1248,15 +1192,15 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      answer. Asking the operator to type a number the system already knows
      is how wrong rates get into a ledger. */
   function rateFor(it){
+    if(!it) return 0;
     var mode = pickMode();
     if(mode === 'atparty'){
       var hi = heldItems();
-      if(hi && hi[it.id] && hi[it.id].qty > 0 && hi[it.id].value)
+      if(hi && it.kind === 'mat' && hi[it.id] && hi[it.id].qty > 0 && hi[it.id].value)
         return Math.round((hi[it.id].value / hi[it.id].qty) * 10000) / 10000;
     } else if(mode === 'here'){
-      var v = VALMAP[it.id], b = balOf(it.id);
-      var l = locId();
-      var val = v ? (l > 0 ? v[l] : v[0]) : undefined;
+      var l = locId(), v = it.val || {}, b = balOf(it);
+      var val = l > 0 ? v[l] : v[0];
       if(val !== undefined && b > 0.0005) return Math.round((val / b) * 10000) / 10000;
     }
     return num(it.rate);
@@ -1268,42 +1212,11 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      belongs HERE is only the two things this screen knows: which rows
      are valid, and what to do when one is taken. */
 
-  function itemById(id){
-    for(var i = 0; i < ITEMS.length; i++) if(String(ITEMS[i].id) === String(id)) return ITEMS[i];
-    return null;
-  }
-
-  /* The rate this item should carry on THIS pass.
-
-     Order of trust: what the stock is actually valued at where it is
-     standing, then what the party is holding it at, then the item's own
-     standard rate. A receipt has no stock to read yet, so it takes the
-     standard — the one case where the master rate is the right answer.
-     Asking the operator to type a number the system already knows is how
-     wrong rates get into a ledger. */
-  function rateFor(it){
-    var mode = pickMode();
-    if(mode === 'atparty'){
-      var hi = heldItems();
-      if(hi && hi[it.id] && hi[it.id].qty > 0 && hi[it.id].value)
-        return Math.round((hi[it.id].value / hi[it.id].qty) * 10000) / 10000;
-    } else if(mode === 'here'){
-      var v = VALMAP[it.id], b = balOf(it.id), l = locId();
-      var val = v ? (l > 0 ? v[l] : v[0]) : undefined;
-      if(val !== undefined && b > 0.0005) return Math.round((val / b) * 10000) / 10000;
-    }
-    return num(it.rate);
-  }
-
-  function locName(){
-    var s = document.querySelector('select[name="location_id"]');
-    return s && s.selectedIndex >= 0 ? s.options[s.selectedIndex].text : 'this location';
-  }
-  function partyName(){
-    if(!pSel || !+pSel.value) return '';
-    var o = pSel.options[pSel.selectedIndex];
-    return o ? String(o.text).split('   —   ')[0] : '';
-  }
+  /* itemById() and rateFor() were defined TWICE in this file — once
+     above and once here — and the second silently shadowed the first.
+     They were identical, so nothing was visibly wrong, but two copies of
+     a rule is one copy too many: the day somebody fixed the one they
+     found, the other would still be running. One copy, above. */
 
   /* Which items may be named, for the transaction type on screen.
      Code order, always. Quantity cannot be compared across units —
@@ -1315,7 +1228,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     ITEMS.forEach(function(it){
       var sc = LOV.score(q, it.code, it.name, it.grp);
       if(sc <= 0) return;
-      var b = mode === 'all' ? null : balOf(it.id);
+      var b = mode === 'all' ? null : balOf(it);
       if(mode !== 'all' && !(b > 0.0005)){ if(!showAll){ hidden++; return; } }
       out.push({ it:it, bal:b, sc:sc, rate:rateFor(it) });
     });
@@ -1330,7 +1243,8 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     cols: [
       { label:'Code',        w:'86px',            cls:'cd', get:function(r,q){ return LOV.hl(r.it.code, q); } },
       { label:'Description', w:'minmax(130px,1fr)',cls:'nm', get:function(r,q){ return LOV.hl(r.it.name, q); } },
-      { label:'Group',       w:'78px',            cls:'gg', get:function(r){ return LOV.esc(r.it.grp); } },
+      { label:'Kind',        w:'68px',            cls:'gg',
+        get:function(r){ return LOV.esc(KINDN[r.it.stage] || r.it.grp); } },
       { label:'Available',   w:'76px', align:'r', cls:'nu',
         style:function(r){ return 'font-weight:700;color:' + (r.bal === null ? '#8a97ab' : r.bal > 0 ? '#16a34a' : '#c0293f'); },
         get:function(r){ return r.bal === null ? '—' : LOV.q3(r.bal); } },
@@ -1358,11 +1272,27 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     revert: function(f){ var box = f.closest('.matbox'); if(box) sync(box); },
     pick: function(f, r){
       var tr = f.closest('tr'), sel = tr.querySelector('.matsel');
-      sel.value = r.it.id;
+      sel.value = r.it.key;
       f.value = r.it.code + ' · ' + r.it.name;
-      tr.dataset.item = r.it.id;
+      tr.dataset.item = r.it.key;
       sel.dispatchEvent(new Event('change', {bubbles:true}));   // fills uom, rate, description
       var lot = tr.querySelector('.lot'); if(lot) lot.value = '';
+      /* A FINISHED PRODUCT HAS A SIZE, NOT A LOT.
+         The lot box is meaningless on one, and the size box — folded away
+         on the detail strip — is the field that matters. So the strip is
+         opened and the size hinted, rather than leaving the operator to
+         find a field they have no reason to know about. */
+      var det = detailOf(tr);
+      if(r.it.kind === 'prod' && det){
+        if(lot){ lot.value = ''; lot.placeholder = 'not used on a finished product'; }
+        var sz = det.querySelector('.szl');
+        if(sz) sz.placeholder = (r.it.sizes && r.it.sizes.length) ? r.it.sizes.join(' / ') : 'size';
+        var w = det.querySelector('.dwrap'); if(w) w.style.display = '';
+        var t = det.querySelector('.dtog');
+        if(t && t.textContent.charAt(0) === '\u25be') t.textContent = '\u25b4' + t.textContent.slice(1);
+        det.classList.add('open');
+        if(sz){ sz.focus(); return; }
+      } else if(lot){ lot.placeholder = 'any lot'; }
       var q = tr.querySelector('.qty'); if(q) q.focus();
     }
   });
@@ -1407,8 +1337,12 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   });
 
   function lotsFor(field, done){
-    var tr = field.closest('tr'), sel = tr.querySelector('.matsel');
-    var mid = sel ? +sel.value : 0;
+    /* matIdOf() returns 0 for a finished product, and a product has no
+       lots to offer — it is counted by size. So the list is simply empty
+       there, rather than fetching lots for a material id that happens to
+       match a product id. */
+    var tr = field.closest('tr');
+    var mid = matIdOf(tr);
     if(!mid || pickMode() === 'all'){ done([]); return; }
     if(pickMode() === 'atparty'){
       var pid = pSel ? +pSel.value : 0;
@@ -1622,7 +1556,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     if(!sel || !q) return;
     sel.style.display = 'none';
     q.style.display = '';
-    q.value = (sel.value && sel.value !== '0' && sel.options[sel.selectedIndex])
+    q.value = (sel.value && sel.options[sel.selectedIndex])
             ? sel.options[sel.selectedIndex].text : '';
   }
   function syncAll(){ tb.querySelectorAll('.matbox').forEach(sync); }
@@ -1654,6 +1588,13 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
      to, in inv_gate_types(). The form now reads it. A Sale can only ever
      be against a sales contract; a Purchase return against a purchase
      contract; a Sample against nothing at all. */
+  /* cSel USED TO BE DECLARED INSIDE THE PULL-FROM-CONTRACT BLOCK.
+     Deleting that block took the declaration with it and left ten uses
+     below pointing at nothing — a ReferenceError that would have killed
+     the whole contract section of this form. It belongs here, with the
+     code that actually uses it, which is where it should have been all
+     along. */
+  var cSel  = document.getElementById('cSel');
   var pSel  = document.querySelector('select[name="party_id"]');
   var cHint = document.getElementById('cHint');
   var CONTRACTS = (function(){

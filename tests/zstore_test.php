@@ -66,13 +66,24 @@ $frag = substr($st, $a, $b - $a + strlen('</table></div>'));
 preg_match('/<style>(.*?)<\/style>/s', $st, $sm);
 $pageCss = $sm[1] ?? '';
 
-function renderStore(string $frag, string $type, array $lines): string {
+/* ONE fixture, used by the PHP render AND by the browser harness below.
+   They have to be the same list: the markup carries the item KEY in the
+   select, and the balance is looked up by that key. Two copies of this
+   drifting apart is how a test passes while the page is broken. */
+$FIXITEMS = [
+  ["key"=>"m1","kind"=>"mat","id"=>1,"code"=>"FAB-001","name"=>"Cotton greige 60s","grp"=>"Fabric","stage"=>"grey","uom"=>"MTR","rate"=>210.5,"bal"=>[0=>900,2=>900],"val"=>[0=>189450,2=>189450],"sizes"=>[]],
+  ["key"=>"m2","kind"=>"mat","id"=>2,"code"=>"BTN-014","name"=>"Button 4-hole","grp"=>"Accessories","stage"=>"na","uom"=>"PCS","rate"=>1.25,"bal"=>[0=>14000,3=>14000],"val"=>[0=>17500,3=>17500],"sizes"=>[]],
+  ["key"=>"p9","kind"=>"prod","id"=>9,"code"=>"PRD-9","name"=>"Duvet cover king","grp"=>"Finished goods","stage"=>"product","uom"=>"PCS","rate"=>0,"bal"=>[0=>60,3=>60],"val"=>[],"sizes"=>["King","Queen"]],
+];
+
+function renderStore(string $frag, string $type, array $lines, array $items): string {
     $tpl = '<?php
 function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
 function inv_balance(...$a){ return 0; }
 $type = ' . var_export($type, true) . ';
 $lines = ' . var_export($lines, true) . ';
 $D = ["from_location_id" => 2];
+$stockItems = ' . var_export($items, true) . ';
 $materials = [["id"=>1,"code"=>"FAB-001","name"=>"Cotton greige 60s","uom"=>"MTR","item_group"=>"Fabric"],
               ["id"=>2,"code"=>"BTN-014","name"=>"Button 4-hole","uom"=>"PCS","item_group"=>"Accessories"]];
 ?>' . $frag;
@@ -87,7 +98,7 @@ $fix = [
 ];
 $html = [];
 foreach (['issue', 'return'] as $t) {
-    $html[$t] = renderStore($frag, $t, $fix);
+    $html[$t] = renderStore($frag, $t, $fix, $FIXITEMS);
     ok(!str_contains($html[$t], 'Fatal') && !str_contains($html[$t], 'Warning'),
        "the $t grid renders clean: " . substr(trim($html[$t]), 0, 120));
 }
@@ -185,14 +196,27 @@ else {
 /* ------------------------------------------------------------------ */
 echo "5. The live balance, driven\n";
 
-/* The page's own JS, lifted, with the stock map replaced by a fixture.
-   Everything it reaches for that lives elsewhere is stubbed HERE. */
+/* The page's own JS, lifted, with only the item list replaced by the
+   fixture. Everything it reaches for that lives elsewhere is stubbed. */
 $ja = strpos($st, "var tb=document.querySelector('#slines tbody');");
 $jb = strpos($st, "  /* ---- the List of Values", $ja);
 $js = substr($st, $ja, $jb - $ja);
 $js = preg_replace('/<\?=.*?\?>/s', 'true', $js);   // IS_ISSUE
 ok(!str_contains($js, '<?'), 'the paint routine lifted with no PHP left in it');
 ok(str_contains($js, 'cell.classList.toggle'), '  and it is the one that paints the balance');
+
+/* THE LOOKUP IS LIFTED TOO, NOT REBUILT. It used to be stubbed here as a
+   materials-only map keyed by material id — which is exactly the shape
+   the page has stopped using, so the stub would have gone on passing
+   while the real balOf read a key it was never given. */
+$ka = strpos($st, '  var ITEMS = ');
+$kb = strpos($st, "  LOV.register('smat'", $ka);
+$lookup = substr($st, $ka, $kb - $ka);
+$lookup = preg_replace('/<\?=\s*json_encode\(\$stockItems.*?\?>/s',
+                       json_encode($FIXITEMS), $lookup);
+ok(!str_contains($lookup, '<?'), 'the lookup lifted with no PHP left in it');
+ok(str_contains($lookup, 'function balOf(k)'), '  and it is the real balOf, keyed by item');
+ok(str_contains($lookup, 'function itemByKey(k)'), '  with the key-to-item lookup beside it');
 
 $harness = '<!doctype html><html><head><meta charset="utf-8">'
   . '<style>' . file_get_contents($B . 'assets/css/app.css') . '</style>'
@@ -203,12 +227,9 @@ $harness = '<!doctype html><html><head><meta charset="utf-8">'
   . '<div class="zskin">' . $html['issue']
   . '<div id="sWarn" class="iss-note warn" style="display:none"></div></div>'
   . '<scr' . 'ipt>'
-  . 'var STOCK = {"1":{"0":900,"2":900,"3":0},"2":{"0":14000,"2":0,"3":14000}};'
-  . 'function fromLoc(){ var s=document.querySelector(\'select[name="from_location_id"]\'); return s?+s.value:0; }'
-  . 'function fromName(){ var s=document.querySelector(\'select[name="from_location_id"]\');'
-  . '  return s&&s.selectedIndex>=0 ? s.options[s.selectedIndex].text : "that location"; }'
-  . 'function balOf(id){ var m=STOCK[id]; if(!m) return 0; var l=fromLoc(), v=l>0?m[l]:m[0]; return v===undefined?0:v; }'
-  . '(function(){' . $js . 'window.TOT = tot; tot();})();'
+  . 'var LOV = { register:function(){}, hl:function(s){return s;}, esc:function(s){return s;},'
+  . '            q3:function(n){return n;}, score:function(){return 1;} };'
+  . '(function(){' . $js . $lookup . 'window.TOT = tot; tot();})();'
   . '</scr' . 'ipt></body></html>';
 file_put_contents($work . '/live.html', $harness);
 

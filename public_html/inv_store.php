@@ -73,13 +73,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $id = (int)db()->lastInsertId();
             }
             db()->prepare("DELETE FROM inv_store_move_items WHERE move_id=?")->execute([$id]);
-            $ins = db()->prepare("INSERT INTO inv_store_move_items (move_id,material_id,product_id,lot_no,qty,uom,condition_note,ownership) VALUES (?,?,?,?,?,?,?,?)");
+            $ins = db()->prepare("INSERT INTO inv_store_move_items (move_id,material_id,product_id,size_label,lot_no,qty,uom,condition_note,ownership) VALUES (?,?,?,?,?,?,?,?,?)");
             $n = 0;
             foreach ((array)($_POST['line'] ?? []) as $ln) {
                 $qty = inv_num($ln['qty'] ?? 0);
-                $mid = (int)($ln['material_id'] ?? 0);
-                if ($qty <= 0 || $mid <= 0) continue;
-                $ins->execute([$id, $mid, null, trim((string)($ln['lot_no'] ?? '')) ?: null, $qty,
+                /* PRODUCTS COULD NEVER BE ISSUED. This loop read
+                   material_id only and passed a hard null for product_id,
+                   so a finished item could not be moved between floors at
+                   all — the column existed and nothing ever filled it.
+                   One key now carries the kind with the id. */
+                [$mid, $pid] = inv_split_key((string)($ln['item_key'] ?? ''));
+                if ($mid <= 0 && $pid <= 0) $mid = (int)($ln['material_id'] ?? 0);
+                if ($qty <= 0 || ($mid <= 0 && $pid <= 0)) continue;
+                $ins->execute([$id, $mid ?: null, $pid ?: null,
+                    $pid > 0 ? (trim((string)($ln['size_label'] ?? '')) ?: null) : null,
+                    trim((string)($ln['lot_no'] ?? '')) ?: null, $qty,
                     trim((string)($ln['uom'] ?? '')) ?: null,
                     trim((string)($ln['condition_note'] ?? '')) ?: null,
                     ($ln['ownership'] ?? 'own') === 'customer' ? 'customer' : 'own']);
@@ -123,8 +131,14 @@ if (!empty($_GET['id'])) {
         $s->execute([(int)$_GET['id']]); $doc = $s->fetch() ?: null;
         if ($doc) {
             $type = $doc['move_type'];
-            $s2 = db()->prepare("SELECT i.*, mt.code mcode, mt.name mname FROM inv_store_move_items i
-                LEFT JOIN inv_materials mt ON mt.id=i.material_id WHERE i.move_id=? ORDER BY i.id");
+            /* a product line would have shown a blank name: this table
+               joined materials only, and nothing ever filled product_id
+               before today */
+            $s2 = db()->prepare("SELECT i.*, mt.code mcode, mt.name mname, pr.name pname
+                FROM inv_store_move_items i
+                LEFT JOIN inv_materials mt ON mt.id=i.material_id
+                LEFT JOIN products pr ON pr.id=i.product_id
+                WHERE i.move_id=? ORDER BY i.id");
             $s2->execute([(int)$doc['id']]); $lines = $s2->fetchAll();
         }
     } catch (Throwable $e) {}
@@ -135,6 +149,10 @@ $isNew = isset($_GET['new']);
 $showForm = $canEdit && ($isNew || ($doc && isset($_GET['edit']) && $doc['status'] === 'draft'));
 
 $materials = ($showForm || $doc) ? inv_materials(true) : [];
+/* Materials AND finished products, each with its balance per location.
+   The old list was materials only, which is why finished goods showed no
+   stock here either. */
+$stockItems = ($showForm || $doc) ? inv_stock_items('own') : [];
 $locations = inv_locations(true);
 $proformas = [];
 $openIssues = [];
@@ -329,9 +347,11 @@ flash();
                      there. */ ?>
             <input class="iss-inp matq" type="text" autocomplete="off" spellcheck="false"
                    data-lov="smat" placeholder="click here — the list opens" style="display:none">
-            <select class="iss-inp mat" name="line[<?= $i ?>][material_id]">
-              <option value="0">— select —</option>
-              <?php foreach ($materials as $m): ?><option value="<?= (int)$m['id'] ?>" data-uom="<?= e($m['uom']) ?>" data-grp="<?= e($m['item_group'] ?? '') ?>" <?= (int)($L['material_id'] ?? 0) === (int)$m['id'] ? 'selected' : '' ?>><?= e($m['code']) ?> · <?= e($m['name']) ?></option><?php endforeach; ?>
+            <?php $curKey = (int)($L['material_id'] ?? 0) > 0 ? 'm' . (int)$L['material_id']
+                          : ((int)($L['product_id'] ?? 0) > 0 ? 'p' . (int)$L['product_id'] : ''); ?>
+            <select class="iss-inp mat" name="line[<?= $i ?>][item_key]">
+              <option value="">— select —</option>
+              <?php foreach ($stockItems as $m): ?><option value="<?= e($m['key']) ?>" data-uom="<?= e($m['uom']) ?>" data-grp="<?= e($m['grp']) ?>" data-kind="<?= e($m['kind']) ?>" <?= $curKey === $m['key'] ? 'selected' : '' ?>><?= e($m['code']) ?> · <?= e($m['name']) ?></option><?php endforeach; ?>
             </select>
           </div></td>
           <td><input class="iss-inp" name="line[<?= $i ?>][lot_no]" value="<?= e($L['lot_no'] ?? '') ?>" style="font-family:monospace"></td>
@@ -401,7 +421,7 @@ flash();
       t+=q;
       var sel=tr.querySelector('select.mat'), id=sel?sel.value:'';
       var cell=tr.querySelector('.bal'); if(!cell) return;
-      if(!id||id==='0'){ cell.textContent='—'; cell.classList.remove('short'); return; }
+      if(!id){ cell.textContent='—'; cell.classList.remove('short'); return; }
       var b=balOf(id);
       cell.textContent=q3(b);
       /* A return ADDS to the source floor, so it can never overdraw it.
@@ -447,31 +467,34 @@ flash();
      store movement never creates or destroys stock, it only changes
      where stock is, so the only question the list has to answer is
      "what is at the place it is leaving". */
-  var STOCK = <?= json_encode(($showForm ? inv_stock_map('own') : []) ?: new stdClass()) ?>;
-  var ITEMS = (function(){
-    var out=[], s=tb.querySelector('select.mat');
-    if(!s) return out;
-    [].slice.call(s.options).forEach(function(o){
-      if(!o.value||o.value==='0') return;
-      var t=o.text||'', d=t.indexOf('·');
-      out.push({ id:o.value, code:d>0?t.slice(0,d).trim():t, name:d>0?t.slice(d+1).trim():t,
-                 grp:o.dataset.grp||'', uom:o.dataset.uom||'' });
-    });
-    return out;
-  })();
+  /* MATERIALS AND FINISHED PRODUCTS, each carrying its own balance per
+     location. This used to be a materials-only stock map plus a list
+     scraped out of the select's option text, so a finished product with a
+     real balance in the ledger could not be issued or even seen. */
+  var ITEMS = <?= json_encode($stockItems ?: [], JSON_UNESCAPED_UNICODE) ?>;
+  var KINDN = {grey:'Grey', raw:'Raw', finished:'Finished', product:'Product', na:''};
+  function itemByKey(k){
+    for(var i=0;i<ITEMS.length;i++) if(ITEMS[i].key===k) return ITEMS[i];
+    return null;
+  }
   function fromLoc(){ var s=document.querySelector('select[name="from_location_id"]'); return s?+s.value:0; }
   function fromName(){
     var s=document.querySelector('select[name="from_location_id"]');
     return s&&s.selectedIndex>=0 ? s.options[s.selectedIndex].text : 'that location';
   }
-  function balOf(id){ var m=STOCK[id]; if(!m) return 0;
-    var l=fromLoc(), v=l>0?m[l]:m[0]; return v===undefined?0:v; }
+  function balOf(k){
+    var it = (typeof k === 'string' || typeof k === 'number') ? itemByKey(String(k)) : k;
+    if(!it) return 0;
+    var l=fromLoc(), m=it.bal||{}, v=l>0?m[l]:m[0];
+    return v===undefined?0:v;
+  }
 
   LOV.register('smat',{
     cols:[
       {label:'Code',        w:'86px',             cls:'cd', get:function(r,q){return LOV.hl(r.it.code,q);}},
       {label:'Description', w:'minmax(140px,1fr)',cls:'nm', get:function(r,q){return LOV.hl(r.it.name,q);}},
-      {label:'Group',       w:'82px',             cls:'gg', get:function(r){return LOV.esc(r.it.grp);}},
+      {label:'Kind',        w:'70px',             cls:'gg',
+        get:function(r){return LOV.esc(KINDN[r.it.stage]||r.it.grp);}},
       {label:'At '+'source',w:'80px', align:'r',  cls:'nu',
         style:function(r){return 'font-weight:700;color:'+(r.bal>0?'#16a34a':'#c0293f');},
         get:function(r){return LOV.q3(r.bal);}},
@@ -486,7 +509,7 @@ flash();
       var out=[], hidden=0;
       ITEMS.forEach(function(it){
         var sc=LOV.score(q,it.code,it.name,it.grp); if(sc<=0) return;
-        var b=balOf(it.id);
+        var b=balOf(it);
         if(!(b>0.0005)){ if(!showAll){ hidden++; return; } }
         out.push({it:it,bal:b,sc:sc});
       });
@@ -496,7 +519,7 @@ flash();
     revert:function(f){ var box=f.closest('.matbox'); if(box) sync(box); },
     pick:function(f,r){
       var tr=f.closest('tr'), sel=tr.querySelector('select.mat');
-      sel.value=r.it.id; f.value=r.it.code+' · '+r.it.name;
+      sel.value=r.it.key; f.value=r.it.code+' · '+r.it.name;
       sel.dispatchEvent(new Event('change',{bubbles:true}));
       var q=tr.querySelector('.qty'); if(q) q.focus();
     }
@@ -505,7 +528,7 @@ flash();
     var sel=box.querySelector('select.mat'), q=box.querySelector('.matq');
     if(!sel||!q) return;
     sel.style.display='none'; q.style.display='';
-    q.value=(sel.value&&sel.value!=='0'&&sel.options[sel.selectedIndex])
+    q.value=(sel.value&&sel.options[sel.selectedIndex])
           ? sel.options[sel.selectedIndex].text : '';
   }
   function syncAll(){ tb.querySelectorAll('.matbox').forEach(sync); }
@@ -566,7 +589,11 @@ flash();
     <thead><tr><th>Material</th><th>Lot</th><th class="r">Quantity</th><th>UOM</th><th>Condition</th></tr></thead>
     <tbody>
     <?php $t = 0; foreach ($lines as $L): $t += (float)$L['qty']; ?>
-      <tr><td style="font-weight:600"><?= e($L['mcode']) ?> · <?= e($L['mname']) ?></td>
+      <?php /* a product line has no material code, so it shows its own
+               name rather than " · " with nothing either side of it */ ?>
+      <tr><td style="font-weight:600"><?= e((int)($L['material_id'] ?? 0) > 0
+            ? trim(($L['mcode'] ?? '') . ' · ' . ($L['mname'] ?? ''))
+            : ($L['pname'] ?: '—')) ?><?= !empty($L['size_label']) ? ' · ' . e($L['size_label']) : '' ?></td>
         <td style="font-family:monospace"><?= e($L['lot_no'] ?: '—') ?></td>
         <td class="r"><b><?= number_format((float)$L['qty'], 3) ?></b></td>
         <td style="font-family:monospace"><?= e($L['uom'] ?: '') ?></td>

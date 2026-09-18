@@ -373,6 +373,11 @@ function inv_ensure_schema(): void {
      * line written before this column existed needs — so the balance queries
      * below fall back to g.contract_id and old documents keep reporting the
      * numbers they always did. */
+    /* A finished product is stocked by SIZE — the ledger has always had a
+       size_label column, but a gate line had nowhere to put one, so a
+       product could only ever be received without its size. */
+    try { db()->exec("ALTER TABLE inv_gate_items ADD COLUMN size_label VARCHAR(80) NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    try { db()->exec("ALTER TABLE inv_store_move_items ADD COLUMN size_label VARCHAR(80) NULL DEFAULT NULL"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE inv_gate_items ADD COLUMN contract_id INT NULL DEFAULT NULL"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE inv_gate_items ADD INDEX idx_gi_contract (contract_id)"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE inv_gate_items ADD INDEX idx_citem (contract_item_id)"); } catch (Throwable $e) {}
@@ -1374,6 +1379,98 @@ function inv_stock_maps(string $ownership = 'own'): array {
     return ['qty' => $qty, 'val' => $val];
 }
 
+/* EVERYTHING THAT CAN BE IN STOCK, WITH ITS BALANCE — materials AND
+   finished products, in one list.
+ *
+ * WHY THIS HAD TO EXIST.
+ * inv_stock_maps() above carries "AND material_id IS NOT NULL". It was
+ * written when only raw material was tracked, and every item picker in
+ * the app was built on it — so a finished product could be RECEIVED into
+ * stock, could sit in the ledger with a real balance, and was invisible
+ * to every screen that asks "what is in stock". You could not sell it,
+ * issue it, or see it. That is the bug behind "stock not showing".
+ *
+ * inv_stock_maps() is left exactly as it is, because a dozen callers
+ * depend on its shape [material_id => [location => qty]]. This is a new,
+ * wider reader: one row per stockable thing, keyed "m<id>" or "p<id>" so
+ * a material and a product can never be confused for one another by an
+ * id that happens to match.
+ *
+ * bal[0] is the company-wide total; bal[<location>] is that floor.
+ */
+function inv_stock_items(string $ownership = 'own', bool $activeOnly = true): array {
+    $own = $ownership === 'customer' ? 'customer' : 'own';
+    $bal = []; $val = [];
+    try {
+        $st = db()->prepare("SELECT material_id, product_id, location_id,
+                COALESCE(SUM(qty_in),0)-COALESCE(SUM(qty_out),0) bal,
+                COALESCE(SUM(value_amount),0) val
+            FROM inv_stock_ledger
+            WHERE ownership = ? AND (material_id IS NOT NULL OR product_id IS NOT NULL)
+            GROUP BY material_id, product_id, location_id");
+        $st->execute([$own]);
+        foreach ($st->fetchAll() as $r) {
+            $b = round((float)$r['bal'], 3);
+            if (abs($b) < 0.0005) continue;
+            $k = $r['material_id'] !== null ? 'm' . (int)$r['material_id'] : 'p' . (int)$r['product_id'];
+            $l = (int)$r['location_id']; $v = round((float)$r['val'], 2);
+            $bal[$k][$l] = round(($bal[$k][$l] ?? 0) + $b, 3);
+            $bal[$k][0]  = round(($bal[$k][0]  ?? 0) + $b, 3);
+            $val[$k][$l] = round(($val[$k][$l] ?? 0) + $v, 2);
+            $val[$k][0]  = round(($val[$k][0]  ?? 0) + $v, 2);
+        }
+    } catch (Throwable $e) {}
+
+    $out = [];
+    try {
+        $w = $activeOnly ? 'WHERE is_active=1' : '';
+        foreach (db()->query("SELECT id, code, name, item_group, stage, uom, std_rate
+                                FROM inv_materials $w ORDER BY code")->fetchAll() as $m) {
+            $k = 'm' . (int)$m['id'];
+            $out[] = [
+                'key' => $k, 'kind' => 'mat', 'id' => (int)$m['id'],
+                'code' => (string)$m['code'], 'name' => (string)$m['name'],
+                'grp'  => (string)$m['item_group'], 'stage' => (string)$m['stage'],
+                'uom'  => (string)$m['uom'], 'rate' => (float)$m['std_rate'],
+                'bal'  => $bal[$k] ?? [], 'val' => $val[$k] ?? [], 'sizes' => [],
+            ];
+        }
+    } catch (Throwable $e) {}
+    try {
+        $w = $activeOnly ? 'WHERE is_active=1' : '';
+        foreach (db()->query("SELECT id, name FROM products $w ORDER BY name LIMIT 900")->fetchAll() as $p) {
+            $k = 'p' . (int)$p['id'];
+            $out[] = [
+                'key' => $k, 'kind' => 'prod', 'id' => (int)$p['id'],
+                /* products have no code column of their own, so the id is
+                   shown — an operator searching "PRD-9" finds it, and it
+                   is never mistaken for a material code */
+                'code' => 'PRD-' . (int)$p['id'], 'name' => (string)$p['name'],
+                'grp'  => 'Finished goods', 'stage' => 'product',
+                'uom'  => 'PCS', 'rate' => 0.0,
+                'bal'  => $bal[$k] ?? [], 'val' => $val[$k] ?? [],
+                'sizes' => function_exists('inv_product_sizes') ? inv_product_sizes((int)$p['id']) : [],
+            ];
+        }
+    } catch (Throwable $e) {}
+    return $out;
+}
+
+/* Split an "m12" / "p7" key back into ids. One box picks from two
+   tables, so the kind travels WITH the id rather than being guessed at
+   from which of two fields happens to be filled in. */
+function inv_split_key(string $key): array {
+    $key = trim($key);
+    if ($key === '') return [0, 0];
+    $n = (int)substr($key, 1);
+    if ($n <= 0) return [0, 0];
+    if ($key[0] === 'm') return [$n, 0];
+    if ($key[0] === 'p') return [0, $n];
+    /* a bare number is an old material id — forms saved before the key
+       existed must not silently lose their item */
+    return ctype_digit($key) ? [(int)$key, 0] : [0, 0];
+}
+
 /* WHO is holding our goods — derived, not stored.
 
    The obvious way to answer "what is Shaheen holding?" is a party column
@@ -1764,6 +1861,10 @@ function inv_gate_post(int $gateId): array {
                 'txn_date'    => $g['gate_date'],
                 'material_id' => $it['material_id'] ?: null,
                 'product_id'  => $it['product_id'] ?: null,
+                /* a finished product is stocked by size, and the gate line
+                   can now carry one — without this it would be dropped on
+                   the way to the ledger */
+                'size_label'  => $it['size_label'] ?? null,
                 'lot_no'      => $it['lot_no'] ?: null,
                 'rate'        => (float)$it['rate'],
                 'ownership'   => $T['own'],
@@ -2251,6 +2352,10 @@ function inv_store_post(int $moveId): array {
             $base = [
                 'txn_date' => $m['move_date'],
                 'material_id' => $it['material_id'] ?: null, 'product_id' => $it['product_id'] ?: null,
+                /* a finished product is stocked by size; without this the
+                   size was dropped on the way to the ledger and the two
+                   halves of the same balance would never meet */
+                'size_label' => $it['size_label'] ?? null,
                 'lot_no' => $it['lot_no'] ?: null, 'ownership' => $it['ownership'],
                 'source_type' => 'store', 'source_id' => $moveId, 'source_item_id' => (int)$it['id'],
                 'source_no' => $m['move_no'], 'proforma_id' => $m['proforma_id'] ?: null,

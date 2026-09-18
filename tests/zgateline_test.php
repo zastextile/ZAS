@@ -91,6 +91,11 @@ function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
 $dir = ' . var_export($dir, true) . ';
 $lines = ' . var_export($lines, true) . ';
 $doc = ' . var_export($doc, true) . ';
+$stockItems = [
+  ["key"=>"m1","kind"=>"mat","id"=>1,"code"=>"FAB-001","name"=>"Cotton greige 60s","grp"=>"Fabric","stage"=>"grey","uom"=>"MTR","rate"=>210.5,"bal"=>[0=>900,2=>900],"val"=>[0=>189450,2=>189450],"sizes"=>[]],
+  ["key"=>"m2","kind"=>"mat","id"=>2,"code"=>"BTN-014","name"=>"Button 4-hole","grp"=>"Accessories","stage"=>"na","uom"=>"PCS","rate"=>1.25,"bal"=>[0=>14000,3=>14000],"val"=>[0=>17500,3=>17500],"sizes"=>[]],
+  ["key"=>"p9","kind"=>"prod","id"=>9,"code"=>"PRD-9","name"=>"Duvet cover king","grp"=>"Finished goods","stage"=>"product","uom"=>"PCS","rate"=>0,"bal"=>[0=>60,3=>60],"val"=>[],"sizes"=>["King","Queen"]],
+];
 $materials = [["id"=>1,"code"=>"FAB-001","name"=>"Cotton greige 60s","uom"=>"MTR","std_rate"=>210.5,"item_group"=>"Fabric"],
               ["id"=>2,"code"=>"BTN-014","name"=>"Button 4-hole","uom"=>"PCS","std_rate"=>1.25,"item_group"=>"Trim"]];
 $products = [["id"=>7,"name"=>"Duvet cover king"]];
