@@ -679,7 +679,15 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
         <?php if ($moreFilled): ?><span style="color:#0b5f8a;font-weight:800">· in use</span><?php endif; ?>
       </button>
       <div id="moreWrap" class="ig-grid" style="margin-top:12px;<?= $moreFilled ? '' : 'display:none' ?>">
-        <div><label class="ig-lbl">Department</label><input class="ig-inp" name="department" value="<?= e($D['department'] ?? '') ?>"></div>
+        <div><label class="ig-lbl">Department</label><?php /* PICKED, NOT TYPED. inv_departments() is the master list when one
+         exists and falls back to what documents have already used while
+         it is empty, so this box narrows to one spelling per department
+         the moment Inventory Setup is filled in — and changes nothing
+         before that. Still an input, not a select: a department that was
+         retired years ago is still on old documents being edited. */
+         $deptOpts = inv_departments(); ?>
+<input class="ig-inp" name="department" list="gateDepts" autocomplete="off" value="<?= e($D['department'] ?? '') ?>">
+        <datalist id="gateDepts"><?php foreach ($deptOpts as $d): ?><option value="<?= e($d) ?>"><?php endforeach; ?></datalist></div>
         <div style="grid-column:span 2"><label class="ig-lbl">Purpose</label><input class="ig-inp" name="purpose" value="<?= e($D['purpose'] ?? '') ?>"></div>
         <div><label class="ig-lbl">Quality / qty verified by</label><input class="ig-inp" name="verified_by" value="<?= e($D['verified_by'] ?? '') ?>"></div>
         <div><label class="ig-lbl">Security check</label><input class="ig-inp" name="security_by" value="<?= e($D['security_by'] ?? '') ?>"></div>
@@ -1385,25 +1393,36 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   });
 
   function lotsFor(field, done){
-    /* matIdOf() returns 0 for a finished product, and a product has no
-       lots to offer — it is counted by size. So the list is simply empty
-       there, rather than fetching lots for a material id that happens to
-       match a product id. */
+    /* THIS WAS LEFT ASKING BY MATERIAL ID AFTER THE REST MOVED TO KEYS,
+       and the two faults it caused were separate. A finished product got an
+       EMPTY list, because matIdOf() returns 0 on one — so the box that is
+       meant to offer its sizes offered nothing. And it cached what it did
+       fetch under "<mid>|loc|own" while loadOnHand() had moved to
+       "<itemkey>|loc|own", so the two never shared a cache and each kept
+       re-fetching what the other had already answered.
+
+       A product is split by SIZE, and the server returns those sizes in the
+       same field a material's lots come back in — so one code path serves
+       both and there is nothing here to special-case. */
     var tr = field.closest('tr');
-    var mid = matIdOf(tr);
-    if(!mid || pickMode() === 'all'){ done([]); return; }
+    var ik = keyOfRow(tr);
+    if(!ik || pickMode() === 'all'){ done([]); return; }
     if(pickMode() === 'atparty'){
       var pid = pSel ? +pSel.value : 0;
-      if(!pid){ done([]); return; }
+      var mid = matIdOf(tr);
+      /* What a party is HOLDING is still a materials-only question — job
+         work goes out as cloth, not as finished sets — so a product has
+         nothing to offer here and says so instead of asking. */
+      if(!pid || !mid){ done([]); return; }
       fetch('inv_gate.php?ajax=held&party_id=' + pid + '&kind=' + holdKind() + '&material_id=' + mid)
         .then(function(r){ return r.json(); })
         .then(function(d){ done((d && d.ok && d.lots) ? d.lots : []); })
         .catch(function(){ done([]); });
       return;
     }
-    var key = mid + '|' + locId() + '|' + ownOf(), d = ONHAND[key];
+    var key = ik + '|' + locId() + '|' + ownOf(), d = ONHAND[key];
     if(d){ done(d.lots || []); return; }
-    fetch('inv_gate.php?ajax=onhand&material_id=' + mid + '&location_id=' + locId() + '&own=' + ownOf())
+    fetch('inv_gate.php?ajax=onhand&item_key=' + encodeURIComponent(ik) + '&location_id=' + locId() + '&own=' + ownOf())
       .then(function(r){ return r.json(); })
       .then(function(dd){
         if(dd && dd.ok){ ONHAND[key] = dd; TOL = dd.tolerance_pct || 10; ISADMIN = !!dd.is_admin; }
@@ -1573,15 +1592,37 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
          it — that is the point of naming the contract rather than typing
          the line again. Anything already filled in by hand is left alone;
          the operator's typing outranks a default. */
+      /* THIS IS WHAT STOPPED A CONTRACT LINE FILLING ANYTHING IN.
+         It set the item select to a bare material id — "12" — from back when
+         that select held material ids. It holds ITEM KEYS now, "m12" or
+         "p7", so assigning "12" matched no option at all and the select was
+         left empty: pick a contract line, and the item, the unit and the
+         rate all stayed blank. Worse on a sale contract for a finished
+         product, where only material_id was ever looked at, so a product
+         line could not fill anything even in principle.
+
+         The key is built the same way inv_stock_items() builds it, so the
+         two cannot disagree about what a row is called. */
+      var key = l.material_id ? ('m' + l.material_id)
+              : (l.product_id ? ('p' + l.product_id) : '');
       var sel = tr.querySelector('.matsel');
-      if(sel && l.material_id && (!sel.value || sel.value === '0')){
-        sel.value = String(l.material_id);
-        tr.dataset.item = String(l.material_id);
-        sel.dispatchEvent(new Event('change', {bubbles:true}));
-        syncAll();
+      if(sel && key && !sel.value){
+        sel.value = key;
+        /* A CONTRACT CAN NAME SOMETHING THE STOCK LIST DOES NOT OFFER — an
+           item made inactive, or a product with nothing in the ledger yet.
+           Assigning a value no <option> carries leaves the select empty and
+           silently drops the line, so it is checked rather than assumed. */
+        if(sel.value === key){
+          tr.dataset.item = key;
+          sel.dispatchEvent(new Event('change', {bubbles:true}));
+          syncAll();
+        } else {
+          var qbox = tr.querySelector('.matq');
+          if(qbox) qbox.value = l.item || l.description || '';
+          CLMSG = 'That contract line names an item that is not on the stock list — '
+                + 'pick the item by hand, or switch it back on in Inventory Setup.';
+        }
       }
-      var ps = det ? det.querySelector('select[name*="[product_id]"]') : null;
-      if(ps && l.product_id && (!ps.value || ps.value === '0')) ps.value = String(l.product_id);
       var u = tr.querySelector('.uom'); if(u && !u.value && l.uom) u.value = l.uom;
       var rt = tr.querySelector('.rate'); if(rt && !num(rt.value) && l.rate > 0) rt.value = Number(l.rate).toFixed(4);
       var d = det ? det.querySelector('.desc') : null;

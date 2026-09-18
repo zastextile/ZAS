@@ -2790,6 +2790,86 @@ function inv_std_materials(int $productId, ?int $costingVersionId = null): array
     } catch (Throwable $e) { return []; }
 }
 
+/* ------------------------------------------------------- departments */
+/* THE MASTER LIST, at last.
+ *
+ * A department used to be free text on a gate pass, a store issue and a
+ * consumption — so "Stitching Floor", "stitching floor" and "Stitching Flr"
+ * were three departments, and no report could ever add them up.
+ *
+ * WHY THE DOCUMENTS STILL STORE THE NAME AND NOT AN ID. Every gate pass,
+ * store move and consumption ever posted carries a typed name. Moving to an
+ * id would strand all of them on the day this shipped, and a department
+ * renamed later would silently rewrite the history of documents that were
+ * posted under the old name. The master list makes people PICK from one
+ * spelling from now on; what is already on a document stays exactly as it
+ * was typed, which is what a posted document is for. */
+function inv_dept_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    try { db()->exec("CREATE TABLE IF NOT EXISTS inv_departments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(80) NOT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_dept (name),
+        INDEX(is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+}
+
+/* The master list. Empty until somebody fills it in — and an empty master
+   must not empty the pickers, so inv_departments() below falls back to what
+   the documents have actually used. */
+function inv_dept_master(bool $activeOnly = true): array {
+    inv_dept_schema();
+    try {
+        $sql = "SELECT * FROM inv_departments" . ($activeOnly ? " WHERE is_active=1" : "") . " ORDER BY name";
+        return db()->query($sql)->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+function inv_dept_add(string $name): array {
+    inv_dept_schema();
+    $name = trim(preg_replace('/\s+/', ' ', $name));
+    if ($name === '') return ['ok' => false, 'error' => 'Type a department name.'];
+    if (mb_strlen($name) > 80) $name = mb_substr($name, 0, 80);
+    /* CASE-INSENSITIVE, because the whole point of this list is that
+       "Packing Hall" and "packing hall" stop being two departments. The
+       UNIQUE key alone would not catch it on a case-sensitive collation. */
+    foreach (inv_dept_master(false) as $d)
+        if (strcasecmp($d['name'], $name) === 0)
+            return ['ok' => false, 'error' => '"' . $d['name'] . '" is already on the list.'];
+    try { db()->prepare("INSERT INTO inv_departments (name) VALUES (?)")->execute([$name]); }
+    catch (Throwable $e) { return ['ok' => false, 'error' => 'Could not add that department.']; }
+    return ['ok' => true, 'error' => '', 'name' => $name];
+}
+
+function inv_dept_toggle(int $id): void {
+    inv_dept_schema();
+    try { db()->prepare("UPDATE inv_departments SET is_active = 1 - is_active WHERE id=?")->execute([$id]); }
+    catch (Throwable $e) {}
+}
+
+/* HOW MANY DOCUMENTS ALREADY SAY THIS NAME — so deactivating one is done
+   with the facts in front of you, and so the setup screen can show which
+   typed spellings are worth adopting. */
+function inv_dept_usage(): array {
+    $out = [];
+    foreach (['inv_store_move', 'inv_consumption', 'inv_gate'] as $t) {
+        try {
+            $rows = db()->query("SELECT TRIM(department) d, COUNT(*) n FROM $t
+                                 WHERE department IS NOT NULL AND TRIM(department) <> ''
+                                 GROUP BY TRIM(department)")->fetchAll();
+            foreach ($rows as $r) {
+                $d = (string)$r['d'];
+                $out[$d] = ($out[$d] ?? 0) + (int)$r['n'];
+            }
+        } catch (Throwable $e) {}
+    }
+    return $out;
+}
+
 /* EVERY DEPARTMENT ANYONE HAS EVER TYPED.
  *
  * A department is not a master record in this system — it is free text on a
@@ -2804,6 +2884,19 @@ function inv_std_materials(int $productId, ?int $costingVersionId = null): array
  * small change and the right one; until then this at least shows what is
  * really on the documents rather than pretending there is a tidy list. */
 function inv_departments(): array {
+    /* THE MASTER LIST WINS THE MOMENT IT HAS ANYTHING IN IT, and while it is
+       empty the pickers fall back to what the documents have really used.
+       That order is what lets the master list be added without a migration:
+       nothing changes on the day it ships, and the pickers narrow to one
+       spelling per department as soon as you fill it in.
+
+       An old typed spelling that is not on the master is deliberately NOT
+       offered any more — offering both is how you keep getting both. What is
+       already on a posted document is untouched; Inventory Setup lists those
+       spellings with a count so you can adopt the ones you meant. */
+    $master = array_column(inv_dept_master(true), 'name');
+    if ($master) { usort($master, fn($a, $b) => strcasecmp($a, $b)); return $master; }
+
     $out = [];
     $ask = function (string $table) use (&$out) {
         try {

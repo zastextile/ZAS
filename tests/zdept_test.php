@@ -47,17 +47,29 @@ $DEPTS = [
     'inv_consumption' => ['packing hall', 'Stitching Floor'],
     'inv_gate'        => ['Dispatch'],
 ];
-$DB->answer = function (string $sql) use (&$DEPTS) {
+$MASTER = [];
+$DB->answer = function (string $sql) use (&$DEPTS, &$MASTER) {
+    if (str_contains($sql, 'FROM inv_departments')) return $MASTER;
     foreach ($DEPTS as $t => $list)
         if (str_contains($sql, "FROM $t"))
             return array_map(fn($d) => ['d' => trim($d)], $list);
     return [];
 };
-$a = strpos($inv, 'function inv_departments()');
-$b = strpos($inv, "\n}\n", $a);
-eval(substr($inv, $a, $b - $a + 3));
+/* inv_departments() now asks the MASTER list first, so the master reader
+   comes with it. The fake database answers it EMPTY here, which is the state
+   every existing install is in on the day this ships — and the state the
+   assertions below are about. */
+function lift2(string $src, string $name): string {
+    $a = strpos($src, 'function ' . $name . '(');
+    $b = strpos($src, "\n}\n", $a);
+    return substr($src, $a, $b - $a + 3);
+}
+eval(lift2($inv, 'inv_dept_schema'));
+eval(lift2($inv, 'inv_dept_master'));
+eval(lift2($inv, 'inv_departments'));
 
 $list = inv_departments();
+ok($list !== [], 'with an empty master, the documents still answer');
 ok(count($list) === 5, 'five distinct spellings across three tables, got ' . count($list) . ': ' . json_encode($list));
 ok(in_array('Cutting', $list, true), '  and they are trimmed, so "  Cutting  " is Cutting');
 ok(in_array('Stitching Floor', $list, true), '  the same word on two documents appears once');
@@ -109,7 +121,53 @@ ok(str_contains($code, 'list="deptSeen"'), 'the department box offers past spell
 ok(str_contains($code, '<datalist id="deptSeen">'), '  from a datalist');
 ok(str_contains($store, 'A real master list belongs in'), '  while saying that is not the real fix');
 
-echo "4. Nothing else on the page moved\n";
+/* AND THE OTHER WAY ROUND: once the master has rows it is the only answer,
+   so the boxes narrow to one spelling per department. */
+$MASTER = [['id'=>1,'name'=>'Packing Hall','is_active'=>1],
+           ['id'=>2,'name'=>'Stitching Floor','is_active'=>1]];
+$list2 = inv_departments();
+ok($list2 === ['Packing Hall', 'Stitching Floor'],
+   'ONCE THE MASTER HAS ROWS IT IS THE ONLY ANSWER, got ' . json_encode($list2));
+ok(!in_array('packing hall', $list2, true),
+   '  so the stray lower-case spelling stops being offered');
+$MASTER = [];
+
+echo "4. The master list in Inventory Setup\n";
+$setup = file_get_contents($B . 'inv_setup.php');
+$sc = preg_replace('!/\*.*?\*/!s', '', $setup);
+ok(str_contains($inv, 'CREATE TABLE IF NOT EXISTS inv_departments'), 'the master table exists');
+ok(str_contains($inv, 'UNIQUE KEY uniq_dept (name)'), '  one row per name');
+ok(str_contains($inv, 'strcasecmp($d[\'name\'], $name) === 0'),
+   'ADDING IS CASE-INSENSITIVE — "Packing Hall" and "packing hall" cannot both get on the list');
+ok(str_contains($inv, 'WHY THE DOCUMENTS STILL STORE THE NAME AND NOT AN ID'),
+   'and the reason documents keep the typed name is written down');
+ok(str_contains($sc, "value=\"add_department\"") && str_contains($sc, "value=\"toggle_department\""),
+   'Setup can add one and switch one off');
+ok(str_contains($sc, "value=\"adopt_department\""),
+   'and can ADOPT a spelling the documents already use, without retyping it');
+ok(str_contains($setup, 'a posted document is never rewritten'),
+   '  saying plainly that adopting does not rewrite history');
+
+/* THE ORDER THAT MAKES THIS SAFE TO SHIP: master wins when it has rows,
+   documents answer while it is empty. The other way round would empty every
+   department box on the day the file was uploaded. */
+ok(str_contains($inv, 'THE MASTER LIST WINS THE MOMENT IT HAS ANYTHING IN IT'),
+   'the fallback order is stated');
+$da = strpos($inv, 'function inv_departments()');
+$db2 = strpos($inv, "\n}\n", $da);
+$fn = substr($inv, $da, $db2 - $da);
+ok(strpos($fn, 'inv_dept_master(true)') < strpos($fn, "\$ask('inv_store_move')"),
+   '  and the master is asked FIRST');
+ok(str_contains($fn, 'if ($master) {'), '  with the documents used only when it is empty');
+
+foreach (['inv_gate.php' => 'gateDepts', 'inv_consume.php' => 'conDepts', 'inv_store.php' => 'deptSeen'] as $f => $id) {
+    $c = file_get_contents($B . $f);
+    ok(str_contains($c, 'list="' . $id . '"'), "$f offers the list");
+    ok(str_contains($c, '<datalist id="' . $id . '">'), "  from a datalist of its own");
+    ok(str_contains($c, 'inv_departments()'), "  built from inv_departments()");
+}
+
+echo "5. Nothing else on the page moved\n";
 ok(substr_count($code, '<div class="zskin">') === 1, 'still one skin wrapper');
 /* Read from the file, not from $code: the wrapper is CLOSED by a comment,
    and $code has had every comment stripped out of it. Stripping comments

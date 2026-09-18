@@ -354,7 +354,15 @@ flash();
           <?php $dl = (int)($D['location_id'] ?? inv_setting('default_location', '1'));
           foreach ($locations as $l): ?><option value="<?= (int)$l['id'] ?>" <?= $dl === (int)$l['id'] ? 'selected' : '' ?>><?= e($l['name']) ?></option><?php endforeach; ?>
         </select></div>
-      <div><label class="ic2-lbl">Department</label><input class="ic2-inp" name="department" value="<?= e($D['department'] ?? '') ?>"></div>
+      <div><label class="ic2-lbl">Department</label><?php /* PICKED, NOT TYPED. inv_departments() is the master list when one
+         exists and falls back to what documents have already used while
+         it is empty, so this box narrows to one spelling per department
+         the moment Inventory Setup is filled in — and changes nothing
+         before that. Still an input, not a select: a department that was
+         retired years ago is still on old documents being edited. */
+         $deptOpts = inv_departments(); ?>
+<input class="ic2-inp" name="department" list="conDepts" autocomplete="off" value="<?= e($D['department'] ?? '') ?>">
+        <datalist id="conDepts"><?php foreach ($deptOpts as $d): ?><option value="<?= e($d) ?>"><?php endforeach; ?></datalist></div>
 
       <div style="grid-column:span 2"><label class="ic2-lbl">Order / proforma — optional</label>
         <select class="ic2-inp" name="proforma_id">

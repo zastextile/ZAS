@@ -54,6 +54,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try { db()->prepare("UPDATE inv_locations SET is_active = 1 - is_active WHERE id=?")->execute([$id]); } catch (Throwable $e) {}
         redirect('inv_setup.php');
     }
+    /* ---- departments: the master list a document picks from ---- */
+    if ($action === 'add_department') {
+        inv_ensure_schema();
+        $r = inv_dept_add((string)($_POST['name'] ?? ''));
+        if ($r['ok']) { inv_audit('dept_add', '', ['name' => $r['name']], ''); $_SESSION['flash'] = 'Department added.'; }
+        else          { $_SESSION['error'] = $r['error']; }
+        redirect('inv_setup.php');
+    }
+    if ($action === 'toggle_department') {
+        inv_ensure_schema();
+        inv_dept_toggle((int)($_POST['id'] ?? 0));
+        redirect('inv_setup.php');
+    }
+    /* ADOPT A SPELLING THE DOCUMENTS ALREADY USE.
+       The whole reason to have a master list is that three spellings became
+       three departments. This puts one of them on the list without retyping
+       it, so what is already posted and what is picked from now on agree. */
+    if ($action === 'adopt_department') {
+        inv_ensure_schema();
+        $r = inv_dept_add((string)($_POST['name'] ?? ''));
+        $_SESSION[$r['ok'] ? 'flash' : 'error'] = $r['ok']
+            ? 'Adopted "' . $r['name'] . '" — documents already using it now match the list.'
+            : $r['error'];
+        redirect('inv_setup.php');
+    }
     if ($action === 'seed_materials') {
         inv_ensure_schema();
         $before = 0;
@@ -247,6 +272,87 @@ flash();
       <div><button class="iv-btn" type="submit">Add location</button></div>
     </div>
   </form>
+</div>
+
+<?php
+/* DEPARTMENTS. Until now this was free text on three documents, so the same
+   floor could be three departments and no report could add them up. The
+   master list is what a document picks from FROM NOW ON; what is already on
+   a posted document keeps the words it was posted with, which is the point
+   of a posted document. The spellings already in use are listed underneath
+   with a count so the real ones can be adopted without retyping. */
+$deptMaster = inv_dept_master(false);
+$deptUsed   = inv_dept_usage();
+$deptOnList = [];
+foreach ($deptMaster as $d) $deptOnList[mb_strtolower($d['name'])] = true;
+$deptStray  = [];
+foreach ($deptUsed as $name => $n)
+    if (!isset($deptOnList[mb_strtolower($name)])) $deptStray[$name] = $n;
+uasort($deptStray, fn($a, $b) => $b <=> $a);
+?>
+<div class="iv-card">
+  <h2>Departments</h2>
+  <p class="sub">The floors and sections that material is issued to. A gate pass, a store issue and a
+    consumption all record one &mdash; and until this list existed each of them typed it by hand, so the same
+    floor could be three departments.</p>
+
+  <?php if ($deptMaster): ?>
+  <div style="overflow-x:auto"><table class="iv-tbl">
+    <thead><tr><th>Department</th><th class="r">On documents</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    <?php foreach ($deptMaster as $d): $used = 0;
+      foreach ($deptUsed as $k => $n) if (strcasecmp($k, $d['name']) === 0) $used += $n; ?>
+      <tr>
+        <td style="font-weight:600"><?= e($d['name']) ?></td>
+        <td class="r"><?= $used ? number_format($used) : '<span style="color:#b6c0cf">—</span>' ?></td>
+        <td><?= $d['is_active'] ? '<span class="iv-pill iv-ok">Active</span>' : '<span class="iv-pill iv-no">Inactive</span>' ?></td>
+        <td class="r"><form method="post" style="display:inline"><?= csrf_field() ?>
+          <input type="hidden" name="action" value="toggle_department">
+          <input type="hidden" name="id" value="<?= (int)$d['id'] ?>">
+          <button class="iv-btn sec" style="padding:5px 11px;font-size:11.5px" type="submit"><?= $d['is_active'] ? 'Deactivate' : 'Activate' ?></button></form></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table></div>
+  <?php else: ?>
+    <div class="iv-note info">
+      <b>The list is empty, and nothing has changed because of that.</b>
+      While it is empty every department box carries on offering whatever has already been typed, exactly as
+      before. The moment you add one, the boxes offer this list instead &mdash; so add the real ones and the
+      spellings stop multiplying.
+    </div>
+  <?php endif; ?>
+
+  <form method="post" style="margin-top:16px"><?= csrf_field() ?><input type="hidden" name="action" value="add_department">
+    <div class="iv-grid iv-g4" style="align-items:end">
+      <div style="grid-column:span 2"><label class="iv-lbl">Department name</label>
+        <input class="iv-inp" name="name" placeholder="Stitching Floor 1" maxlength="80" autocomplete="off"></div>
+      <div><button class="iv-btn" type="submit">Add department</button></div>
+    </div>
+  </form>
+
+  <?php if ($deptStray): ?>
+  <div style="margin-top:18px">
+    <h3 style="font-size:13px;margin:0 0 4px;font-weight:800">Already used on documents, not on this list</h3>
+    <p class="sub" style="margin:0 0 10px">These were typed by hand before the list existed. Adopt the ones
+      you meant &mdash; a posted document is never rewritten, so adopting is what makes the two agree.</p>
+    <div style="overflow-x:auto"><table class="iv-tbl">
+      <thead><tr><th>Typed as</th><th class="r">On documents</th><th></th></tr></thead>
+      <tbody>
+      <?php foreach ($deptStray as $name => $n): ?>
+        <tr>
+          <td style="font-family:monospace"><?= e($name) ?></td>
+          <td class="r"><?= number_format($n) ?></td>
+          <td class="r"><form method="post" style="display:inline"><?= csrf_field() ?>
+            <input type="hidden" name="action" value="adopt_department">
+            <input type="hidden" name="name" value="<?= e($name) ?>">
+            <button class="iv-btn sec" style="padding:5px 11px;font-size:11.5px" type="submit">Adopt</button></form></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table></div>
+  </div>
+  <?php endif; ?>
 </div>
 
 <div class="iv-card">
