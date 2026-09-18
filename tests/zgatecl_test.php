@@ -38,6 +38,20 @@ ok(str_contains($gate, 'THE CONTRACT IS SET OR CLEARED BY WHAT WAS PICKED'),
    '  with the reason recorded');
 ok(str_contains($code, "if(r.cl && r.cl.rate > 0){"),
    "the contract's agreed rate outranks the item's standard one");
+/* FOUND BY DRIVING THE SCREEN, NOT READING IT.
+   The change handler fills the unit and the rate only when each is EMPTY —
+   right while a line is being built, wrong the moment the item on it is
+   replaced. Pick a contract line for a 4,200 comforter set, then change
+   that line to sewing thread, and 4,200 stayed on the thread with SET as
+   its unit. Both are cleared before the new item fills them. */
+ok(str_contains($code, "if(ru) ru.value = '';") && str_contains($code, "if(rr0) rr0.value = '';"),
+   'CHANGING THE ITEM ON A LINE CLEARS THE OLD UNIT AND RATE');
+ok(str_contains($gate, 'THE UNIT AND THE RATE ARE CLEARED BEFORE THE NEW ITEM FILLS THEM'),
+   '  with the reason recorded');
+$pk = substr($code, strpos($code, 'pick: function(f, r){'));
+$pk = substr($pk, 0, strpos($pk, "\n    }\n  });"));
+ok(strpos($pk, "if(ru) ru.value = '';") < strpos($pk, "sel.dispatchEvent"),
+   '  and cleared BEFORE the change event, or the handler would skip them again');
 ok(str_contains($code, "if(!r.it){"),
    'a contract line naming an item the stock list has not got is handled');
 ok(str_contains($gate, 'names an item that is not on the stock list'),

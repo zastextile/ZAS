@@ -1462,6 +1462,21 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
         return;
       }
 
+      /* THE UNIT AND THE RATE ARE CLEARED BEFORE THE NEW ITEM FILLS THEM.
+         The change handler below only fills each one when it is EMPTY —
+         which is right while a line is being built, and wrong the moment
+         the item on it is replaced. Picking a contract line for a 4,200
+         comforter set and then changing the line to sewing thread left
+         4,200 sitting on the thread, and MTR on a thing sold by the kilo.
+         Found by driving the screen rather than reading it.
+
+         A rate typed by hand is lost when the item changes, and that is
+         the right trade: a rate typed for a different item is not a rate
+         worth keeping, and it is one keystroke to type again. */
+      var ru = tr.querySelector('.uom'), rr0 = tr.querySelector('.rate');
+      if(ru) ru.value = '';
+      if(rr0) rr0.value = '';
+
       sel.value = r.it.key;
       f.value = r.it.code + ' · ' + r.it.name;
       tr.dataset.item = r.it.key;
