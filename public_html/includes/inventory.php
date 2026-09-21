@@ -1761,6 +1761,31 @@ function inv_holding_lots(int $partyId, int $materialId, string $locKind = 'jobw
    Checked against the balance AT THE PASS'S LOCATION. Material sitting on
    the Cutting Floor cannot be issued from Main Store without moving it
    first, which is the point of having locations at all. */
+/* CAN THIS MUCH GO OUT — OF A MATERIAL OR OF A FINISHED PRODUCT.
+   ==============================================================
+
+   The material-only version below is the original and is kept, because
+   other screens call it. This one takes an ITEM KEY ("m12" or "p7"), the
+   same key the picker and the gate line already use, so the check finally
+   covers the half of the stock it never saw.
+
+   THE SUB-KEY IS A LOT ON A MATERIAL AND A SIZE ON A PRODUCT. That is not
+   a special case invented here: inv_lot_balances_key() already returns a
+   product's size in the lot_no field, because a size is what a finished
+   product is stocked by. One column, two meanings, decided by the kind —
+   exactly like the item key itself. */
+function inv_outward_check_key(string $key, string $sub, int $locationId, string $ownership, float $qty): array {
+    $bal   = inv_available_key($key, $sub, $locationId, $ownership);
+    $short = round($qty - $bal, 3);
+    if ($short <= 0.0005) return ['level' => 'ok', 'bal' => $bal, 'short' => 0.0, 'limit' => 0.0];
+    $pct   = inv_neg_tolerance_pct();
+    $limit = round(max(0.0, $bal) * $pct / 100, 3);
+    return [
+        'level' => $short <= $limit + 0.0005 ? 'tolerance' : 'admin_only',
+        'bal' => $bal, 'short' => $short, 'limit' => $limit,
+    ];
+}
+
 function inv_outward_check(int $materialId, string $lot, int $locationId, string $ownership, float $qty): array {
     $bal   = inv_available_at($materialId, $lot, $locationId, $ownership);
     $short = round($qty - $bal, 3);
@@ -1954,6 +1979,26 @@ function inv_gate_post(int $gateId): array {
                 $MATNAME[(int)$m['id']] = $m['code'] . ' · ' . $m['name'];
             }
         } catch (Throwable $e) {}
+        /* AND THE FINISHED PRODUCTS TOO. Without these, a product line
+           could only ever be called "That item" in a message — which on a
+           fourteen-line pass tells the operator nothing. */
+        $PRODNAME = [];
+        try {
+            foreach (db()->query("SELECT id, name FROM products")->fetchAll() as $m) {
+                $PRODNAME[(int)$m['id']] = (string)$m['name'];
+            }
+        } catch (Throwable $e) {}
+        /* One name for a line, whichever kind it is, with the size on a
+           product because a King set and a Queen set are different stock. */
+        $lineName = function (array $it) use ($MATNAME, $PRODNAME): string {
+            if (!empty($it['material_id'])) return $MATNAME[(int)$it['material_id']] ?? 'That item';
+            if (!empty($it['product_id'])) {
+                $n = $PRODNAME[(int)$it['product_id']] ?? 'That product';
+                $sz = trim((string)($it['size_label'] ?? ''));
+                return $sz !== '' ? $n . ' · ' . $sz : $n;
+            }
+            return 'That item';
+        };
 
         $takesOut = in_array($T['move'], ['out', 'to_jw', 'from_cust'], true);
         if ($takesOut) {
@@ -1969,13 +2014,30 @@ function inv_gate_post(int $gateId): array {
             $stop = [];
             foreach ($items as $it) {
                 $qty = (float)$it['qty'];
-                if ($qty <= 0 || !$it['material_id']) continue;   // finished goods and empty rows skip
+                if ($qty <= 0) continue;
+
+                /* FINISHED GOODS USED TO SKIP THIS CHECK ENTIRELY.
+                   The line read "if (!$it['material_id']) continue" with the
+                   comment "finished goods and empty rows skip", and it meant
+                   a Sale of 500 sets posted cleanly when 180 existed. Nothing
+                   on any screen said a word, and the ledger simply went
+                   negative. A gate pass may carry both kinds on one document,
+                   so both kinds are checked on one document.
+
+                   A material is keyed by LOT, a product by SIZE — the sub-key
+                   the ledger already stores for each. */
+                $key = !empty($it['material_id']) ? 'm' . (int)$it['material_id']
+                     : (!empty($it['product_id']) ? 'p' . (int)$it['product_id'] : '');
+                if ($key === '') continue;                        // an empty row is not a fault
+                $sub = !empty($it['material_id']) ? (string)($it['lot_no'] ?? '')
+                                                  : (string)($it['size_label'] ?? '');
                 $fromLoc = $T['move'] === 'from_cust' ? ($custLoc ?: $docLoc) : $docLoc;
-                $chk = inv_outward_check((int)$it['material_id'], (string)($it['lot_no'] ?? ''), $fromLoc, $T['own'], $qty);
+                $chk = inv_outward_check_key($key, $sub, $fromLoc, $T['own'], $qty);
                 if ($chk['level'] === 'ok') continue;
-                $item  = $it['material_id'] && isset($MATNAME[(int)$it['material_id']])
-                       ? $MATNAME[(int)$it['material_id']] : 'That item';
-                $what  = ($it['lot_no'] ?? '') !== '' ? "$item lot " . $it['lot_no'] : $item;
+                $item  = $lineName($it);
+                $what  = $sub !== ''
+                       ? (!empty($it['material_id']) ? "$item lot $sub" : $item)
+                       : $item;
                 $where = inv_location_name($fromLoc);
                 $has   = rtrim(rtrim(number_format($chk['bal'], 3), '0'), '.');
                 $over  = rtrim(rtrim(number_format($chk['short'], 3), '0'), '.');
@@ -2017,10 +2079,16 @@ function inv_gate_post(int $gateId): array {
             $stop2 = [];
             foreach ($items as $it) {
                 $qty = (float)$it['qty'];
+                /* MATERIALS ONLY, AND THAT IS DELIBERATE — unlike the
+                   outward check above, where skipping products was a bug.
+                   What a party holds is derived from what was SENT to them,
+                   and nobody sends a finished product out for processing and
+                   gets the same product back. A product line on a return
+                   pass has nothing to be measured against. */
                 if ($qty <= 0 || !$it['material_id']) continue;
                 $chk = inv_return_check((int)$it['material_id'], $pid, $kind, $qty);
                 if ($chk['level'] === 'ok') continue;
-                $item = isset($MATNAME[(int)$it['material_id']]) ? $MATNAME[(int)$it['material_id']] : 'That item';
+                $item = $lineName($it);
                 $has  = rtrim(rtrim(number_format($chk['held'], 3), '0'), '.');
                 $over = rtrim(rtrim(number_format($chk['over'], 3), '0'), '.');
                 $pct  = rtrim(rtrim(number_format($chk['pct'], 2), '0'), '.');
