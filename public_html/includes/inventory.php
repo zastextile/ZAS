@@ -2012,6 +2012,20 @@ function inv_gate_post(int $gateId): array {
             if ($why === '') $why = trim((string)($g['remarks'] ?? ''));
 
             $stop = [];
+            /* THE PASS IS ONE DOCUMENT, SO IT IS MEASURED AS ONE.
+               ==================================================
+
+               Each line used to be checked on its own against the full
+               balance. With 200 in stock, two lines of 150 each BOTH
+               passed — 150 is less than 200, twice — and the pass posted
+               300, leaving the ledger at minus 100 with nothing said.
+
+               It is the ordinary way a pass gets typed, too: the same
+               fabric off two different lots, or a set split across two
+               lines for two cartons. So the running total per item is
+               carried down the pass, and each line is judged on what the
+               WHOLE document has taken by the time it is reached. */
+            $taken = []; $said = [];
             foreach ($items as $it) {
                 $qty = (float)$it['qty'];
                 if ($qty <= 0) continue;
@@ -2032,8 +2046,17 @@ function inv_gate_post(int $gateId): array {
                 $sub = !empty($it['material_id']) ? (string)($it['lot_no'] ?? '')
                                                   : (string)($it['size_label'] ?? '');
                 $fromLoc = $T['move'] === 'from_cust' ? ($custLoc ?: $docLoc) : $docLoc;
-                $chk = inv_outward_check_key($key, $sub, $fromLoc, $T['own'], $qty);
+                /* WHAT THIS PASS HAS TAKEN OF THIS ITEM SO FAR, this line
+                   included. A blank sub-key ("any lot") and a named one are
+                   counted apart, exactly as the balance behind them is. */
+                $bucket = $key . '|' . $sub;
+                $taken[$bucket] = round(($taken[$bucket] ?? 0) + $qty, 3);
+                $chk = inv_outward_check_key($key, $sub, $fromLoc, $T['own'], $taken[$bucket]);
                 if ($chk['level'] === 'ok') continue;
+                /* Reported once per item, not once per line: three lines of
+                   the same fabric should not say the same thing three times. */
+                if (isset($said[$bucket])) continue;
+                $said[$bucket] = true;
                 $item  = $lineName($it);
                 $what  = $sub !== ''
                        ? (!empty($it['material_id']) ? "$item lot $sub" : $item)
@@ -2077,6 +2100,9 @@ function inv_gate_post(int $gateId): array {
             if ($why2 === '') $why2 = trim((string)($g['remarks'] ?? ''));
 
             $stop2 = [];
+            /* THE SAME RULE COMING BACK. Two lines of 150 against 200 held
+               at the mill would each have passed on their own. */
+            $back = []; $said2 = [];
             foreach ($items as $it) {
                 $qty = (float)$it['qty'];
                 /* MATERIALS ONLY, AND THAT IS DELIBERATE — unlike the
@@ -2086,8 +2112,12 @@ function inv_gate_post(int $gateId): array {
                    gets the same product back. A product line on a return
                    pass has nothing to be measured against. */
                 if ($qty <= 0 || !$it['material_id']) continue;
-                $chk = inv_return_check((int)$it['material_id'], $pid, $kind, $qty);
+                $mid = (int)$it['material_id'];
+                $back[$mid] = round(($back[$mid] ?? 0) + $qty, 3);
+                $chk = inv_return_check($mid, $pid, $kind, $back[$mid]);
                 if ($chk['level'] === 'ok') continue;
+                if (isset($said2[$mid])) continue;
+                $said2[$mid] = true;
                 $item = $lineName($it);
                 $has  = rtrim(rtrim(number_format($chk['held'], 3), '0'), '.');
                 $over = rtrim(rtrim(number_format($chk['over'], 3), '0'), '.');
