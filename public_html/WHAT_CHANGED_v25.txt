@@ -1,0 +1,160 @@
+ZAS v25 (batch 1 of 2) — the form you screenshotted
+====================================================
+3 files. Upload over v24. No schema change. No new table. No column.
+No rule, rate, formula or quantity is touched anywhere in this zip.
+
+    assets/css/app.css        <- EDITED, additive only
+    product_master.php        <- the form rebuilt
+    part_library.php          <- same treatment, so the two screens match
+
+They go to:
+    public_html/assets/css/app.css
+    public_html/product_master.php
+    public_html/part_library.php
+
+
+1. WHAT I CHECKED FIRST
+-----------------------
+You sent your whole public_html. I compared every file against my copy:
+EVERY PHP FILE MATCHES EXACTLY. You did upload v22-v24 — WHAT_CHANGED_v22
+_to_v24.txt is on the server. You were fully current. Nothing was missing.
+
+The only things in your zip that I do not have are assets/signatures (your
+uploaded signature images) and config/ (your live credentials, correctly
+left out). So this batch is built on exactly what is running.
+
+
+2. THE FORM — WHAT WAS WRONG
+----------------------------
+Six fields took a whole screen. Measured from your own file:
+
+  · TWO heavy cards for six fields. Each carried a 14px title bar AND 14px
+    body padding. The chrome cost more than the fields.
+  · A LEFT RAIL WITH TWO LINKS repeating the two headings already on screen.
+  · .zin = padding 10px 12px PLUS margin-top 7px, inside a grid with
+    gap 14px. About 62px of height to hold ONE LINE of text.
+  · margin-top:26px HAND-TYPED on the Active checkbox to fake alignment.
+    A guessed number that breaks at any other width.
+  · A THREE-LINE PARAGRAPH about the FCL box, printed every time, forever.
+
+
+3. WHAT IT IS NOW
+-----------------
+ONE section. One row per fact: label on the left, field on the right.
+Two fields share a row where they belong together (Category + Default Unit,
+Capacity + Last Sale).
+
+ALL SEVEN FIELDS ARE STILL THERE. Nothing was removed to make it smaller:
+Product Name, Description, Category, Default Unit, Active, 40ft HC Capacity,
+Last Sale Price. Same names, same POST, same validation, same handler.
+
+The FCL explanation is not deleted — it is now the field's tooltip plus one
+short line beside the button, instead of three lines of prose in the body.
+
+THE RAIL now appears only while EDITING, where Parts & Operations and Size
+Variants really are further down the page. On a new product the whole form
+is one short section already in front of you, so a nav listing it was
+furniture. #sec-packing still exists as an anchor, so an old bookmark lands.
+
+
+4. WHY YOUR PAGES DISAGREED ABOUT SPACING
+-----------------------------------------
+You asked why form cells differ page to page. Here is the real answer.
+
+.zin — the class every input uses — IS DEFINED FIVE TIMES:
+
+    product_master.php        padding:10px 12px   bg #fbfcfe
+    part_library.php          padding:10px 12px   bg #fbfcfe
+    production_ops_bulk.php   padding:10px 12px   bg #ffffff
+    product_costing.php       padding:10px 12px   bg #ffffff
+    product_costing.php AGAIN padding:4px 7px     <- overrides itself
+    includes/customer_layout  padding:11px 13px
+
+product_costing defines it TWICE IN ONE FILE. That is exactly why its grid
+is tight and its form is fat ON THE SAME SCREEN.
+
+I ALSO GOT THIS WRONG AT FIRST and my own test caught it: I said there was
+no shared stylesheet. There is — assets/css/app.css. But it only tightens
+TABLE CELLS, and its own comment says it "deliberately leaves standalone
+form fields alone, which should stay comfortable to tap." That was my call
+in the v17 density pass, made for phones. On your desk it is wrong, and
+your screenshot is the proof.
+
+
+5. THE FIX, AND WHY IT CANNOT BREAK ANYTHING ELSE
+-------------------------------------------------
+app.css now has a FORM layer beside the grid layer. It is OPT-IN:
+
+    NOTHING CHANGES UNTIL A PAGE WRAPS ITS FIELDS IN class="zform".
+
+Only product_master.php and part_library.php do that in this zip. Every
+other page in the app — invoices, gate passes, proformas, costing, all of
+them — is byte-for-byte unaffected. I did not have to touch them, and I
+did not.
+
+Two more deliberate choices:
+
+  · THE RULE REQUIRES .zrow. So a TABLE inside a .zform is untouched — its
+    controls keep the grid sizing from the rules above, where they belong.
+    No grid anywhere gets re-styled by accident.
+
+  · SPECIFICITY .zform .zrow .zin scores 0,3,0, which beats a page's own
+    bare .zin at 0,1,0 whatever the load order. So the pages keep working
+    WITHOUT deleting their local .zin. I deliberately left those in place
+    this round — deleting them would restyle the ops grid, the size variant
+    cards and the top bar all at once, which is a bigger change than the one
+    you asked for. They come out in batch 2.
+
+THE PHONE DOES NOT GET WORSE. Below 720px the label moves above the field
+and both go back to 40px minimum. The compaction is a desktop answer to a
+desktop problem and must not cost you tap targets.
+
+
+6. WHAT IS NOT IN THIS ZIP
+--------------------------
+Deliberately held for batch 2, after you confirm this one behaves:
+
+  · product_costing.php and final_costing.php — 841 lines of inline
+    JavaScript moved to cached files, both .zin removed, compact rows.
+  · production_ops_bulk.php — the duplicate "Fast Entry Grid" tab removed.
+  · includes/menu.php — a menu entry for the CSV page.
+
+ON THE DUPLICATE YOU SPOTTED — you were right. production_ops_bulk.php has
+a Fast Entry Grid that does the same job as the Product Master grid. Two
+places to type the same rows. BUT its CSV half exists nowhere else, and
+"Export only what is missing" lists every active product with no operations
+at all — that is your adoption worklist. So: strip the grid, keep the CSV,
+rename the button from "Bulk Production Operations" (that name is exactly
+why it reads as a competing second way to do the same job).
+
+ON THE COSTING PAGES — straight answer: they are NOT 300-query pages. Zero
+queries inside a display loop on either. What makes them feel heavy is 841
+lines of JavaScript re-downloaded on every single load because it is inline.
+
+
+7. CHECK THESE ON THE LIVE SITE
+-------------------------------
+No MySQL here. Please check, in order:
+
+  1. Product Master -> Add Product. The form should be ONE short block, no
+     left rail, no two cards.
+  2. Fill it in and Create. The product must save exactly as before.
+  3. Open an existing product for editing. The rail IS there now, listing
+     Product / Parts & Operations / Size Variants. Click each — it must jump
+     down the same page, not reload.
+  4. Check the Active tick, the Default Unit dropdown, and the 40ft HC box
+     all still save. Hover the capacity box — the explanation is the tooltip.
+  5. Part Library -> add or edit a part. Same compact rows. THE OPERATIONS
+     TABLE UNDER IT MUST LOOK EXACTLY AS BEFORE — if that table changed
+     size, tell me at once, that would mean the scoping leaked.
+  6. Open the same two pages on your phone. Fields must be BIG again there.
+  7. Open any other page — an invoice, a gate pass, product costing. They
+     must be completely unchanged. Nothing in this zip touches them.
+
+Covered by tests that run here: 876 assertions on the PHP side, 699 in the
+browser, all passing. 62 of them are new and on this change alone — every
+field name, every default, the scoping, and the phone query.
+
+What those tests CANNOT do is click a button on your server. Step 5 and
+step 7 are the two that matter most, because they are the two a test here
+cannot prove.

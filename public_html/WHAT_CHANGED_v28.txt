@@ -1,0 +1,149 @@
+ZAS v28 — the red error, the crushed column, and Cutting
+=========================================================
+4 files. Upload over v27. If you have not uploaded v27 yet, upload v27 FIRST
+(it carries the stylesheet cache-bust, without which any screen fix is
+invisible to your browser), then this.
+
+No schema change. No new table. No column.
+No rule, rate, formula or quantity is changed anywhere in this zip.
+
+    product_master.php          <- the red error + the crushed column
+    part_library.php            <- the Cutting rule, said on screen
+    includes/part_library.php   <- the Cutting rule, enforced
+    includes/layout.php         <- (from v27) the stylesheet cache-bust
+
+
+1. "Unexpected token '<', "<!doctype "... is not valid JSON"
+------------------------------------------------------------
+WHAT IT REALLY MEANS: the save asked the server for a RESULT and the server
+sent back a PAGE. The browser tried to read that page as data, hit the very
+first character of <!doctype, and complained about punctuation. The message
+you saw is the parser's complaint, not the actual problem.
+
+The actual problem is one of a small number of ordinary things, and every one
+of them now says so in plain words:
+
+  · YOUR SESSION EXPIRED. Most likely yours — that tab was open from before
+    you went offline. The save was redirected to the login page, and the login
+    page came back instead of a result.
+        "Your session has expired. Open the page again and sign in —
+         nothing was saved."
+
+  · THE ACCOUNT CANNOT MANAGE PRODUCTS. The POST handler was guarded by a
+    permission check, and a POST that failed it FELL STRAIGHT THROUGH and the
+    whole page rendered as the "answer". That was a real hole: a permission
+    problem wearing a parser's clothes. It now returns a proper 403 in JSON.
+        "Your account is not allowed to change products. Nothing was saved."
+
+  · THE SERVER ERRORED. Reported with its HTTP code.
+
+  · AN ACTION THE SERVER DOES NOT KNOW. If a button posts something no handler
+    matches, that also used to render the page. Now it is named.
+        "That action is not recognised by the server (…). Nothing was saved —
+         reload the page, it may be running an older copy."
+
+HOW IT IS FIXED: the browser now reads the reply as TEXT first and tries to
+parse it inside a try. A parse failure is no longer an accident that escapes —
+it is inspected, identified, and turned into one of the sentences above.
+
+EVERY ONE OF THEM ENDS WITH "NOTHING WAS SAVED", because nothing was. That is
+the part you actually needed to know, and the old message never said it.
+
+WHAT TO DO WHEN YOU SEE IT AGAIN: if it says the session expired, reload and
+sign in. Your unsaved edits on that screen are gone — the server never got
+them. There is no way around that; what changed is that you are now told.
+
+
+2. THE PARTS & OPERATIONS COLUMN CRUSHED TO A VERTICAL STRIP
+-------------------------------------------------------------
+In your screenshot the middle column is about twenty pixels wide and its text
+runs one letter per line. That is not a theme problem. The two panes were
+laid out as:
+
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr)
+
+minmax(0, …) means "this column may shrink to NOTHING". So when the Size
+Variants side needed room, the Parts & Operations side gave up all of its
+width rather than the grid stacking. A pane squeezed to nothing looks like a
+broken page, which is exactly how you read it.
+
+FIXED — each column now has a real floor:
+
+    grid-template-columns: minmax(380px, 1.15fr) minmax(300px, 1fr)
+
+and the panes STACK at 1100px, which is before 380 + 300 + 11 can stop
+fitting. So it either shows two usable columns or one full-width column —
+never a crushed one. Children can still shrink inside their own column, so
+nothing else about the panes changes.
+
+
+3. CUTTING — ONE PER PART, WHETHER OR NOT YOU TYPE ITS NAME
+------------------------------------------------------------
+You are right, and the old behaviour was bad: A ROW WITH A BLANK OPERATION
+NAME WAS SILENTLY DROPPED. You could set Stage = Cutting, type a rate, press
+Add Part, and that row simply vanished. No message. If every row was unnamed
+you got "a part needs at least one operation", which explained nothing.
+
+THE NEW RULE, which is what you described:
+
+  · A BLANK OPERATION NAME TAKES ITS STAGE AS ITS NAME. Cutting happens once
+    per part and nobody wants to type the word "Cutting" into a box that
+    already says Cutting. Leave it empty, put the rate in, and it is saved as
+    the operation "Cutting". Same for Stitching and Dispatch.
+
+  · ONE UNNAMED ROW PER STAGE. Two blank Cutting rows would become two
+    operations both called "Cutting" — the same work charged twice, which is
+    the exact thing the v24 cap exists to stop. It is refused, by name:
+        "There are two unnamed Cutting rows. Cutting happens once per part —
+         give one of them a name, or delete it."
+
+  · THE SAME NAME TWICE IS REFUSED TOO, whatever the capitals. "Singer" and
+    "singer" are one operation:
+        "This part lists "Singer" twice. One operation, one row — otherwise
+         the same work gets paid for twice."
+
+  · A ROW BLANK IN BOTH BOXES IS STILL NOTHING. The two starter rows on a
+    fresh form do not invent operations. A blank name with a rate of 0 is an
+    empty row, not a free Cutting step.
+
+THE SCREEN NOW AGREES WITH THE SAVE. The live "one piece of this part costs
+PKR …" total used to skip unnamed rows, so it disagreed with what was stored.
+It counts them now. And the rule is written above the grid and in the column
+header, so you meet it before you hit it, not after.
+
+THESE RULES ARE RUN FOR REAL IN TESTING, not just read: the save function is
+executed against every one of those cases and the stored rows are inspected.
+
+
+WHAT I COULD NOT TEST
+---------------------
+No MySQL here. 1011 assertions on the PHP side and 665 in the browser all
+pass, 48 of them new and on these three faults alone.
+
+They CANNOT reproduce your expired session, and they cannot see your browser.
+So I will be straight: I could not prove which of the four causes produced
+your particular red toast. What I could do is make sure that whichever one it
+was, the screen now names it instead of showing you a parser error — and
+close the one cause that was a genuine bug of mine (the permission gate
+falling through to a page).
+
+
+CHECK THESE, IN THIS ORDER
+--------------------------
+  1. Upload, then RELOAD Product Master (CTRL+F5 once if v27 was not already
+     on). The Parts & Operations column must be a proper column, not a strip.
+  2. Edit a product, change something, press Save all. It must save, or tell
+     you in a sentence why not.
+  3. Part Library -> Add a part. Type a name. Leave the Operation box EMPTY
+     on the Cutting row, put 15 in Rate. Press Add Part.
+     -> IT MUST SAVE, and the part must show an operation called "Cutting".
+  4. Now add a SECOND blank Cutting row and save.
+     -> it must be refused, naming the two unnamed Cutting rows.
+  5. Add two rows both called Singer.  -> refused.
+  6. Check the "one piece of this part costs PKR …" line counts a row whose
+     name you left blank.
+  7. Any other page — an invoice, a gate pass. Unchanged.
+
+If step 2 still shows a red message, SEND ME THE EXACT WORDING. It will now
+be one of the four sentences above, and each one points at a different cause —
+that is the whole purpose of this change.

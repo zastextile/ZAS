@@ -1,0 +1,102 @@
+ZAS v30 — the mis-paired labels on product_master.php
+=====================================================
+3 files. Upload over v29. No schema change. No rule, rate or quantity changed.
+
+    assets/css/app.css      <- the broken pairing removed
+    product_master.php      <- one field per row
+    includes/layout.php     <- ?v=29 so the new CSS actually reaches you
+
+
+WHAT YOUR SCREENSHOT SHOWS, AND WHY
+------------------------------------
+Look at the form in your screenshot:
+
+    Product Name      [Bed shee…]        <- right
+    Description       [Plain dyed]       <- right
+    Category          [Default Un…]      <- WRONG
+    40ft HC Capacity  [Last Sale]        <- WRONG
+
+"Default Unit" and "Last Sale" are LABELS. They are sitting where their
+neighbour's INPUT BOX should be. The form is telling you Category is called
+Default Unit, which is nonsense, and the two real fields are squeezed to
+slivers you cannot see.
+
+THE CAUSE IS MINE, AND IT IS SIMPLE. To keep the form short I put two fields
+on one row:
+
+    [ field ] [ label ] [ field ]        (a 3-column grid)
+
+That works at a comfortable width. But this form sits in HALF OF A SPLIT —
+Size Variants has the other half — so those three cells were sharing about
+200 pixels. The middle label was set not to wrap, so it took its full width
+first and both fields collapsed to almost nothing. What you are left with on
+screen is a label standing where a box should be.
+
+A LABEL POINTING AT THE WRONG BOX IS WORSE THAN A FORM ONE ROW TALLER. So the
+pairing is gone, not patched:
+
+    Product Name      [ … ]
+    Description       [ … ]
+    Category          [ … ]
+    Default Unit      [ … ]
+    40ft HC Capacity  [ … ]
+    Last Sale         [ … ]
+    Active            [x] in use for new orders
+
+One field per row. Every label points at the box beside it. Seven short rows
+— still far shorter than the two big cards this replaced, and now it cannot
+be misread at any width.
+
+I ALSO REMOVED THE RULE ITSELF from app.css, not just its use, with a note
+saying why. If two fields ever share a row again they need a container query
+that knows how wide the PANE is — a fixed 3-column grid cannot know that, and
+will fail the same way.
+
+AND THE LABEL COLUMN NOW GIVES WAY. It was a hard 130px, which in a narrow
+pane leaves very little for the field. It is now min(130px, 38%) — 130px when
+there is room, proportional when there is not.
+
+
+WHY YOU MUST UPLOAD includes/layout.php TOO
+--------------------------------------------
+It carries ?v=29 on the stylesheet. Without it your browser keeps the CSS it
+already has, and a form built for new rules gets old ones — which is the
+exact fault that made the whole page look unstyled two releases ago. The CSS
+and the pages that use it move together. Always.
+
+
+THE OTHER THING IN YOUR SCREENSHOT
+-----------------------------------
+"Bed sheet — 0 parts · 4 size variants · ready for production"
+
+ZERO PARTS. Every size variant reads "No parts yet". That product cannot be
+produced, whatever the badge says — and this is the same gate 4 the v29
+diagnostic reports on the production screens. The badge says "ready for
+production" because the checklist counts a whole-set operation (your CUTTING
+and HEM rows have a blank Part, which means "the whole set") as enough.
+
+I have NOT changed that badge in this zip, because it is a judgement call and
+I would rather ask than guess: a bed sheet genuinely may be a single-part
+product with no named parts at all, in which case "ready" is correct and your
+CUTTING and HEM rows are all it needs. But if you expect every product to
+carry named parts imported from the Part Library, then "0 parts" should read
+as NOT ready, and I will change the checklist to say so.
+
+TELL ME WHICH, and it is a one-line change.
+
+
+CHECK
+-----
+  1. Upload all three, then CTRL+F5 once on Product Master.
+  2. Open product 5 (Bed sheet). Every label must point at the box beside it:
+     Category has a category box, Default Unit has the dropdown, 40ft HC
+     Capacity has a number, Last Sale has the read-only box.
+  3. Narrow the browser window. Rows must stay correctly paired the whole way
+     down, then stack on a phone.
+  4. Save Changes. It must still save.
+
+1065 assertions on the PHP side and 665 in the browser pass. One of my own
+tests failed during this and it was the test being wrong: it required the CSS
+and JavaScript cache versions to be equal, which would force a pointless
+re-download of 40KB of JavaScript every time a colour changed. Each file's
+version is now raised only when that file changes.

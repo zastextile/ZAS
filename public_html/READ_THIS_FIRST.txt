@@ -1,0 +1,66 @@
+UPLOAD THIS ONE. IT IS v20 AND v21 TOGETHER.
+============================================
+
+You asked whether v20 and v21 are separate. THEY ARE — v21 did not contain
+v20's files, so uploading only v21 would have given you the packing fix and
+none of the Part Library.
+
+This package is both, so there is nothing to decide. 10 files:
+
+    part_library.php              v20  NEW — the library screen
+    product_master.php            v20  Size Variants + Import a part
+    product_costing.php           v20  the size id-first fix
+    includes/part_library.php     v20  NEW — library schema and logic
+    includes/menu.php             v20  one new menu line
+
+    production_api.php            v21  returns the bottleneck with the limit
+    production_entry.php          v21  shows it, takes an over-cut reason
+    production_my_work.php        v21  packing card counted in sets
+    production_dashboard.php      v21  an Over-cuts card
+    includes/production.php       v21  the packing ceiling
+
+Keep the structure: the three files under includes/ go in includes/.
+
+IF YOU HAVE NOT UPLOADED v19 YET, UPLOAD THAT FIRST (42 files). These 10
+sit on top of it. Everything since v19 is in here and nothing else is.
+
+ALREADY UPLOADED v20? Then only the five v21 files are new to you — but
+uploading all 10 is harmless, they are the same files you already have.
+
+
+THE TWO THINGS TO KNOW BEFORE YOU UPLOAD
+----------------------------------------
+1. PACKING LIMITS WILL DROP on live multi-part orders — from a number that
+   was too big to one that is correct. An order that said 250 will say 75.
+   Nothing is lost, no saved entry changes. Tell your packers first, and
+   tell them the new number names the part that is holding it.
+
+2. FOUR NEW COLUMNS AND TWO NEW TABLES appear by themselves on first load,
+   all additive and nullable:
+       part_library, part_library_operations           (new tables)
+       production_operations.lib_part_id               (NULL = typed by hand)
+       production_operations.lib_base_rate
+       production_transactions.variance_reason         (NULL = normal entry)
+   Every row already in your database keeps working untouched.
+
+
+WHAT TO CHECK AFTER UPLOADING
+-----------------------------
+The full lists are in WHAT_CHANGED_v20.txt section 7 and
+WHAT_CHANGED_v21.txt section 7. The four that matter most:
+
+  · Import the same library part twice
+      -> "already on this product", no duplicate rows.
+  · Rename a size in Product Master, then save Product Costing
+      -> ONE size, renamed. Not two.
+  · Open a multi-part order at packing
+      -> the limit is in SETS and says "Held by <part>" when one is behind.
+  · Enter more than planned on a CUTTING row
+      -> a reason box appears, Save is disabled until it is filled.
+
+
+WHAT I COULD NOT TEST
+---------------------
+Same limit as every release: there is no MySQL in my sandbox. None of these
+handlers has run against your database. What does run here: 625 assertions
+on the PHP side and 576 in the browser, all passing.

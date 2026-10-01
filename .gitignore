@@ -1,0 +1,17 @@
+# Never commit these.
+#
+# config/ and config.php hold the live database password, the app key and the
+# OpenAI API key. They belong on the server only. If they ever land in the
+# repo, the credentials have to be changed, not just the file deleted — git
+# keeps every old version.
+public_html/config/
+public_html/config.php
+public_html/.env
+
+# Real uploaded spreadsheets from live imports — customer data, not code.
+public_html/storage/uploads/*.xlsx
+public_html/storage/uploads/*.xls
+public_html/storage/uploads/*.csv
+
+# Written at runtime.
+public_html/session/

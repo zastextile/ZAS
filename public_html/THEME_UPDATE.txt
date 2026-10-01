@@ -1,0 +1,57 @@
+ZAS Textile app - Modern color scheme update (2026-07-27)
+=============================================================
+
+WHAT CHANGED
+Moved the whole app from the old near-black "Intergalactic UI" look to a
+clean modern theme: light content area (white cards, light-gray page
+background, dark readable text) with the navigation sidebar kept dark navy
+for contrast — the same layout style used by apps like Stripe/Linear.
+Nothing about layout, page structure, business logic, permissions, or the
+database was touched — this is a colors-only change. Every button, form,
+table, badge, and status colour still works exactly the same, just
+restyled to fit the new palette.
+
+The Commercial Invoice / Packing List / Costing / Proforma PRINT pages
+were left exactly as they already were — they were already a clean white
+professional layout and weren't part of this change.
+
+FILES — every file below replaces the SAME PATH in your app (the ones
+inside "includes/templates/" and "assets/css/" go inside those existing
+subfolders; the rest sit in your app root):
+
+  assets/css/app.css                          - the shared theme (colors,
+                                                  sidebar, buttons, tables,
+                                                  cards, badges, alerts)
+  costing_import.php
+  dashboard.php
+  import_excel.php
+  includes/templates/password_change_own.php
+  includes/templates/password_manage_list.php
+  includes/templates/password_reset_user.php
+  packing_list.php
+  password_manage.php
+  product_costing.php
+  product_master.php
+  profile.php
+  proforma.php
+  search.php
+  search721.php
+  shipment_form.php
+  shipment_view.php
+  shipments.php
+  users.php
+
+IMPORTANT — these are the CURRENT, latest versions of these files,
+already including every bug/security fix delivered earlier in this
+session (CSV import, Incoterm, Alloc. Wt formula, CSRF fixes, Create User
+fix, etc.). If you already uploaded those earlier individual files, this
+package supersedes them — just overwrite with these.
+
+Verified by rendering 8 key pages (Login, Dashboard, Shipment view, Users,
+CSV Import, Product Costing, Shipments, Packing List) in a browser against
+a test copy of your data before sending — all readable, consistent, no
+layout breakage.
+
+No database change, .env change, or cron change needed. If your host has
+PHP OPcache enabled, visit any page once after uploading (or ask your host
+to clear it) so the new files are served instead of a cached copy.

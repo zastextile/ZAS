@@ -1,0 +1,196 @@
+ZAS — v13   Gate pass: all eight items, in one upload
+=====================================================
+
+  inv_gate.php            the form, the LOV, the guards
+  inv_ledger.php          party filter and party column
+  inv_contracts.php       (unchanged since v10 — included so you have the
+                           matching set in one place)
+  includes/inventory.php  inv_return_check, inv_stock_maps, inv_party_name
+
+Upload all four to public_html/, keeping includes/ where it is.
+Replaces v12, which you never uploaded — its fix is inside this one.
+NO DATABASE CHANGE. Nothing to migrate. Nothing to run.
+
+
+WHAT WENT IN, IN THE ORDER YOU RAISED IT
+----------------------------------------
+
+1. THE PARTY IS NO LONGER ERASED   (my bug, from v11)
+
+   Both list rebuilds used to end "if the saved value is not in the new
+   list, set it to 0". Open an old pass, change the type, and the party
+   silently became "— not listed —"; save, and it was gone.
+
+   Now a value already on the pass is never removed from its list. If it
+   does not match the filter it appears at the top as
+
+       AL NOOR MILLS   —   on this pass
+
+   and stays selected. Filtering decides what is EASY TO PICK. It never
+   decides what is allowed to remain. The same protection is on the
+   contract box, which matters much more now that its filter is strict.
+
+   Correction to what I told you earlier: only the PARTY was being lost.
+   The contract list grouped rather than removed, so its value always
+   stuck. The damage was narrower than I described.
+
+2. CONTRACTS: THIS PARTY, THIS MOVEMENT, NOTHING ELSE
+
+   Every transaction type already declared the contract type it belongs
+   to. The form now reads it:
+
+       Sale / Export      -> sales contracts only
+       Purchase return    -> purchase contracts only
+       Job work issue     -> job work contracts only
+       Sample / Transfer  -> box disabled, "never under a contract"
+
+   Combined with the party filter, a Sale for EURO HOME offers EURO
+   HOME's sales contracts and nothing else. That is also the answer to
+   your Pull lines question: the button was always right, it was being
+   handed a contract that had no business being on that pass.
+
+3. THE MATERIAL CELL IS A REAL LOV
+
+   Click or tab into it and the list is ALREADY OPEN — code, description,
+   group, available, UOM, rate, with headings and a count. Typing only
+   reduces what you are already looking at.
+
+       arrows      move
+       Enter       take the highlighted row
+       Tab         take it and move to the next cell
+       Esc         close, change nothing
+       Home / End  jump
+
+   Taking a row fills UOM, rate and description, then puts the cursor in
+   Quantity. The lot cell is an LOV too — real lots with balance and age,
+   oldest first. On a receipt the lot stays typed, because it comes off
+   the supplier's challan.
+
+   Sorted BY CODE, not by quantity. Quantity cannot be compared across
+   units: 14,000 buttons is not "more" than 1,840 metres of fabric, and
+   ranking that way puts the cheapest item at the top of every list. When
+   you type, the best match rises. The balance is on the row for reading,
+   not for ranking.
+
+   Style B as you chose — Oracle's mechanics, today's surface.
+
+4. UOM AND RATE ARE DERIVED, NOT ASKED FOR
+
+   Rate now comes from the stock actually moving:
+
+       outward      value / quantity of what is at that location
+       job work     value / quantity of what that party is holding
+       from a       the contract's agreed rate, when you pulled the line
+       contract
+       receipt      the item master's standard rate — the only case
+                    where the master rate is the right answer
+
+   Both fields show dashed to say "filled in for you", and both stay
+   editable. Column widths rebuilt so 531.5652 fits. PACKING HAS LEFT THE
+   ROW — it and Description and the finished-product picker are in a
+   per-line strip that opens on its own when the line uses any of them.
+
+5. A JOB WORK RETURN CANNOT EXCEED WHAT WAS SENT
+
+   Gate Outward always checked that you own what you are sending. Coming
+   back was unchecked entirely, so 300 could be booked back from a mill
+   that only ever received 200.
+
+   Now measured against what that party is actually holding, with the
+   same three bands used everywhere else:
+
+       within what they hold        posts, nothing asked
+       over, inside 10%             anyone, with a reason on the pass
+       beyond 10%                   admin only, reason still required
+
+   Applies both ways — material back from a processor, and a customer's
+   processed goods going home. A LOSS is not touched by this check; that
+   is the yield formula's business, and losing material in processing is
+   normal. The 10% is a setting (return_over_pct).
+
+   Posting a return with no party named is refused outright — without it
+   there is nothing to check the quantity against.
+
+6. AN EMPTY PASS CANNOT BE VERIFIED
+
+   Draft may be empty; that is how you start. VERIFIED says a second
+   person has checked it, and it cannot say that about a document with
+   nothing on it. A line counts only if it names an item AND carries a
+   quantity above zero, so an empty row left by "+ Add line" is not a
+   line.
+
+7. ORDER / PROFORMA                       (already in v11, unchanged)
+
+   Gone from Inward, where nothing read it. On Outward it is "Dispatch
+   against order" — its one real job, feeding Order Costing Control.
+
+8. STOCK LEDGER: PARTY FILTER AND PARTY COLUMN
+
+   A Party box at the top turns the page into that party's own statement
+   for that item. Leave it on "all parties" and a PARTY column appears
+   after Location. The party is joined back from the gate pass that wrote
+   each row — a store issue between your own floors has no party and
+   shows a dash, which is honest rather than blank.
+
+   Only parties that actually appear against that item are listed. A
+   filter that can return nothing is not a filter, it is a trap.
+
+   The opening balance obeys the party filter too, so the running balance
+   never starts from a number belonging to a different question.
+
+
+TESTING
+-------
+
+  lov_ship_test.js    46 checks. pickMode, balOf, rateFor, lovItemRows and
+                      the fuzzy scorer lifted out of the SHIPPED
+                      inv_gate.php: what the LOV holds per transaction
+                      type, the derived rate (978,080 / 1,840 = 531.5652,
+                      not the master's 530), code ordering, and every
+                      typo case.
+  keepvalue_test.js   29 checks. 12 party combinations and 75 contract
+                      combinations, zero losses — including a job work
+                      contract sitting on a purchase pass, kept and
+                      marked "On this pass".
+  returncap_test.php  24 checks. The full return truth table, the
+                      holding-nothing case, who may post, and the
+                      tolerance as a setting at 0% and 25%.
+  structure           44 checks. LOV opens on entry, one panel not one per
+                      row, the select still submits, packing out of the
+                      row, MATNAME shared by both direction checks,
+                      ledger colspans.
+  verify_test.php     59 checks (v9)  — still passing
+  delete_test.php     24 checks (v11) — still passing
+
+  226 checks, all passing.
+
+  Retired: contract_pick_test.js and cascade_test.js from v10/v11. Both
+  tested functions this release replaced (fillContracts became strict,
+  match() became lovItemRows). Their coverage is inside the two suites
+  above, against the current code.
+
+
+NOT TESTED — PLEASE CHECK THESE FIRST
+-------------------------------------
+
+There is no MySQL in my sandbox, so five queries have never run against a
+real database:
+
+  inv_holdings()      who is holding what        (v11)
+  inv_holding_lots()  their lots                 (v11)
+  inv_stock_maps()    quantity AND value         new
+  the ledger party join and the party list       new
+
+All are inside try/catch and return empty on failure, which would look
+like "nothing is in stock" rather than a broken page. Four things to try
+in order, each takes a minute:
+
+  1. Gate Outward, Sale — click the Material cell. The list should open
+     with your Main Store items and their balances.
+  2. Check one rate against Current Stock: value divided by quantity.
+     If it shows the item master's rate instead, the value map failed.
+  3. Gate Inward, Job work return — the mills should appear with the
+     quantity each is holding, and the item list should be only theirs.
+  4. Stock Ledger — the Party column, and then pick one party.
+
+Tell me which of the four look wrong and I will fix them.

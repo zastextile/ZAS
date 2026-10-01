@@ -1,0 +1,347 @@
+/* ZAS TEXTILE — Export Docs AI · Modern Light UI
+   Light content area, dark navy sidebar. Maps the existing class vocabulary
+   1:1 so every PHP page is re-themed with no markup changes. Palette matches
+   the print documents (invoice/packing/costing) for a consistent brand look. */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+
+:root{
+  --bg:#f3f5fa; --bg2:#eef1f8;
+  --panel:#ffffff; --panel-solid:#ffffff;
+  --text:#152033; --muted:#5a6b82; --faint:#8a97ab;
+  --line:#e3e9f2; --line-strong:#cbd5e3;
+  --navy:#0b2a4a; --gold:#b8891f;
+  --cyan:#0ea8c9; --violet:#6d5bd0; --pink:#e0435d; --green:#16a34a; --orange:#d97706; --blue:#2f7fe0;
+  --primary:#0ea8c9; --primaryDark:#6d5bd0;
+  --shadow:0 10px 30px rgba(15,35,65,.08); --radius:16px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:'Manrope',system-ui,Segoe UI,Arial,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+}
+/* starfield/nebula elements are injected by layout.php but stay hidden in the light theme */
+#zstar{display:none}
+#znebula{display:none}
+@keyframes zrise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes zspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+
+.ai-orb-wrap{display:flex;flex-direction:column;align-items:center;text-align:center;padding:14px 0 22px}
+.ai-orb{position:relative;width:110px;height:110px}
+.ai-orb .halo{position:absolute;inset:-6px;border-radius:50%;background:conic-gradient(from 0deg,var(--cyan),var(--violet),var(--pink),var(--green),var(--cyan));filter:blur(9px);opacity:.5;animation:zspin 7s linear infinite}
+.ai-orb .core{position:absolute;inset:8px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#12335a,var(--navy));display:flex;align-items:center;justify-content:center;font-size:32px;color:#bfe3ff;box-shadow:0 10px 26px rgba(11,42,74,.28)}
+.ai-orb-hint{margin-top:14px;color:var(--muted);font-size:14px}
+.ai-answer{border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:20px;margin-top:16px;box-shadow:var(--shadow);animation:zrise .4s ease both}
+.ai-answer .who{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-weight:700;font-size:13.5px}
+.ai-answer .who .dot{width:22px;height:22px;border-radius:7px;background:conic-gradient(from 210deg,var(--cyan),var(--violet),var(--pink),var(--cyan))}
+.ai-answer p{margin:0;font-size:14.5px;line-height:1.7;color:var(--text)}
+.ai-caret{color:var(--cyan)}
+
+a{color:var(--cyan);text-decoration:none}
+a:hover{color:var(--violet)}
+::selection{background:rgba(14,168,201,.18)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:8px}
+::-webkit-scrollbar-track{background:transparent}
+
+.app{position:relative;z-index:1;display:grid;grid-template-columns:262px 1fr;min-height:100vh}
+
+/* ---------- sidebar (kept dark for contrast against the light content area) ---------- */
+.sidebar{
+  background:linear-gradient(180deg,#0b2a4a,#0a2340);
+  border-right:1px solid rgba(255,255,255,.06);
+  color:#eaf1ff;padding:22px 14px;position:sticky;top:0;height:100vh;
+}
+.brand{padding:6px 10px 18px;border-bottom:1px solid rgba(255,255,255,.12);display:flex;align-items:center;gap:12px}
+.brand:before{content:"";width:30px;height:30px;border-radius:9px;flex:0 0 auto;background:conic-gradient(from 210deg,var(--cyan),var(--violet),var(--pink),var(--cyan))}
+.brand-title{font-family:'Space Grotesk';font-size:18px;font-weight:700;letter-spacing:.02em;color:#fff}
+.brand-sub{font-size:11px;line-height:1.4;color:#9fb3cf;margin-top:2px}
+.nav{margin-top:16px;display:flex;flex-direction:column;gap:3px}
+.nav a{display:flex;align-items:center;gap:10px;color:#c3d3ea;padding:11px 13px;border-radius:12px;font-size:14px;font-weight:500;transition:.16s ease}
+.nav a:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav a:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--cyan);opacity:.55;transition:.16s ease}
+.nav a:hover:before{opacity:1;box-shadow:0 0 8px var(--cyan)}
+.side-user{position:absolute;bottom:18px;left:14px;right:14px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);font-size:13px;color:#eaf1ff}
+.side-user strong{font-weight:700}
+.side-user span{display:block;color:#9fb3cf;margin-top:4px;font-size:11.5px}
+
+.content{padding:26px;position:relative;z-index:1}
+.content-login{grid-column:1 / -1;max-width:440px;margin:9vh auto;width:100%}
+
+.topbar{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:22px}
+h1{margin:0;font-family:'Space Grotesk';font-size:26px;line-height:1.12;letter-spacing:-.01em;font-weight:600;color:var(--navy)}
+h2{margin:0;font-family:'Space Grotesk';font-size:17px;color:var(--text);font-weight:600}
+h3{margin:12px 0 8px;font-family:'Space Grotesk';font-weight:600;color:var(--text)}
+p.lead{color:var(--muted);margin:8px 0 0;line-height:1.55;font-size:14px}
+
+/* ---------- cards ---------- */
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:15px;margin-bottom:11px;
+  animation:zrise .4s ease both;
+}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:11px}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---------- buttons ---------- */
+.btn{
+  border:0;padding:11px 16px;border-radius:12px;cursor:pointer;
+  font-family:inherit;font-weight:700;font-size:13px;display:inline-block;color:#fff;
+  background:linear-gradient(100deg,var(--cyan),var(--violet));
+  box-shadow:0 8px 18px rgba(14,168,201,.22);transition:.16s ease;
+}
+.btn:hover{filter:brightness(1.06);transform:translateY(-1px)}
+.btn.secondary{background:var(--panel);color:var(--text);border:1px solid var(--line-strong);box-shadow:none}
+.btn.green{background:linear-gradient(100deg,var(--green),#0ea8c9);box-shadow:0 8px 18px rgba(22,163,74,.2)}
+.btn.orange{background:linear-gradient(100deg,var(--orange),#e0435d);box-shadow:0 8px 18px rgba(217,119,6,.2)}
+.btn.red{background:linear-gradient(100deg,var(--pink),#e0435d);color:#fff;box-shadow:0 8px 18px rgba(224,67,93,.22)}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none;filter:none}
+
+/* ---------- forms ---------- */
+.form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.field label{display:block;color:var(--muted);font-size:12px;font-weight:600;margin-bottom:6px}
+.field input,.field select,.field textarea{
+  width:100%;border:1px solid var(--line-strong);border-radius:11px;
+  background:#fff;padding:11px 12px;font-size:14px;color:var(--text);
+  font-family:inherit;transition:.15s ease;
+}
+.field input:focus,.field select:focus,.field textarea:focus,
+td input:focus,td textarea:focus,td select:focus{
+  outline:none;border-color:var(--cyan);box-shadow:0 0 0 4px rgba(14,168,201,.14)
+}
+.field select option{background:#fff;color:var(--text)}
+td select option{background:#fff;color:var(--text)}
+.field textarea{min-height:84px;resize:vertical}
+.full{grid-column:1/-1}.two{grid-column:span 2}
+
+/* ---------- tables ---------- */
+.table-wrap{border:1px solid var(--line);border-radius:16px;overflow:auto;background:#fff}
+table{border-collapse:separate;border-spacing:0;width:100%;min-width:980px}
+/* Density, set once here for the whole app.
+
+   A row used to land near 44px. Not because of the cell — because of the
+   CONTROL inside the cell: cells were padded 10px and the input inside them
+   another 11px, so the input, not the row, decided the height. Fourteen
+   lines of that is roughly 200px of nothing, which is two or three lines you
+   scroll for that should have been on screen.
+
+   Text size is deliberately NOT reduced. This tightens space, not legibility
+   — small type on a costing screen is how a rate gets misread. */
+th{
+  position:sticky;top:0;z-index:1;background:#f6f8fc;color:var(--faint);
+  padding:5px 8px;text-transform:uppercase;letter-spacing:.04em;font-size:11px;
+  text-align:left;border-bottom:1px solid var(--line)
+}
+td{padding:3px 8px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle;color:var(--text)}
+tbody tr:hover td{background:#f6f8fc}
+/* A control in a table cell is a grid cell, not a form field.
+
+   The descendant selector is doing real work: it scores 0,1,1, which beats a
+   page's own bare `.zin{padding:10px 12px}` at 0,1,0 no matter which
+   stylesheet loads last. That is what lets one rule here tighten every grid
+   in the app without editing a dozen page files — and it deliberately leaves
+   standalone form fields alone, which should stay comfortable to tap. */
+td input,td select,td textarea,
+td .zin,td .fc-in,td .ctin{
+  width:100%;border:1px solid var(--line-strong);border-radius:8px;
+  padding:4px 7px;font-size:12.5px;line-height:1.35;
+  background:#fff;color:var(--text);font-family:inherit
+}
+/* 30px keeps a row tappable on a phone — the floor this pass will not cross. */
+td input,td select,td .zin,td .fc-in,td .ctin{min-height:26px}
+td textarea{min-height:30px}
+.num{text-align:right;font-variant-numeric:tabular-nums;font-family:'Space Grotesk'}
+.total-row td{background:#f6f8fc;font-weight:700;border-top:2px solid var(--line-strong)}
+
+/* ---------- the base form field, defined ONCE ----------
+
+   `.zin` was defined separately on five pages — four different sizes, and
+   product_costing.php defined it TWICE inside itself (10px 12px, then
+   4px 7px), which is exactly why its grid was tight and its form was fat on
+   the same screen.
+
+   This is the one definition. The values are deliberately IDENTICAL to what
+   those pages already set, so adopting it changes nothing on screen: it only
+   removes the duplication. And because it scores 0,1,0 — the same as a
+   page's own copy — any page still carrying its own wins on load order (a
+   page's <style> comes after this linked file), so pages can be converted
+   one at a time instead of all at once. */
+.zin{
+  width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line-strong);
+  background:#fff;color:var(--text);font-size:13.5px;outline:none;font-family:inherit
+}
+.zin:focus{border-color:var(--cyan)}
+
+/* ---------- compact forms ----------
+
+   The density pass above tightened GRIDS and deliberately left standalone
+   form fields comfortable, for the phone. On a desktop that turned six
+   fields into a full screen: a field cost ~62px to hold one line of text,
+   because `.zin` carries padding 10px 12px PLUS margin-top 7px, inside a
+   grid with gap 14px.
+
+   This is the form half of the same idea, and it is OPT-IN. Nothing changes
+   until a page wraps its fields in `.zform`, so a page nobody has reviewed
+   cannot be altered by this block. Convert pages one at a time.
+
+   Shape: label left, field right, on one row. A form stops being a stack of
+   tall boxes and becomes a readable list of facts.
+
+   Specificity is deliberate. `.zform .zrow .zin` scores 0,3,0, which beats
+   any page's own bare `.zin` at 0,1,0 whatever the load order — so a page
+   keeps working before its local copy is deleted. And because the rule
+   requires `.zrow`, a TABLE inside a .zform is untouched: its controls stay
+   with the `td` rules above, where they belong. */
+/* The label column is a CEILING, not a fixed width. A .zform can sit in a
+   narrow pane (Product Master puts one in half of a split), and a hard 130px
+   label there leaves almost nothing for the field. min() keeps it at 130px
+   when there is room and lets it give way when there is not. */
+.zform .zrow{
+  display:grid;grid-template-columns:min(130px,38%) minmax(0,1fr);gap:9px;
+  align-items:center;padding:3px 0;border-bottom:1px solid #f2f6fa
+}
+.zform .zrow:last-child{border-bottom:0}
+.zform .zrow > .zlab,.zform .zrow > label.zlab{
+  font-size:12px;font-weight:600;color:var(--faint);text-align:right;
+  line-height:1.3;margin:0;display:block
+}
+.zform .zrow .zin,.zform .zrow input,.zform .zrow select{
+  width:100%;margin:0;border:1px solid var(--line-strong);border-radius:7px;
+  padding:4px 8px;font-size:12.5px;line-height:1.35;min-height:26px;
+  background:#fff;color:var(--text);font-family:inherit
+}
+.zform .zrow textarea.zin{min-height:44px;padding:5px 8px}
+.zform .zrow input[type=checkbox]{width:15px;height:15px;min-height:0;accent-color:var(--cyan)}
+.zform .zrow .zin:focus{border-color:var(--cyan);outline:none}
+/* THERE IS DELIBERATELY NO TWO-FIELDS-ON-ONE-ROW RULE.
+   There was one — [field][label][field] in a 3-column grid. It works at a
+   comfortable width and fails badly at a narrow one: the middle label does
+   not wrap, so it takes its full width and both fields collapse to slivers,
+   leaving a label sitting where the other field's box should be. A label
+   pointing at the wrong box is a worse fault than a form one row taller.
+   If two fields ever need to share a row again, they need a container query,
+   not a fixed 3-column grid. */
+/* a section is a thin bar, not a card with a title bar and its own padding */
+.zform .zsec{border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:10px}
+.zform .zsec > h3{
+  margin:0;padding:5px 10px;background:#f6f8fc;border-bottom:1px solid var(--line);
+  font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)
+}
+.zform .zsec > .zsec-b{padding:8px 10px}
+.zform .zhint{font-size:11px;color:var(--faint);line-height:1.4}
+
+/* THE PHONE KEEPS ITS TAP TARGETS. Below 720px the label goes above the
+   field and both go back to a comfortable size — the compaction above is a
+   desktop answer to a desktop problem, and must not make a phone worse. */
+@media(max-width:720px){
+  .zform .zrow{grid-template-columns:1fr;gap:3px;padding:5px 0}
+  .zform .zrow > .zlab,.zform .zrow > label.zlab{text-align:left}
+  .zform .zrow .zin,.zform .zrow input,.zform .zrow select{
+    padding:9px 11px;font-size:13.5px;min-height:40px
+  }
+}
+
+/* ---------- badges ---------- */
+.badge{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:999px;
+  border:1px solid var(--line-strong);background:#f0f6fb;color:var(--cyan);font-size:12px;font-weight:600}
+.badge.green{background:#e9f9ef;color:var(--green);border-color:#bfe8cf}
+.badge.orange{background:#fdf1e0;color:var(--orange);border-color:#f2d6a6}
+.badge.red{background:#fdeaee;color:var(--pink);border-color:#f5c3cd}
+.badge.blue{background:#eaf2fe;color:var(--blue);border-color:#c3d9fb}
+
+/* ---------- alerts ---------- */
+.alert{border-radius:14px;padding:12px 15px;margin-bottom:14px;font-size:14px}
+.alert.success{background:#e9f9ef;color:#127a3f;border:1px solid #bfe8cf}
+.alert.error{background:#fdeaee;color:#b8283f;border:1px solid #f5c3cd}
+
+/* ---------- KPIs ---------- */
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);
+  padding:18px;animation:zrise .4s ease both}
+.kpi .label{font-size:12px;color:var(--muted);font-weight:600}
+.kpi .value{font-family:'Space Grotesk';font-size:30px;font-weight:700;margin-top:7px;line-height:1.2;padding-top:2px;
+  background:linear-gradient(100deg,var(--cyan),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.kpi .sub{font-size:12px;color:var(--faint);margin-top:4px}
+
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.readonly-note{background:#f6f8fc;border:1px dashed var(--line-strong);border-radius:14px;padding:13px;color:var(--muted);font-size:13px;line-height:1.6}
+.codebox{background:#0b1424;color:#cfe0ff;border:1px solid var(--line);border-radius:16px;padding:15px;overflow:auto;font-size:13px;line-height:1.55;white-space:pre-wrap}
+.audit-entry{display:grid;grid-template-columns:170px 1fr;gap:10px;padding:13px 0;border-bottom:1px solid var(--line)}
+.audit-time{color:var(--faint);font-size:12px;font-weight:600}
+.audit-text{font-size:13px;line-height:1.5}
+.search-line{display:flex;gap:10px;margin-bottom:14px}
+.search-line input{flex:1;border:1px solid var(--line-strong);border-radius:14px;padding:13px;font-size:15px;background:#fff;color:var(--text)}
+.small{font-size:12px;color:var(--faint)}
+
+/* ---------- login orb ---------- */
+.login-orb{position:relative;width:70px;height:70px;margin:0 auto 8px}
+.login-orb .halo{position:absolute;inset:-4px;border-radius:50%;background:conic-gradient(from 0deg,var(--cyan),var(--violet),var(--pink),var(--green),var(--cyan));filter:blur(7px);opacity:.6;animation:zspin 8s linear infinite}
+.login-orb .core{position:absolute;inset:5px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#12335a,var(--navy));display:flex;align-items:center;justify-content:center;box-shadow:0 10px 24px rgba(11,42,74,.3);font-size:26px;color:#bfe3ff}
+.content-login .card{text-align:center}
+.content-login .field{text-align:left}
+
+/* ---------- sound toggle ---------- */
+#zsound{position:fixed;top:16px;right:16px;z-index:50;width:40px;height:40px;border-radius:12px;
+  border:1px solid var(--line-strong);background:#fff;box-shadow:var(--shadow);
+  color:var(--text);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center}
+#zsound:hover{border-color:var(--cyan)}
+
+@media(max-width:1100px){.app{grid-template-columns:1fr}.sidebar{height:auto;position:relative}.side-user{position:static;margin-top:18px}.kpis{grid-template-columns:repeat(2,1fr)}.form-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:700px){.content{padding:14px}.topbar{flex-direction:column}.kpis,.grid-2{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.two{grid-column:1}.search-line{flex-direction:column}
+/* keeps inputs at >=16px on phones — below that, iOS Safari auto-zooms the
+   whole page in when a field is focused, which is what made login (and
+   every other form) feel awkward on mobile even though nothing was
+   actually broken; desktop never had this problem since only mobile
+   Safari/Chrome do this auto-zoom */
+.field input,.field select,.field textarea{font-size:16px}
+.btn{min-height:44px}}
+
+/* ============================================================
+   THEME OVERRIDES for pages that ship their own inline <style>
+   (packing_list.php staff-mobile + PC compact form). These use
+   !important so the light theme wins over the page's inline
+   rules without editing that page's PHP/JS markup structure. */
+.staff-wrap{max-width:560px;margin:0 auto}
+.staff-head{background:linear-gradient(135deg,rgba(14,168,201,.08),rgba(109,91,208,.08))!important;border:1px solid var(--line)!important;color:var(--text)!important;border-radius:20px!important;padding:18px!important}
+.staff-title{color:var(--text)!important;font-family:'Space Grotesk'}
+.staff-sub{color:var(--muted)!important}
+.staff-card{background:var(--panel)!important;border:1px solid var(--line)!important;border-radius:18px!important;box-shadow:var(--shadow)!important;color:var(--text)}
+.staff-card h2{color:var(--text)!important;font-family:'Space Grotesk'}
+.staff-note,.staff-serial{color:var(--muted)!important}
+.staff-item{background:#f6f8fc!important;border:1px solid var(--line-strong)!important;border-radius:16px!important}
+.staff-item-title{color:var(--text)!important}
+.staff-item-desc{color:var(--muted)!important}
+.staff-big-btn{background:linear-gradient(100deg,var(--cyan),var(--violet))!important;color:#fff!important;border-radius:15px!important;box-shadow:0 8px 20px rgba(14,168,201,.22)!important;font-weight:700}
+.staff-big-btn.light{background:#f0f3f9!important;color:var(--text)!important;border:1px solid var(--line-strong)!important;box-shadow:none!important}
+.staff-big-btn.orange{background:linear-gradient(100deg,var(--orange),var(--pink))!important;color:#fff!important}
+.staff-big-btn.red{background:linear-gradient(100deg,var(--pink),#e0435d)!important;color:#fff!important}
+.staff-field label{color:var(--muted)!important;font-weight:600}
+.staff-field input,.staff-field select,.staff-field textarea{background:#fff!important;border:1px solid var(--line-strong)!important;color:var(--text)!important;border-radius:13px!important}
+.staff-field select option{background:#fff;color:var(--text)}
+.staff-pill{background:#eaf2fe!important;color:var(--blue)!important;border-radius:999px}
+.staff-pill.green{background:#e9f9ef!important;color:var(--green)!important}
+.staff-pill.red{background:#fdeaee!important;color:var(--pink)!important}
+.staff-pill.orange{background:#fdf1e0!important;color:var(--orange)!important}
+.staff-badge{background:#eaf2fe!important;color:var(--blue)!important}
+.staff-badge.done{background:#e9f9ef!important;color:var(--green)!important}
+.staff-alert{border-radius:14px!important}
+.staff-alert.ok{background:#e9f9ef!important;color:#127a3f!important;border:1px solid #bfe8cf!important}
+.staff-alert.info{background:#eaf2fe!important;color:#1d4f91!important;border:1px solid #c3d9fb!important}
+.staff-alert.err{background:#fdeaee!important;color:#b8283f!important;border:1px solid #f5c3cd!important}
+.staff-row{background:#f6f8fc!important;border:1px solid var(--line)!important;border-radius:14px;padding:13px;margin-top:10px}
+.staff-row-title{color:var(--text)!important;font-weight:700}
+.staff-row-sub{color:var(--muted)!important;font-size:12.5px;margin-top:5px;line-height:1.5}
+.staff-delete-form button{background:#fdeaee!important;color:var(--pink)!important;border:1px solid #f5c3cd!important;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer;margin-top:10px;width:100%}
+.staff-backbar{display:flex;gap:8px}
+.pc-compact-scroll{background:#f6f8fc!important;border:1px solid var(--line)!important;border-radius:14px!important}
+.pc-compact-field label{color:var(--muted)!important}
+.pc-compact-field input,.pc-compact-field select{background:#fff!important;border:1px solid var(--line-strong)!important;color:var(--text)!important;border-radius:10px!important}
+.pc-compact-field select option{background:#fff;color:var(--text)}
+
+/* Numeric fields: no tiny 0.001-step spinner arrows cluttering the box. */
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+input[type=number]{-moz-appearance:textfield}

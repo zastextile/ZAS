@@ -1,0 +1,129 @@
+ZAS v29 — "no status, no data, cannot enter"
+=============================================
+3 files. Upload over v28. No schema change. No new table. No column.
+Nothing is written by anything in this zip — it only READS and reports.
+
+    includes/production.php     <- the diagnostic (added at the end, nothing else touched)
+    production_entry.php        <- shows it above the search box
+    production_my_work.php      <- shows it instead of the old one-size message
+
+
+WHY THOSE SCREENS ARE EMPTY
+---------------------------
+Production entry is gated FOUR times. An item becomes enterable only when ALL
+FOUR are true:
+
+    1. a Proforma Invoice has production ENABLED
+    2. that order has LINES on it
+    3. each line RESOLVES to a product in Product Master
+       (by its saved product link, or failing that by its name)
+    4. that product has at least ONE ACTIVE OPERATION
+
+Until now every one of those four failed the SAME SILENT WAY: an empty
+screen, or a search box that returned nothing no matter what you typed.
+
+And My Work's single message was worse than silence. It said:
+
+    "No production-enabled orders yet — enable one from Proforma Invoices."
+
+It said that WHATEVER the real reason was. So if your order was enabled
+correctly and the real problem was gate 4 — the product has no operations —
+you were sent to Proforma Invoices, where there was nothing wrong. That is my
+message, and it was misleading.
+
+
+WHAT IT SAYS NOW
+----------------
+Both screens ask which gate actually failed, and name it:
+
+  GATE 1  "No order is switched on for production yet."
+          -> Open Proforma Invoices
+
+  GATE 1b "No orders are assigned to you." (a worker, not an admin)
+          -> no link, because there is nothing for THEM to fix
+
+  GATE 2  "The production order has no lines on it."
+          -> Open Proforma Invoices
+
+  GATE 3  "No order line matches a product in Product Master."
+          -> AND IT LISTS THE NAMES that match nothing
+          -> Open Product Master
+
+  GATE 4  "The products on this order have no operations yet."
+          -> AND IT NAMES THE PRODUCTS still waiting
+          -> "An operation is what a worker books against and what sets the
+              rate — with none, there is nothing to enter. Open the product,
+              import its parts from the Part Library, and give each one its
+              Cutting and Stitching steps."
+          -> Open Product Master
+
+I EXPECT GATE 4 IS YOURS. Your Product Master screenshot showed Patient Gown
+at "0 parts", and every size variant reading "No parts yet". A product with no
+operations can never appear in production entry — there is nothing to book
+against and no rate to pay. The screen simply never said so.
+
+
+A HALF-FINISHED ORDER ALSO WARNS
+--------------------------------
+If SOME items are ready and others are not, entry works — and the screen
+still says, in amber rather than red:
+
+    "Some items will not appear in the search"
+    "Ready — but these will not appear until they are finished: Patient Gown."
+
+That is the case where a worker says "my item is not in the list" and nobody
+can tell why. Now the list of what is missing is on the screen.
+
+When everything is set up, NOTHING is shown. The banner stays off a healthy
+screen entirely.
+
+
+WHERE IT APPEARS
+----------------
+  · PRODUCTION ENTRY — above the search box, BEFORE you type. Typing into a
+    box that can only ever answer "no results" is not a search, it is a dead
+    end. Now you know before you start.
+  · MY WORK — in place of the old message.
+
+Both are scoped the same way the search itself is scoped: an admin sees every
+order, a production worker only the orders assigned to them. A worker will
+never be shown the name of an order they cannot see. That scoping is copied
+from production_api.php line 11, so the banner and the search can never
+disagree about what this user is allowed to know.
+
+
+WHAT THIS IS NOT
+----------------
+It does not create anything, fix anything, or change a single rule. It is four
+counts and a sentence. The per-operation cap, the packing ceiling, the MIN
+rule, the rates — none of it is touched, and the test checks that those
+functions are all still present and that the cap is byte-for-byte intact.
+
+
+CHECK THIS ON THE LIVE SITE
+---------------------------
+  1. Open Production Entry. A coloured box should now appear above the search
+     with a reason. READ WHICH GATE IT NAMES.
+  2. Open My Work. It should say the same thing, not "no production-enabled
+     orders".
+  3. If it says GATE 4 and names your products: open Product Master for one of
+     them, import a part from the Part Library, give it a Cutting and a
+     Stitching operation, save.
+  4. Come back to Production Entry. That product must now be searchable, and
+     the red box must be gone or turned amber naming only what is still left.
+
+If the box says something you believe is WRONG — for example it says no order
+is switched on when you know one is — tell me which gate it named and what you
+see, and that narrows it to one query.
+
+
+WHAT I COULD NOT TEST
+---------------------
+No MySQL here. 1057 assertions on the PHP side and 665 in the browser all
+pass, 46 of them new: the diagnostic is RUN against a staged database for each
+of the four gates in turn, plus the assigned-worker case, the half-finished
+case, and the fully-healthy case where it must stay silent.
+
+What those tests cannot do is see YOUR data. They prove the diagnostic reports
+the right gate for a given state; only opening the page proves which state you
+are actually in.

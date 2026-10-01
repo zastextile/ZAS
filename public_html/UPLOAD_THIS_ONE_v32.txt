@@ -1,0 +1,227 @@
+================================================================
+ZAS  v32  —  Parts Library redesign, order rate amendments
+================================================================
+
+READ THIS FIRST — IT MATTERS
+----------------------------
+I compared this zip against the copy of your live site you sent me.
+
+    YOUR SERVER IS STILL ON v24.
+
+Everything from v25 to v31 never went up. So this is NOT a six-file
+patch — it is every file that differs from what is running right now,
+15 in total. Upload all of them.
+
+If I had sent only the files I changed today, product_master.php would
+have arrived expecting a stylesheet (assets/css/app.css) that is not on
+your server, and the page would have rendered with no formatting at all
+— the same "completely view disturb" you reported before.
+
+Nothing here is a patch. Every file is complete. Overwrite and go.
+
+
+WHAT TO UPLOAD
+--------------
+Copy public_html/ over your public_html/, keeping the folders:
+
+    assets/css/app.css                (changed — the shared form sizing)
+    assets/js/costing.js              (NEW)
+    assets/js/final_costing.js        (NEW)
+    includes/layout.php               (changed — stylesheet cache version)
+    includes/menu.php                 (changed — one new menu entry)
+    includes/part_library.php         (changed)
+    includes/production.php           (changed)
+    part_library.php                  (rebuilt)
+    product_costing.php               (changed)
+    product_master.php                (changed)
+    final_costing.php                 (changed)
+    production_entry.php              (changed)
+    production_my_work.php            (changed)
+    production_ops_bulk.php           (changed)
+    production_order_rates.php        (NEW)
+
+DO NOT upload anything into config/. Your database password lives there
+and nothing in this zip needs to touch it.
+
+Open any page once after uploading. New database columns and tables are
+created automatically on the first page load — there is no SQL to run.
+If a column already exists, the code shrugs and carries on.
+
+
+================================================================
+WHAT IS NEW  —  the screens you drew
+================================================================
+
+1. PART LIBRARY  (part_library.php)
+-----------------------------------
+Three boxes at the top:  Part ID · Part Name · Style (optional)
+
+  · Part ID is shown, never typed. It is what the CSV and every product
+    import use to find the part again.
+  · Style offers the styles already in the library, and still takes a
+    new one you type.
+
+Then one grid:  #  ·  Stage  ·  Operation  ·  Rate / pc  ·  Action
+
+  · Line 1 is Cutting, the word already written in, and the cursor
+    starts ON ITS RATE. The only thing you have to say about cutting
+    is what it costs.
+  · Line 2 onward is Stitching, cursor on the OPERATION.
+  · Enter, Tab and the right arrow go forward. Up and down move
+    between lines. Going forward off the last rate makes a new line.
+  · THE KEYBOARD NEVER ENTERS THE STAGE COLUMN. The Stage box is
+    mouse-only on purpose, for the rare second cutting — and that one
+    must be given a name, because two lines both called "Cutting"
+    would pay for the same work twice.
+  · Leave an operation name blank and it takes its stage as the name.
+    A line blank in BOTH boxes is nothing at all.
+
+NO FINISHING BOX. NO RATE AT THE TOP.
+"Finish" is an ordinary stitching operation you type, paid per piece
+like Singer or Overlock.
+
+PACKING IS NOT HERE. A part is not packed — a SET is, and how many
+parts make a set lives on the product with its sizes. Dispatch is gone
+from the stage list.
+
+Per part: Save/Update · Edit · Copy · Delete, each with its ID visible.
+Parts delete freely. A product that imported one keeps its own copy, so
+deleting a library part never changes anything on the floor.
+
+CSV out and back in, one line per operation — which is also exactly
+what Excel puts on the clipboard, so you can paste a block straight
+into the grid. The Part ID column makes a rename survive the round
+trip. Nothing is written unless every part in the file passes: one bad
+line leaves the library exactly as it was.
+
+
+2. MASTER PRODUCTS — NEVER DELETED  (product_master.php)
+--------------------------------------------------------
+A new "Used In" column, and the Delete button is greyed out whenever
+anything uses the product.
+
+  · Used in any production entry, order, invoice, shipment or costing
+    → Delete is OFF. Deactivate instead: it leaves every list, and
+    every record that points at it stays intact.
+  · Once nothing references it at all → Delete turns back on. That one
+    is a typo being cleaned up, not a product.
+  · A check that CANNOT RUN counts as used. A count that fails never
+    reads as "safe to delete".
+
+The server enforces this too, not just the greyed-out button. If you
+post a delete for a product that is in use, it deactivates it and tells
+you exactly what was in the way.
+
+THIS FIXES A REAL HOLE. The old Delete had no check of any kind: it
+removed the product and its sizes, and left its operations, its
+production history and its cost sheets pointing at nothing.
+
+Importing a part now asks WHICH SIZES — "All", or pick the ones you
+want. A size you leave out simply does not use that part, which is how
+a Single takes one pillow and a Double takes two. It lands at 1, and
+re-importing never resets a number you already set.
+
+
+3. ORDER RATE AMENDMENTS  (production_order_rates.php — NEW)
+------------------------------------------------------------
+Production → Order Rate Amendments.
+
+When one buyer's order is worth more for one operation — a tighter hem,
+a quality parameter written into the contract — amend it THERE.
+
+  · LOCKED BY DEFAULT. Press Unlock on a line, type the rate and a
+    reason, and it saves and locks again.
+  · THE REASON IS REQUIRED. An unexplained rate change six months later
+    is indistinguishable from a mistake.
+  · THIS ORDER ONLY. The master product keeps its rate, the library
+    keeps its rate, every other order keeps paying the standard.
+  · WORK ALREADY BOOKED IS NEVER RE-PRICED. Every production entry
+    carries the rate it was booked at, so an amendment changes what is
+    paid from now on and can never quietly restate a wage somebody has
+    already earned. The screen shows that figure next to each line.
+  · Withdraw puts a line back on the standard rate, and the withdrawal
+    is recorded too.
+
+Only an admin can move a rate. A colleague can read the screen — which
+is the point of an audit trail.
+
+
+4. RATE CHANGE HISTORY
+----------------------
+Every rate change is now recorded, from all three places a rate lives:
+
+    library   the Part Library definition
+    product   one operation on one master product
+    order     an amendment on one production order
+
+From → to, who, when, and why. Shown at the bottom of the Part Library
+and on the order rate screen. Never edited, never deleted.
+
+Both the Part Library and the Product Master operations grid now have a
+"why the rate changed" box. It is only needed when you actually move a
+rate; leave it empty the rest of the time.
+
+
+================================================================
+TWO BUGS FOUND AND FIXED ALONG THE WAY
+================================================================
+
+1. OVER-CUTTING WAS ALWAYS REFUSED.
+   includes/production.php read the over-cut reason out of a variable
+   that does not exist in that part of the code ($r instead of $e). The
+   reason was therefore ALWAYS empty, so the "cutting above the plan is
+   allowed if you give a reason" path could never be reached. Every
+   over-cut was refused — with a message telling you to do the exact
+   thing the code then ignored. Now it reads the right variable and
+   works as it was always described.
+
+2. THE NEW PART LIBRARY GRID WOULD NOT HAVE LOADED AT ALL.
+   My own bug, caught by the tests before it reached you: a line
+   registered a handler for a function defined further down the file,
+   which throws in the browser and would have killed the whole keyboard
+   block. Fixed, and the test now presses real keys against the real
+   code so it cannot come back silently.
+
+
+================================================================
+WHAT I DID NOT TOUCH
+================================================================
+
+Your existing products, operations and rates are EXACTLY as they were.
+Nothing was converted, migrated or rewritten — you said you will enter
+the new stage operation costs yourself, so the old data is left alone
+and keeps working.
+
+All new database columns and tables are additive and nullable:
+
+    part_library.style                     (new column)
+    production_order_rates                 (new table)
+    rate_history                           (new table)
+
+Every one is created inside a try/catch, so an install that already has
+them is unaffected.
+
+
+================================================================
+TESTING — AND WHAT IS NOT TESTED
+================================================================
+
+2,182 assertions pass (1,180 PHP, 1,002 JavaScript). The tests do not
+read the code and look for words in it — they LIFT the shipped
+functions out of the files and RUN them, and the keyboard test presses
+real keys against the real grid logic.
+
+WHAT IS NOT TESTED: there is no MySQL where I work. Every SQL statement
+here is written carefully and none of it has been run against a real
+database. The schema additions are the ordinary additive kind this app
+already uses everywhere, and they are all wrapped so a failure cannot
+stop a page loading — but I am telling you plainly rather than letting
+you assume otherwise. Open Part Library and Product Master first after
+uploading, before anyone starts entering a day's production.
+
+A STILL-OPEN GAP, unchanged from before and worth repeating: the
+per-operation cap stops work being booked beyond the plan. It does NOT
+catch a worker being credited for work somebody else did, or a quantity
+that was never produced but sits inside the plan. That needs either an
+approval step or a cross-check against fabric actually cut. Nothing in
+this release changes that.

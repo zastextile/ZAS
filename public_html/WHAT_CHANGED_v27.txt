@@ -1,0 +1,165 @@
+ZAS v27 — the broken screen, and the stale export
+==================================================
+9 files. Upload over v25 or v26 (this contains all of v26). Replaces v26.
+No schema change. No new table. No column.
+No rule, rate, formula or quantity is touched anywhere in this zip.
+
+
+WHY YOUR SCREEN LOOKED BROKEN — I FOUND IT, AND IT WAS MY FAULT
+===============================================================
+
+THE STYLESHEET WAS NEVER CACHE-BUSTED.
+
+includes/layout.php linked it like this:
+
+    <link rel="stylesheet" href="assets/css/app.css">
+
+No version. So a browser that had already downloaded app.css KEPT SERVING THE
+OLD ONE. You uploaded the new app.css to the server, but your browser never
+asked for it.
+
+In v25 I rebuilt the Product Master form using NEW classes — .zform, .zsec,
+.zrow, .zlab — that only exist in the NEW app.css. Your browser had the new
+MARKUP (from product_master.php, which is not cached) and the OLD STYLES. The
+result is a form with no styling at all: plain stacked boxes, no spacing, no
+layout. "Completely view disturbed" is exactly right, and it is exactly what
+that combination produces.
+
+This was my mistake in the plain sense: I shipped markup that depends on new
+CSS without making sure the new CSS could actually arrive.
+
+FIXED:
+    <link rel="stylesheet" href="assets/css/app.css?v=26">
+
+The two JavaScript files carry ?v=26 as well, so all three refresh together.
+A comment in layout.php tells whoever changes app.css next to raise that
+number, and a test fails if it is ever linked bare again.
+
+IF YOU STILL SEE A BROKEN SCREEN AFTER UPLOADING THIS, it is the browser
+holding the old file harder than usual. Press CTRL+F5 (or CMD+SHIFT+R) once
+on that page. After this upload you should never need to do that again.
+
+ALSO IN THIS ZIP, from v26: the rail fix. I had made the left rail appear only
+while editing, which removed your Parts & Operations link AND re-flowed the
+list page, because .pm-layout is a flex row and I deleted its 200px first
+column. The rail always renders again. A test now fails if it is ever made
+conditional.
+
+Both of your complaints about Product Master were caused by me, in the same
+release, and neither was anything you did.
+
+
+WHY THE EXPORT DID NOT SHOW YOUR LATEST PRODUCTS
+=================================================
+
+THE SAME KIND OF FAULT: A CACHED DOWNLOAD.
+
+pob_send_csv() sent the file with no cache headers at all:
+
+    Content-Type: text/csv
+    Content-Disposition: attachment; filename="production_operations.csv"
+
+The download URL never changes — it is always ?download=operations. With no
+cache headers a browser is entitled to hand you back the file it downloaded
+last time instead of asking the server again. So you pressed Export, and got
+the export from BEFORE you added those products.
+
+THE QUERY WAS NEVER WRONG. I checked it: it reads live from the database every
+time, joins products, and includes every active product with no operations at
+all as a blank starter row. It was simply never being asked.
+
+FIXED, three ways:
+
+  1. NO-CACHE HEADERS on every export:
+         Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+         Pragma: no-cache
+         Expires: 0
+     (all three, because the older two are what some proxies still obey)
+
+  2. A STAMPED FILENAME. Every download now carries the date and time:
+         production_operations_2026-09-11_2140.csv
+     Two exports can never be confused in your Downloads folder again, and
+     the newest is obvious by name.
+
+  3. A LIVE COUNT ON THE PAGE, above the export buttons:
+
+         Right now: 47 active products · 312 active operations ·
+                    9 products with no operations yet.
+
+     Counted as the page loads, straight from the database. Press Export and
+     compare. IF THE FILE DISAGREES WITH THAT LINE, IT IS AN OLD DOWNLOAD —
+     reload the page and press again. You now have a way to tell, instead of
+     wondering.
+
+ONE THING TO KNOW, stated on the page too: ONLY ACTIVE PRODUCTS ARE EXPORTED.
+A product switched off in Product Master will not appear in the file. That is
+deliberate and unchanged — but it was never written down, so if a product is
+missing, check its Active tick first.
+
+
+THE 9 FILES
+===========
+    includes/layout.php         <- the cache-bust. THE FIX FOR YOUR SCREEN.
+    assets/css/app.css          <- the form rules + .zin defined once
+    assets/js/costing.js        <- 432 lines moved out of product_costing
+    assets/js/final_costing.js  <- 94 lines moved out of final_costing
+    product_master.php          <- rail always renders + CSV button renamed
+    product_costing.php         <- JS moved out, both .zin copies removed
+    final_costing.php           <- JS moved out
+    production_ops_bulk.php     <- duplicate grid removed + THE EXPORT FIX
+    includes/menu.php           <- the CSV page has a menu entry
+
+They go to:
+    public_html/includes/layout.php
+    public_html/includes/menu.php
+    public_html/assets/css/app.css
+    public_html/assets/js/costing.js
+    public_html/assets/js/final_costing.js
+    public_html/product_master.php
+    public_html/product_costing.php
+    public_html/final_costing.php
+    public_html/production_ops_bulk.php
+
+UPLOAD ALL NINE. The CSS and the pages that depend on it must move together —
+that is the whole lesson of this release.
+
+
+ALSO IN HERE (batch 2, unchanged from v26)
+-------------------------------------------
+  · The duplicate "Fast Entry Grid" is removed from production_ops_bulk.php.
+    Its CSV half is untouched, including EXPORT ONLY WHAT IS MISSING. The page
+    is now "Operations & Quantities — CSV", the Product Master button reads
+    "Import / export by CSV", and it has a menu entry at last.
+  · .zin was defined FIVE times, twice inside product_costing.php alone. Now
+    once, in app.css, at the same values — so nothing moves, the duplication
+    just goes away.
+  · 841 lines of inline JavaScript moved to two cached files. Moved, not
+    rewritten: zero lines lost, none edited.
+
+
+CHECK THESE, IN THIS ORDER
+--------------------------
+  1. Upload all nine. Open Product Master. If it still looks wrong, press
+     CTRL+F5 once. THE FORM SHOULD NOW BE ONE TIDY BLOCK AND THE RAIL SHOULD
+     BE ON THE LEFT.
+  2. The list page must look as it did before v25.
+  3. Edit a product. Click PARTS & OPERATIONS in the rail — it must jump down
+     the page. Click PRODUCT — it must open the folded Details block.
+  4. Operations & Quantities — CSV. Read the "Right now:" line. Add a product
+     in Product Master, come back, RELOAD, and the count must go up by one.
+     Export, and the new product must be in the file.
+  5. Product Costing — add a line, change a rate, totals, Save, print, AI.
+     THE RISKIEST FILE IN THE ZIP: 432 lines of its behaviour moved.
+  6. Final Costing — add a line, Tab across it, use the item picker.
+  7. An invoice or a gate pass — must be completely unchanged.
+
+
+WHAT I COULD NOT TEST
+---------------------
+No MySQL here. 962 assertions on the PHP side and 665 in the browser all pass,
+and they read the shipped files, so they catch a missing function, a bare
+stylesheet link, or a missing cache header. THEY CANNOT CLICK A BUTTON ON YOUR
+SERVER, and they cannot see your browser's cache.
+
+Steps 5 and 6 are the two a test here cannot prove. If either misbehaves, tell
+me at once and upload nothing further.

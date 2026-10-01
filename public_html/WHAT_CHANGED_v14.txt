@@ -1,0 +1,184 @@
+ZAS — v14   One LOV, used everywhere
+====================================
+
+  assets/js/lov.js        NEW  the List of Values itself
+  assets/css/lov.css      NEW  how it looks (style B)
+  inv_gate.php            uses it
+  inv_consume.php         uses it — and the cascade now SHOWS
+  inv_store.php           uses it
+  inv_ledger.php          (unchanged from v13, included for the set)
+  inv_contracts.php       (unchanged from v10, included for the set)
+  includes/inventory.php  (unchanged from v13, included for the set)
+
+Upload all of it to public_html/, keeping the folder structure:
+assets/js/ and assets/css/ and includes/ must land where they are.
+Replaces v12 and v13, neither of which you uploaded. Everything from
+both is inside this one.
+NO DATABASE CHANGE.
+
+
+THE BUG YOU FOUND IN v13 — TYPING DID NOT FILTER
+------------------------------------------------
+
+You reported: the list opens, but typing does nothing until you press
+the down arrow. That is exactly right, and here is the cause.
+
+v13's LOV listened for three events:
+
+    focusin     open the list
+    keydown     arrows, Enter, Esc
+    focusout    close it
+
+There was NO 'input' listener. Typing changed the box's value and
+nothing redrew. Pressing ArrowDown ran the keydown handler, which calls
+lovDraw(), and lovDraw() reads the box — so the filter appeared to work
+only after an arrow key.
+
+Fixed in the shared engine:
+
+    root.addEventListener('input', function (e) {
+      if (!S.open || e.target !== S.f) return;
+      S.idx = 0;        // a new query starts at the top of the list
+      load();           // ask the screen for rows again
+    });
+
+WHY MY TESTS MISSED IT, WHICH MATTERS MORE THAN THE BUG
+
+Every test I had ran the filtering FUNCTIONS directly — give it "thred",
+check it returns THREAD. Not one of them ever fired an event. So the
+filter was provably correct and provably unreachable at the same time.
+
+There is now lov_events_test.js, which drives the LOV the way a keyboard
+does: focus the cell, type, arrow, Enter, Esc, Tab — and asserts the list
+reacted to each. It fails against v13 and passes against v14. That class
+of bug cannot get past it again.
+
+
+WHY THIS IS ONE FILE AND NOT THREE COPIES
+-----------------------------------------
+
+You asked for the same LOV on Consumption "and all other related to
+production". Before writing it a third time I stopped and pulled it out
+into assets/js/lov.js.
+
+That matters to you, not just to me. Three copies drift: the Gate screen
+already had balances and Consumption did not, and neither behaved the
+same on the keyboard. Now there is one implementation. When you ask for
+a change to the LOV, it changes in all three screens at once — and it
+cannot be right in one place and wrong in another.
+
+A screen now supplies only the two things it alone knows: WHICH ROWS ARE
+VALID, and WHAT TO DO when one is chosen. The panel, the columns, the
+keyboard, the fuzzy matching and the positioning are shared.
+
+
+CONSUMPTION — THE CASCADE YOU ASKED FOR
+---------------------------------------
+
+Your rule: choose one field and the next shows only what relates to it.
+On Consumption the chain is not party → contract → item, it is:
+
+    Order (proforma)
+        -> only the products that order actually makes, and only the
+           lines the floor has already started
+    Product
+        -> only the materials that product's COSTING uses
+    Material
+        -> only the lots of it really on the floor, oldest first
+
+The data for this was already here. What was missing was showing it: the
+material box was a dropdown of every item in the business with the wrong
+ones merely hidden, no balance anywhere, and nothing to say why an item
+was missing. It is now the same LOV, and every row carries:
+
+    Code · Description · In costing · On floor · UOM · Rate
+
+"In costing" says yes or no. Materials in the costing rank first; ones
+outside it are hidden until you tick "Show every material", which then
+marks them rather than pretending they belong. That tick already existed
+and still works — it is now honest about what it is doing.
+
+The rate is derived from the ledger (value ÷ quantity at that location),
+not from the item master's planning rate. The final number still comes
+from the FIFO allocation lot by lot, which is more accurate than any
+single figure — the LOV rate is what you see before you commit.
+
+WHAT I DID NOT CHANGE: the lot picker on Consumption. It is a full
+screen with a ledger view, multi-lot selection and FIFO override, which
+is more than an LOV can be. Making it a dropdown would have been a
+downgrade. It stays as it is.
+
+
+STORE ISSUE / RETURN
+--------------------
+
+Same LOV. A store movement never creates or destroys stock, it only
+changes where stock is — so the only question is "what is at the place
+it is leaving". The list is the FROM location's stock, with balances.
+Change the From box and the list changes with it.
+
+
+GATE PASSES
+-----------
+
+Behaviour is exactly as you approved in the demo. What changed is only
+where the code lives: about 200 lines moved out of inv_gate.php into the
+shared file. Every gate test still passes unchanged, which is the point
+of moving it.
+
+
+TESTING
+-------
+
+  lov_events_test.js  23 checks on the WIRING — the suite that would
+                      have caught your bug. Typing re-asks the provider
+                      with what was typed, with no arrow key; an input on
+                      another field is ignored; Enter, Tab, Esc, Home and
+                      End all still take the right row.
+  regression check    19 checks proving v13 has no input listener and v14
+                      does, and that Consumption and Store carry no LOV
+                      event code of their own — so they inherit the fix
+                      rather than needing their own copy of it.
+  lov_core_test.js    33 checks on the shared engine itself — the four
+                      fuzzy rules, the compactness rule that makes "btn"
+                      mean BUTTON and not COTTON, highlighting, HTML
+                      escaping, number formatting.
+  providers_test.js   31 checks on each screen's own rules, lifted from
+                      the shipped files: the consumption cascade
+                      narrowing to the costing and widening again, the
+                      derived rate (978,080 ÷ 1,840 = 531.5652), and the
+                      store list following the From location.
+  lov_ship_test.js    46 checks on the gate screen — unchanged from v13,
+                      still passing after the extraction.
+  keepvalue_test.js   29 checks — the party/contract loss bug.
+  verify_test.php     59 · delete_test.php 24 · returncap_test.php 24
+
+  288 checks, all passing.
+
+  One correction while testing: I asserted that searching "btn" inside a
+  costing that contains COTTON GREIGE would return nothing. It returns
+  the greige — because b-t-n does appear in order inside "cotton greige",
+  and greige IS in that costing. The filter was right and my expectation
+  was wrong. BUTTON itself is correctly excluded. The test now records
+  the real behaviour.
+
+
+NOT TESTED — PLEASE CHECK
+-------------------------
+
+No MySQL here, so the queries behind the balances have still never run
+for real. Four things, a minute each:
+
+  0. ANY of the three screens — click a Material cell and TYPE. The list
+     must shorten on every letter, with no arrow key. This is the v13
+     bug; check it first.
+  1. Consumption — click the Material cell. The list should open with
+     your materials and an "On floor" number against each.
+  2. Pick an order and a product. The list should narrow to that
+     product's costing, and the line under the table should say how many.
+  3. Store Issue — the list should be what is at the From location, and
+     should change when you change From.
+  4. Gate Outward — unchanged from what you have already seen.
+
+If the "On floor" column reads 0 for everything, the stock map query
+failed and I will fix it — the rest of the screen will still work.

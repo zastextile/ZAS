@@ -1,0 +1,217 @@
+ZAS v18 — Production Operations: Excel paste + a real CSV round trip
+=====================================================================
+THIS PACKAGE REPLACES v17, v16 AND v15. Upload v18 only.
+
+  46 files in the main folder. Keep the structure: includes/, assets/js/,
+  assets/css/.
+
+IF YOU ALREADY UPLOADED v17
+---------------------------
+Only THREE files changed since it:
+
+    includes/production.php
+    production_ops_bulk.php
+    proforma.php            <- see section 0, this one is a real bug fix
+
+All three are in the folder **_only_new_since_v17/**. Upload just those three and
+you are current. That folder is a convenience copy — do not upload the
+folder itself, only the three files inside it, into their normal places.
+
+If you have NOT uploaded v17, ignore that folder and upload the 46 files.
+
+
+0. A BUG FOUND BY YOUR OWN QUESTION — READ THIS ONE
+---------------------------------------------------
+You asked whether a hand-added line, in a proforma where the rest came from
+CSV, really reaches production and prints. Tracing it end to end found a
+case where it did NOT, and it was one I introduced in v16.
+
+WHAT WAS WRONG. The proforma CSV import updated each row with
+    product_id = <the master id for this name, or NULL>
+Your reworded names are not exact Product Master names, so they resolved to
+NULL. Meaning: pick a product, reword the printed name (which the screen
+explicitly invites you to do and promises the link survives), then export
+the items, edit quantities in Excel, re-import — and the link you made on
+purpose was silently wiped. That line dropped straight back out of
+production. The original bug, reintroduced by a round trip.
+
+THE FIX. One word of SQL:
+    product_id = COALESCE(?, product_id)
+A CSV name the master recognises still sets the link, including moving a
+line to a different product. A name it does not recognise now leaves the
+existing link alone instead of destroying it.
+
+WHAT WAS ALREADY FINE, checked at the same time:
+  · Printing never depended on the link. proforma_print.php reads
+    SELECT * FROM proforma_items with no filter — every line prints,
+    linked or not. Same for the commercial invoice.
+  · The Excel import on the shipment side (import_excel.php) does not
+    touch product_id in its UPDATE, so links there already survived.
+  · The manual save still assigns product_id directly, on purpose — the
+    edit screen owns its own rows, so clearing a cell there really does
+    unlink, which is what you would expect.
+
+SO, TO ANSWER YOU DIRECTLY: yes — with one condition that has not changed.
+A hand-added line reaches production when you PICK the product from the
+list. The green tick under the cell is the confirmation. A line you type
+without picking still falls back to name-guessing, which may work and may
+not — that is what the amber "not linked" chip is telling you. Printing
+works either way, always.
+
+
+WHAT YOU DECIDED
+----------------
+You asked what I recommend, so I took my own recommendations:
+  · "Export what is missing" gives a BLANK STARTER ROW per product.
+  · Set quantities get their OWN CSV, separate from operations (option A).
+
+
+1. THREE OF YOUR FOUR ASKS ALREADY EXISTED
+------------------------------------------
+Before building anything I read what was there. Worth knowing:
+
+(a) THE BED SET IS ALREADY HANDLED.
+    There is a table, product_component_qty, holding
+    (product, size, part, qty per set). Single + Pillow Case = 1,
+    Double + Pillow Case = 2, Bed Sheet = 1 in both. Production already
+    reads it. You edit it on **Product Master -> edit a product**, in a
+    grid of sizes across parts.
+
+    It is not on the operations screen, which is almost certainly why it
+    felt missing. v18 puts a panel at the top of Bulk Operations pointing
+    at it.
+
+    THE CATCH NOBODY TOLD YOU: that grid only appears once a product HAS
+    parts, and a product only has parts once an operation names one. So
+    the order is operations first, quantities second. The new panel says
+    this out loud.
+
+(b) THE BULK GRID AND CSV IMPORT ALREADY EXISTED, on
+    production_ops_bulk.php, reached from Product Master. If you have not
+    been using them, the real problem was finding the screen.
+
+(c) What genuinely did NOT exist: pasting from Excel, and any way to get
+    your EXISTING operations out. Those are what v18 adds.
+
+
+2. PASTE STRAIGHT FROM EXCEL
+----------------------------
+The grid handled exactly one key: Enter. It now uses the same two shared
+files as the invoice, the proforma and Final Costing.
+
+    Excel column order:  Product | Part | Operation Name | Stage | Rate
+
+    Tab across      Enter down      Ctrl+D fill down
+    Alt+N new row   Ctrl+S save     paste a whole block
+
+Leave Part blank for a simple product. A pasted product name that matches
+Product Master links itself; one that does not is kept on screen with an
+amber "not in Product Master" mark, so you fix it before saving rather
+than after. A pasted Stage snaps to Cutting/Stitching/Dispatch whatever
+case you typed.
+
+A rate of 1,200 reads as 1200. Anything unreadable ("2-3", "approx 500")
+is left exactly as pasted and named above the grid, never guessed.
+
+The product box also stopped calling the server on every keystroke — the
+whole product list is sent once and filtered in the browser, like every
+other picker in the app.
+
+
+3. THE ROUND TRIP — the part you actually asked for
+---------------------------------------------------
+The old download was a BLANK template. There was no way to see what you
+already have. Three buttons now, under CSV Import:
+
+  Export all operations
+      Every operation, each carrying its **Operation ID**.
+
+  Export only what is missing
+      Every active product with NO operations at all, one blank starter
+      row each. This is the list you cannot see anywhere else in the app
+      — the answer to "what is left to set up?".
+
+  Blank template
+      Unchanged, for starting from nothing.
+
+HOW THE OPERATION ID WORKS, because this is the important bit:
+
+    a row WITH an id   -> UPDATES that exact operation
+    a row with NO id   -> creates a new one
+
+So: export, fix thirty rates in Excel, import, and those thirty rows are
+corrected. Without the id, re-importing your own export would have
+created a second copy of everything and quietly doubled your Workmanship
+cost. The preview now shows "update #1041" or "add new" on every row, and
+counts them separately before you commit.
+
+Guards, because a spreadsheet slip should not cost you a day:
+  · An id that no longer exists is refused, and tells you to clear the id
+    to add it as new.
+  · An id whose product name has been changed to a DIFFERENT product is
+    refused — it will not quietly move an operation between products.
+  · Blank starter rows in an imported file are skipped and counted as
+    "not got to yet", not reported as errors.
+
+
+4. SET QUANTITIES GET THEIR OWN FILE
+------------------------------------
+    Export set quantities  ->  Product Name, Size, Part, Qty Per Set
+
+This is separate from operations ON PURPOSE, and the reason is worth one
+minute:
+
+    An operation is one row per product + part. It does not care about size.
+    A quantity is one row per product + size + part. It does not care
+    about operations.
+
+Bed Set 3-Pc with 3 operations and 4 sizes is 3 rows + 4 rows = 7 rows in
+two files. Forced into one sheet it becomes 12 rows, with each rate
+repeated four times — and the moment two of those copies disagree about a
+rate, nothing can tell you which is right.
+
+The export lists EVERY size x part combination, not only the ones already
+saved, because an unsaved combination behaves as 1. It is the only way to
+see what the system currently believes.
+
+The import matches the product by its EXACT name and one of its existing
+sizes. No fuzzy matching here on purpose: writing "2 pillow cases" onto
+the wrong size produces nothing that looks wrong anywhere — you would
+simply cut the wrong number. A size it cannot resolve is refused and
+named.
+
+A product only appears in this export once it has operations with a Part
+filled in. If the file comes back empty, do the operations first.
+
+
+5. WHAT I COULD NOT TEST
+------------------------
+Same limit as every round: no MySQL here. The new SQL — the operations
+export, the size x part export, and the UPDATE branch — has never run
+against your database. Please check:
+
+  1. Bulk Operations -> CSV Import -> Export all operations.
+     -> opens in Excel with an Operation ID column filled in.
+  2. Change one rate in that file. Import it.
+     -> the preview says "update #NNNN" on that row, and the count of
+        operations does NOT go up afterwards.
+  3. Export only what is missing.
+     -> one blank row per product that has no operations.
+  4. Fast Entry Grid: paste 5 rows from Excel.
+     -> lands in the right columns; unmatched product names show amber.
+  5. Export set quantities, change a Double pillow case to 2, import.
+     -> Product Master shows 2 for that size.
+  6. Try importing the set-quantities file with a size spelled wrong.
+     -> that row is refused and named, nothing else is affected.
+
+Also worth running after this one:
+  7. Open a proforma that has both CSV and hand-added lines. Reword a
+     picked line, export the items to CSV, re-import that file.
+     -> the green tick must still be there, and the line must still be in
+        production. That is section 0.
+
+Covered by tests that run here: 476 assertions on the PHP side and 360 in
+the browser, all passing — including 29 that walk exactly the mixed
+CSV-plus-manual document you asked about. That includes 34 on the CSV round trip (the
+duplicate case above is pinned explicitly), 26 on set quantities, and 34
+on the grid.

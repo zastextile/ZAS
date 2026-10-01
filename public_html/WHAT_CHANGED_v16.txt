@@ -1,0 +1,203 @@
+ZAS v16 — Proforma & Commercial Invoice: product LOV, kept link, Excel keys
+===========================================================================
+CHANGED FILES ONLY. Upload over the existing files, keeping the folder
+structure (includes/ and assets/js/ go inside their folders).
+
+  proforma.php                    the proforma edit screen
+  shipment_view.php               the commercial invoice screen
+  shipment_save.php               stores the product link on invoice lines
+  packing_list.php                v15's dead-code cleanup, carried over
+  inv_consume.php                 now reads the link instead of guessing
+  production_dashboard.php        same
+  includes/production.php         which product a line IS
+  includes/bootstrap.php          adds the two new columns on first load
+  includes/helpers.php            one small shared function (lov_norm)
+  assets/js/grid.js               NEW — the spreadsheet keys, shared
+
+
+YOU DO NOT NEED v15 — IT IS INSIDE THIS ONE
+-------------------------------------------
+You never uploaded zas_v15_dept_removed.zip. You do not have to.
+
+v15 contained three files: shipment_view.php, shipment_save.php and
+packing_list.php. The first two are in this zip in a NEWER form — v16 was
+built on top of the v15 edits, not beside them, so the Dept column
+removal you asked for is already inside the copies here. packing_list.php
+is now included too, unchanged from v15.
+
+So: upload v16 only. v15 can be deleted.
+
+(For the record, v15 removed the per-line Dept dropdown from the
+commercial invoice. It wrote to shipment_items.department, which nothing
+in the application ever read — the column and its old values are left
+alone, the screen simply stopped writing to it. packing_list.php in that
+release only deleted a filter function that was written but never called.
+Neither change affects anything you can see except the missing column.)
+
+assets/js/lov.js and assets/css/lov.css are UNCHANGED from v14 — the two
+invoice screens use the very same picker files as Gate Inward/Outward.
+You uploaded v14, so they are already on the server and are not repeated
+here. If you ever restore from an older backup, take those two from the
+v14 zip as well or the picker will not open on any screen.
+
+
+1. THE BUG YOU REPORTED
+-----------------------
+"in proforma invoice is it not show entry if i do manually — first we
+ import via csv then any line if enter by manual so its now show in
+ production"
+
+You were right, and here is exactly why.
+
+A proforma line stored only the product NAME as free text. Production had
+no code to follow, so every time it needed to know what a line was, it
+GUESSED — it compared your typed name against every name in Product
+Master and took the closest one, but only if the resemblance scored 55%
+or better. Below that it returned nothing, and the line simply did not
+appear in production.
+
+A CSV import happened to use names copied from the master, so those lines
+scored 100% and always appeared. A line you typed by hand almost never
+matched to the letter — so it fell under 55% and vanished. Nothing warned
+you. The line was on the proforma, printed correctly, and was invisible
+to the floor.
+
+THE FIX: the line now stores the product's CODE alongside the name. Pick
+once from the list and the code is written; production follows the code
+and never guesses again.
+
+
+2. WHAT YOU ASKED FOR, AND WHAT IT NOW DOES
+-------------------------------------------
+"show list of product same like you did for gate in / out"
+
+Both screens now use the same list you already have on Gate Inward and
+Outward. Click the Product cell and the whole master opens. Type and the
+list shortens. Enter picks. Same keys, same behaviour, same code — one
+shared file, so the two can never drift apart.
+
+"allow me to write even slight differ name but code backend will be
+ remain same"
+
+This is the part worth reading carefully.
+
+Pick a product, then reword the name as much as the buyer needs. The
+PRINTED text is yours. The CODE does not move. Under the cell a small
+green chip tells you both:
+
+    ✓ Hand Towel 400 GSM   printing your wording
+
+The tick is the code that production follows. "printing your wording"
+means the invoice will show what you typed, not the master's name.
+
+Only two things change the code:
+  - emptying the cell entirely  -> the line unlinks
+  - typing the exact full name of ANOTHER master product -> it links to
+    that one instead
+
+Anything else you type is treated as your wording for the product you
+already picked.
+
+"can i use control ctrl + s so can i save"
+
+Yes, on both screens.
+
+    Ctrl + S      save
+    Ctrl + Enter  save and print
+    Alt + N       new line, cursor already in it
+    Tab           next cell; off the last cell it makes a new line
+    Enter         DOWN one line, same column — the Excel behaviour
+    Ctrl + D      copy the cell above
+    paste         a block copied from Excel fills across and down and
+                  adds the lines it needs
+
+Beside the Save button a small marker reads "saved" or "● unsaved —
+Ctrl+S". Closing the tab with unsaved lines now asks first.
+
+"delete dept column A" — done in v15, still gone. Nothing read it.
+
+
+3. THE CHIP HAS FOUR STATES, NOT TWO
+------------------------------------
+    ✓ Hand Towel 400 GSM
+        picked, and the printed name is the master's name.
+
+    ✓ Hand Towel 400 GSM   printing your wording
+        picked, and you have reworded it. The link holds.
+
+    not linked
+        no code stored. Production will fall back to guessing at the
+        name, exactly as the whole system did before v16 — which may
+        work, or may drop the line.
+
+    ⚠ product #12 no longer in master — pick again
+        a code IS stored, but that product has been removed from Product
+        Master. The link is dead. Production is guessing again and you
+        need to know.
+
+That last one is why this is worth having: previously a dead link and a
+live one looked identical on screen.
+
+
+4. OLD LINES — NOTHING BREAKS
+-----------------------------
+Every proforma and invoice line saved before today has no code stored.
+Those behave EXACTLY as they did yesterday: production matches the name
+the same way, with the same 55% threshold, and finds the same products it
+found before. Nothing was rewritten, nothing was re-guessed in bulk, and
+no existing line changed.
+
+They will show as "not linked". That is not damage — it is the truth
+about a line the system has always been guessing at. Open a proforma,
+click a Product cell, pick the right item, save: that line is now
+certain. There is no rush and no deadline.
+
+If you want, I can build you a one-page fixer listing every existing line
+with what it currently resolves to and how confident that guess is, so
+you can confirm or correct them in bulk instead of one document at a
+time. Say the word and I will.
+
+
+5. WHAT THE DATABASE DOES ON FIRST LOAD
+---------------------------------------
+Two columns are added, both optional and both empty:
+
+    ALTER TABLE proforma_items ADD COLUMN product_id INT NULL
+    ALTER TABLE shipment_items ADD COLUMN product_id INT NULL
+    (plus an index on each)
+
+Nothing is dropped, nothing is rewritten, and no existing value is
+touched. They are added automatically the first time any page loads.
+
+
+6. HOW TO CHECK IT WORKED — four minutes
+----------------------------------------
+1. Open any proforma. Click a Product cell.
+   -> the full product list opens. Type three letters; it shortens as you
+      type, not only when you press the arrow key.
+
+2. Pick a product with Enter, then edit the name — add " for Metro,
+   ctn/12" to the end.
+   -> the chip still shows the green tick with the MASTER name, plus
+      "printing your wording". Press Ctrl+S.
+
+3. Reopen the proforma.
+   -> your reworded name is what shows. The green tick is still there.
+
+4. Open Production and look for that order line.
+   -> it is there, under the master product, even though the proforma
+      prints your wording. This is the thing that was broken.
+
+Then repeat step 1 on a Commercial Invoice — same list, same keys.
+
+
+7. WHAT I COULD NOT TEST
+------------------------
+Same limit as every round so far, stated plainly: I have no MySQL here.
+Every SQL statement in this release is written and read carefully but has
+never run against your real database. The four checks above are the only
+real proof. Everything else — the list, the matching, the link rules, the
+chip states, the resolver's branching — is covered by tests that run
+here: 343 assertions on the PHP side and 245 on the browser side, all
+passing, including 38 written specifically for the link behaviour in
+section 2, run against BOTH screens so the two cannot drift.

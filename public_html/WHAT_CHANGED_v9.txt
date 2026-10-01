@@ -1,0 +1,158 @@
+ZAS — v9  (5 files)
+Upload everything to public_html/, keeping the includes/ folder structure.
+
+  inv_verify.php          NEW   Stock Health — the cross-check page
+  inv_reset.php           NEW   Start Again — admin-only clear-and-restart
+  inv_gate.php            EDIT  type-to-find item picker on the item lines
+  includes/inventory.php  EDIT  inv_stock_map(); the outward reason now reads
+                                Remarks; over-issue errors name the item
+  includes/menu.php       EDIT  two new links
+
+New menu entries
+  Inventory > Stock  > Stock Health
+  Administration     > Start Again (clear stock)     (admin only)
+
+
+1. WHY THE THREAD FIGURES DISAGREED
+
+Nothing disagreed. Every number on both screens is correct arithmetic on
+the same rows:
+
+  received 221, issued 211, balance 10          <- the item total
+  Main Store -191 · Production Floor 1 · At Job Worker 200   <- the split
+
+Those add to 10. The item total is right AND Main Store is wrong at the
+same time, because a minus in one place cancels a plus in another.
+
+The cause is one document: GOP-2609-0001, a job work issue of 200 CON
+raised from Main Store on 08-09-2026. Main Store had only ever received
+10. So 200 left a place that held 10, and the 200 that arrived At Job
+Worker is real stock standing on a receipt that never existed.
+
+That pass could not be posted by the code you are running now: 200 against
+a balance of 10 is 190 short, the 10% allowance on 10 is 1, so it lands in
+the admin-only band and is refused outright with no reason on the pass. It
+was posted before includes/inventory.php carried the outward check.
+
+There is nothing to refresh. No balance is stored anywhere in this module
+— every figure is SUM(qty_in) - SUM(qty_out) computed when you open the
+page. That is why there is no rebuild button: if a figure looks wrong, a
+ledger row is wrong.
+
+
+2. STOCK HEALTH  (Inventory > Stock > Stock Health)
+
+Read only. Writes nothing. Eight checks:
+
+  MUST FIX
+   - a balance below zero at any location, with the documents that took
+     the most out, ranked, each one a link
+   - a document marked posted that wrote no stock rows (a post that died
+     half way)
+   - stock rows whose document was deleted or put back to draft
+   - customer-owned goods carrying a value
+
+  WORTH FIXING
+   - owned material received at rate 0 (counts in quantity, adds nothing
+     to value — every cost built on it afterwards is understated)
+   - stored value that does not equal quantity x rate
+   - malformed rows (in and out together, no item, no location)
+   - rows for an item deleted from the Item Master
+
+Plus a reconciliation panel showing what each document type contributed,
+and a document count by status so drafts stop being a mystery.
+
+On your data today it will report one MUST FIX: Main Store -191, naming
+GOP-2609-0001 as the document that took 200.
+
+
+3. START AGAIN  (Administration > Start Again)
+
+Admin only. Type RESET INVENTORY exactly, give a reason, and the reason is
+written to the audit log BEFORE anything is deleted.
+
+Four tick-boxes, each showing its live row count so you agree to a number
+and not to a word:
+
+  Stock movements            ALWAYS ON — ledger, gate passes, store
+                             movements, consumptions, job work bills
+  Reservations and charges   optional
+  Contracts                  optional
+  Item Master / parties /    optional, most destructive. Standard
+  locations                  locations are recreated straight after, and
+                             Product Costing lines are unlinked rather
+                             than left pointing at deleted items.
+
+Never touched by any option: production entries and wages, proformas and
+orders, product costings, users and permissions, and your inventory
+settings (GST %, tolerances, document prefixes).
+
+Document numbering restarts at 0001 by itself — numbers are derived from
+the rows on file, so an empty table already starts fresh.
+
+Prefer the smaller fix where you can. If one document is wrong, open it
+and reverse it: the original stays, the opposite entries appear beside it,
+and the history reads as what happened then the correction. That is the
+right answer for anything already shown to a customer, a supplier or an
+auditor. Start Again is for trial data.
+
+
+4. THE ITEM PICKER ON GATE PASSES
+
+The MATERIAL column was a dropdown of every item; you had to know the code
+to find anything, and on an outward pass nothing told you whether what you
+picked was even on the shelf.
+
+It is now a type-to-find box:
+
+  - type any part of the code, the name or the group; several words all
+    have to match
+  - an exact or leading code match ranks first, otherwise the item with
+    the most stock leads
+  - arrow keys and Enter, or click
+  - OUTWARD: only items with stock at the pass's Location are offered,
+    each showing its balance. A link at the bottom of the list reveals the
+    rest if you genuinely need one. Change the Location dropdown and the
+    list re-ranks immediately.
+  - INWARD: every item, unfiltered — receiving is what creates stock in
+    the first place, so filtering by stock would be backwards.
+
+The <select> is still underneath and is still what gets submitted, so if
+the script ever fails the plain dropdown comes back and the screen works.
+
+
+5. TWO FIXES IN includes/inventory.php
+
+  a) The over-issue error said "put a reason in the pass's Remarks/override
+     field" — but the server read override_reason, and no input on the form
+     ever set it. The tolerance band was unreachable and the message
+     pointed at a box that did not exist. The server now reads Remarks,
+     which is what the screen has always told you to fill.
+
+  b) That same error said "That item has 10 here" — on a fourteen-line
+     pass, fourteen times, telling you nothing about which line to fix. It
+     now names the item: "AC-0001 · THREAD has 10 at Main Store and this
+     pass takes 190 more."
+
+
+6. TESTING
+
+  verify_test.php   59 checks, all passing — the ledger above recomputed
+                    from the screenshot, each detector fired against a
+                    ledger holding one of every defect, reversed parents
+                    proven NOT to raise an orphan, the reason/admin truth
+                    table, and the reset tool's deletion order read out of
+                    inv_reset.php itself (children before parents, nothing
+                    listed twice, production/costing/users never in scope)
+
+  picker_test.js    27 checks, all passing — balOf() and match() lifted
+                    from the shipped inv_gate.php and run against a
+                    stubbed stock map: the stock filter, location
+                    switching, multi-word search, and the ranking rule
+
+There is no MySQL in my sandbox, so the SQL in inv_verify.php has NOT been
+executed against a real database. The detection logic was tested through
+PHP mirrors of the same GROUP BY / HAVING semantics. Every query is inside
+try/catch, so a check that cannot run shows nothing rather than breaking
+the page — open Stock Health first and tell me if any section looks empty
+when it should not be.

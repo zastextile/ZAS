@@ -1,0 +1,142 @@
+ZAS v22-v24 COMBINED — everything after v21, in one upload
+===========================================================
+5 files. Upload over v21. No schema change. No new table. No column.
+
+You told me you uploaded v21 only. So this zip carries EVERYTHING that
+came after it — v22, v23, v23.1 and v24 rolled into one. Upload this and
+you are fully current. Do not hunt for the other zips; they are all inside
+this one, at their latest version.
+
+
+THE 5 FILES
+-----------
+    product_master.php            <- v22 + v23 (split layout, library-first)
+    part_library.php              <- v23       (the library screen)
+    includes/part_library.php     <- v23 + v23.1 (library engine + adopt fix)
+    includes/production.php       <- v24       (one operation, one allowance)
+    production_api.php            <- v24       (the same cap on the API)
+
+Keep the folder. They go to:
+
+    public_html/product_master.php
+    public_html/part_library.php
+    public_html/includes/part_library.php
+    public_html/includes/production.php
+    public_html/production_api.php
+
+
+WHAT EACH ONE GIVES YOU
+-----------------------
+
+v22 — PRODUCT MASTER, SPLIT AND FAST
+  · Layout A: Parts & Operations and Size Variants side by side, one screen.
+  · Nothing reloads. Every change posts in the background.
+  · ONE "Save all" button, with an unsaved badge you cannot miss.
+    Ctrl+S saves. Leaving with unsaved work asks first.
+  · Details and Packing fold away while editing — almost never touched.
+  · A readiness checklist in the top bar says what is still missing before
+    the product can be produced. A checklist, not a rule: quantities are
+    never on it, because blank means 1.
+  · THE 300 QUERIES ARE GONE, both of them. While editing one product the
+    All-Products table is not built at all. And the last-sale column is now
+    ONE statement for every product, not one per product.
+
+v23 — LIBRARY FIRST
+  · Every part on a product shows where it came from: a badge saying
+    "library" or "not in library".
+  · An unlinked part has a one-click Add that adopts it into the library,
+    taking the operations and rates the product ALREADY has. Nothing on any
+    product changes.
+  · The library screen lists every unlinked part name across all products,
+    with a count, and adopts them in bulk. A part used on eleven products is
+    adopted ONCE, not eleven times.
+  · Size chips: click to pick several sizes on one operation. One screen
+    row, one database row per size. Typing keeps the chips in step.
+  · Excel paste — a column of size names, or a whole size x part table.
+
+v23.1 — THE ADOPTION HOLE, CLOSED
+  · A part priced ONLY per size used to be refused by adoption, which would
+    have left you doing it by hand. It is now adopted, taking the most
+    common rate per operation. The only refusal left is a part with no
+    active operations at all, which is nothing to adopt.
+
+v24 — ONE OPERATION, ONE ALLOWANCE  (the fraud stop)
+  · The cap used to be PER STAGE. A stage's progress is a MIN across its
+    operations — correct for reporting, WRONG as a booking limit.
+
+        Singer   200 of 200 done  (complete)
+        Overlock  50 of 200 done  (behind)
+        stage remaining = 200 - MIN(200,50) = 150
+
+    That 150 belongs to OVERLOCK. Book it against SINGER and Singer read
+    350 PIECES ON A 200 PIECE ORDER. Rs 350 paid where Rs 200 was owed.
+    The stage total still looked right, and the 150 stayed on offer — so it
+    could be taken again, and again.
+
+  · Now every operation is capped by ITS OWN booked total:
+        Cutting    ceiling = ordered x per-set
+        Stitching  ceiling = what was actually CUT for that part
+        Dispatch   ceiling = what was actually finished before it
+        remaining  = ceiling - what THIS operation has booked
+
+    Singer -> 0 left, refused by name with the number.
+    Overlock -> exactly its own 150, untouched.
+
+  · THE MIRROR BUG IS FIXED TOO. Before, once Singer reached 200 the stage
+    read 0 and OVERLOCK COULD NOT BE BOOKED AT ALL. Real work was blocked
+    while fake work went through.
+
+
+WHAT DOES NOT CHANGE
+--------------------
+  · The expansion you described was already correct and is untouched:
+        operation quantity = order quantity x part quantity per set
+    100 double bed sets = 100 bed sheets and 200 pillow cases. Singer on
+    200 pillow cases is Rs 200. Overlock is Rs 400.
+  · Packing is still counted in SETS, capped by MIN(finished / per-set)
+    across parts. 200 pillow cases at 2 per set allow 100 sets, never 200.
+  · Cutting above the plan is still allowed WITH a reason — that is
+    wastage, it is real, and it is recorded and shown on the dashboard.
+    Every other stage refuses to exceed.
+
+
+CHECK THESE ON THE LIVE SITE, IN THIS ORDER
+-------------------------------------------
+No MySQL here, so none of this has run against your database. Please check:
+
+  1. Open Product Master on a product with many operations.
+     -> one screen, two grids, no reload when you change anything.
+  2. Change something, then try to leave the page.
+     -> it must warn you about unsaved work.
+  3. Open the Part Library screen, run the bulk adopt.
+     -> every unlinked part name listed once, with a product count.
+     -> after adopting, no product shows as "drifted".
+  4. A part with TWO stitching operations. Book the first to completion.
+     -> it must offer 0. Try again: refused.
+  5. The SECOND operation on that same part.
+     -> it must offer its own full outstanding quantity.
+        THIS IS THE CASE THAT WAS BROKEN BEFORE. If it offers 0, tell me
+        at once.
+  6. Book more than was cut, on any stitching operation.  -> refused.
+  7. Two rows for the SAME operation in one save, past the plan. -> refused.
+  8. Two rows for DIFFERENT operations of the same part.  -> both accepted.
+  9. Cut above the plan. -> allowed with a reason, listed under Over-cuts.
+ 10. Pack a set where one part is short. -> the ceiling drops, and the page
+     names the part holding it back.
+
+
+COVERED BY TESTS THAT RUN HERE
+------------------------------
+765 assertions on the PHP side, 698 in the browser. All passing. They read
+the shipped files themselves, so they fail if the shipped code changes.
+They do NOT prove the SQL runs on your server — only steps 1-10 above can.
+
+
+WHAT THIS STILL DOES NOT CATCH
+------------------------------
+Being straight with you. v24 force-stops OVER-booking against the plan. It
+does not detect a worker booked for work somebody else actually did, or a
+quantity that was never produced but sits within the plan. Those need a
+different control — an approval step, or a cross-check against cut fabric.
+Say the word and I will lay out what that takes. It is a separate piece of
+work and I am not going to imply this one covers it.

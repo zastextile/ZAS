@@ -1,0 +1,173 @@
+ZAS v26 — the rail fix (URGENT) + batch 2
+==========================================
+7 files. Upload over v25. No schema change. No new table. No column.
+No rule, rate, formula or quantity is touched anywhere in this zip.
+
+
+PART A — THE FIX. UPLOAD THIS EVEN IF YOU WANT NOTHING ELSE.
+============================================================
+
+YOU WERE RIGHT ON BOTH COUNTS, AND BOTH HAD THE SAME CAUSE: ME.
+
+In v25 I made the left rail appear only while editing a product. My reasoning
+was that on the list page it listed two headings already on screen. That
+reasoning was wrong twice over:
+
+  1. IT TOOK AWAY THE "PARTS & OPERATIONS" LINK. That is the one you asked
+     about. It had no link because there was no rail.
+
+  2. IT BROKE THE LOOK OF THE MAIN PAGE. This is the part I did not think
+     through. .pm-layout is a FLEX ROW: rail on the left at a fixed 200px,
+     content beside it. Remove the rail and the content re-flows across the
+     whole width. That is your "theme setting is disturbed" — the page was
+     not re-themed, it was re-flowed, by me, for no benefit to you.
+
+FIXED: THE RAIL ALWAYS RENDERS AGAIN. The list page goes back to exactly the
+layout you had before v25.
+
+The only thing that changed about it is the FIRST entry. "Basic Information"
+and "Packing Information" were two links pointing into two cards that are now
+one section, so they are one link, "Product". Parts & Operations and Size
+Variants are unchanged and still appear while editing, exactly as they always
+did.
+
+ONE MORE THING I FOUND WHILE FIXING IT: while editing, Details & Packing is
+folded shut, so the "Product" link pointed INSIDE a closed fold and clicking
+it appeared to do nothing. It now opens the fold first, then jumps. That was
+broken in v25 too and you would have hit it next.
+
+A test now fails if that rail is ever made conditional again, and says why.
+
+
+PART B — BATCH 2 (the rest of what you asked for)
+=================================================
+
+    assets/css/app.css          <- .zin defined ONCE, for the whole app
+    assets/js/costing.js        <- NEW: 432 lines moved out of product_costing
+    assets/js/final_costing.js  <- NEW: 94 lines moved out of final_costing
+    product_master.php          <- PART A fix + the CSV button renamed
+    product_costing.php         <- JS moved out, BOTH .zin copies removed
+    final_costing.php           <- JS moved out
+    production_ops_bulk.php     <- the duplicate grid removed
+    includes/menu.php           <- the CSV page finally has a menu entry
+
+They go to:
+    public_html/assets/css/app.css
+    public_html/assets/js/costing.js
+    public_html/assets/js/final_costing.js
+    public_html/product_master.php
+    public_html/product_costing.php
+    public_html/final_costing.php
+    public_html/production_ops_bulk.php
+    public_html/includes/menu.php
+
+
+B1. THE DUPLICATE WORK YOU SPOTTED — REMOVED
+--------------------------------------------
+production_ops_bulk.php had a "Fast Entry Grid" tab doing the same job as the
+operations grid inside Product Master. Two places to type the same rows. That
+is gone: the tab strip, the grid, its JavaScript, and the two AJAX handlers
+only it used.
+
+WHAT STAYS, because it exists nowhere else in the app:
+  · Export ALL operations as CSV (each row carries its Operation ID, so you
+    can edit a rate in Excel and send it straight back)
+  · EXPORT ONLY WHAT IS MISSING — every active product with no operations at
+    all. That is your adoption worklist and nothing else produces it.
+  · Import operations CSV
+  · Export / import set quantities
+
+The page is now called "Operations & Quantities — CSV" and says on it: to type
+operations for ONE product, use that product in Product Master. The button on
+Product Master is renamed from "Bulk Production Operations" to "Import /
+export by CSV" — that old name is exactly why it read as a competing second
+way to do the same job. And it now has a menu entry instead of sitting one
+button deep where you could not find it.
+
+
+B2. WHY YOUR PAGES DISAGREED ABOUT FIELD SPACING — FIXED AT THE SOURCE
+---------------------------------------------------------------------
+.zin was defined FIVE times across the app, four different sizes. Worst of
+all, product_costing.php defined it TWICE INSIDE ITSELF — 10px 12px, then
+4px 7px further down. The second silently overrode the first. That is exactly
+why its grid was tight and its form was fat on the same screen.
+
+It is now defined ONCE, in app.css, AT THE SAME VALUES THOSE PAGES ALREADY
+USED — so nothing moves on screen. This removes the duplication, it does not
+restyle anything.
+
+Deliberately kept safe: the single rule scores the same as a page's own copy,
+and a page's own <style> loads after the shared file, so ANY PAGE STILL
+CARRYING ITS OWN COPY WINS. Pages convert one at a time. I removed the copies
+from product_costing.php and production_ops_bulk.php only. Every other page in
+the app keeps its own and is untouched.
+
+
+B3. THE COSTING PAGES — WHAT WAS ACTUALLY SLOW
+-----------------------------------------------
+Straight answer, measured from your files: THESE ARE NOT 300-QUERY PAGES.
+Zero queries inside a display loop on either one. That problem was real on
+Product Master and is fixed; this is a different problem.
+
+What made them heavy is that 841 LINES OF JAVASCRIPT WERE RE-DOWNLOADED
+INSIDE THE PAGE ON EVERY SINGLE LOAD, because they were inline. They are now
+two files the browser caches once:
+
+    assets/js/costing.js         432 lines
+    assets/js/final_costing.js    94 lines
+
+MOVED, NOT REWRITTEN. I checked every line of the original block: zero lines
+were lost, and none were edited. The data that CANNOT be cached — your item
+list, sizes, versions, the CAN_EDIT / CAN_PRINT permissions — stays rendered
+in the page by PHP, as it must.
+
+BOTH FILES DECLARE ONLY; nothing in them runs at load. They are linked BEFORE
+the inline block that supplies the data and calls renderAll(), which is the
+order that has to hold. A test fails if either file ever gains a top-level
+call, or if the link is ever moved after the data.
+
+Both are tagged ?v=25 so no browser can serve you a stale copy.
+
+ON PRODUCT COSTING'S FORM: I did not compact it, and I want to be straight
+about why rather than pad the list. It has exactly THREE standalone fields —
+a product dropdown, the AI textarea, and the "type a size" box. There is no
+multi-field form there to tighten; its density is the cost table, which the
+v17 pass already handled. Making those three smaller would be fiddling, and
+the AI textarea is 7 rows on purpose.
+
+
+WHAT I COULD NOT TEST
+---------------------
+No MySQL here. 943 assertions on the PHP side and 665 in the browser all pass,
+and they read the shipped files so they catch a missing function or a broken
+handler. THEY CANNOT CLICK A BUTTON ON YOUR SERVER.
+
+Three of my own tests failed during this work and all three were the test
+being wrong, not the code — I have said so rather than quietly fixing them:
+one counted rail links, one read final_costing.php for functions that now live
+in the JS file, and one called a REQUIRED duplicate a bug (product_costing
+genuinely needs esc/aiShowMsg/aiCancel in both places, because costing.js only
+loads when a product is selected).
+
+
+CHECK THESE ON THE LIVE SITE, IN THIS ORDER
+-------------------------------------------
+  1. Product Master, main list page. THE RAIL IS BACK AND THE PAGE LOOKS AS
+     IT DID BEFORE v25. This is the fix — check it first.
+  2. Open a product for editing. The rail shows Product / Parts & Operations /
+     Size Variants. Click PARTS & OPERATIONS — it must jump down the page.
+  3. Click PRODUCT while editing — it must OPEN the folded Details & Packing
+     block and jump to it, not sit there doing nothing.
+  4. Product Costing. Open a product. Everything must work exactly as before:
+     add a line, change a rate, the totals, Save Costing, print, AI. THIS IS
+     THE RISKIEST FILE IN THE ZIP — 432 lines of its behaviour moved.
+  5. Product Costing with NO product selected, and with AI enabled. The AI
+     panel must still work. (This is the case the duplicate helpers cover.)
+  6. Final Costing. Add a line, Tab across it, use the item picker.
+  7. Operations & Quantities — CSV, from the new menu entry. Export all
+     operations, export only what is missing, and import one back.
+  8. Any untouched page — an invoice, a gate pass. Must be unchanged.
+
+If step 4 or 6 misbehaves, tell me at once and upload nothing further; those
+are the two where moved JavaScript could bite, and they are the two a test
+here cannot prove.

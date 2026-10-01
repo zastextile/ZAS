@@ -1,0 +1,150 @@
+ZAS v21 — the packing ceiling, and cutting an actual
+====================================================
+6 files. Everything changed since v20.
+
+    includes/production.php       the ceiling, and one rule instead of four
+    production_api.php            returns the bottleneck with the limit
+    production_entry.php          shows it, and takes an over-cut reason
+    production_my_work.php        packing card counted in sets
+    production_dashboard.php      an Over-cuts card
+    includes/menu.php             unchanged since v20, included so v20+v21
+                                  can be uploaded together
+
+Upload all 6 over v20. If you have not uploaded v20 yet, upload it first
+(5 files) — these sit on top of it.
+
+READ SECTION 5 BEFORE YOU UPLOAD. Packing limits will DROP on live orders.
+
+
+1. THE PACKING CEILING
+----------------------
+Before: the packing step's remaining was every stitched piece of every part
+ADDED TOGETHER, minus what was packed — and the order quantity was not used
+at all. On 100 sets of a 1-sheet + 2-pillow product, fully stitched, it
+offered 300.
+
+Now:
+
+    sets available = MIN over every part of ( finished pieces / per-set )
+                     capped by the order, less the sets already packed
+
+A MINIMUM, not a sum. A set is complete only when its SLOWEST part is
+ready. 100 bed sheets and 150 pillow covers at 2 per set is 75 sets — not
+250 — and finishing more bed sheets does not raise it.
+
+Partial sets are never offered: 10 pieces at 3 per set is 3 whole sets.
+
+A part with a per-set count of 0 is not in that size at all, so it is left
+out of the minimum rather than holding the order at zero.
+
+WHICH STAGE FINISHES A PART is read from that part's own operations, not
+assumed. Most parts end at Stitching; a part that is only cut — a label, a
+tag — ends at Cutting. Assuming Stitching for everything would have held
+packing at zero forever for those parts.
+
+
+2. THE NUMBER NOW COMES WITH A REASON
+-------------------------------------
+The entry screen, the search cards and My Work all show WHICH part is
+holding the figure:
+
+    You can pack   75 sets
+    Held by        pillow cover
+
+"75" alone gets argued with on the floor. "75, held by pillow cover" sends
+someone to the right machine. The refusal message says it too, when a
+packer tries to enter more than exists.
+
+The whole-set step is now labelled in SETS rather than pcs, everywhere it
+appears. A named part is still pieces. Nothing else changed unit.
+
+
+3. ONE RULE INSTEAD OF FOUR COPIES
+----------------------------------
+The same if/else — "named part means pieces, blank means sets" — was
+written out four times: the entry API, the combo search, the per-item
+lookup and the save guard. Changing the whole-set rule would have meant
+changing four copies together, and the first one missed would have been a
+limit that disagreed with the one that refused it.
+
+They now all call production_limit_for(). This is the same collapse I did
+for the Final Costing estimate key: one fragile rule, one place.
+
+
+4. CUTTING MAY NOW GO ABOVE THE PLAN
+------------------------------------
+Cutting was the one stage capped by the PLAN (ordered x per-set) rather
+than by what actually happened. Wastage, a short roll, an extra lay —
+cutting 105 against a plan of 100 is ordinary, and refusing to record it
+never stopped it happening. It only stopped it being written down, so the
+extra pieces were absorbed into a later order or lost.
+
+Now the over-cut is allowed — but never silently. Enter more than the plan
+on a Cutting row and a box appears: "Why is this above the plan?" Save
+stays disabled until it is answered. The reason is stored on the row and
+listed on the dashboard under OVER-CUTS, with the product, the part, the
+worker and the date.
+
+No other stage may exceed. Stitching more than was cut, or packing more
+sets than exist, is a mistake — not wastage — and is still refused.
+
+
+5. WHAT YOU WILL SEE ON DAY ONE — READ THIS
+-------------------------------------------
+PACKING LIMITS WILL DROP ON LIVE ORDERS, from a number that was too big to
+one that is correct. An order whose packing said 250 will say 75.
+
+Nothing is lost and no entry already saved is affected. But if your packers
+have been working around the old figure, day one will look like a
+regression. TELL THEM BEFORE IT LANDS, NOT AFTER — and tell them the new
+number names the part that is holding it, which the old one never did.
+
+The only orders that change are multi-part products packed as a whole set.
+A simple product with no parts keeps exactly the behaviour it has today —
+that path is untouched and is covered by its own tests.
+
+
+6. SCHEMA — ONE NULLABLE COLUMN
+-------------------------------
+    production_transactions.variance_reason  VARCHAR(255) NULL
+
+Added by ALTER, wrapped in try/catch like everything else. NULL on every
+row already in the table and on every normal entry; it only ever holds the
+sentence somebody typed to explain an over-cut.
+
+The ceiling itself needs NO new storage. Every number it uses — per-part
+progress, per-set counts — was already there. It is derived, not recorded.
+
+
+7. WHAT I COULD NOT TEST
+------------------------
+No MySQL here. None of this has run against your database. Please check,
+in order:
+
+  1. Open a multi-part order at the packing step.
+     -> the limit is in SETS, and if one part is behind it says "Held by".
+  2. Finish more of a part that is already ahead.
+     -> the packing number does NOT move. That is the fix working.
+  3. Finish the part that was named as holding it.
+     -> the packing number rises.
+  4. Pack some sets, then look again.
+     -> the limit drops by the sets packed, once — not once per part.
+  5. A simple product with no parts.
+     -> unchanged from today in every respect.
+  6. Enter more than the plan on a CUTTING row.
+     -> a reason box appears, Save is disabled until it is filled.
+  7. Fill it and save.
+     -> it saves, and appears on the dashboard under Over-cuts.
+  8. Try the same on a Stitching or packing row.
+     -> still refused, with no reason box.
+
+Covered by tests that run here: 625 assertions on the PHP side and 576 in
+the browser, all passing — including 39 new ones on the ceiling itself,
+run against the real functions.
+
+
+8. NOTHING IS NOW DEFERRED
+--------------------------
+Both items held back since v19 are in this release. There is no
+outstanding piece of the production model that I know about and have not
+built or told you about.
