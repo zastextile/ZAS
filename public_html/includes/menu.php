@@ -45,6 +45,12 @@ function zas_menu(): array {
                 ['label' => 'Packing List',      'href' => 'packing_list.php',  'show' => $notProd],
                 ['label' => 'Proforma Invoices', 'href' => 'proforma.php',      'show' => $office],
                 ['label' => 'CSV Import',        'href' => 'import_excel.php',  'show' => $office],
+                /* The four per-shipment tabs are not listed here — they are
+                   reached from the tab strip on the shipment, the same way
+                   shipment_view.php always has been. Only the two screens that
+                   stand on their own get a menu entry. */
+                ['label' => 'Logistics Board',   'href' => 'shipment_board.php', 'show' => $office],
+                ['label' => 'Service Providers', 'href' => 'exp_providers.php',  'show' => $office],
             ],
         ],
         [
@@ -170,6 +176,7 @@ function zas_menu(): array {
                 ['label' => 'User Access',      'href' => 'user_access.php','show' => $admin],
                 ['label' => 'Settings',         'href' => 'settings.php',  'show' => $admin],
                 ['label' => 'Inventory Setup',  'href' => 'inv_setup.php', 'show' => $admin],
+                ['label' => 'Export Masters',   'href' => 'exp_settings.php', 'show' => $admin],
                 ['label' => 'Start Again (clear stock)', 'href' => 'inv_reset.php', 'show' => $admin],
             ],
         ],

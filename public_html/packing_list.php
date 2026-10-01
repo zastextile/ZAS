@@ -1,7 +1,9 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
+require_once __DIR__ . '/includes/export.php';
 require_login();
 if (is_production_staff()) { http_response_code(403); exit('Production Staff cannot access the packing list.'); }
+exp_ensure_schema();
 
 /*
   Packing List V2.3 - Zero Balance Visible in Dashboard
@@ -762,6 +764,12 @@ endif;
 /* ADMIN / COLLEAGUE PC LAYOUT */
 ?>
 <?= zas_pack_demo_css() ?>
+<?php
+/* THE TAB STRIP — on this layout only. Staff get the mobile layout above and
+   have no permission for any of the other tabs, so drawing it there would
+   produce an empty strip. Everything below is unchanged. */
+exp_tab_strip($shipment, 'packing');
+?>
 <div class="topbar">
   <div>
     <h1>Packing List - <?= e($shipment['invoice_no']) ?></h1>

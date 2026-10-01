@@ -15,3 +15,8 @@ public_html/storage/uploads/*.csv
 
 # Written at runtime.
 public_html/session/
+
+# Installed by the test harness for the browser-based tests.
+tests/node_modules/
+tests/package*.json
+tests/.z*/

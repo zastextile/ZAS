@@ -8,6 +8,9 @@ if (is_staff() || is_production_staff()) { http_response_code(403); exit('Staff 
 require_costing('proforma');
 costing_ensure_schema();
 require_once __DIR__ . '/includes/production.php';
+/* Only for the bank list that fills the bank fields below. The proforma's own
+   behaviour, schema and printing are untouched by this include. */
+require_once __DIR__ . '/includes/export.php';
 production_ensure_schema();
 
 function pf_num($v): float { return is_numeric($v)?(float)$v:0.0; }
@@ -693,6 +696,53 @@ if ($id) {
           <label class="<?= $labC ?>" style="<?= $lab ?>">Validity<input class="<?= $inpC ?>" style="<?= $inp ?>" name="validity" value="<?= e($pf['validity']) ?>" placeholder="e.g. 30 days"></label>
           <label class="<?= $labC ?>" style="<?= $lab ?>">Bank on Print<select class="<?= $inpC ?>" style="<?= $inp ?>" name="bank_choice"><option value="1" <?= ($pf['bank_choice'] ?? '1')!=='2'?'selected':'' ?>>Bank 1</option><option value="2" <?= ($pf['bank_choice'] ?? '1')==='2'?'selected':'' ?>>Bank 2</option></select></label>
         </div>
+        <?php
+        /* PICK FROM THE BANK MASTER.
+         *
+         * The proforma keeps its own SNAPSHOT of the bank details — that is
+         * deliberate and stays exactly as it was, so a proforma printed last
+         * year still prints the details it was saved with even if the bank
+         * master changes afterwards.
+         *
+         * This dropdown only FILLS the fields below. It writes nothing on its
+         * own, changes no saved proforma, and an existing proforma that is
+         * never touched keeps printing precisely as before. */
+        $expBanks = [];
+        if (function_exists('exp_banks')) { try { $expBanks = exp_banks(); } catch (Throwable $e) { $expBanks = []; } }
+        if ($expBanks): ?>
+        <div style="margin-top:10px;display:flex;gap:9px;align-items:end;flex-wrap:wrap">
+          <label class="<?= $labC ?>" style="<?= $lab ?>;flex:1;min-width:200px">Fill from your bank list
+            <select class="<?= $inpC ?>" style="<?= $inp ?>" id="pfBankPick">
+              <option value="">— choose a bank —</option>
+              <?php foreach ($expBanks as $b): ?>
+                <option value="<?= (int)$b['id'] ?>"
+                        data-name="<?= e($b['bank_name']) ?>"
+                        data-branch="<?= e($b['branch']) ?>"
+                        data-title="<?= e($b['account_title']) ?>"
+                        data-swift="<?= e($b['swift']) ?>"
+                        data-iban="<?= e($b['iban'] ?: $b['account_no']) ?>"><?= e($b['bank_name']) ?><?= $b['branch'] ? ' — ' . e($b['branch']) : '' ?></option>
+              <?php endforeach; ?>
+            </select>
+          </label>
+          <button type="button" class="zbtn sec" style="padding:8px 14px;border-radius:9px;border:1px solid #cbd5e3;background:#f6f8fc;color:#152033;font-size:12.5px;font-weight:600;cursor:pointer" onclick="pfFillBank(1)">Into Bank 1</button>
+          <button type="button" class="zbtn sec" style="padding:8px 14px;border-radius:9px;border:1px solid #cbd5e3;background:#f6f8fc;color:#152033;font-size:12.5px;font-weight:600;cursor:pointer" onclick="pfFillBank(2)">Into Bank 2</button>
+        </div>
+        <script>
+        function pfFillBank(slot) {
+          var sel = document.getElementById('pfBankPick');
+          if (!sel || !sel.value) { alert('Choose a bank from the list first.'); return; }
+          var o = sel.options[sel.selectedIndex];
+          var map = {name: 'name', branch: 'branch', title: 'title', swift: 'swift', iban: 'iban'};
+          for (var k in map) {
+            var el = document.querySelector('[name="bank' + slot + '_' + map[k] + '"]');
+            if (el) el.value = o.getAttribute('data-' + k) || '';
+          }
+          var choice = document.querySelector('[name="bank_choice"]');
+          if (choice) choice.value = String(slot);
+        }
+        </script>
+        <?php endif; ?>
+
         <?php if (trim((string)($pf['bank1_details'] ?? '')) !== '' && trim((string)($pf['bank1_name'] ?? '')) === '' && trim((string)($pf['bank2_name'] ?? '')) === ''): ?>
         <div style="margin-top:12px;padding:10px 14px;border-radius:10px;background:rgba(184,137,31,.08);border:1px solid rgba(184,137,31,.25);font-size:12px;color:#8a6410">This proforma still has bank details saved the old way (one free-text box) — it keeps printing exactly as before until you fill in the fields below, at which point those take over.</div>
         <?php endif; ?>

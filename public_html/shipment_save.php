@@ -36,7 +36,10 @@ if ($locked && is_admin() && $reason === '') {
 }
 
 $editInvoice = can_edit_invoice($shipment);
-$editPacking = can_edit_packing($shipment);
+/* $editPacking was read here and used only by the packing write that has been
+   removed below. Leaving the call would spend a query per save on an answer
+   nothing asks for. can_edit_packing() itself is untouched and is still what
+   packing_list.php uses. */
 $saveAndSubmit = isset($_POST['save_and_submit']) && !is_staff() && $editInvoice && ($shipment['status'] !== 'approved_locked');
 $showRates = can_see_rates();
 
@@ -158,58 +161,39 @@ try {
       Any packing rows posted here must use invoice_item_id[].
       Product/description are copied from shipment_items.
     */
-    if ($editPacking && isset($_POST['invoice_item_id'])) {
-        $itemRows = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORDER BY line_no,id");
-        $itemRows->execute([$id]);
-        $itemMap = [];
-        foreach ($itemRows->fetchAll() as $it) $itemMap[(int)$it['id']] = $it;
-
-        db()->prepare("DELETE FROM packing_items WHERE shipment_id=?")->execute([$id]);
-
-        $stmtPack = db()->prepare("INSERT INTO packing_items (shipment_id,line_no,product_name,des_col,optional_value,carton_from,carton_to,packages,qty_per_carton,total_qty,net_weight,gross_weight) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
-
-        $totalPackages = 0; $totalPackQty = 0; $net = 0; $gross = 0; $line = 0;
-
-        foreach (post_array('invoice_item_id') as $i => $itemId) {
-            $itemId = (int)$itemId;
-            if (!$itemId || empty($itemMap[$itemId])) continue;
-
-            $from = (int)(post_array('carton_from')[$i] ?? 0);
-            $to = (int)(post_array('carton_to')[$i] ?? 0);
-            if ($from <= 0 || $to < $from) continue;
-
-            $packages = max(0, $to - $from + 1);
-            $qpc = (float)(post_array('qty_per_carton')[$i] ?? 0);
-            $totalQty = $packages * $qpc;
-            $nw = (float)(post_array('net_weight')[$i] ?? 0);
-            $gw = (float)(post_array('gross_weight')[$i] ?? 0);
-
-            $it = $itemMap[$itemId];
-            $line++;
-
-            $stmtPack->execute([
-                $id,
-                $line,
-                $it['product_name'],
-                $it['des_col'],
-                $it['optional_value'],
-                $from,
-                $to,
-                $packages,
-                $qpc,
-                $totalQty,
-                $nw,
-                $gw
-            ]);
-
-            $totalPackages += $packages;
-            $totalPackQty += $totalQty;
-            $net += $nw;
-            $gross += $gw;
-        }
-
-        db()->prepare("UPDATE shipments SET total_packages=?, total_net_weight=?, total_gross_weight=?, updated_by=?, updated_at=NOW() WHERE id=?")
-            ->execute([$totalPackages, $net, $gross, current_user()['id'], $id]);
+    /* PACKING IS NOT WRITTEN FROM HERE ANY MORE.
+     *
+     * What used to stand here deleted every packing row for the shipment and
+     * rebuilt them from posted fields. Three things were wrong with it, and
+     * the third is the serious one:
+     *
+     *  1. It wrote 12 columns and silently dropped invoice_item_id,
+     *     pack_unit_title and qty_mode — the three columns packing_list.php
+     *     maintains. That is why zas_pack_selected_item_id_v21() has to fall
+     *     back to matching on product name plus description.
+     *
+     *  2. It recomputed every total as packages x qty_per_carton, so a row
+     *     entered as a direct total would come back out as a different number.
+     *
+     *  3. It enforced NONE of the packing guards. packing_list.php refuses to
+     *     pack more than the invoice quantity (zas_pack_validate_qty_v21) and
+     *     refuses a third use of a carton serial (zas_pack_find_over_serials_v21).
+     *     This path checked neither, so it was an unguarded way into
+     *     packing_items that could over-pack a line or duplicate a serial.
+     *
+     * Nothing in the application ever reached it: no form anywhere posts
+     * invoice_item_id to this endpoint — packing_list.php posts its packing
+     * rows to itself. So removing the write loses no working feature, and
+     * leaving it would have left a loaded gun for the first person to wire a
+     * packing form onto the invoice screen.
+     *
+     * Packing has one owner: packing_list.php, which has the guards. If a
+     * request does arrive here carrying packing fields, it is refused loudly
+     * rather than written unchecked. */
+    if (isset($_POST['invoice_item_id']) || isset($_POST['carton_from'])) {
+        throw new Exception('Packing rows are entered on the Packing List screen, '
+            . 'which checks the invoice quantity and the carton serials. '
+            . 'They cannot be saved from the invoice screen.');
     }
 
     if ($locked && is_admin()) {

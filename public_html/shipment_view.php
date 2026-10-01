@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
+require_once __DIR__ . '/includes/export.php';
 require_login();
+exp_ensure_schema();
 
 function zas_ensure_reopen_columns_v26(): void {
     try { db()->exec("ALTER TABLE shipments ADD COLUMN reopen_status VARCHAR(40) NULL AFTER status"); } catch (Throwable $e) {}
@@ -98,6 +100,11 @@ $dis = $editInvoice ? '' : 'disabled';
 
 page_header('Shipment ' . $shipment['invoice_no']);
 flash();
+
+/* THE TAB STRIP. Everything below this line is exactly as it was — the strip
+   is drawn above the existing page and changes none of it. A tab the viewer
+   has no permission for is not drawn at all. */
+exp_tab_strip($shipment, 'invoice');
 ?>
 <?php /* THE SKIN, OPTED IN. Every rule in assets/css/zskin.css is scoped under
          .zskin, so this one attribute is the whole of the restyle and removing

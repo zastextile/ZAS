@@ -221,10 +221,24 @@ foreach (['production_ops_bulk.php','product_costing.php','final_costing.php',
 }
 t('no page was left with an empty <script></script>',
   !str_contains($fc, "<script>\n</script>") && !str_contains($pc, "<script>\n</script>"));
-t('the production rules were not touched at all',
-  md5(f('includes/production.php')) === md5(f('includes/production.php')));
-t('  and neither was the part library engine',
-  str_contains(f('includes/part_library.php'), 'function pl_apply'));
+/* These two assertions were both broken, and in different ways.
+ *
+ * The first compared includes/production.php against ITSELF — an md5 equals
+ * the same md5, so it passed on every run while testing nothing at all.
+ *
+ * The second read includes/part_library.php for a function called pl_apply.
+ * Neither exists in this application: the page is part_library.php at the
+ * root, and there is no pl_apply anywhere in it. The assertion could only
+ * ever fail, and it did.
+ *
+ * What they were reaching for is real — "the part library still works and
+ * nothing in this batch touched it" — so that is what is checked now, against
+ * the file that actually exists and the actions it actually handles. */
+$pl = f('part_library.php');
+t('the part library page is still there and still saves',
+  str_contains($pl, "=== 'save_part'") && str_contains($pl, "=== 'save_ops'"));
+t('  and it still guards its writes',
+  str_contains($pl, 'verify_csrf()') && str_contains($pl, 'require_login()'));
 
 /* ===================================================================== */
 head('THE STYLESHEET IS CACHE-BUSTED — this is what broke the screen');

@@ -41,6 +41,17 @@ function zu_modules(): array {
         ['g' => 'Sales & Export',    'k' => 'ship',     'n' => 'Shipments & Invoices',  'a' => 'vcud'],
         ['g' => 'Sales & Export',    'k' => 'proforma', 'n' => 'Proforma / Orders',     'a' => 'vcud'],
         ['g' => 'Sales & Export',    'k' => 'packing',  'n' => 'Packing Lists',         'a' => 'vcud'],
+        /* The export module. These four start with NO rows for anybody, because
+           zu_seed_user() has already run for every existing user — so nobody
+           silently gains access to payment or cost data on upgrade day. Admin is
+           unaffected: zu_can() returns true for admin regardless.
+           'r' is Reverse, which on payments and costs is the VOID action. There is
+           no hard delete of a posted financial row, so 'd' there only covers
+           removing a row before it is relied on. */
+        ['g' => 'Sales & Export',    'k' => 'shiplog',  'n' => 'Shipment Logistics',    'a' => 'vcud'],
+        ['g' => 'Sales & Export',    'k' => 'shippay',  'n' => 'Shipment Payments',     'a' => 'vcudr'],
+        ['g' => 'Sales & Export',    'k' => 'shipcost', 'n' => 'Shipment Costs',        'a' => 'vcudr'],
+        ['g' => 'Sales & Export',    'k' => 'shipdoc',  'n' => 'Shipment Documents',    'a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'costing',  'n' => 'Product Costing',       'a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'fcost',    'n' => 'Final Costing',         'a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'pmaster',  'n' => 'Product Master & Parts','a' => 'vcud'],

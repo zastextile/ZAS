@@ -36,4 +36,14 @@ flash();
   </form>
 </div>
 
+<div style="<?= $cardCss ?>;max-width:520px;margin-top:16px">
+  <h2 style="font-size:15px;margin:0 0 4px">Export Masters</h2>
+  <p style="color:#8a97ab;font-size:12px;margin:0 0 16px">
+    The lists the shipment screens pick from — loading ports, shipping lines, container types,
+    payment methods, cost types, document types, your banks, and where documents are stored.
+    Nothing in those lists is hard-coded in the application.
+  </p>
+  <a href="exp_settings.php" style="display:inline-block;padding:10px 18px;border-radius:10px;border:1px solid #cbd5e3;background:#f6f8fc;color:#152033;font-weight:600;font-size:13px;text-decoration:none">Open Export Masters</a>
+</div>
+
 <?php page_footer(); ?>
