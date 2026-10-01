@@ -24,7 +24,7 @@
   the already-loaded user row; this is that idea where no such row exists.
 */
 
-const EXP_SCHEMA_VERSION = '1';
+const EXP_SCHEMA_VERSION = '2';
 
 /* The money shape used everywhere in this module. Amounts are DECIMAL, never
    float — a float cannot hold 0.1 exactly, and a ledger that cannot add up
@@ -290,12 +290,19 @@ function exp_build_schema(): void {
         archived_by INT NULL,
         archived_at DATETIME NULL,
         notes TEXT NULL,
+        legacy_file_id INT NULL,
         uploaded_by INT NULL,
         uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
         INDEX idx_ship_type_ver (shipment_id, doc_type_id, version),
-        INDEX(is_archived)
+        INDEX(is_archived), INDEX(legacy_file_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    /* For an install that created shipment_documents before this column
+       existed. The column lives on the NEW table on purpose: shipment_files
+       is the old, working table and gains nothing. */
+    $x("ALTER TABLE shipment_documents ADD COLUMN legacy_file_id INT NULL");
+    $x("CREATE INDEX idx_legacy ON shipment_documents (legacy_file_id)");
 
     /* ------------------------------------- columns on tables that already
        exist. Every one nullable, so no existing row changes meaning and no
@@ -742,13 +749,128 @@ function exp_documents(int $shipmentId, bool $includeArchived = false): array {
    but they keep downloading through download_file.php, which has always
    served them and has always checked the permission. Nothing is copied,
    moved or rewritten. */
-function exp_legacy_files(int $shipmentId): array {
+function exp_legacy_files(int $shipmentId, bool $onlyUnimported = false): array {
     try {
-        $st = db()->prepare("SELECT id, original_name, mime_type, file_size, uploaded_by, created_at
-                             FROM shipment_files WHERE shipment_id=? ORDER BY id DESC");
+        $sql = "SELECT f.id, f.original_name, f.stored_name, f.mime_type, f.file_size,
+                       f.uploaded_by, f.created_at,
+                       (SELECT d.id FROM shipment_documents d
+                         WHERE d.legacy_file_id = f.id LIMIT 1) AS imported_as
+                FROM shipment_files f WHERE f.shipment_id=?";
+        if ($onlyUnimported) {
+            $sql .= " AND NOT EXISTS (SELECT 1 FROM shipment_documents d WHERE d.legacy_file_id = f.id)";
+        }
+        $sql .= " ORDER BY f.id DESC";
+        $st = db()->prepare($sql);
         $st->execute([$shipmentId]);
         return $st->fetchAll();
     } catch (Throwable $e) { return []; }
+}
+
+/* ------------------------------------- bringing an old attachment inside
+
+   Gives a file that predates this module a document type, a version and a
+   place in the version history — the same shape as anything uploaded today.
+
+   THE ORIGINAL ROW AND THE ORIGINAL FILE ARE NOT TOUCHED. shipment_files
+   keeps its row and download_file.php keeps serving it; the new document
+   row simply points at the same bytes, or at a fresh copy on R2 when that
+   is asked for. Nothing is deleted, so a mistake here costs one archived
+   document row and nothing else.
+
+   legacy_file_id is what stops the same file being brought in twice, and it
+   lives on the new table rather than on shipment_files, which gains nothing.
+
+   Returns [ok, message]. */
+function exp_import_legacy_file(int $shipmentId, int $fileId, int $typeId, ?string $stage, bool $toR2): array
+{
+    global $config;
+
+    try {
+        $st = db()->prepare("SELECT * FROM shipment_files WHERE id=? AND shipment_id=?");
+        $st->execute([$fileId, $shipmentId]);
+        $f = $st->fetch();
+    } catch (Throwable $e) { return [false, 'Could not read that file.']; }
+
+    if (!$f) return [false, 'That file is not on this shipment.'];
+
+    try {
+        $st = db()->prepare("SELECT id FROM shipment_documents WHERE legacy_file_id=? LIMIT 1");
+        $st->execute([$fileId]);
+        if ($st->fetch()) return [false, 'That file has already been brought in.'];
+    } catch (Throwable $e) {}
+
+    $typeRow = null;
+    foreach (exp_masters('doc_type', false) as $t) if ((int)$t['id'] === $typeId) $typeRow = $t;
+    if (!$typeRow) return [false, 'Choose a document type.'];
+    if (!exp_master_flag($typeRow, 'supports_draft_final')) $stage = null;
+    if ($stage !== null && !in_array($stage, ['draft', 'final'], true)) $stage = null;
+
+    $dir   = rtrim((string)($config['upload_dir'] ?? (__DIR__ . '/../storage/uploads')), '/');
+    $local = $dir . '/' . basename((string)$f['stored_name']);
+    if (!is_file($local)) {
+        return [false, 'The stored file is missing from the server, so there is nothing to bring in. '
+                     . 'The old record is left exactly as it is.'];
+    }
+
+    /* Default: point at the file already on disk. No copy, no risk. */
+    $driver = 'local';
+    $key    = basename((string)$f['stored_name']);
+
+    /* Asked for, and possible: put a copy on R2 and point at that instead.
+       The local file still stays where it is. */
+    if ($toR2 && function_exists('exp_r2_configured') && exp_r2_configured()) {
+        $newKey = exp_storage_key($shipmentId, (string)$f['original_name']);
+        [$ok, $err] = exp_r2_put($local, $newKey, (string)($f['mime_type'] ?? ''));
+        if (!$ok) {
+            return [false, 'Could not copy it to R2: ' . $err . ' Nothing was changed.'];
+        }
+        $driver = 'r2';
+        $key    = $newKey;
+    }
+
+    $version = exp_next_version($shipmentId, $typeId, $stage);
+
+    try {
+        db()->beginTransaction();
+        db()->prepare("INSERT INTO shipment_documents
+            (shipment_id, doc_type_id, doc_no, stage, version, original_name, storage_driver,
+             storage_key, mime_type, file_size, notes, legacy_file_id, uploaded_by, uploaded_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            ->execute([
+                $shipmentId, $typeId, null, $stage, $version,
+                (string)$f['original_name'], $driver, $key,
+                (string)($f['mime_type'] ?? ''), (int)($f['file_size'] ?? 0),
+                'Brought in from the old Files list.',
+                $fileId,
+                (int)($f['uploaded_by'] ?? 0) ?: (current_user()['id'] ?? null),
+                /* The date it was ORIGINALLY attached, not today. A document
+                   history that says every old file arrived this afternoon is
+                   worse than no history. */
+                (string)($f['created_at'] ?? date('Y-m-d H:i:s')),
+            ]);
+        $newId = (int)db()->lastInsertId();
+
+        db()->prepare("UPDATE shipment_documents SET superseded_by=?
+                       WHERE shipment_id=? AND doc_type_id=? AND (stage <=> ?)
+                         AND id<>? AND superseded_by IS NULL AND is_archived=0
+                         AND version < ?")
+            ->execute([$newId, $shipmentId, $typeId, $stage, $newId, $version]);
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return [false, 'Could not save it: ' . $e->getMessage()];
+    }
+
+    try {
+        audit_log($shipmentId, 'Document', 'import', (string)$f['original_name'],
+                  $typeRow['label'] . ($stage ? ' ' . ucfirst($stage) : '') . ' V' . $version,
+                  'Old attachment brought into the document system' . ($driver === 'r2' ? ', copied to R2' : ''));
+    } catch (Throwable $e) {}
+
+    return [true, '"' . $f['original_name'] . '" is now ' . $typeRow['label']
+                . ($stage ? ' ' . ucfirst($stage) : '') . ' version ' . $version
+                . ($driver === 'r2' ? ', stored on R2.' : '.')
+                . ' The original file and its old record are untouched.'];
 }
 
 /* ------------------------------------------------- linking a document back

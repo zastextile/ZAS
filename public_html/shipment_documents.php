@@ -120,6 +120,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect('shipment_documents.php?id=' . $id);
         }
 
+        if ($action === 'import_legacy') {
+            exp_require('documents', 'c');
+            [$ok, $msg] = exp_import_legacy_file(
+                $id,
+                (int)($_POST['file_id'] ?? 0),
+                (int)($_POST['doc_type_id'] ?? 0),
+                ($_POST['stage'] ?? '') !== '' ? (string)$_POST['stage'] : null,
+                !empty($_POST['to_r2'])
+            );
+            if (!$ok) throw new Exception($msg);
+            $_SESSION['flash'] = $msg;
+            redirect('shipment_documents.php?id=' . $id);
+        }
+
         if ($action === 'archive') {
             exp_require('documents', 'd');
             $did    = (int)($_POST['doc_id'] ?? 0);
@@ -265,24 +279,59 @@ exp_tab_strip($shipment, 'docs');
 </div>
 <?php endforeach; ?>
 
-<?php if ($legacy): ?>
+<?php
+$pending = array_values(array_filter($legacy, fn($f) => empty($f['imported_as'])));
+if ($legacy): ?>
 <div class="dgroup" style="margin-top:14px">
   <div class="dhead">
     <div>
       <div class="n">Files attached before the document system</div>
-      <div class="dmeta"><?= count($legacy) ?> file<?= count($legacy) === 1 ? '' : 's' ?> &middot; read-only</div>
+      <div class="dmeta">
+        <?= count($legacy) ?> file<?= count($legacy) === 1 ? '' : 's' ?>
+        <?php if ($pending): ?> &middot; <?= count($pending) ?> not yet given a type<?php endif; ?>
+      </div>
     </div>
-    <span class="xpill b">Legacy</span>
+    <span class="xpill <?= $pending ? 'o' : 'g' ?>"><?= $pending ? 'Needs a type' : 'All brought in' ?></span>
   </div>
-  <?php foreach ($legacy as $f): ?>
-    <div class="drow old">
-      <div style="min-width:0">
-        <div style="font-size:12.5px;word-break:break-all"><?= e($f['original_name']) ?></div>
+
+  <?php foreach ($legacy as $f): $done = !empty($f['imported_as']); ?>
+    <div class="drow <?= $done ? 'old' : '' ?>">
+      <div style="min-width:0;flex:1">
+        <div style="font-size:12.5px;word-break:break-all">
+          <?= e($f['original_name']) ?>
+          <?php if ($done): ?><span class="xpill g" style="margin-left:5px">brought in</span><?php endif; ?>
+        </div>
         <div class="dmeta">
           <?= e(exp_size_h($f['file_size'])) ?>
           <?= $f['created_at'] ? ' &middot; ' . e(date('d M Y', strtotime((string)$f['created_at']))) : '' ?>
           &middot; on this server
         </div>
+
+        <?php if (!$done && $canUpload): ?>
+        <form method="post" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px">
+          <?= csrf_field() ?>
+          <input type="hidden" name="action" value="import_legacy">
+          <input type="hidden" name="shipment_id" value="<?= $id ?>">
+          <input type="hidden" name="file_id" value="<?= (int)$f['id'] ?>">
+          <select name="doc_type_id" required class="xin" style="width:auto;min-width:150px;margin-top:0;padding:5px 8px;font-size:11.5px">
+            <option value="">Give it a type…</option>
+            <?php foreach ($types as $t): ?>
+              <option value="<?= (int)$t['id'] ?>" data-stage="<?= exp_master_flag($t, 'supports_draft_final') ? 1 : 0 ?>"><?= e($t['label']) ?></option>
+            <?php endforeach; ?>
+          </select>
+          <select name="stage" class="xin" style="width:auto;margin-top:0;padding:5px 8px;font-size:11.5px">
+            <option value="">—</option>
+            <option value="draft">Draft</option>
+            <option value="final">Final</option>
+          </select>
+          <?php if (exp_r2_configured()): ?>
+            <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#5a6b82">
+              <input type="checkbox" name="to_r2" value="1" checked style="width:14px;height:14px;accent-color:#0ea8c9"> copy to R2
+            </label>
+          <?php endif; ?>
+          <button class="xbtn sm">Bring in</button>
+        </form>
+        <?php endif; ?>
       </div>
       <div style="white-space:nowrap">
         <a class="xbtn sec sm" href="download_file.php?id=<?= (int)$f['id'] ?>">Download</a>
@@ -290,11 +339,13 @@ exp_tab_strip($shipment, 'docs');
     </div>
   <?php endforeach; ?>
 </div>
+
 <div class="xnote" style="margin-bottom:12px">
-  These came from the old <b>Files</b> button on the invoice screen, before documents had types and
-  versions. They are listed here so there is one place to look for this shipment's paperwork. They are
-  not moved or changed, and they download exactly as they always have. To give one a type and a
-  version, upload it again below.
+  These came from the old <b>Files</b> button, before documents had types and versions.
+  Give one a type and it joins the list above as a proper document, with a version and its original
+  date kept.
+  <b>Nothing is deleted or moved</b> — the old record and the file itself stay exactly as they are,
+  and this download keeps working either way. Bringing a file in twice is refused.
 </div>
 <?php endif; ?>
 

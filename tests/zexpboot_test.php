@@ -214,6 +214,16 @@ $GLOBALS['BDB']->A = [
      'archive_reason'=>null,'archived_by'=>null,'archived_at'=>null,'notes'=>'','uploaded_by'=>1,
      'uploaded_at'=>'2026-10-17 15:00:00'],
   ],
+  /* Two old attachments: one already brought in, one still waiting for a
+     type. Both must render, and only the waiting one may offer the form. */
+  "FROM shipment_files f" => [
+    ['id'=>31,'original_name'=>'old buyer PO scan.pdf','stored_name'=>'41_aaa.pdf',
+     'mime_type'=>'application/pdf','file_size'=>120000,'uploaded_by'=>1,
+     'created_at'=>'2026-08-02 10:00:00','imported_as'=>null],
+    ['id'=>32,'original_name'=>'old insurance cert.pdf','stored_name'=>'41_bbb.pdf',
+     'mime_type'=>'application/pdf','file_size'=>96000,'uploaded_by'=>1,
+     'created_at'=>'2026-08-05 12:00:00','imported_as'=>8],
+  ],
   "SELECT COUNT(*) FROM shipments s" => [['n'=>3]],
   "SELECT s.id, s.invoice_no, s.invoice_date, s.buyer_name" => [[
     'id'=>41,'invoice_no'=>'ZAS/5191','invoice_date'=>'2026-09-20','buyer_name'=>'ABC Trading',
@@ -297,6 +307,22 @@ ok(!preg_match('~r2\.cloudflarestorage\.com~', $html['documents']),
    'a raw R2 URL leaked into the page');
 ok(!preg_match('~storage_key~', $html['documents']) || !str_contains($html['documents'], 'y.pdf'),
    'the object storage key leaked into the page');
+
+/* The old attachments, and the one-way door into the document system. */
+ok(str_contains($html['documents'], 'old buyer PO scan.pdf'), 'the legacy file was not listed');
+ok(str_contains($html['documents'], 'Files attached before the document system'),
+   'the legacy group heading is missing');
+ok(str_contains($html['documents'], 'download_file.php?id=31'),
+   'the legacy file does not download through the original endpoint');
+ok(str_contains($html['documents'], 'import_legacy'),
+   'there is no way to bring a legacy file in');
+ok(str_contains($html['documents'], 'brought in'),
+   'the already-imported file is not marked as such');
+/* Exactly one form, for the one file still waiting. */
+ok(substr_count($html['documents'], 'name="file_id"') === 1,
+   'the Bring in form should appear once, only for the file without a type — got '
+   . substr_count($html['documents'], 'name="file_id"'));
+ok(str_contains($html['documents'], 'Needs a type'), 'the pending count badge is missing');
 
 ok(str_contains($html['board'], 'Booking Pending') && str_contains($html['board'], 'Final BL Pending'),
    'the board is missing its indicators');

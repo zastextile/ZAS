@@ -276,18 +276,26 @@ t('every column added to an existing table is nullable', (function () use ($alte
    the versioned documents went into their own table, so those columns were
    dead weight on a live table. Old attachments are listed from the columns
    shipment_files already had. */
-t('  and there are the six expected ALTERs, no more', count($alters) === 6, count($alters));
+t('  and there are the seven expected ALTERs, no more', count($alters) === 7, count($alters));
 
-t('shipment_files is not altered at all any more',
-  !preg_match('~ALTER TABLE shipment_files~i', $ddl));
+/* The distinction that matters is not how many, but WHOSE table. Three of
+   the application's own tables are touched, each adding one nullable column.
+   The seventh is on shipment_documents, which this module created and owns —
+   altering your own table is not the same risk as altering a live one. */
+$foreign = array_values(array_filter($alters, fn($a) =>
+    !preg_match('~ALTER TABLE shipment_documents\b~i', $a)));
 
-t('the ALTERs only touch shipments, proforma_invoices and products',
-  (function () use ($alters) {
-      foreach ($alters as $a) {
+t('only three of the application\'s existing tables are altered',
+  (function () use ($foreign) {
+      foreach ($foreign as $a) {
           if (!preg_match('~ALTER TABLE (shipments|proforma_invoices|products)\b~i', $a)) return false;
       }
-      return true;
-  })(), $alters);
+      return count($foreign) === 6;
+  })(), $foreign);
+
+t('shipment_files is never altered', !preg_match('~ALTER TABLE shipment_files~i', $ddl));
+t('and neither is any other working table',
+  !preg_match('~ALTER TABLE (packing_items|shipment_items|shipment_charges|audit_logs|users|inv_\w+)\b~i', $ddl));
 
 t('shipments.status is NOT reused for the logistics status',
   str_contains($src, 'logistics_status VARCHAR(40) NULL')
@@ -418,8 +426,15 @@ $upSrc   = file_get_contents($B . 'upload_file.php');
 t('the Documents tab lists the legacy files', str_contains($docsSrc, 'exp_legacy_files($id)'));
 t('  and serves them through the old, already permission-checked endpoint',
   str_contains($docsSrc, 'download_file.php?id='));
-t('  and marks them read-only rather than offering to edit them',
-  str_contains($docsSrc, 'read-only') && !preg_match('~shipment_files[^\n]*(UPDATE|DELETE|INSERT)~i', $docsSrc));
+/* They are no longer read-only — a file can now be given a type and brought
+   into the version history. What must still hold is that doing so never
+   writes to the old table. */
+t('  and the Documents page never writes to shipment_files',
+  !preg_match('~(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+shipment_files~i', $docsSrc));
+t('  and offers to bring an untyped one in',
+  str_contains($docsSrc, 'Give it a type') && str_contains($docsSrc, 'import_legacy'));
+t('  while one already brought in is shown without a second form',
+  str_contains($docsSrc, 'imported_as') && str_contains($docsSrc, 'brought in'));
 
 t('upload_file.php is completely untouched',
   str_contains($upSrc, 'INSERT INTO shipment_files (shipment_id,original_name,stored_name,mime_type,file_size,uploaded_by)'));
@@ -452,6 +467,68 @@ t('  and returns the user to the row they started from',
   str_contains($docsSrc, "shipment_payments.php?id=" ) && str_contains($docsSrc, "shipment_costs.php?id="));
 t('the attached documents are fetched in one query, not one per row',
   str_contains($paySrc, 'exp_attached_docs($id)') && str_contains($costSrc, 'exp_attached_docs($id)'));
+
+
+/* ------------------------------------------------------------------------- */
+head('10. Bringing an old attachment into the document system');
+
+$impl = lift($src, 'function exp_import_legacy_file(');
+t('exp_import_legacy_file is in the shipped file', $impl !== '');
+
+/* Behaviour is asserted on the code, because the function writes rows and
+   touches the filesystem; the refusals below are the part that matters and
+   each one is a distinct early return. */
+t('it refuses a file that is not on this shipment',
+  str_contains($impl, "return [false, 'That file is not on this shipment.']"));
+t('it refuses the same file twice',
+  str_contains($impl, 'already been brought in'));
+t('it refuses without a document type',
+  str_contains($impl, "return [false, 'Choose a document type.']"));
+t('it refuses when the stored file is gone, rather than writing a dead row',
+  str_contains($impl, 'missing from the server'));
+t('  and says the old record is left alone when it does',
+  str_contains($impl, 'The old record is left exactly as it is.'));
+
+t('a failed R2 copy changes nothing',
+  str_contains($impl, "' Nothing was changed.'"));
+
+/* The guarantees the feature is sold on. */
+t('the original shipment_files row is never updated or deleted',
+  !preg_match('~(UPDATE|DELETE)\s+(FROM\s+)?shipment_files~i', $impl));
+t('the original file on disk is never moved or unlinked',
+  !preg_match('~\b(unlink|rename|move_uploaded_file)\s*\(~', $impl));
+t('the new row points at the SAME local file by default',
+  str_contains($impl, "\$driver = 'local'") && str_contains($impl, "basename((string)\$f['stored_name'])"));
+t('R2 is only used when it is configured and asked for',
+  str_contains($impl, "\$toR2 && function_exists('exp_r2_configured') && exp_r2_configured()"));
+
+/* The detail that makes the history honest. */
+t('the ORIGINAL attachment date is kept, not today',
+  str_contains($impl, "(string)(\$f['created_at'] ?? date('Y-m-d H:i:s'))"));
+t('  and the original uploader is kept where known',
+  str_contains($impl, "(int)(\$f['uploaded_by'] ?? 0) ?:"));
+
+t('the import is written inside a transaction',
+  str_contains($impl, 'beginTransaction()') && str_contains($impl, 'rollBack()'));
+t('the import is audit logged', str_contains($impl, "audit_log(\$shipmentId, 'Document', 'import'"));
+
+/* Where the "already imported" mark lives. */
+t('the de-duplication column is on the NEW table, not on shipment_files',
+  str_contains($src, 'legacy_file_id INT NULL')
+  && !preg_match('~ALTER TABLE shipment_files~i', $src));
+t('  and it is indexed, because every legacy row checks it',
+  str_contains($src, 'INDEX(legacy_file_id)') || str_contains($src, 'idx_legacy'));
+
+/* The listing tells the page which files still need a type, in one query
+   rather than one per file. */
+$ls = lift($src, 'function exp_legacy_files(');
+t('the legacy listing reports what has already been brought in',
+  str_contains($ls, 'AS imported_as'));
+t('  without a query per file',
+  substr_count($ls, 'prepare(') === 1);
+
+t('the schema version was bumped so the new column installs',
+  str_contains($src, "EXP_SCHEMA_VERSION = '2'"));
 
 
 echo "\n$P passed, $F failed\n";
