@@ -1,0 +1,213 @@
+===============================================================
+ CLOUDFLARE R2 — SETUP FOR DOCUMENT STORAGE
+ ZAS Textile export module
+===============================================================
+
+Read this once, do it in about ten minutes, and shipment documents
+stop living on your hosting disk.
+
+Nothing in this file is a secret. Your keys go in on your own
+server, in step 3. They never go in the repository, never in a
+chat, never in a screenshot.
+
+
+---------------------------------------------------------------
+STEP 1 — MAKE A NEW API TOKEN  (do this first)
+---------------------------------------------------------------
+
+Cloudflare dashboard
+  -> R2 Object Storage
+  -> Manage API Tokens
+  -> Create API Token
+
+Settings to choose:
+  Permission   : Object Read & Write
+  Bucket       : only the bucket you use for ZAS documents
+                 (not "all buckets" — if the key ever leaks,
+                  the damage stops at that one bucket)
+  TTL          : forever, unless you want to rotate on a schedule
+
+When it is created Cloudflare shows you THREE values, once only:
+
+  Access Key ID        - an identifier, like a username
+  Secret Access Key    - the password. Shown ONCE. Never again.
+  Endpoint             - https://<account-id>.r2.cloudflarestorage.com
+
+Copy all three somewhere safe before you close that page.
+
+IF YOU EVER SHOW THOSE VALUES TO ANYONE, OR PUT THEM IN A
+SCREENSHOT, A CHAT, OR AN EMAIL — revoke the token and make a new
+one. Anyone holding them can read, overwrite and delete every
+document in that bucket. There is no way to limit it afterwards.
+
+
+---------------------------------------------------------------
+STEP 2 — FIND YOUR CONFIG FILE
+---------------------------------------------------------------
+
+On the server:
+
+    public_html/config.php
+
+It already holds your database password and your OpenAI key, and
+it is protected: config/ has a .htaccess that denies everything,
+and config.php is in .gitignore so it never reaches the
+repository.
+
+That is exactly why the R2 keys belong in there and nowhere else.
+
+
+---------------------------------------------------------------
+STEP 3 — ADD FOUR LINES
+---------------------------------------------------------------
+
+Open config.php. You will see a big array that starts like this:
+
+    return [
+        'app_name' => 'ZAS Textile',
+        'timezone' => 'Asia/Karachi',
+        ...
+
+Add these four lines INSIDE that array — anywhere inside it, but
+the tidiest place is just after the upload settings:
+
+---------------- copy from here ----------------
+
+    /* Cloudflare R2 — document storage */
+    'r2_endpoint'   => 'https://PUT-ACCOUNT-ID-HERE.r2.cloudflarestorage.com',
+    'r2_bucket'     => 'PUT-BUCKET-NAME-HERE',
+    'r2_access_key' => 'PUT-ACCESS-KEY-ID-HERE',
+    'r2_secret'     => 'PUT-SECRET-ACCESS-KEY-HERE',
+
+----------------- to here ----------------------
+
+Replace the four PUT-...-HERE parts with your real values.
+
+Watch these three things:
+
+  * Keep the quotes and the comma at the end of each line.
+  * The endpoint has NO bucket name on the end, and NO trailing
+    slash. Just https://<account-id>.r2.cloudflarestorage.com
+  * The bucket name is exactly as it appears in the R2 bucket
+    list — lowercase, no spaces.
+
+Save the file. Nothing else to change anywhere.
+
+
+---------------------------------------------------------------
+STEP 4 — TEST IT, FROM INSIDE THE APP
+---------------------------------------------------------------
+
+In the application:
+
+    Settings
+      -> Export Masters
+        -> Document Storage tab
+          -> "Test the R2 Connection"
+
+It writes a tiny test file to your bucket, reads it back, checks
+the contents match, and deletes it again. You get four lines:
+
+    Configuration   OK    All four values present.
+    Upload          OK    Wrote a 30-byte test object.
+    Download        OK    Read it back and the contents match.
+    Delete          OK    Removed the test object.
+
+All four OK means R2 is live. Every document you upload from then
+on goes to object storage.
+
+The test never prints your keys, so it is safe to run with anyone
+watching your screen.
+
+
+---------------------------------------------------------------
+IF A STEP FAILS — WHAT IT MEANS
+---------------------------------------------------------------
+
+Configuration failed
+    One of the four values is still blank or still says
+    PUT-...-HERE. Check for a missing quote or comma.
+
+Upload failed, "Access Denied"
+    The token does not have write permission on this bucket, or
+    it was made for a different bucket. Make a new token with
+    Object Read & Write on the right bucket.
+
+Upload failed, "NoSuchBucket"
+    The bucket name is spelled differently from the real one.
+    Compare it character by character with the R2 bucket list.
+
+Upload failed, "Connection to R2 failed"
+    Your host could not reach Cloudflare. Rare — the app already
+    reaches OpenAI the same way, so if that works this should.
+
+Download OK but contents differ
+    Very unusual. Tell me and I will look.
+
+Delete failed
+    Upload and download work, so R2 is usable. The message tells
+    you the test file's name so you can remove it by hand.
+
+
+---------------------------------------------------------------
+WHAT HAPPENS TO YOUR EXISTING FILES
+---------------------------------------------------------------
+
+Nothing. They stay exactly where they are and keep working.
+
+Every document row records WHERE ITS OWN BYTES LIVE, in a column
+called storage_driver. Files already on your server read as
+"local" and keep downloading from disk, for ever. New documents
+read as "r2".
+
+So switching R2 on is not a migration. There is no moment where
+old documents stop working. If you later want to move the old
+ones across too, that is a separate job you choose to do, not
+something you must do.
+
+The same column is also your way out. If you ever leave
+Cloudflare, that is a new driver — not a rewrite of the module.
+
+
+---------------------------------------------------------------
+HOW THE SECURITY ACTUALLY WORKS
+---------------------------------------------------------------
+
+Worth knowing, because it is a fair question to ask.
+
+  * No document ever has a public URL. Not a long one, not a
+    secret one, not a temporary signed one.
+
+  * The storage key is random and never leaves the server. It is
+    not in the page, not in the HTML, not in any link.
+
+  * Every download goes through shipment_doc_file.php, which
+    checks three things before one byte is sent: that you are
+    logged in, that you are allowed to see that shipment, and
+    that you have document permission.
+
+  * Downloads are recorded. Who opened the final BL, and when,
+    is in the audit log.
+
+  * Signed links were deliberately NOT used. A signed link is a
+    password inside a URL — it can be forwarded, it sits in
+    browser history, and proxies log it. Streaming through the
+    application costs a little bandwidth and removes that whole
+    class of leak.
+
+  * Your keys are read from config.php on the server only. They
+    are never sent to a browser and never appear in any page.
+
+
+---------------------------------------------------------------
+THE ONE RULE
+---------------------------------------------------------------
+
+config.php NEVER leaves the server.
+
+Not in a zip. Not in the repository. Not in a screenshot. Not in
+a chat. If it does, change the database password, the app key,
+the OpenAI key and the R2 token — all four, because they are all
+in that one file.
+
+===============================================================
