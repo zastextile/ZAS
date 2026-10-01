@@ -307,13 +307,23 @@ function exp_build_schema(): void {
     $x("ALTER TABLE shipments ADD COLUMN bank_id INT NULL");
     $x("ALTER TABLE proforma_invoices ADD COLUMN bank_id INT NULL");
 
-    /* The old file table learns where its bytes live and what it is. Existing
-       rows read as local, which is exactly where they are. */
-    $x("ALTER TABLE shipment_files ADD COLUMN storage_driver VARCHAR(20) NULL");
-    $x("ALTER TABLE shipment_files ADD COLUMN storage_key VARCHAR(500) NULL");
-    $x("ALTER TABLE shipment_files ADD COLUMN doc_type_id INT NULL");
-    $x("ALTER TABLE shipment_files ADD COLUMN version INT NULL");
-    $x("ALTER TABLE shipment_files ADD COLUMN superseded_by INT NULL");
+    /* shipment_files gets NO new columns.
+     *
+     * The plan said it would gain storage_driver, storage_key, doc_type_id,
+     * version and superseded_by so old attachments could carry forward. In
+     * the build the versioned documents went into their own table instead,
+     * and those five columns ended up written by nothing and read by nothing
+     * — dead weight on a live table.
+     *
+     * Old attachments are shown in the Documents tab as read-only legacy rows
+     * (exp_legacy_files below), straight from the columns they already have,
+     * and they still download through download_file.php exactly as before.
+     * No column, no migration, nothing to keep in step.
+     *
+     * If an install ran schema version 1 before this was corrected, it has
+     * those five nullable columns sitting unused. They are harmless and are
+     * deliberately not dropped — dropping a column on a live table to tidy up
+     * is a bigger risk than leaving an empty one alone. */
 
     /* products.hs_code is NOT added — it already exists and is already printed
        on the costing reports. These three are the ones that do not. */
@@ -725,6 +735,79 @@ function exp_documents(int $shipmentId, bool $includeArchived = false): array {
         $st = db()->prepare($sql); $st->execute([$shipmentId]);
         return $st->fetchAll();
     } catch (Throwable $e) { return []; }
+}
+
+/* Attachments made before this module existed. Read-only: they are listed in
+   the Documents tab so there is ONE place to look for a shipment's paperwork,
+   but they keep downloading through download_file.php, which has always
+   served them and has always checked the permission. Nothing is copied,
+   moved or rewritten. */
+function exp_legacy_files(int $shipmentId): array {
+    try {
+        $st = db()->prepare("SELECT id, original_name, mime_type, file_size, uploaded_by, created_at
+                             FROM shipment_files WHERE shipment_id=? ORDER BY id DESC");
+        $st->execute([$shipmentId]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* ------------------------------------------------- linking a document back
+
+   A payment's SWIFT slip and a cost's bill are the two documents people
+   actually want to reach from the row itself. The link is one column on the
+   payment or cost, set when the document is uploaded from that row.
+
+   exp_attach_target() reads the "for" parameter that the Attach button adds
+   to the Documents URL. It is strict about shape and verifies the row really
+   belongs to this shipment, so a hand-edited URL cannot staple a document
+   onto someone else's payment. */
+function exp_attach_target(int $shipmentId, string $raw): ?array {
+    $raw = trim($raw);
+    if ($raw === '' || !preg_match('~^(pay|cost):(\d+)$~', $raw, $m)) return null;
+
+    $kind = $m[1];
+    $rowId = (int)$m[2];
+    if ($rowId <= 0) return null;
+
+    $table = $kind === 'pay' ? 'shipment_payments' : 'shipment_costs';
+    $col   = $kind === 'pay' ? 'proof_doc_id' : 'doc_id';
+
+    try {
+        $st = db()->prepare("SELECT * FROM $table WHERE id=? AND shipment_id=? AND is_void=0");
+        $st->execute([$rowId, $shipmentId]);
+        $row = $st->fetch();
+        if (!$row) return null;
+    } catch (Throwable $e) { return null; }
+
+    $label = $kind === 'pay'
+        ? 'payment of ' . (string)$row['currency'] . ' ' . number_format((float)$row['amount'], 2)
+            . ((string)($row['reference'] ?? '') !== '' ? ' (' . $row['reference'] . ')' : '')
+        : 'cost bill ' . ((string)($row['bill_no'] ?? '') !== '' ? $row['bill_no'] : '#' . $rowId);
+
+    return ['kind' => $kind, 'id' => $rowId, 'table' => $table, 'column' => $col, 'label' => $label];
+}
+
+/* Writes the link after the document row exists. Permission is the caller's
+   job — this is only reached from an upload the caller already allowed. */
+function exp_attach_document(array $target, int $docId, int $shipmentId): void {
+    try {
+        db()->prepare("UPDATE {$target['table']} SET {$target['column']}=? WHERE id=? AND shipment_id=?")
+            ->execute([$docId, $target['id'], $shipmentId]);
+    } catch (Throwable $e) {}
+}
+
+/* doc id => the document row, for every document attached to a payment or a
+   cost on this shipment. One query for the whole page rather than one per
+   row. */
+function exp_attached_docs(int $shipmentId): array {
+    $out = [];
+    try {
+        $st = db()->prepare("SELECT id, original_name, doc_type_id, version, stage, is_archived
+                             FROM shipment_documents WHERE shipment_id=?");
+        $st->execute([$shipmentId]);
+        foreach ($st->fetchAll() as $r) $out[(int)$r['id']] = $r;
+    } catch (Throwable $e) {}
+    return $out;
 }
 
 /* The next version number for this type and stage on this shipment. */

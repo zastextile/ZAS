@@ -129,6 +129,12 @@ if (isset($_GET['edit'])) {
 $canAdd = exp_can('payments', 'c');
 $canVoid = exp_can('payments', 'r');
 
+/* The documents attached to rows on this shipment — one query for the page,
+   not one per payment. */
+$attached = exp_attached_docs($id);
+$canDocs  = exp_can('documents');
+$canDocAdd = exp_can('documents', 'c');
+
 $pkrTotal = 0.0;
 foreach ($rows as $r) if ((int)$r['is_void'] === 0) $pkrTotal += (float)($r['pkr_credited'] ?? 0);
 
@@ -185,6 +191,17 @@ $statusClass = $pay['status'] === 'PAID' ? 'g' : ($pay['status'] === 'UNPAID' ? 
             <?php if ($void): ?>
               <span class="xpill r" title="<?= e($r['void_reason']) ?>">Voided</span>
             <?php else: ?>
+              <?php
+              /* The proof for THIS payment: a download when one is attached,
+                 an Attach button when it is not. The button carries the
+                 payment id, so the upload lands back on this row. */
+              $pd = $attached[(int)($r['proof_doc_id'] ?? 0)] ?? null;
+              if ($pd && $canDocs): ?>
+                <a class="xbtn sec sm" href="shipment_doc_file.php?doc=<?= (int)$pd['id'] ?>"
+                   title="<?= e($pd['original_name']) ?>">Proof</a>
+              <?php elseif ($canDocAdd): ?>
+                <a class="xbtn sec sm" href="shipment_documents.php?id=<?= $id ?>&for=pay:<?= (int)$r['id'] ?>">Attach</a>
+              <?php endif; ?>
               <?php if (exp_can('payments', 'u')): ?>
                 <a class="xbtn sec sm" href="shipment_payments.php?id=<?= $id ?>&edit=<?= (int)$r['id'] ?>#pform">Edit</a>
               <?php endif; ?>
@@ -278,8 +295,8 @@ $statusClass = $pay['status'] === 'PAID' ? 'g' : ($pay['status'] === 'UNPAID' ? 
     <div style="display:flex;gap:9px;margin-top:13px;flex-wrap:wrap">
       <button class="xbtn"><?= $edit ? 'Update Payment' : 'Record Payment' ?></button>
       <?php if ($edit): ?><a class="xbtn sec" href="shipment_payments.php?id=<?= $id ?>">Cancel</a><?php endif; ?>
-      <?php if (exp_can('documents')): ?>
-        <a class="xbtn sec" href="shipment_documents.php?id=<?= $id ?>">Attach the TT / SWIFT proof</a>
+      <?php if ($canDocs): ?>
+        <a class="xbtn sec" href="shipment_documents.php?id=<?= $id ?>">Open Documents</a>
       <?php endif; ?>
     </div>
   </form>

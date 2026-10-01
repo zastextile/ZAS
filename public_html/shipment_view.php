@@ -337,11 +337,24 @@ exp_tab_strip($shipment, 'invoice');
   <?php if(is_admin()): ?><button type="button" class="zbtn" style="background:linear-gradient(100deg,#6d5bd0,#0ea8c9)" onclick="runAICheck()">AI Check</button><?php endif; ?>
   <?php if(is_admin()): ?><a class="zbtn sec" target="_blank" href="costing_report_print.php?id=<?= e($id) ?>">View Costing Report</a><?php endif; ?>
   <?php if(is_admin()): ?><a class="zbtn sec" href="final_costing.php?shipment_id=<?= e($id) ?>">Final Costing</a><?php endif; ?>
-  <a class="zbtn sec" href="upload_file.php?id=<?= e($id) ?>">Files</a>
+  <?php
+  /* ONE DOOR FOR DOCUMENTS.
+     This used to go to upload_file.php, which still works and still serves
+     every file already attached. But a shipment with two upload buttons —
+     one with document types and versions, one without — is two places to
+     look and two places to forget. So the button goes to the Documents tab
+     for anyone who has it, and the old files are listed there as read-only
+     legacy rows alongside the versioned ones. Nobody who only has the old
+     permission loses their button. */
+  if (exp_can('documents')): ?>
+    <a class="zbtn sec" href="shipment_documents.php?id=<?= e($id) ?>">Documents</a>
+  <?php else: ?>
+    <a class="zbtn sec" href="upload_file.php?id=<?= e($id) ?>">Files</a>
+  <?php endif; ?>
 </div>
 </form>
 
-<?php if($files): ?>
+<?php if($files && !exp_can('documents')): /* shown in the Documents tab instead for anyone who has it */ ?>
 <div class="zcard">
   <div class="zhead"><h2>Attached Files</h2></div>
   <div style="overflow-x:auto"><table class="ztable" style="min-width:480px"><thead><tr><th>File</th><th>Date</th><th></th></tr></thead><tbody>

@@ -156,6 +156,11 @@ if (isset($_GET['edit'])) {
 $canAdd  = exp_can('costs', 'c');
 $canVoid = exp_can('costs', 'r');
 
+/* One query for every document attached to a row on this shipment. */
+$attached  = exp_attached_docs($id);
+$canDocs   = exp_can('documents');
+$canDocAdd = exp_can('documents', 'c');
+
 page_header('Costs — ' . $shipment['invoice_no']);
 flash();
 echo exp_page_css();
@@ -275,6 +280,17 @@ exp_tab_strip($shipment, 'costs');
             <?php if ($void): ?>
               <span class="xpill r" title="<?= e($c['void_reason']) ?>">Voided</span>
             <?php else: ?>
+              <?php
+              /* The bill for THIS cost row: download it when one is attached,
+                 otherwise an Attach button carrying this row's id so the
+                 upload comes back here. */
+              $bd = $attached[(int)($c['doc_id'] ?? 0)] ?? null;
+              if ($bd && $canDocs): ?>
+                <a class="xbtn sec sm" href="shipment_doc_file.php?doc=<?= (int)$bd['id'] ?>"
+                   title="<?= e($bd['original_name']) ?>">Bill</a>
+              <?php elseif ($canDocAdd): ?>
+                <a class="xbtn sec sm" href="shipment_documents.php?id=<?= $id ?>&for=cost:<?= (int)$c['id'] ?>">Attach</a>
+              <?php endif; ?>
               <?php if (exp_can('costs', 'u')): ?>
                 <a class="xbtn sec sm" href="shipment_costs.php?id=<?= $id ?>&edit=<?= (int)$c['id'] ?>#cform">Edit</a>
               <?php endif; ?>
@@ -357,8 +373,8 @@ exp_tab_strip($shipment, 'costs');
     <div style="display:flex;gap:9px;margin-top:13px;flex-wrap:wrap">
       <button class="xbtn"><?= $edit ? 'Update Cost' : 'Add Cost' ?></button>
       <?php if ($edit): ?><a class="xbtn sec" href="shipment_costs.php?id=<?= $id ?>">Cancel</a><?php endif; ?>
-      <?php if (exp_can('documents')): ?>
-        <a class="xbtn sec" href="shipment_documents.php?id=<?= $id ?>">Attach the bill</a>
+      <?php if ($canDocs): ?>
+        <a class="xbtn sec" href="shipment_documents.php?id=<?= $id ?>">Open Documents</a>
       <?php endif; ?>
     </div>
   </form>

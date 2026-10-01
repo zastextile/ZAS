@@ -271,12 +271,20 @@ t('every column added to an existing table is nullable', (function () use ($alte
     return count($alters) > 0;
 })(), $alters);
 
-t('  and there are the eleven expected ALTERs, no more', count($alters) === 11, count($alters));
+/* Six, not the eleven first written. Five ALTERs on shipment_files were
+   removed after the check found them written by nothing and read by nothing:
+   the versioned documents went into their own table, so those columns were
+   dead weight on a live table. Old attachments are listed from the columns
+   shipment_files already had. */
+t('  and there are the six expected ALTERs, no more', count($alters) === 6, count($alters));
 
-t('the ALTERs only touch shipments, proforma_invoices, shipment_files and products',
+t('shipment_files is not altered at all any more',
+  !preg_match('~ALTER TABLE shipment_files~i', $ddl));
+
+t('the ALTERs only touch shipments, proforma_invoices and products',
   (function () use ($alters) {
       foreach ($alters as $a) {
-          if (!preg_match('~ALTER TABLE (shipments|proforma_invoices|shipment_files|products)\b~i', $a)) return false;
+          if (!preg_match('~ALTER TABLE (shipments|proforma_invoices|products)\b~i', $a)) return false;
       }
       return true;
   })(), $alters);
@@ -362,6 +370,89 @@ t('  and the new picker only fills fields, writing nothing itself',
   str_contains($pf, 'function pfFillBank') && !str_contains($pf, "name=\"exp_bank_id\""));
 t('  and still falls back to company_bank_defaults for a new proforma',
   str_contains($pf, "\$bd['bank1_name']"));
+
+/* ------------------------------------------------------------------------- */
+head('8. Attaching a document back to a payment or a cost');
+
+eval(lift($src, 'function exp_attach_target('));
+
+/* The guard that matters: the row must belong to THIS shipment. */
+$FAKE->answers = ['FROM shipment_payments' => [[
+    'id' => 7, 'shipment_id' => 41, 'currency' => 'USD', 'amount' => 20000.00,
+    'reference' => 'TT-889211', 'is_void' => 0,
+]]];
+$t = exp_attach_target(41, 'pay:7');
+t('a valid payment target resolves', is_array($t) && $t['id'] === 7, $t);
+t('  and names the right table and column',
+  $t['table'] === 'shipment_payments' && $t['column'] === 'proof_doc_id', $t);
+t('  and the label names the payment a person would recognise',
+  str_contains((string)$t['label'], '20,000.00') && str_contains((string)$t['label'], 'TT-889211'), $t['label'] ?? null);
+
+$FAKE->answers = ['FROM shipment_costs' => [[
+    'id' => 3, 'shipment_id' => 41, 'bill_no' => 'FR-8871', 'currency' => 'USD',
+    'amount' => 3150.00, 'is_void' => 0,
+]]];
+$t = exp_attach_target(41, 'cost:3');
+t('a valid cost target resolves to its own column',
+  is_array($t) && $t['column'] === 'doc_id' && $t['table'] === 'shipment_costs', $t);
+
+/* Nothing matched = the row is not on this shipment, or does not exist, or
+   is voided. The fake returns no rows, which is exactly that case. */
+$FAKE->answers = [];
+t('a row that is not on this shipment is refused', exp_attach_target(41, 'pay:7') === null);
+t('a voided or missing row is refused', exp_attach_target(41, 'cost:999') === null);
+
+/* Shape, so a hand-edited URL cannot reach anything unexpected. */
+foreach (['', 'pay', 'pay:', ':7', 'pay:abc', 'pay:-1', 'pay:0', 'other:7',
+          'pay:7 OR 1=1', "pay:7'; DROP TABLE x;--", 'PAY:7', 'pay:7:8'] as $bad) {
+    t('a malformed target is refused: ' . var_export($bad, true), exp_attach_target(41, $bad) === null);
+}
+
+/* ------------------------------------------------------------------------- */
+head('9. Old attachments are shown, never touched');
+
+$docsSrc = file_get_contents($B . 'shipment_documents.php');
+$viewSrc = file_get_contents($B . 'shipment_view.php');
+$upSrc   = file_get_contents($B . 'upload_file.php');
+
+t('the Documents tab lists the legacy files', str_contains($docsSrc, 'exp_legacy_files($id)'));
+t('  and serves them through the old, already permission-checked endpoint',
+  str_contains($docsSrc, 'download_file.php?id='));
+t('  and marks them read-only rather than offering to edit them',
+  str_contains($docsSrc, 'read-only') && !preg_match('~shipment_files[^\n]*(UPDATE|DELETE|INSERT)~i', $docsSrc));
+
+t('upload_file.php is completely untouched',
+  str_contains($upSrc, 'INSERT INTO shipment_files (shipment_id,original_name,stored_name,mime_type,file_size,uploaded_by)'));
+
+t('the invoice screen sends users with document access to the Documents tab',
+  str_contains($viewSrc, "exp_can('documents')") && str_contains($viewSrc, 'shipment_documents.php?id='));
+t('  and still shows the old Files button to anyone without it',
+  str_contains($viewSrc, 'upload_file.php?id='));
+t('  and does not show the old file list twice',
+  str_contains($viewSrc, "if(\$files && !exp_can('documents'))"));
+
+/* The five columns that were dead. */
+t('shipment_files gets no new columns any more',
+  !preg_match('~ALTER TABLE shipment_files~', $src));
+t('  and the reason is recorded rather than silently dropped',
+  str_contains($src, 'dead weight on a live table'));
+
+/* The two link columns are now actually written. */
+$paySrc  = file_get_contents($B . 'shipment_payments.php');
+$costSrc = file_get_contents($B . 'shipment_costs.php');
+t('the payment row offers Attach when nothing is attached',
+  str_contains($paySrc, 'for=pay:'));
+t('  and a download when something is',
+  str_contains($paySrc, 'shipment_doc_file.php?doc='));
+t('the cost row offers the same',
+  str_contains($costSrc, 'for=cost:') && str_contains($costSrc, 'shipment_doc_file.php?doc='));
+t('the upload writes the link back',
+  str_contains($docsSrc, 'exp_attach_document($target, $newId, $id)'));
+t('  and returns the user to the row they started from',
+  str_contains($docsSrc, "shipment_payments.php?id=" ) && str_contains($docsSrc, "shipment_costs.php?id="));
+t('the attached documents are fetched in one query, not one per row',
+  str_contains($paySrc, 'exp_attached_docs($id)') && str_contains($costSrc, 'exp_attached_docs($id)'));
+
 
 echo "\n$P passed, $F failed\n";
 exit($F > 0 ? 1 : 0);

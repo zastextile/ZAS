@@ -91,13 +91,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$newId, $id, $typeId, $stage !== '' ? $stage : null, $newId]);
             db()->commit();
 
+            /* If this upload was started from a payment or a cost row, link it
+               back to that row now. The target was verified against this
+               shipment when the page loaded, so a hand-edited URL cannot
+               attach a document to someone else's payment. */
+            $attached = '';
+            $target = exp_attach_target($id, (string)($_POST['for'] ?? ''));
+            if ($target) {
+                exp_attach_document($target, $newId, $id);
+                $attached = ' It is now attached to the ' . $target['label'] . '.';
+                audit_log($id, 'Document', 'attach', '', $orig . ' → ' . $target['label'], 'Document linked to a row');
+            }
+
             audit_log($id, 'Document', 'upload', '',
                       $typeRow['label'] . ($stage !== '' ? ' ' . ucfirst($stage) : '') . ' V' . $version . ' — ' . $orig,
                       'Document uploaded to ' . strtoupper($driver));
 
             $_SESSION['flash'] = $typeRow['label'] . ($stage !== '' ? ' ' . ucfirst($stage) : '')
                                . ' saved as version ' . $version
-                               . ($version > 1 ? '. Version ' . ($version - 1) . ' is kept and marked superseded.' : '.');
+                               . ($version > 1 ? '. Version ' . ($version - 1) . ' is kept and marked superseded.' : '.')
+                               . $attached;
+
+            /* Back where the upload started from, not to a list they then
+               have to navigate out of. */
+            if ($target) {
+                redirect(($target['kind'] === 'pay' ? 'shipment_payments.php?id=' : 'shipment_costs.php?id=') . $id);
+            }
             redirect('shipment_documents.php?id=' . $id);
         }
 
@@ -126,6 +145,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $showArchived = !empty($_GET['archived']);
 $docs    = exp_documents($id, $showArchived);
+$legacy  = exp_legacy_files($id);
+
+/* Set when the page was opened by an Attach button on a payment or cost row.
+   Verified against this shipment, so an invented value simply comes back
+   null and the page behaves as an ordinary upload. */
+$target  = exp_attach_target($id, (string)($_GET['for'] ?? ''));
 $types   = exp_masters('doc_type');
 $typeAll = exp_masters('doc_type', false);
 $typeMap = exp_master_map('doc_type');
@@ -240,6 +265,39 @@ exp_tab_strip($shipment, 'docs');
 </div>
 <?php endforeach; ?>
 
+<?php if ($legacy): ?>
+<div class="dgroup" style="margin-top:14px">
+  <div class="dhead">
+    <div>
+      <div class="n">Files attached before the document system</div>
+      <div class="dmeta"><?= count($legacy) ?> file<?= count($legacy) === 1 ? '' : 's' ?> &middot; read-only</div>
+    </div>
+    <span class="xpill b">Legacy</span>
+  </div>
+  <?php foreach ($legacy as $f): ?>
+    <div class="drow old">
+      <div style="min-width:0">
+        <div style="font-size:12.5px;word-break:break-all"><?= e($f['original_name']) ?></div>
+        <div class="dmeta">
+          <?= e(exp_size_h($f['file_size'])) ?>
+          <?= $f['created_at'] ? ' &middot; ' . e(date('d M Y', strtotime((string)$f['created_at']))) : '' ?>
+          &middot; on this server
+        </div>
+      </div>
+      <div style="white-space:nowrap">
+        <a class="xbtn sec sm" href="download_file.php?id=<?= (int)$f['id'] ?>">Download</a>
+      </div>
+    </div>
+  <?php endforeach; ?>
+</div>
+<div class="xnote" style="margin-bottom:12px">
+  These came from the old <b>Files</b> button on the invoice screen, before documents had types and
+  versions. They are listed here so there is one place to look for this shipment's paperwork. They are
+  not moved or changed, and they download exactly as they always have. To give one a type and a
+  version, upload it again below.
+</div>
+<?php endif; ?>
+
 <?php if ($canUpload): ?>
 <div class="xcard" style="margin-top:12px">
   <h2>Upload a Document</h2>
@@ -251,10 +309,19 @@ exp_tab_strip($shipment, 'docs');
     </div>
   <?php endif; ?>
 
+  <?php if ($target): ?>
+    <div class="xnote" style="margin-bottom:12px;border-color:#0ea8c9;background:rgba(14,168,201,.08)">
+      <b>Attaching to the <?= e($target['label']) ?>.</b>
+      When this uploads it is linked to that row, and you are taken back to it.
+      <a href="shipment_documents.php?id=<?= $id ?>" style="color:#0ea8c9;font-weight:600;margin-left:6px">Upload without attaching</a>
+    </div>
+  <?php endif; ?>
+
   <form method="post" enctype="multipart/form-data" id="upForm">
     <?= csrf_field() ?>
     <input type="hidden" name="action" value="upload">
     <input type="hidden" name="shipment_id" value="<?= $id ?>">
+    <?php if ($target): ?><input type="hidden" name="for" value="<?= e($target['kind'] . ':' . $target['id']) ?>"><?php endif; ?>
 
     <div class="xgrid">
       <label class="xlabel">Document Type
