@@ -36,6 +36,7 @@ $PAGES = [
     'exp_providers.php'      => 'providers',
     'shipment_customs.php'   => 'customs',
     'customs_print.php'      => 'customsprint',
+    'search.php'             => 'search',
 ];
 foreach (array_keys($PAGES) as $p) copy($B . $p, $work . '/' . $p);
 
@@ -45,6 +46,7 @@ copy($B . 'includes/storage.php', $work . '/includes/storage.php');
 /* export.php requires this one, so every page that includes export.php needs
    it present — which is exactly how this harness noticed the new coupling. */
 copy($B . 'includes/exportdocs.php', $work . '/includes/exportdocs.php');
+copy($B . 'includes/qrouter.php',    $work . '/includes/qrouter.php');
 foreach (['lov.js', 'grid.js'] as $j) if (is_file($B . 'assets/js/' . $j)) copy($B . 'assets/js/' . $j, $work . '/assets/js/' . $j);
 foreach (['lov.css', 'zskin.css'] as $c) if (is_file($B . 'assets/css/' . $c)) copy($B . 'assets/css/' . $c, $work . '/assets/css/' . $c);
 
@@ -85,6 +87,10 @@ function status_badge($s){ return '<span class="xpill b">' . e($s) . '</span>'; 
 function post_array($k){ return isset($_POST[$k]) && is_array($_POST[$k]) ? $_POST[$k] : []; }
 function fx_get_rates(){ return ['PKR' => 1.0, 'USD' => 0.00359, 'EUR' => 0.0033, 'GBP' => 0.0028]; }
 function fx_last_synced_at(){ return null; }
+function costing_perm($a){ return true; }
+function create_embedding($t){ throw new Exception('create_embedding must not be called without a button'); }
+function gpt_answer($q, $c){ throw new Exception('gpt_answer must not be called without a button'); }
+function aic_rank_by_similarity($r, $v, $n){ return []; }
 function inv_parties($t = '', $a = true){ return [['id'=>5,'code'=>'SUP-0001','name'=>'Al-Madina Transport','party_type'=>'supplier']]; }
 
 function page_header($t){
@@ -238,6 +244,17 @@ $GLOBALS['BDB']->A = [
     'actual_arrival_date'=>null,'bl_no'=>'MAEU240817221',
   ]],
   "shipment_id, COALESCE(SUM(amount),0) s" => [['shipment_id'=>41,'s'=>30000.00]],
+  "FROM shipments s" => [[
+    'id'=>41,'invoice_no'=>'ZAS/5191','buyer_name'=>'ABC Trading','buyer_country'=>'Belgium',
+    'status'=>'approved_locked','currency'=>'USD','invoice_date'=>'2026-09-20',
+    'destination_port'=>'ANTWERP','total_amount'=>36000.00,'logistics_status'=>'In Transit',
+    'ip'=>'Flat Sheet','idc'=>'White 300TC','iqty'=>1200,'irate'=>12.00,'iamount'=>14400.00,
+  ]],
+  "DISTINCT buyer_country" => [['v'=>'Belgium'],['v'=>'Spain']],
+  "DISTINCT destination_port" => [['v'=>'ANTWERP']],
+  "DISTINCT buyer_name" => [['v'=>'ABC Trading']],
+  "FROM exp_ai_budget" => [['ym'=>date('Y-m'),'calls_used'=>3]],
+  "k='ai_cap_calls'" => [['v'=>'500']],
   "FROM exp_doc_lines" => [
     ['id'=>1,'shipment_id'=>41,'view'=>'customs','line_no'=>1,'description'=>'Cotton Bed Linen White',
      'hs_code'=>'630231','unit'=>'Pcs','qty'=>1200,'rate'=>11.98,'amount'=>14376.00],
@@ -267,13 +284,22 @@ file_put_contents($work . '/includes/bootstrap.php', $bootstrap);
    nothing else. */
 file_put_contents($work . '/includes/inventory.php', "<?php\n/* stub: the export module needs inv_parties() only, stubbed in bootstrap */\n");
 
+/* search.php pulls these in. Each one's functions are stubbed in bootstrap
+   above, so the files only have to exist — and the fact that they can be
+   EMPTY is the point: create_embedding() and gpt_answer() come from the
+   bootstrap stubs, which THROW. If the page renders, nothing called them. */
+foreach (['openai', 'costing', 'ai_costing', 'proforma_embed'] as $stub) {
+    file_put_contents($work . '/includes/' . $stub . '.php',
+        "<?php\n/* stub: " . $stub . " functions are defined in the test bootstrap */\n");
+}
+
 /* ------------------------------------------------- render each page with PHP */
 head('1. Every page renders under PHP without a fatal error');
 
 $html = [];
 foreach ($PAGES as $page => $slug) {
     $cmd = 'cd ' . escapeshellarg($work) . ' && php -d error_reporting=E_ALL -d display_errors=1 '
-         . '-r ' . escapeshellarg('$_GET=["id"=>41,"view"=>"transit","doc"=>"invoice"]; $_SERVER["REQUEST_METHOD"]="GET"; include "' . $page . '";')
+         . '-r ' . escapeshellarg('$_GET=["id"=>41,"view"=>"transit","doc"=>"invoice","mode"=>"shipment","q"=>"Belgium payment outstanding"]; $_SERVER["REQUEST_METHOD"]="GET"; include "' . $page . '";')
          . ' 2>&1';
     $out = (string)shell_exec($cmd);
     $html[$slug] = $out;
@@ -398,8 +424,10 @@ const fs = require('fs');
     pg.on('console', m => { if (m.type() === 'error') {
       const t = m.text();
       /* A missing favicon or a blocked file:// fetch is this harness, not the
-         app. Anything else counts. */
-      if (!/favicon|ERR_FILE_NOT_FOUND|ERR_FAILED|net::/i.test(t)) errs.push('console: ' + t);
+         app: pages are loaded from disk, so any fetch() the page makes is
+         refused by the browser's own origin rules before it reaches any
+         code. Anything else counts. */
+      if (!/favicon|ERR_FILE_NOT_FOUND|ERR_FAILED|net::|blocked by CORS|Cross origin/i.test(t)) errs.push('console: ' + t);
     }});
 
     await pg.goto('file://' + path.join(work, slug + '.html'), { waitUntil: 'load' });

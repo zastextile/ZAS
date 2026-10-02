@@ -30,7 +30,7 @@
    Including it costs nothing: the file declares functions and runs no query. */
 require_once __DIR__ . '/exportdocs.php';
 
-const EXP_SCHEMA_VERSION = '3';
+const EXP_SCHEMA_VERSION = '4';
 
 /* The money shape used everywhere in this module. Amounts are DECIMAL, never
    float — a float cannot hold 0.1 exactly, and a ledger that cannot add up
@@ -358,6 +358,37 @@ function exp_build_schema(): void {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uniq_view_key (view, norm_key),
         INDEX idx_view_used (view, times_used)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    /* ----------------------------------------- the AI ceiling (Phase 3a)
+
+       Before this there was none: search.php called OpenAI twice on every
+       search, with no cap, no cache and no counter. One row a month. */
+    $x("CREATE TABLE IF NOT EXISTS exp_ai_budget (
+        ym CHAR(7) NOT NULL PRIMARY KEY,
+        calls_used INT NOT NULL DEFAULT 0,
+        tokens_used BIGINT NOT NULL DEFAULT 0,
+        updated_at DATETIME NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    /* What people actually ask, and which route answered it. This is how the
+       next set of patterns gets chosen from evidence rather than guesswork:
+       a question that lands with no filters and no rows is a pattern the
+       router has not learnt yet. */
+    $x("CREATE TABLE IF NOT EXISTS exp_query_log (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NULL,
+        mode VARCHAR(16) NOT NULL,
+        question VARCHAR(500) NULL,
+        filters_found INT NOT NULL DEFAULT 0,
+        leftover VARCHAR(190) NULL,
+        rows_found INT NOT NULL DEFAULT 0,
+        route VARCHAR(20) NOT NULL DEFAULT 'filters',
+        calls_spent INT NOT NULL DEFAULT 0,
+        ms INT NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_when (created_at),
+        INDEX idx_route (route, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     /* ------------------------------------- columns on tables that already

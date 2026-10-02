@@ -4,6 +4,8 @@ require_once __DIR__ . '/includes/openai.php';
 require_once __DIR__ . '/includes/costing.php';
 require_once __DIR__ . '/includes/ai_costing.php';
 require_once __DIR__ . '/includes/proforma_embed.php';
+require_once __DIR__ . '/includes/export.php';
+require_once __DIR__ . '/includes/qrouter.php';
 require_login();
 
 if (is_staff() || is_production_staff()) {
@@ -22,176 +24,240 @@ $proformaMatches = [];
 function ai_sym($cur){ $m=['USD'=>'$','EUR'=>'€','GBP'=>'£','PKR'=>'₨']; return $m[strtoupper((string)$cur)] ?? (($cur?$cur.' ':'')); }
 function ai_money($cur,$v){ return ai_sym($cur).number_format((float)$v,2); }
 
+/* =======================================================================
+   THE ROUTER REPLACES WHAT STOOD HERE.
+   =======================================================================
+
+   What this used to do, on every search in every mode: a LIKE query, then
+   create_embedding() on the question, then every stored vector loaded into
+   PHP and ranked, then gpt_answer(). Two OpenAI calls, unconditionally, with
+   no cap, no cache and no counter — even for "ZAS/5191", which is a lookup.
+
+   Now the question is parsed into filters and answered from the tables. The
+   paid routes still exist, but only behind a button, and only while the
+   monthly cap has room. The render below is unchanged: it is fed the same
+   $costingMatches / $proformaMatches / $matches it always was.
+   ===================================================================== */
+
+$t0       = microtime(true);
+$parsed   = ['mode' => $mode, 'filters' => [], 'used' => [], 'leftover' => ''];
+$chips    = [];
+$describing = false;
+$route    = 'none';
+$spent    = 0;
+$budget   = qr_budget();
+$wantExplain  = isset($_GET['explain']) || isset($_POST['explain']);
+$wantSemantic = isset($_GET['semantic']) || isset($_POST['semantic']);
+$paidNote = '';
+
 if ($q !== '') {
-    $like = "%{$q}%";
+    $parsed = qr_parse($mode, $q);
+    $chips  = qr_chips($parsed);
+    $describing = qr_is_description($parsed);
+    [$where, $wparams] = qr_where($mode, $parsed['filters']);
 
-    /* ============ COSTING MODE ============ */
-    if ($mode === 'costing' && costing_perm('view')) {
+    /* A question with no filter and words left over is a DESCRIPTION, not a
+       request for the whole table. Showing everything would look like an
+       answer and would not be one. */
+    if ($describing) {
+        $route = 'description';
+    } else {
+        $route = 'filters';
+
+        if ($mode === 'costing' && costing_perm('view')) {
+            try {
+                $sql = "SELECT cv.id, cv.costing_no, cv.version_name, cv.status, cv.currency,
+                               cv.total_cost, cv.suggested_price, cv.created_at,
+                               p.id AS product_id, p.name AS product_name
+                        FROM costing_versions cv JOIN products p ON p.id = cv.product_id";
+                if ($where !== '') $sql .= " WHERE $where";
+                $sql .= " ORDER BY cv.id DESC LIMIT 60";
+                $st = db()->prepare($sql); $st->execute($wparams);
+                $costingMatches = $st->fetchAll();
+
+                if ($costingMatches) {
+                    $ids = array_column($costingMatches, 'id');
+                    $in  = implode(',', array_fill(0, count($ids), '?'));
+                    $sz  = db()->prepare("SELECT cvs.costing_version_id, ps.size_label
+                                          FROM costing_version_sizes cvs
+                                          JOIN product_sizes ps ON ps.id = cvs.product_size_id
+                                          WHERE cvs.costing_version_id IN ($in)");
+                    $sz->execute($ids);
+                    $bySize = [];
+                    foreach ($sz->fetchAll() as $r) $bySize[$r['costing_version_id']][] = $r['size_label'];
+                    foreach ($costingMatches as &$cmRow) $cmRow['sizes'] = implode(', ', $bySize[$cmRow['id']] ?? []);
+                    unset($cmRow);
+                }
+            } catch (Throwable $e) { $costingMatches = []; }
+        }
+
+        if ($mode === 'proforma' && costing_perm('proforma')) {
+            try {
+                $sql = "SELECT pf.id, pf.pi_no, pf.customer_name, pf.currency, pf.status, pf.created_at
+                        FROM proforma_invoices pf";
+                if ($where !== '') $sql .= " WHERE $where";
+                $sql .= " ORDER BY pf.id DESC LIMIT 60";
+                $st = db()->prepare($sql); $st->execute($wparams);
+                $proformaMatches = $st->fetchAll();
+                foreach ($proformaMatches as &$pfRow) {
+                    $tot = db()->prepare("SELECT COALESCE(SUM(amount),0) FROM proforma_items WHERE proforma_id=?");
+                    $tot->execute([$pfRow['id']]);
+                    $pfRow['total'] = (float)$tot->fetchColumn();
+                }
+                unset($pfRow);
+            } catch (Throwable $e) { $proformaMatches = []; }
+        }
+
+        if ($mode === 'shipment') {
+            try {
+                /* DRAFTS ARE INCLUDED NOW. The old query had
+                   s.status='approved_locked' hard-coded, so a search for a
+                   draft returned "no records matched" — which reads as "it
+                   does not exist" rather than "I am not looking there".
+                   Visibility is still can_view_shipment(): a colleague sees
+                   all, staff never reach this page. */
+                $scope = ''; $sparams = [];
+                if (!is_admin()) {
+                    $ids = assigned_shipment_ids();
+                    if ($ids === ['ALL']) { /* colleague: everything */ }
+                    elseif (!$ids) { $scope = ' AND 1=0'; }
+                    else {
+                        $scope = ' AND s.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+                        $sparams = $ids;
+                    }
+                }
+
+                $sql = "SELECT s.id, s.invoice_no, s.buyer_name, s.buyer_country, s.status, s.currency,
+                               s.invoice_date, s.destination_port, s.total_amount, s.logistics_status,
+                               i.product_name AS ip, i.des_col AS idc, i.qty AS iqty,
+                               i.rate AS irate, i.amount AS iamount
+                        FROM shipments s
+                        LEFT JOIN shipment_items i ON i.shipment_id = s.id
+                        WHERE " . ($where !== '' ? "($where)" : '1=1') . $scope . "
+                        ORDER BY s.id DESC LIMIT 200";
+                $st = db()->prepare($sql);
+                $st->execute(array_merge($wparams, $sparams));
+                $matches = $st->fetchAll();
+            } catch (Throwable $e) { $matches = []; }
+        }
+    }
+
+    /* ----------------------------------------------- the two paid routes
+
+       Neither runs unless a button was pressed AND the monthly cap has room.
+       Semantic reaches locked records only — that is the existing embedding
+       cost control, unchanged. */
+    $rowCount = $mode === 'costing' ? count($costingMatches)
+              : ($mode === 'proforma' ? count($proformaMatches) : count($matches));
+
+    if (($wantExplain || $wantSemantic) && !$budget['ok']) {
+        $paidNote = 'The monthly AI allowance of ' . (int)$budget['cap'] . ' calls is used up. '
+                  . 'Filter searches are unaffected and still free. An admin can raise the cap in Settings.';
+    } elseif ($wantSemantic) {
         try {
-            $csql = "SELECT cv.id, cv.costing_no, cv.version_name, cv.status, cv.currency, cv.total_cost, cv.suggested_price, cv.created_at,
-                            p.id AS product_id, p.name AS product_name
-                     FROM costing_versions cv
-                     JOIN products p ON p.id = cv.product_id
-                     WHERE p.name LIKE ? OR cv.costing_no LIKE ? OR cv.version_name LIKE ?
-                        OR EXISTS (SELECT 1 FROM costing_lines cl WHERE cl.costing_version_id = cv.id AND cl.item_name LIKE ?)
-                     ORDER BY cv.id DESC LIMIT 40";
-            $cst = db()->prepare($csql);
-            $cst->execute([$like, $like, $like, $like]);
-            $costingMatches = $cst->fetchAll();
-            if ($costingMatches) {
-                $cids = array_column($costingMatches, 'id');
-                $in = implode(',', array_fill(0, count($cids), '?'));
-                $szst = db()->prepare("SELECT cvs.costing_version_id, ps.size_label FROM costing_version_sizes cvs JOIN product_sizes ps ON ps.id = cvs.product_size_id WHERE cvs.costing_version_id IN ($in)");
-                $szst->execute($cids);
-                $sizesByV = [];
-                foreach ($szst->fetchAll() as $r) { $sizesByV[(int)$r['costing_version_id']][] = $r['size_label']; }
-                foreach ($costingMatches as &$cm) { $cm['sizes'] = $sizesByV[(int)$cm['id']] ?? []; }
-                unset($cm);
-            }
-
-            $queryVec = create_embedding($q);
-            $costForRank = [];
-            $costRows = db()->query("SELECT costing_version_id, embedded_text, embedding_vector FROM costing_embeddings")->fetchAll();
-            foreach ($costRows as $r) {
-                $vec = json_decode((string)$r['embedding_vector'], true);
-                if (is_array($vec)) $costForRank[$r['costing_version_id']] = ['text' => $r['embedded_text'], 'vector' => $vec];
-            }
-            $topCost = $queryVec ? aic_rank_by_similarity($costForRank, $queryVec, 6) : [];
-
-            $strongIds = array_column(array_filter($topCost, fn($c) => $c['score'] >= 0.55), 'key');
-            $existingIds2 = array_column($costingMatches, 'id');
-            $newIds = array_diff($strongIds, $existingIds2);
-            if ($newIds) {
-                $in = implode(',', array_fill(0, count($newIds), '?'));
-                $extra = db()->prepare("SELECT cv.id, cv.costing_no, cv.version_name, cv.status, cv.currency, cv.total_cost, cv.suggested_price, cv.created_at,
-                                                p.id AS product_id, p.name AS product_name
-                                         FROM costing_versions cv JOIN products p ON p.id = cv.product_id
-                                         WHERE cv.id IN ($in)");
-                $extra->execute(array_values($newIds));
-                $extraRows = $extra->fetchAll();
-                if ($extraRows) {
-                    $cids = array_column($extraRows, 'id');
-                    $in2 = implode(',', array_fill(0, count($cids), '?'));
-                    $szst = db()->prepare("SELECT cvs.costing_version_id, ps.size_label FROM costing_version_sizes cvs JOIN product_sizes ps ON ps.id = cvs.product_size_id WHERE cvs.costing_version_id IN ($in2)");
-                    $szst->execute($cids);
-                    $sizesByV = [];
-                    foreach ($szst->fetchAll() as $r) { $sizesByV[(int)$r['costing_version_id']][] = $r['size_label']; }
-                    foreach ($extraRows as &$er) { $er['sizes'] = $sizesByV[(int)$er['id']] ?? []; }
-                    unset($er);
-                    $costingMatches = array_merge($costingMatches, $extraRows);
+            $vec = create_embedding($q);
+            qr_spend(1); $spent++;
+            $rank = [];
+            if ($mode === 'shipment') {
+                /* PRE-FILTERED, which is the whole point. If the filters found
+                   twelve shipments we rank twelve vectors, not five hundred.
+                   The old code loaded every row it could and still went blind
+                   past the newest 500 without saying so. */
+                $sqlv = "SELECT e.id, e.shipment_id, e.chunk_text, e.vector_json
+                         FROM shipment_embeddings e WHERE e.is_active=1";
+                $vp = [];
+                if (!empty($matches)) {
+                    $sids = array_values(array_unique(array_map(fn($m) => (int)$m['id'], $matches)));
+                    $sqlv .= " AND e.shipment_id IN (" . implode(',', array_fill(0, count($sids), '?')) . ")";
+                    $vp = $sids;
+                } else {
+                    $sqlv .= " ORDER BY e.id DESC LIMIT 300";
+                }
+                $vs = db()->prepare($sqlv); $vs->execute($vp);
+                foreach ($vs->fetchAll() as $r) {
+                    $v = json_decode((string)$r['vector_json'], true);
+                    if (is_array($v)) $rank[$r['id']] = ['text' => $r['chunk_text'], 'vector' => $v];
+                }
+            } elseif ($mode === 'costing') {
+                $vs = db()->query("SELECT costing_version_id, embedded_text, embedding_vector
+                                   FROM costing_embeddings ORDER BY costing_version_id DESC LIMIT 300");
+                foreach ($vs->fetchAll() as $r) {
+                    $v = json_decode((string)$r['embedding_vector'], true);
+                    if (is_array($v)) $rank[$r['costing_version_id']] = ['text' => $r['embedded_text'], 'vector' => $v];
+                }
+            } else {
+                $vs = db()->query("SELECT proforma_id, embedded_text, embedding_vector
+                                   FROM proforma_embeddings ORDER BY proforma_id DESC LIMIT 300");
+                foreach ($vs->fetchAll() as $r) {
+                    $v = json_decode((string)$r['embedding_vector'], true);
+                    if (is_array($v)) $rank[$r['proforma_id']] = ['text' => $r['embedded_text'], 'vector' => $v];
                 }
             }
-
+            $top = $vec ? aic_rank_by_similarity($rank, $vec, 6) : [];
             $chunks = [];
-            foreach ($topCost as $c) $chunks[] = $c['text'];
-            $topIds = array_column($topCost, 'key');
-            foreach ($costingMatches as $cm) {
-                if (in_array((int)$cm['id'], $topIds, true)) continue;
-                $chunks[] = 'Costing ' . $cm['costing_no'] . ' for ' . $cm['product_name'] . ($cm['sizes'] ? ' (' . implode('/', $cm['sizes']) . ')' : '')
-                    . ': status ' . $cm['status'] . ', total cost ' . $cm['currency'] . ' ' . number_format((float)$cm['total_cost'], 2)
-                    . ($cm['suggested_price'] > 0 ? ', suggested price ' . $cm['currency'] . ' ' . number_format((float)$cm['suggested_price'], 2) : '') . '.';
+            foreach ($top as $tRow) $chunks[] = $tRow['text'];
+            if ($chunks) {
+                $answer = gpt_answer($q, array_slice($chunks, 0, 8));
+                qr_spend(1); $spent++;
+            } else {
+                $answer = 'Nothing close enough was found by meaning. Remember that only approved and '
+                        . 'locked records are embedded — a draft can be found by filters but not this way.';
             }
-            if ($chunks) $answer = gpt_answer($q, array_slice($chunks, 0, 8));
-        } catch (Throwable $e) { $answer = ''; }
-        if ($answer === '') {
-            $answer = $costingMatches ? 'Found ' . count($costingMatches) . ' costing record(s) for "' . $q . '". See the matched records below.' : 'No costing records matched "' . $q . '".';
+            $route = 'semantic';
+        } catch (Throwable $e) {
+            $answer = 'The meaning search could not run just now. Your filter results are unaffected.';
         }
-    }
-
-    /* ============ PROFORMA MODE ============ */
-    if ($mode === 'proforma' && costing_perm('proforma')) {
+    } elseif ($wantExplain) {
         try {
-            $psql = "SELECT DISTINCT pf.id, pf.pi_no, pf.customer_name, pf.currency, pf.status, pf.created_at
-                     FROM proforma_invoices pf
-                     LEFT JOIN proforma_items pi ON pi.proforma_id = pf.id
-                     WHERE pf.pi_no LIKE ? OR pf.customer_name LIKE ? OR pi.product_name LIKE ? OR pi.description LIKE ?
-                     ORDER BY pf.id DESC LIMIT 40";
-            $pst = db()->prepare($psql);
-            $pst->execute([$like, $like, $like, $like]);
-            $proformaMatches = $pst->fetchAll();
-            if ($proformaMatches) {
-                $totSt = db()->prepare("SELECT COALESCE(SUM(amount),0) FROM proforma_items WHERE proforma_id=?");
-                foreach ($proformaMatches as &$pm) { $totSt->execute([$pm['id']]); $pm['total'] = (float)$totSt->fetchColumn(); }
-                unset($pm);
-            }
-
-            $queryVec = create_embedding($q);
-            $pfForRank = [];
-            $pfRows = db()->query("SELECT proforma_id, embedded_text, embedding_vector FROM proforma_embeddings")->fetchAll();
-            foreach ($pfRows as $r) {
-                $vec = json_decode((string)$r['embedding_vector'], true);
-                if (is_array($vec)) $pfForRank[$r['proforma_id']] = ['text' => $r['embedded_text'], 'vector' => $vec];
-            }
-            $topPf = $queryVec ? aic_rank_by_similarity($pfForRank, $queryVec, 6) : [];
-
-            $strongIds = array_column(array_filter($topPf, fn($c) => $c['score'] >= 0.55), 'key');
-            $existingIds2 = array_column($proformaMatches, 'id');
-            $newIds = array_diff($strongIds, $existingIds2);
-            if ($newIds) {
-                $in = implode(',', array_fill(0, count($newIds), '?'));
-                $extra = db()->prepare("SELECT id, pi_no, customer_name, currency, status, created_at FROM proforma_invoices WHERE id IN ($in)");
-                $extra->execute(array_values($newIds));
-                $extraRows = $extra->fetchAll();
-                if ($extraRows) {
-                    $totSt = db()->prepare("SELECT COALESCE(SUM(amount),0) FROM proforma_items WHERE proforma_id=?");
-                    foreach ($extraRows as &$er) { $totSt->execute([$er['id']]); $er['total'] = (float)$totSt->fetchColumn(); }
-                    unset($er);
-                    $proformaMatches = array_merge($proformaMatches, $extraRows);
+            $lines = [];
+            if ($mode === 'shipment') {
+                foreach (array_slice($matches, 0, 40) as $m) {
+                    $lines[] = $m['invoice_no'] . ' | ' . $m['buyer_name'] . ' | ' . $m['buyer_country']
+                             . ' | ' . $m['status'] . ' | ' . $m['currency'] . ' ' . $m['total_amount']
+                             . ' | ' . $m['ip'] . ' ' . $m['iqty'];
+                }
+            } elseif ($mode === 'costing') {
+                foreach ($costingMatches as $cmX) {
+                    $lines[] = $cmX['costing_no'] . ' | ' . $cmX['product_name'] . ' | ' . $cmX['status']
+                             . ' | cost ' . $cmX['total_cost'] . ' | price ' . $cmX['suggested_price'];
+                }
+            } else {
+                foreach ($proformaMatches as $pmX) {
+                    $lines[] = $pmX['pi_no'] . ' | ' . $pmX['customer_name'] . ' | ' . $pmX['status']
+                             . ' | ' . $pmX['currency'] . ' ' . ($pmX['total'] ?? 0);
                 }
             }
-
-            $chunks = [];
-            foreach ($topPf as $c) $chunks[] = $c['text'];
-            $topIds = array_column($topPf, 'key');
-            foreach ($proformaMatches as $pm) {
-                if (in_array((int)$pm['id'], $topIds, true)) continue;
-                $chunks[] = 'Proforma Invoice ' . $pm['pi_no'] . ' for ' . ($pm['customer_name'] ?: 'an unnamed customer')
-                    . ': status ' . $pm['status'] . ', total ' . $pm['currency'] . ' ' . number_format((float)$pm['total'], 2) . '.';
+            if ($lines) {
+                $answer = gpt_answer($q, $lines);
+                qr_spend(1); $spent++;
+                $route = 'explain';
             }
-            if ($chunks) $answer = gpt_answer($q, array_slice($chunks, 0, 8));
-        } catch (Throwable $e) { $answer = ''; }
-        if ($answer === '') {
-            $answer = $proformaMatches ? 'Found ' . count($proformaMatches) . ' proforma invoice(s) for "' . $q . '". See the matched records below.' : 'No proforma invoices matched "' . $q . '".';
+        } catch (Throwable $e) {
+            $answer = 'The explanation could not be written just now. Your results are unaffected.';
         }
     }
 
-    /* ============ SHIPMENT & PACKING MODE ============ */
-    if ($mode === 'shipment') {
-        try {
-            $sql = "SELECT s.id, s.invoice_no, s.buyer_name, s.buyer_country, s.status, s.currency,
-                           i.product_name AS ip, i.des_col AS idc, i.qty AS iqty, i.rate AS irate, i.amount AS iamount
-                    FROM shipments s
-                    LEFT JOIN shipment_items i ON i.shipment_id = s.id
-                    WHERE s.status='approved_locked'
-                      AND (s.invoice_no LIKE ? OR s.buyer_name LIKE ? OR s.buyer_country LIKE ? OR s.destination_port LIKE ? OR i.product_name LIKE ? OR i.des_col LIKE ?
-                           OR EXISTS (SELECT 1 FROM packing_items pk WHERE pk.shipment_id = s.id AND (pk.product_name LIKE ? OR pk.des_col LIKE ?)))
-                    ORDER BY s.id DESC LIMIT 60";
-            $stmt = db()->prepare($sql);
-            $stmt->execute([$like, $like, $like, $like, $like, $like, $like, $like]);
-            $matches = $stmt->fetchAll();
-
-            $queryVec = create_embedding($q);
-            $shipForRank = [];
-            $shipRows = db()->query("SELECT id, chunk_text, vector_json FROM shipment_embeddings WHERE is_active=1 ORDER BY id DESC LIMIT 500")->fetchAll();
-            foreach ($shipRows as $r) {
-                $vec = json_decode((string)$r['vector_json'], true);
-                if (is_array($vec)) $shipForRank[$r['id']] = ['text' => $r['chunk_text'], 'vector' => $vec];
-            }
-            $topShip = $queryVec ? aic_rank_by_similarity($shipForRank, $queryVec, 6) : [];
-            $chunks = [];
-            foreach ($topShip as $s) $chunks[] = $s['text'];
-            if ($chunks) $answer = gpt_answer($q, array_slice($chunks, 0, 8));
-        } catch (Throwable $e) { $answer = ''; }
-        if ($answer === '') {
-            $answer = $matches ? 'Found ' . count($matches) . ' shipment line item(s) for "' . $q . '". See the matched records below.' : 'No records matched "' . $q . '".';
+    if ($answer === '') {
+        if ($describing) {
+            $answer = 'No filter was recognised in that, so nothing was looked up — and nothing was spent. '
+                    . 'If "' . $parsed['leftover'] . '" is a description rather than a code, '
+                    . 'Search by meaning is the button for it.';
+        } else {
+            $answer = $rowCount
+                ? 'Found ' . $rowCount . ' record' . ($rowCount === 1 ? '' : 's') . ' from the database. No AI was used.'
+                : 'Nothing matched those filters.';
         }
     }
+
+    qr_log($mode, $q, $parsed, $rowCount, $route, $spent, (int)round((microtime(true) - $t0) * 1000));
+    $budget = qr_budget();
 }
 
 $examples = [
-    'costing' => ['fitted sheet costing', 'draft costings this month', 'highest cost per unit'],
-    'proforma' => ['socks order for Aruf Group', 'unsent proformas', 'GBP proformas over 10000'],
-    'shipment' => ['UAE shipments', 'blankets packing', 'recent invoices'],
+    'costing' => ['draft costings', 'costings over 1200', 'costings this month'],
+    'proforma' => ['draft proformas', 'GBP proformas over 10000', 'proformas last month'],
+    'shipment' => ['payment outstanding', 'partially paid invoices', 'shipments in transit',
+                   'draft shipments', 'freight above 3000'],
 ];
 $placeholders = [
     'costing' => 'Ask about a costing… e.g. fitted sheet costing',
@@ -200,9 +266,9 @@ $placeholders = [
 ];
 $modeLabels = ['costing' => 'Costing', 'proforma' => 'Proforma Invoice', 'shipment' => 'Shipment & Packing'];
 $modeNotes = [
-    'costing' => 'Searching saved Costing Versions — draft, approved and locked',
-    'proforma' => 'Searching Proforma Invoices — draft, sent, confirmed and archived',
-    'shipment' => 'Searching approved &amp; locked Shipments — invoice items and packing list together',
+    'costing' => 'Searching saved Costing Versions — filters first, no AI unless you ask',
+    'proforma' => 'Searching Proforma Invoices — filters first, no AI unless you ask',
+    'shipment' => 'Searching every shipment you may see — draft, submitted and locked',
 ];
 
 /* Line-item matches (shipment mode only) + per-currency totals + source grouping */
@@ -297,11 +363,51 @@ flash();
     </div>
   </form>
 
+  <?php if($chips || ($q !== '' && $parsed['leftover'] !== '')): ?>
+  <div style="max-width:820px;margin:16px auto 0;display:flex;flex-wrap:wrap;gap:7px;justify-content:center">
+    <?php foreach($chips as $c): ?>
+      <span style="padding:5px 12px;border-radius:16px;font-size:11.5px;font-weight:600;background:rgba(47,127,224,.13);color:#2f7fe0"><?= e($c[0]) ?> <b><?= e($c[1]) ?></b></span>
+    <?php endforeach; ?>
+    <?php if($parsed['leftover'] !== ''): ?>
+      <span style="padding:5px 12px;border-radius:16px;font-size:11.5px;background:#f6f8fc;color:#8a97ab;border:1px solid #e3e9f2">not understood: <?= e($parsed['leftover']) ?></span>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
+
   <?php if($answer): ?>
   <div class="ai-answer">
     <div class="ai-card">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div class="ai-badge"></div><span style="font-weight:700;font-size:13.5px">ZAS Textile AI</span></div>
       <p style="margin:0;font-size:14.5px;line-height:1.7;color:#152033"><span id="aiTyped"></span><span style="color:#0ea8c9">&#9613;</span></p>
+
+      <?php
+      /* THE ONLY TWO THINGS ON THIS PAGE THAT COST MONEY, and both need a
+         press. Before this, every search spent two calls whether you wanted
+         them or not. */
+      $rowsNow = $mode === 'costing' ? count($costingMatches)
+               : ($mode === 'proforma' ? count($proformaMatches) : count($matches));
+      $qs = 'search.php?mode=' . urlencode($mode) . '&q=' . urlencode($q);
+      ?>
+      <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:14px;padding-top:13px;border-top:1px solid #e3e9f2">
+        <?php if($spent === 0): ?>
+          <span style="font-size:11.5px;font-weight:700;color:#16a34a;background:rgba(22,163,74,.12);padding:5px 11px;border-radius:14px">Answered from your database &middot; 0 AI calls</span>
+        <?php else: ?>
+          <span style="font-size:11.5px;font-weight:700;color:#d97706;background:rgba(217,119,6,.12);padding:5px 11px;border-radius:14px"><?= (int)$spent ?> AI call<?= $spent === 1 ? '' : 's' ?> used &middot; you pressed for it</span>
+        <?php endif; ?>
+
+        <?php if($q !== '' && $route !== 'explain' && $rowsNow > 0 && $budget['ok']): ?>
+          <a class="ai-pill" href="<?= e($qs) ?>&explain=1">Explain these results</a>
+        <?php endif; ?>
+        <?php if($q !== '' && $route !== 'semantic' && ($rowsNow === 0 || $describing) && $budget['ok']): ?>
+          <a class="ai-pill" href="<?= e($qs) ?>&semantic=1">Search by meaning instead</a>
+        <?php endif; ?>
+
+        <span style="font-size:11px;color:#8a97ab"><?= (int)$budget['left'] ?> of <?= (int)$budget['cap'] ?> AI calls left this month</span>
+      </div>
+
+      <?php if($paidNote !== ''): ?>
+        <div style="margin-top:11px;padding:9px 12px;border-radius:10px;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.3);font-size:12px;color:#9a5a06"><?= e($paidNote) ?></div>
+      <?php endif; ?>
     </div>
 
     <?php if($mode==='costing' && $costingMatches): ?>
