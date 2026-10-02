@@ -81,6 +81,30 @@ function qr_dict(string $what): array {
     return $cache[$what] = $out;
 }
 
+/* The document prefixes the search box should recognise on sight.
+ *
+ * The two built-in ones are always in the list even after you change the
+ * format, because every number already saved under the old format still
+ * starts with them and must stay findable. Numbering may not be loaded on
+ * every page that searches, hence the guard. */
+function qr_doc_prefixes(): array
+{
+    static $cache = null;
+    if ($cache !== null) return $cache;
+
+    $out = ['PI', 'INV', 'CI'];
+    if (function_exists('exp_numbering_prefixes')) {
+        foreach (exp_numbering_prefixes() as $p) {
+            $p = strtoupper(trim((string)$p));
+            if (preg_match('~^[A-Z][A-Z0-9]{0,9}$~', $p)) $out[] = $p;
+        }
+    }
+    $out = array_values(array_unique($out));
+    /* Longest first, so ZASPI is not matched as ZAS with a stray PI. */
+    usort($out, fn($a, $b) => strlen($b) <=> strlen($a));
+    return $cache = $out;
+}
+
 /* --------------------------------------------------------------- the parse
 
    Each pattern that fires removes its own words from the question, so what
@@ -120,6 +144,21 @@ function qr_parse(string $mode, string $raw): array
      * own and the router says it did not understand, which is the truth. */
     $eat('~\b(?:hs|tariff)\s*(?:code|no\.?)?\s*:?\s*(\d{6,10})\b~',
         function ($m) use (&$f) { $f['hs'] = $m[1]; });
+
+    /* YOUR OWN SERIES, read from Export Masters → Numbering.
+     *
+     * This runs before the general rule below because the general rule needs
+     * a separator, and a format of your own need not have one: set the code
+     * to ZAS and the format to {PREFIX}{YYYY}{SEQ:4} and the number is
+     * ZAS20260001, which no shape rule would pick out of a sentence. Once a
+     * prefix is a configured one, the letters are enough. */
+    $prefixes = qr_doc_prefixes();
+    if ($prefixes) {
+        $alt = implode('|', array_map(fn($p) => preg_quote(mb_strtolower($p), '~'), $prefixes));
+        $eat('~\b((?:' . $alt . ')\s*[-/]?\s*\d+(?:\s*[-/]\s*\d+)*)\b~', function ($m) use (&$f) {
+            $f['ref'] = strtoupper(preg_replace('/\s/', '', $m[1]));
+        });
+    }
 
     /* A document reference: a short letter prefix, a separator, then digits —
        with or without the date block in the middle. Covers ZAS/5191 as typed
@@ -241,7 +280,13 @@ function qr_is_description(array $parsed): bool {
  * Returns [sqlFragment, params] for one column. */
 function qr_ref_match(string $col, string $ref): array {
     $like = null;
-    if (preg_match('~^([A-Z]{2,5})[-/](?:\d{1,8}[-/])?(\d{1,6})$~', $ref, $m)) {
+    if (preg_match('~^([A-Z][A-Z0-9]{0,9})[-/](?:\d{1,8}[-/])?(\d{1,8})$~', $ref, $m)) {
+        $like = $m[1] . '%' . $m[2];
+    } elseif (preg_match('~^([A-Z]{2,10})(\d{1,12})$~', $ref, $m)) {
+        /* A format with no separator — ZAS20260001, or PI786 typed in a
+           hurry. Same idea: the letters, then the digits, with whatever the
+           saved number carries in between. The two capture groups are
+           letters and digits only, so neither can smuggle a LIKE wildcard. */
         $like = $m[1] . '%' . $m[2];
     }
     if ($like === null) return ["$col = ?", [$ref]];

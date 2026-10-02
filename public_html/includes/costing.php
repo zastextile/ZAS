@@ -205,6 +205,21 @@ function costing_print_head(string $title): void {
 }
 function costing_print_foot(): void { echo '</div></body></html>'; }
 
+/* The document number.
+ *
+ * If you have set up your own series for this prefix in Export Masters →
+ * Numbering, that is used: your code, your format, a real counter that
+ * cannot hand the same number to two people.
+ *
+ * If you have not, or that screen's switch is off, the line below runs and
+ * behaves exactly as it always did. Nothing changes until you turn it on.
+ * (The old scheme's weakness is written up above exp_numbering in
+ * includes/export.php — the three-digit tail is random, not sequential, so
+ * it can repeat within the same day.) */
 function next_doc_no(string $prefix): string {
+    if (function_exists('exp_numbering_next')) {
+        $own = exp_numbering_next($prefix);
+        if ($own !== null && $own !== '') return $own;
+    }
     return $prefix . '-' . date('ymd') . '-' . substr((string)random_int(100, 999), 0, 3);
 }

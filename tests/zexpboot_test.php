@@ -40,6 +40,15 @@ $PAGES = [
 ];
 foreach (array_keys($PAGES) as $p) copy($B . $p, $work . '/' . $p);
 
+/* The Numbering tab draws its own preview in the browser, and the harness
+   below sends one fixed $_GET to every page — which lands exp_settings.php
+   on its default tab, where that script does not exist. A one-line wrapper
+   is the whole fix: same file, same includes, one tab along. Written after
+   the copy loop because it has no original in public_html to copy. */
+file_put_contents($work . '/exp_numbering_tab.php',
+    "<?php \$_GET['tab'] = 'numbering'; include __DIR__ . '/exp_settings.php';\n");
+$PAGES['exp_numbering_tab.php'] = 'numbering';
+
 /* The real libraries, so the page is wired to what it is actually wired to. */
 copy($B . 'includes/export.php',  $work . '/includes/export.php');
 copy($B . 'includes/storage.php', $work . '/includes/storage.php');
@@ -480,6 +489,31 @@ const fs = require('fs');
       }
     }
 
+    if (slug === 'numbering') {
+      /* The preview is worked out twice — once in PHP when the number is
+         actually issued, once here so you can see the format before saving.
+         Two implementations of one rule is exactly where they drift apart,
+         so the browser's answer is read back and compared against PHP's. */
+      const f = await pg.$('form[data-num]');
+      if (f) {
+        const set = async (pattern, prefix, next) => {
+          const fm = await pg.$('form[data-num]');
+          await fm.$eval('[data-f="pattern"]', (el, v) => { el.value = v; }, pattern);
+          await fm.$eval('[data-f="prefix"]',  (el, v) => { el.value = v; }, prefix);
+          await fm.$eval('[data-f="next"]',    (el, v) => { el.value = v; }, String(next));
+          await (await fm.$('[data-f="next"]')).dispatchEvent('input');
+          await pg.waitForTimeout(40);
+          return (await fm.$eval('[data-f="out"]', el => el.textContent.trim()));
+        };
+        r.probes.slashSeq  = await set('{PREFIX}/{SEQ}', 'ZAS', 5191);
+        r.probes.noSep     = await set('{PREFIX}{YYYY}{SEQ:4}', 'ZAS', 1);
+        r.probes.builtin   = await set('{PREFIX}-{YY}{MM}{DD}-{SEQ:3}', 'PI', 7);
+        r.probes.padWide   = await set('{SEQ:3}', '', 12345);
+        r.probes.noCounter = await set('{PREFIX}-{YY}', 'ZAS', 1);
+        r.probes.runOn     = await pg.$eval('form[data-num] [data-f="run"]', el => el.textContent.trim());
+      }
+    }
+
     if (slug === 'documents') {
       /* The Stage control must appear only for a type that has draft/final,
          and the next version must be announced before upload. */
@@ -525,6 +559,42 @@ if (!is_array($res) || isset($res['__harness'])) {
         $errs = $res[$slug]['errors'] ?? ['no result'];
         ok(count($errs) === 0, "$page threw in the browser: " . implode(' | ', $errs));
     }
+
+    head('4a. The numbering preview agrees with the PHP that issues the number');
+
+    /* The real renderer, lifted out of the shipped file. Writing a second
+       copy of it here would only prove my expectation agrees with itself. */
+    $esrc = (string)file_get_contents($B . 'includes/export.php');
+    $a = strpos($esrc, 'function exp_render_pattern(');
+    $o = strpos($esrc, '{', $a); $dep = 0; $body = '';
+    for ($i = $o, $n = strlen($esrc); $i < $n; $i++) {
+        if ($esrc[$i] === '{') $dep++;
+        elseif ($esrc[$i] === '}') { $dep--; if ($dep === 0) { $body = substr($esrc, $a, $i - $a + 1); break; } }
+    }
+    ok($body !== '', 'exp_render_pattern() could not be lifted out of includes/export.php');
+    if ($body !== '' && !function_exists('exp_render_pattern')) eval($body);
+
+    $p = $res['numbering']['probes'] ?? [];
+    $d = mktime(12, 0, 0, (int)date('n'), (int)date('j'), (int)date('Y'));
+    $expect = [
+        'slashSeq' => ['{PREFIX}/{SEQ}',                'ZAS', 5191],
+        'noSep'    => ['{PREFIX}{YYYY}{SEQ:4}',         'ZAS', 1],
+        'builtin'  => ['{PREFIX}-{YY}{MM}{DD}-{SEQ:3}', 'PI',  7],
+        'padWide'  => ['{SEQ:3}',                       '',    12345],
+    ];
+    ok(count($p) > 0, 'the numbering preview produced no probes at all');
+    foreach ($expect as $k => [$pat, $pfx, $n]) {
+        /* The PHP renderer is loaded here from the real file, so this is not
+           two copies of my expectation agreeing with each other — it is the
+           browser's answer against the function that issues the number. */
+        $want = exp_render_pattern($pat, $pfx, $n, $d);
+        ok(($p[$k] ?? '') === $want,
+           "the browser previewed $pat as " . var_export($p[$k] ?? null, true) . ", PHP issues $want");
+    }
+    ok(($p['noCounter'] ?? '') === '—',
+       'a format with no {SEQ} must refuse to preview, got ' . var_export($p['noCounter'] ?? null, true));
+    ok(str_contains((string)($p['runOn'] ?? ''), '{SEQ}'),
+       'and must say what is missing, got ' . var_export($p['runOn'] ?? null, true));
 
     head('4. The two in-browser calculators give the right numbers');
 

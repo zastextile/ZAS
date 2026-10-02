@@ -65,6 +65,10 @@ function qr_dict(string $what): array { global $DICT; return $DICT[$what] ?? [];
 function current_user() { return ['id' => 1]; }
 function db() { throw new Exception('the parser must not touch the database'); }
 
+/* qr_parse asks this which document prefixes to recognise. With no numbering
+   loaded it answers with the two built-in ones plus CI, which is exactly the
+   state every assertion below was written against. */
+eval(lift($src, 'function qr_doc_prefixes('));
 eval(lift($src, 'function qr_parse('));
 eval(lift($src, 'function qr_has_filters('));
 eval(lift($src, 'function qr_is_description('));

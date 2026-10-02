@@ -30,7 +30,7 @@
    Including it costs nothing: the file declares functions and runs no query. */
 require_once __DIR__ . '/exportdocs.php';
 
-const EXP_SCHEMA_VERSION = '4';
+const EXP_SCHEMA_VERSION = '5';
 
 /* The money shape used everywhere in this module. Amounts are DECIMAL, never
    float — a float cannot hold 0.1 exactly, and a ledger that cannot add up
@@ -391,6 +391,39 @@ function exp_build_schema(): void {
         INDEX idx_route (route, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
+    /* ------------------------------------------ your own document numbers
+
+       Until now next_doc_no() produced PREFIX-YYMMDD-NNN where NNN was
+       random_int(100,999). Two problems with that.
+
+       One, it is not yours. The prefix was fixed in code — 'PI' and 'INV' —
+       so there was no way to use your own series.
+
+       Two, a random three-digit tail is not a sequence, it is a lottery with
+       900 tickets, drawn fresh each day. Ten documents in one day is already
+       a 4.9% chance that two of them carry the same number; forty documents
+       is 58.5%. That is the birthday problem, and nothing in the old code
+       checked for the clash afterwards.
+
+       This table replaces the lottery with a counter. One row per document
+       kind, and the counter is handed out by a single atomic UPDATE, so two
+       people pressing New at the same moment cannot be given the same number.
+
+       is_active defaults to 0. A row that is switched off changes nothing —
+       next_doc_no() falls back to exactly the old behaviour. Numbering only
+       becomes yours once you turn it on, per document kind, in Export
+       Masters. Nothing already saved is touched either way. */
+    $x("CREATE TABLE IF NOT EXISTS exp_numbering (
+        doc_kind VARCHAR(20) NOT NULL PRIMARY KEY,
+        prefix VARCHAR(20) NOT NULL DEFAULT '',
+        pattern VARCHAR(120) NOT NULL DEFAULT '{PREFIX}-{YY}{MM}{DD}-{SEQ:3}',
+        next_no INT NOT NULL DEFAULT 1,
+        reset_cycle VARCHAR(10) NOT NULL DEFAULT 'never',
+        cycle_key VARCHAR(10) NOT NULL DEFAULT '',
+        is_active TINYINT(1) NOT NULL DEFAULT 0,
+        updated_at DATETIME NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
     /* ------------------------------------- columns on tables that already
        exist. Every one nullable, so no existing row changes meaning and no
        existing INSERT breaks. */
@@ -514,6 +547,169 @@ function exp_seed_masters(): void {
 /* ============================================================== masters API */
 
 /* Active rows of one kind, in your order. One indexed read. */
+/* ============================================================ NUMBERING
+ *
+ * Where each kind of number actually lives. The third and fourth entries
+ * are the table and column the finished number is written to, and they are
+ * here for one reason: before a generated number is handed out it is checked
+ * against the column it is about to be written into. A counter alone is not
+ * enough — the counter can be edited by hand on the settings screen, and the
+ * old random numbers are already in those columns.
+ */
+const EXP_DOC_KINDS = [
+    'PI'  => ['Proforma Invoice',  'proforma_invoices', 'pi_no'],
+    'INV' => ['Commercial Invoice', 'shipments',        'invoice_no'],
+];
+
+const EXP_RESET_CYCLES = [
+    'never'   => 'Never — one running series',
+    'yearly'  => 'Restart at 1 each year',
+    'monthly' => 'Restart at 1 each month',
+];
+
+/* The cycle key is what the counter compares against to decide whether this
+   document starts a new series. 'never' has no key, so it never differs. */
+function exp_cycle_key(string $cycle, ?int $ts = null): string {
+    $ts = $ts ?? time();
+    if ($cycle === 'yearly')  return date('Y', $ts);
+    if ($cycle === 'monthly') return date('Y-m', $ts);
+    return '';
+}
+
+/* Turn a pattern into a number.
+ *
+ * {PREFIX}  your code, exactly as typed
+ * {YY}      26        {YYYY}  2026
+ * {MM}      10        {DD}    02
+ * {SEQ}     7         {SEQ:4} 0007   (any width 1-9)
+ *
+ * Anything that is not a token is kept as typed, so slashes, dashes, spaces
+ * and your own letters all survive. An unknown token is left alone rather
+ * than silently deleted — a number with {FOO} visible in it is a mistake you
+ * can see and fix, a number with it quietly dropped is one you cannot.
+ */
+function exp_render_pattern(string $pattern, string $prefix, int $seq, ?int $ts = null): string {
+    $ts = $ts ?? time();
+    $out = str_replace(
+        ['{PREFIX}', '{YYYY}', '{YY}', '{MM}', '{DD}'],
+        [$prefix, date('Y', $ts), date('y', $ts), date('m', $ts), date('d', $ts)],
+        $pattern
+    );
+    $out = preg_replace_callback('~\{SEQ(?::([1-9]))?\}~', function ($m) use ($seq) {
+        $w = isset($m[1]) && $m[1] !== '' ? (int)$m[1] : 0;
+        return $w > 0 ? str_pad((string)$seq, $w, '0', STR_PAD_LEFT) : (string)$seq;
+    }, $out);
+    return trim((string)$out);
+}
+
+function exp_numbering_row(string $kind): ?array {
+    if (!isset(EXP_DOC_KINDS[$kind])) return null;
+    try {
+        $st = db()->prepare("SELECT * FROM exp_numbering WHERE doc_kind=?");
+        $st->execute([$kind]);
+        $r = $st->fetch();
+        return $r ?: null;
+    } catch (Throwable $e) { return null; }
+}
+
+function exp_numbering_all(): array {
+    $out = [];
+    foreach (EXP_DOC_KINDS as $k => $meta) $out[$k] = exp_numbering_row($k);
+    return $out;
+}
+
+/* Is this number already on a document? */
+function exp_number_taken(string $kind, string $no): bool {
+    if (!isset(EXP_DOC_KINDS[$kind]) || $no === '') return false;
+    [, $table, $col] = EXP_DOC_KINDS[$kind];
+    try {
+        $st = db()->prepare("SELECT 1 FROM `$table` WHERE `$col` = ? LIMIT 1");
+        $st->execute([$no]);
+        return (bool)$st->fetchColumn();
+    } catch (Throwable $e) { return false; }
+}
+
+/* What the NEXT number would be, without using it up.
+ *
+ * This is for showing on a form. It deliberately does not touch the counter,
+ * because a number burnt by someone who opened a form and changed their mind
+ * leaves a hole in the series that looks like a lost document. */
+function exp_numbering_peek(string $kind): ?string {
+    $r = exp_numbering_row($kind);
+    if (!$r || (int)$r['is_active'] !== 1) return null;
+    $cycle = (string)$r['reset_cycle'];
+    $seq   = exp_cycle_key($cycle) === (string)$r['cycle_key'] ? (int)$r['next_no'] : 1;
+    return exp_render_pattern((string)$r['pattern'], (string)$r['prefix'], max(1, $seq));
+}
+
+/* Take the next number, for real.
+ *
+ * The counter is handed out by ONE UPDATE statement. LAST_INSERT_ID(expr)
+ * inside an UPDATE stores expr for this connection and returns it, so the
+ * read and the increment are the same statement and cannot interleave with
+ * another user's. Two people pressing New in the same second get different
+ * numbers without any lock being taken.
+ *
+ * Returns null when this kind is not configured or is switched off, and the
+ * caller then keeps its old behaviour. */
+function exp_numbering_next(string $kind): ?string {
+    $r = exp_numbering_row($kind);
+    if (!$r || (int)$r['is_active'] !== 1) return null;
+
+    $pattern = (string)$r['pattern'];
+    $prefix  = (string)$r['prefix'];
+    $cycle   = (string)$r['reset_cycle'];
+    $key     = exp_cycle_key($cycle);
+
+    /* Up to 50 tries. Normally the first one is free; the loop only runs if
+       the counter was wound back by hand onto numbers already in use, or an
+       old random number happens to collide. Each turn consumes a counter
+       value, which is correct — a number that is already on a document is
+       spent whether this table knew about it or not. */
+    for ($i = 0; $i < 50; $i++) {
+        try {
+            db()->prepare(
+                "UPDATE exp_numbering
+                    SET next_no = LAST_INSERT_ID(IF(cycle_key = ?, GREATEST(next_no, 1), 1)) + 1,
+                        cycle_key = ?, updated_at = NOW()
+                  WHERE doc_kind = ?"
+            )->execute([$key, $key, $kind]);
+            $seq = (int)db()->lastInsertId();
+        } catch (Throwable $e) { return null; }
+        if ($seq < 1) return null;
+
+        $no = exp_render_pattern($pattern, $prefix, $seq);
+        if ($no === '') return null;
+        if (!exp_number_taken($kind, $no)) return $no;
+    }
+    return null;
+}
+
+/* The highest number this kind has actually used, for the settings screen.
+   Shown so you can set the counter without first going to look it up. */
+function exp_number_last_used(string $kind): ?string {
+    if (!isset(EXP_DOC_KINDS[$kind])) return null;
+    [, $table, $col] = EXP_DOC_KINDS[$kind];
+    try {
+        $st = db()->query("SELECT `$col` FROM `$table` WHERE `$col` IS NOT NULL AND `$col` <> '' ORDER BY id DESC LIMIT 1");
+        $v = $st->fetchColumn();
+        return $v === false ? null : (string)$v;
+    } catch (Throwable $e) { return null; }
+}
+
+/* The prefixes in use, so the search box can recognise your own series.
+   Both the configured ones and the two built-in ones — an old PI- number
+   from before you changed the format must still be findable. */
+function exp_numbering_prefixes(): array {
+    $out = array_keys(EXP_DOC_KINDS);
+    foreach (exp_numbering_all() as $r) {
+        if (!$r) continue;
+        $p = strtoupper(trim(preg_replace('/[^A-Za-z0-9]+/', '', (string)$r['prefix'])));
+        if ($p !== '' && strlen($p) <= 10) $out[] = $p;
+    }
+    return array_values(array_unique($out));
+}
+
 function exp_masters(string $kind, bool $activeOnly = true): array {
     try {
         $sql = "SELECT * FROM exp_masters WHERE kind=?" . ($activeOnly ? " AND is_active=1" : "")

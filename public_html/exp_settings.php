@@ -30,7 +30,7 @@ const EXP_KINDS = [
 $kind = (string)($_GET['kind'] ?? 'port_loading');
 if (!isset(EXP_KINDS[$kind])) $kind = 'port_loading';
 $tab  = (string)($_GET['tab'] ?? 'lists');
-if (!in_array($tab, ['lists', 'banks', 'storage'], true)) $tab = 'lists';
+if (!in_array($tab, ['lists', 'banks', 'numbering', 'storage'], true)) $tab = 'lists';
 
 /* ------------------------------------------------------------------ writes */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -114,6 +114,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['flash'] = 'Bank saved.';
             redirect('exp_settings.php?tab=banks');
         }
+
+        if ($action === 'save_numbering') {
+            $k = (string)($_POST['doc_kind'] ?? '');
+            if (!isset(EXP_DOC_KINDS[$k])) throw new Exception('Unknown document kind.');
+
+            /* The prefix is yours, so it is kept as typed apart from the
+               characters that would break a filename or a URL later. */
+            $prefix  = trim((string)($_POST['prefix'] ?? ''));
+            $prefix  = (string)preg_replace('~[^A-Za-z0-9 ./_-]~', '', $prefix);
+            if (mb_strlen($prefix) > 20) $prefix = mb_substr($prefix, 0, 20);
+
+            $pattern = trim((string)($_POST['pattern'] ?? ''));
+            if ($pattern === '') throw new Exception('The format cannot be empty.');
+            if (mb_strlen($pattern) > 120) throw new Exception('That format is too long.');
+            if (strpos($pattern, '{SEQ') === false) {
+                throw new Exception('The format must contain {SEQ} or {SEQ:3}, otherwise every document would get the same number.');
+            }
+
+            $cycle = (string)($_POST['reset_cycle'] ?? 'never');
+            if (!isset(EXP_RESET_CYCLES[$cycle])) $cycle = 'never';
+
+            $next   = max(1, (int)($_POST['next_no'] ?? 1));
+            $active = isset($_POST['is_active']) ? 1 : 0;
+
+            /* A worked example is rejected before it is saved rather than
+               discovered on the next document. */
+            $sample = exp_render_pattern($pattern, $prefix, $next);
+            if ($sample === '') throw new Exception('That format produces an empty number.');
+            if (mb_strlen($sample) > 40) {
+                throw new Exception('That format produces "' . $sample . '", which is longer than the 40 characters the column holds.');
+            }
+
+            db()->prepare(
+                "INSERT INTO exp_numbering (doc_kind,prefix,pattern,next_no,reset_cycle,cycle_key,is_active,updated_at)
+                 VALUES (?,?,?,?,?,?,?,NOW())
+                 ON DUPLICATE KEY UPDATE prefix=VALUES(prefix), pattern=VALUES(pattern), next_no=VALUES(next_no),
+                                         reset_cycle=VALUES(reset_cycle), cycle_key=VALUES(cycle_key),
+                                         is_active=VALUES(is_active), updated_at=NOW()"
+            )->execute([$k, $prefix, $pattern, $next, $cycle, exp_cycle_key($cycle), $active]);
+
+            audit_log(0, 'Numbering', 'edit', EXP_DOC_KINDS[$k][0], $sample,
+                      $active ? 'Own numbering on — next will be ' . $sample : 'Own numbering off');
+            $_SESSION['flash'] = $active
+                ? EXP_DOC_KINDS[$k][0] . ' numbering saved. The next one will be ' . $sample . '.'
+                : EXP_DOC_KINDS[$k][0] . ' numbering saved but left switched off.';
+            redirect('exp_settings.php?tab=numbering');
+        }
     } catch (Throwable $e) {
         $_SESSION['error'] = $e->getMessage();
         redirect('exp_settings.php?tab=' . urlencode($tab) . '&kind=' . urlencode($kind));
@@ -124,8 +171,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $r2test = null;
 if ($tab === 'storage' && isset($_GET['run_test'])) $r2test = exp_r2_selftest();
 
-$rows  = exp_masters($kind, false);
-$banks = exp_banks(false);
+$rows      = exp_masters($kind, false);
+$banks     = exp_banks(false);
+$numbering = exp_numbering_all();
 $edit  = null;
 if (isset($_GET['edit'])) {
     $st = db()->prepare("SELECT * FROM exp_masters WHERE id=?");
@@ -155,6 +203,7 @@ echo exp_page_css();
 <div class="xcard" style="display:flex;gap:8px;flex-wrap:wrap">
   <a class="ktab <?= $tab === 'lists' ? 'on' : '' ?>" href="exp_settings.php?tab=lists&kind=<?= e($kind) ?>">Lists</a>
   <a class="ktab <?= $tab === 'banks' ? 'on' : '' ?>" href="exp_settings.php?tab=banks">Our Banks</a>
+  <a class="ktab <?= $tab === 'numbering' ? 'on' : '' ?>" href="exp_settings.php?tab=numbering">Numbering</a>
   <a class="ktab <?= $tab === 'storage' ? 'on' : '' ?>" href="exp_settings.php?tab=storage">Document Storage</a>
 </div>
 
@@ -301,6 +350,151 @@ echo exp_page_css();
     exactly as it did before, from the old settings.
   </div>
 </div>
+
+<?php elseif ($tab === 'numbering'): ?>
+
+<div class="xcard">
+  <h2>Your Own Document Numbers</h2>
+  <div class="xnote">
+    Each kind of document can run on your own code and your own sequence. Until you switch one on
+    it keeps the number it has always produced, so nothing changes by itself and nothing already
+    saved is touched.
+    <div style="margin-top:9px">
+      <b>The pieces you can use in a format:</b>
+      <code>{PREFIX}</code> your code ·
+      <code>{YY}</code> <?= date('y') ?> ·
+      <code>{YYYY}</code> <?= date('Y') ?> ·
+      <code>{MM}</code> <?= date('m') ?> ·
+      <code>{DD}</code> <?= date('d') ?> ·
+      <code>{SEQ}</code> the counter ·
+      <code>{SEQ:4}</code> the counter padded to four digits.
+      Everything else — slashes, dashes, spaces, your own letters — prints exactly as you type it.
+    </div>
+  </div>
+</div>
+
+<?php foreach (EXP_DOC_KINDS as $dk => $dmeta):
+        $cfg  = $numbering[$dk] ?? null;
+        $on   = $cfg && (int)$cfg['is_active'] === 1;
+        $pat  = $cfg['pattern'] ?? '{PREFIX}-{YY}{MM}{DD}-{SEQ:3}';
+        $pfx  = $cfg['prefix']  ?? $dk;
+        $nxt  = max(1, (int)($cfg['next_no'] ?? 1));
+        $cyc  = $cfg['reset_cycle'] ?? 'never';
+        $last = exp_number_last_used($dk);
+?>
+<div class="xcard">
+  <h2 style="display:flex;align-items:center;gap:10px">
+    <?= e($dmeta[0]) ?>
+    <?= $on ? '<span class="xpill g">Your numbering</span>' : '<span class="xpill o">Built-in numbering</span>' ?>
+  </h2>
+
+  <div class="xnote" style="margin-bottom:12px">
+    Written to <code><?= e($dmeta[1]) ?>.<?= e($dmeta[2]) ?></code>.
+    <?php if ($last !== null): ?>Most recent on file: <b><?= e($last) ?></b>.<?php else: ?>Nothing on file yet.<?php endif; ?>
+    <?php if ($on): ?>
+      Next one out: <b><?= e((string)exp_numbering_peek($dk)) ?></b>.
+    <?php else: ?>
+      Switched off, so the next one looks like <b><?= e($dk) ?>-<?= date('ymd') ?>-<?= str_pad((string)random_int(100,999),3,'0',STR_PAD_LEFT) ?></b> — a random tail, not a sequence.
+    <?php endif; ?>
+  </div>
+
+  <form method="post" class="xgrid" style="align-items:end" data-num="1">
+    <?= csrf_field() ?>
+    <input type="hidden" name="action" value="save_numbering">
+    <input type="hidden" name="doc_kind" value="<?= e($dk) ?>">
+
+    <label class="xlabel">Your code
+      <input class="xin" name="prefix" maxlength="20" value="<?= e($pfx) ?>" placeholder="ZAS" data-f="prefix">
+    </label>
+    <label class="xlabel xspan2">Format
+      <input class="xin" name="pattern" required maxlength="120" value="<?= e($pat) ?>" data-f="pattern" style="font-family:ui-monospace,Menlo,Consolas,monospace">
+    </label>
+    <label class="xlabel">Next number
+      <input class="xin" type="number" min="1" name="next_no" value="<?= (int)$nxt ?>" data-f="next">
+    </label>
+    <label class="xlabel xspan2">Restart the counter
+      <select class="xin" name="reset_cycle" data-f="cycle">
+        <?php foreach (EXP_RESET_CYCLES as $cv => $cl): ?>
+          <option value="<?= e($cv) ?>" <?= $cyc === $cv ? 'selected' : '' ?>><?= e($cl) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </label>
+    <label class="xlabel" style="display:flex;align-items:center;gap:8px;padding-top:18px">
+      <input type="checkbox" name="is_active" <?= $on ? 'checked' : '' ?> style="width:15px;height:15px;accent-color:#0ea8c9">
+      Use this instead of the built-in number
+    </label>
+
+    <div class="xspan2" style="padding:10px 12px;background:#f6f8fc;border:1px solid #e3e9f2;border-radius:8px">
+      <div style="font-size:11px;color:#8a97ab;text-transform:uppercase;letter-spacing:.5px">Preview</div>
+      <div data-f="out" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:16px;font-weight:700;color:#0b2a4a;margin-top:3px">&nbsp;</div>
+      <div data-f="run" style="font-size:11.5px;color:#64748b;margin-top:4px">&nbsp;</div>
+    </div>
+
+    <div><button class="xbtn">Save</button></div>
+  </form>
+</div>
+<?php endforeach; ?>
+
+<div class="xcard">
+  <div class="xnote">
+    <b>Three things worth knowing.</b>
+    <div style="margin-top:7px">1. The counter is handed out one document at a time, so two people
+    creating a document in the same second cannot be given the same number. The built-in scheme
+    could: its last three digits are drawn at random out of 900, which at ten documents in a day
+    is about a one-in-twenty chance of a repeat, and nothing checked for it.</div>
+    <div style="margin-top:5px">2. A number that is already on a document is never handed out
+    again — the counter steps past it. So you can wind the counter back without creating duplicates.</div>
+    <div style="margin-top:5px">3. The number stays typeable. Every one of these screens still lets
+    you overwrite it by hand, and a number you type yourself leaves the counter where it is.</div>
+  </div>
+</div>
+
+<script>
+/* Preview, worked out in the browser the same way the server works it out.
+   No request, no framework — the format is short and the rules are four
+   substitutions. The server renders it again on save, which is the copy
+   that counts. */
+(function () {
+  var now = new Date();
+  var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+  var D = {
+    '{YYYY}': String(now.getFullYear()),
+    '{YY}': String(now.getFullYear()).slice(-2),
+    '{MM}': p2(now.getMonth() + 1),
+    '{DD}': p2(now.getDate())
+  };
+  function render(pattern, prefix, seq) {
+    var s = pattern.split('{PREFIX}').join(prefix);
+    for (var k in D) { s = s.split(k).join(D[k]); }
+    return s.replace(/\{SEQ(?::([1-9]))?\}/g, function (_, w) {
+      var v = String(seq);
+      if (!w) return v;
+      while (v.length < +w) v = '0' + v;
+      return v;
+    }).trim();
+  }
+  document.querySelectorAll('form[data-num]').forEach(function (f) {
+    var g = function (n) { return f.querySelector('[data-f="' + n + '"]'); };
+    var out = g('out'), run = g('run');
+    function draw() {
+      var pat = g('pattern').value, pfx = g('prefix').value, n = parseInt(g('next').value, 10) || 1;
+      if (pat.indexOf('{SEQ') === -1) {
+        out.textContent = '—';
+        run.textContent = 'The format needs {SEQ} or {SEQ:3}, or every document gets the same number.';
+        return;
+      }
+      var a = render(pat, pfx, n);
+      out.textContent = a;
+      run.textContent = 'then ' + render(pat, pfx, n + 1) + ', ' + render(pat, pfx, n + 2) +
+                        ' · ' + a.length + ' characters' + (a.length > 40 ? ' — too long, the column holds 40' : '');
+    }
+    ['pattern', 'prefix', 'next', 'cycle'].forEach(function (n) {
+      var el = g(n); if (el) el.addEventListener('input', draw);
+    });
+    draw();
+  });
+})();
+</script>
 
 <?php else: /* storage */ ?>
 

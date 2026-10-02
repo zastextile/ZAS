@@ -1,7 +1,9 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
+require_once __DIR__ . '/includes/export.php';
 require_login();
 if (is_staff() || is_production_staff()) { http_response_code(403); exit('Staff cannot create commercial invoices.'); }
+exp_ensure_schema();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
@@ -14,12 +16,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $optEnabled = isset($_POST['optional_column_enabled']) ? 1 : 0;
     $optTitle = $optEnabled ? trim($_POST['optional_column_title'] ?? '') : null;
 
+    /* THE INVOICE NUMBER IS STILL WHATEVER YOU TYPE.
+     *
+     * When your own numbering is switched on, the box arrives pre-filled with
+     * the next number in your series. That suggestion did NOT use the counter
+     * up — opening a form and changing your mind must not leave a hole in the
+     * sequence that looks like a lost invoice.
+     *
+     * So the counter is only spent here, on save, and only if you left the
+     * suggestion exactly as it was. Type your own number over it and the
+     * counter is not touched at all. The second call is what actually claims
+     * the number, so if someone else saved first in the meantime you get the
+     * one after theirs rather than a duplicate. */
+    $invoiceNo  = trim($_POST['invoice_no'] ?? '');
+    $suggested  = trim($_POST['invoice_no_suggested'] ?? '');
+    if ($suggested !== '' && $invoiceNo === $suggested) {
+        $claimed = exp_numbering_next('INV');
+        if ($claimed !== null && $claimed !== '') $invoiceNo = $claimed;
+    }
+
     $stmt = db()->prepare("INSERT INTO shipments
         (invoice_no, invoice_date, buyer_name, buyer_address, buyer_country, destination_port, po_no, bl_container_no, currency, payment_terms, optional_column_enabled, optional_column_title, created_by, updated_by, created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())");
 
     $stmt->execute([
-        trim($_POST['invoice_no'] ?? ''),
+        $invoiceNo,
         $_POST['invoice_date'] ?: null,
         trim($_POST['buyer_name'] ?? ''),
         trim($_POST['buyer_address'] ?? ''),
@@ -78,7 +99,14 @@ flash();
 <div class="zcard">
   <h2>Shipment Header</h2>
   <div class="zgrid">
-    <label class="zlabel">Invoice No.<input class="zin" name="invoice_no" required placeholder="Example: ZAS/5191"></label>
+    <?php $suggest = exp_numbering_peek('INV'); ?>
+    <label class="zlabel">Invoice No.
+      <input class="zin" name="invoice_no" required placeholder="Example: ZAS/5191" value="<?= e((string)$suggest) ?>">
+      <?php if ($suggest !== null): ?>
+        <input type="hidden" name="invoice_no_suggested" value="<?= e($suggest) ?>">
+        <small style="color:#64748b;font-weight:400">Next in your series — type over it if you want a different one.</small>
+      <?php endif; ?>
+    </label>
     <label class="zlabel">Invoice Date<input class="zin" type="date" name="invoice_date"></label>
     <label class="zlabel">Currency<select class="zin" name="currency"><option>USD</option><option>EUR</option><option>GBP</option><option>PKR</option></select></label>
     <label class="zlabel">Payment Terms<input class="zin" name="payment_terms" placeholder="DP / TT / LC"></label>
