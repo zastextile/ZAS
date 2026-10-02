@@ -293,6 +293,125 @@ function expdoc_from_invoice(int $shipmentId, string $view): array
     return $out;
 }
 
+/* ------------------------------------------------------ CSV and Excel paste
+
+   Two ways in, one parser. A pasted block from Excel arrives TAB separated;
+   a saved .csv arrives comma separated. Guessing wrong turns one column into
+   five, so the separator is detected from the first line rather than assumed.
+
+   A header row is optional. With one, columns are matched by name in any
+   order and any spelling of the name. Without one, the order is taken as
+   description, HS code, unit, quantity, rate — which is the order the
+   template downloads in. */
+
+const EXPDOC_CSV_COLS = ['description', 'hs_code', 'unit', 'qty', 'rate'];
+
+function expdoc_csv_header_match(string $cell): ?string {
+    $k = strtolower(trim(preg_replace('/[^a-z0-9]+/i', '_', $cell), '_'));
+    $map = [
+        'description' => 'description', 'desc' => 'description', 'goods' => 'description',
+        'product' => 'description', 'product_name' => 'description', 'item' => 'description',
+        'description_of_goods' => 'description', 'particulars' => 'description',
+        'hs' => 'hs_code', 'hs_code' => 'hs_code', 'hscode' => 'hs_code', 'hs_no' => 'hs_code',
+        'tariff' => 'hs_code', 'tariff_code' => 'hs_code',
+        'unit' => 'unit', 'uom' => 'unit', 'units' => 'unit',
+        'qty' => 'qty', 'quantity' => 'qty', 'pcs' => 'qty', 'pieces' => 'qty',
+        'rate' => 'rate', 'price' => 'rate', 'unit_price' => 'rate', 'unit_rate' => 'rate',
+    ];
+    return $map[$k] ?? null;
+}
+
+/* A number typed by a person: thousands separators, a currency symbol, stray
+   spaces. Anything that is not a digit, a dot or a minus goes. */
+function expdoc_csv_num(string $v): float {
+    $s = preg_replace('/[^0-9.\-]/', '', $v);
+    return is_numeric($s) ? (float)$s : 0.0;
+}
+
+/* Returns [rows, notes]. Notes are for the operator, not for the log —
+   "row 4 was skipped, it had no quantity" is the kind of thing that saves a
+   phone call. */
+function expdoc_parse_csv(string $text, string $view): array
+{
+    $text = str_replace(["\r\n", "\r"], "\n", trim($text));
+    if ($text === '') return [[], ['Nothing was pasted.']];
+
+    $lines = array_values(array_filter(explode("\n", $text), fn($l) => trim($l) !== ''));
+    if (!$lines) return [[], ['Nothing readable in that.']];
+
+    /* Tabs win when present: that is an Excel paste, and a description may
+       legitimately contain a comma. */
+    $first = $lines[0];
+    $sep = substr_count($first, "\t") >= 1 ? "\t"
+         : (substr_count($first, ';') > substr_count($first, ',') ? ';' : ',');
+
+    $split = function (string $line) use ($sep): array {
+        $cells = $sep === "\t" ? explode("\t", $line) : str_getcsv($line, $sep);
+        return array_map(fn($c) => trim((string)$c, " \t\"'"), $cells);
+    };
+
+    /* Is the first row a header? Only if at least two of its cells name a
+       column we know AND it carries no number where a quantity would be. */
+    $head = $split($lines[0]);
+    $named = 0; $byPos = EXPDOC_CSV_COLS;
+    foreach ($head as $c) if (expdoc_csv_header_match($c) !== null) $named++;
+    $hasHeader = $named >= 2;
+
+    $cols = $byPos;
+    $start = 0;
+    if ($hasHeader) {
+        $cols = [];
+        foreach ($head as $c) $cols[] = expdoc_csv_header_match($c);   /* null = ignore this column */
+        $start = 1;
+    }
+
+    $rows = []; $notes = []; $skipped = 0;
+    for ($i = $start, $n = count($lines); $i < $n; $i++) {
+        $cells = $split($lines[$i]);
+        $r = ['description' => '', 'hs_code' => '', 'unit' => '', 'qty' => 0.0, 'rate' => 0.0];
+        foreach ($cells as $ci => $val) {
+            $key = $cols[$ci] ?? null;
+            if ($key === null) continue;
+            if ($key === 'qty' || $key === 'rate') $r[$key] = expdoc_csv_num((string)$val);
+            else $r[$key] = (string)$val;
+        }
+
+        if (trim($r['description']) === '' && $r['qty'] == 0.0) { $skipped++; continue; }
+        if ($r['qty'] < 0 || $r['rate'] < 0) {
+            $notes[] = 'Row ' . ($i + 1) . ' had a negative number and was skipped.';
+            continue;
+        }
+
+        /* The memory still applies to an imported row — an exact match fills
+           in the HS code the operator did not type. */
+        if ($r['hs_code'] === '' && trim($r['description']) !== '') {
+            $rc = expdoc_recall($view, $r['description']);
+            if ($rc && $rc['kind'] === 'exact' && (string)$rc['row']['hs_code'] !== '') {
+                $r['hs_code'] = (string)$rc['row']['hs_code'];
+            }
+        }
+
+        $r['line_no'] = count($rows) + 1;
+        $r['amount']  = round($r['qty'] * $r['rate'], 2);
+        $rows[] = $r;
+    }
+
+    if (!$rows) $notes[] = 'No usable rows were found. Each row needs at least a description or a quantity.';
+    if ($skipped) $notes[] = $skipped . ' empty row' . ($skipped === 1 ? '' : 's') . ' ignored.';
+    if ($hasHeader) array_unshift($notes, 'Header row recognised, columns matched by name.');
+    else array_unshift($notes, 'No header row found — columns read in order: description, HS code, unit, qty, rate.');
+    array_unshift($notes, $sep === "\t" ? 'Read as an Excel paste (tab separated).'
+                                        : 'Read as CSV (separator "' . $sep . '").');
+
+    return [$rows, $notes];
+}
+
+function expdoc_csv_template(): string {
+    return "Description,HS Code,Unit,Qty,Rate\n"
+         . "Cotton Bed Linen,630231,Pcs,1200,11.98\n"
+         . "Cotton Terry Towels,630260,Pcs,550,11.63\n";
+}
+
 /* Everything the editing screen needs to draw one row's recall state, in one
    pass over the memory rather than a query per line. */
 function expdoc_annotate(string $view, array $lines): array

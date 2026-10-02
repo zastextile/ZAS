@@ -96,9 +96,11 @@ function trim_num($n, $d = 3) { return rtrim(rtrim(number_format((float)$n, $d, 
 $AUDIT = [];
 function audit_log($sid, $sec, $fld, $old, $new, $why = '') { global $AUDIT; $AUDIT[] = compact('sid','sec','fld','old','new','why'); }
 
+const EXPDOC_CSV_COLS = ['description', 'hs_code', 'unit', 'qty', 'rate'];
 foreach (['expdoc_view_ok','expdoc_norm','expdoc_near','expdoc_memory','expdoc_recall',
           'expdoc_lines','expdoc_source_lines','expdoc_totals','expdoc_check',
-          'expdoc_save_lines','expdoc_audit_change','expdoc_from_invoice','expdoc_annotate'] as $fn) {
+          'expdoc_save_lines','expdoc_audit_change','expdoc_from_invoice','expdoc_annotate',
+          'expdoc_csv_header_match','expdoc_csv_num','expdoc_parse_csv','expdoc_csv_template'] as $fn) {
     $code = lift($src, 'function ' . $fn . '(');
     if ($code === '') { t("could not lift $fn", false); continue; }
     eval($code);
@@ -341,6 +343,116 @@ $exp = file_get_contents($B . 'includes/export.php');
 t('the CUSTOMS tab is in the strip', str_contains($exp, "'label' => 'CUSTOMS'"));
 t('no new permission module was added for it',
   !str_contains($exp, "'k' => 'shipcust'") && !str_contains($exp, "'k' => 'shipchamber'"));
+
+/* ------------------------------------------------------------------------- */
+head('8. Bringing rows in from Excel or a CSV');
+
+/* No memory, so nothing is auto-filled and the parse is judged on its own. */
+$DB->A = ['FROM exp_doc_memory WHERE view=? AND norm_key=?' => [],
+          'FROM exp_doc_memory WHERE view=? ORDER BY' => []];
+
+/* THE CASE THAT MATTERS MOST: cells copied out of Excel arrive TAB separated,
+   and a description legitimately contains commas. Splitting on the comma
+   would turn one column into five. */
+[$r, $n] = expdoc_parse_csv("Cotton Bed Linen, White	630231	Pcs	1200	11.98", 'customs');
+t('an Excel paste is detected as tab separated', str_contains($n[0], 'tab separated'), $n[0]);
+t('  and a comma inside the description survives',
+  ($r[0]['description'] ?? '') === 'Cotton Bed Linen, White', $r[0]['description'] ?? null);
+t('  with the other four columns in place',
+  ($r[0]['hs_code'] ?? '') === '630231' && ($r[0]['qty'] ?? 0) == 1200 && ($r[0]['rate'] ?? 0) == 11.98);
+
+/* A header in any order. */
+[$r, $n] = expdoc_parse_csv("Qty,Description,Rate,HS Code\n1200,Cotton Bed Linen,11.98,630231", 'customs');
+t('a header row is recognised', str_contains($n[1] ?? '', 'Header row recognised'), $n[1] ?? null);
+t('  and columns are matched by name, not position',
+  ($r[0]['description'] ?? '') === 'Cotton Bed Linen' && ($r[0]['qty'] ?? 0) == 1200, $r[0] ?? null);
+
+/* Header spellings people actually use. */
+foreach (['Description' => 'description', 'DESC' => 'description', 'Product Name' => 'description',
+          'Description of Goods' => 'description', 'HS Code' => 'hs_code', 'hs-code' => 'hs_code',
+          'Tariff Code' => 'hs_code', 'UOM' => 'unit', 'Quantity' => 'qty', 'PCS' => 'qty',
+          'Unit Price' => 'rate', 'Price' => 'rate'] as $given => $want) {
+    t('"' . $given . '" is understood as ' . $want,
+      expdoc_csv_header_match($given) === $want, expdoc_csv_header_match($given));
+}
+t('an unknown column name is ignored rather than guessed',
+  expdoc_csv_header_match('Remarks') === null);
+
+/* No header: read in template order. */
+[$r, $n] = expdoc_parse_csv("Cotton Bed Linen,630231,Pcs,1200,11.98", 'customs');
+t('with no header the order is description, hs, unit, qty, rate',
+  ($r[0]['description'] ?? '') === 'Cotton Bed Linen' && ($r[0]['rate'] ?? 0) == 11.98, $r[0] ?? null);
+t('  and it says so, so nobody is surprised', str_contains($n[1] ?? '', 'No header row found'));
+
+/* Numbers as people type them. */
+t('a thousands separator is ignored', expdoc_csv_num('2,750') === 2750.0);
+t('a currency symbol is ignored', expdoc_csv_num('$ 11.98') === 11.98);
+t('spaces are ignored', expdoc_csv_num('  1 200 ') === 1200.0, expdoc_csv_num('  1 200 '));
+t('text that is not a number reads as zero', expdoc_csv_num('n/a') === 0.0);
+t('a negative is still negative, so it can be refused', expdoc_csv_num('-5') === -5.0);
+
+/* Rows that should not become lines. */
+[$r, $n] = expdoc_parse_csv("Description,Qty,Rate\nBath Towel,250,17\n,,\n   ,  ,\nBeach Towel,150,16.29", 'customs');
+t('blank rows are dropped', count($r) === 2, count($r));
+t('  and counted in the notes', (bool)preg_grep('~empty row~', $n), $n);
+t('line numbers are renumbered after the drop',
+  ($r[1]['line_no'] ?? 0) === 2, $r[1]['line_no'] ?? null);
+
+[$r, $n] = expdoc_parse_csv("Description,Qty,Rate\nGood,10,5\nBad,-10,5", 'customs');
+t('a negative quantity row is refused, not imported', count($r) === 1, count($r));
+t('  and the row number is named', (bool)preg_grep('~Row 3~', $n), $n);
+
+/* Nothing in, a clear answer out. */
+[$r, $n] = expdoc_parse_csv('', 'customs');
+t('an empty paste returns no rows and says so', count($r) === 0 && (bool)preg_grep('~Nothing~', $n));
+
+/* Semicolon CSV, which is what a European Excel writes. */
+[$r, $n] = expdoc_parse_csv("Description;Qty;Rate\nCotton Bed Linen;1200;11.98", 'customs');
+t('a semicolon separated CSV is handled', ($r[0]['qty'] ?? 0) == 1200, $r[0] ?? null);
+
+/* The amount is computed here, never read from the file. */
+[$r, $n] = expdoc_parse_csv("Cotton Bed Linen,630231,Pcs,1200,11.98", 'customs');
+t('the amount is calculated from qty times rate',
+  abs(($r[0]['amount'] ?? 0) - 14376.00) < 0.005, $r[0]['amount'] ?? null);
+
+/* An exact memory still fills a blank HS code on an imported row. */
+$DB->A['FROM exp_doc_memory WHERE view=? AND norm_key=?'] = [
+    ['id'=>1,'view'=>'customs','norm_key'=>'cottonbedlinen','description'=>'Cotton Bed Linen',
+     'hs_code'=>'630231','unit'=>'Pcs','times_used'=>14],
+];
+[$r, $n] = expdoc_parse_csv("Description,Qty,Rate\nCotton Bed Linen,1200,11.98", 'customs');
+t('an imported row with no HS code takes it from the memory',
+  ($r[0]['hs_code'] ?? '') === '630231', $r[0]['hs_code'] ?? null);
+
+[$r, $n] = expdoc_parse_csv("Description,HS Code,Qty,Rate\nCotton Bed Linen,999999,1200,11.98", 'customs');
+t('  but an HS code in the file is never overwritten by the memory',
+  ($r[0]['hs_code'] ?? '') === '999999', $r[0]['hs_code'] ?? null);
+
+/* The template is what the no-header order documents. */
+$tpl = expdoc_csv_template();
+t('the template header matches the no-header reading order',
+  str_starts_with($tpl, 'Description,HS Code,Unit,Qty,Rate'), substr($tpl, 0, 40));
+
+/* An import must reach the editor, not the database. */
+$scr2 = file_get_contents($B . 'shipment_customs.php');
+/* Written out properly. The first attempt at this check ended in `|| x`,
+   which made the whole expression true whatever the rest said — a test that
+   cannot fail. What has to hold is specific: the import branch puts rows in
+   the session draft and does NOT call the save. */
+$impBlock = '';
+if (preg_match("~if \(\\\$action === 'import'\) \{(.*?)\n        \}~s", $scr2, $ib)) $impBlock = $ib[1];
+t('the import branch was found in the screen', $impBlock !== '');
+t('it puts the rows in the draft', str_contains($impBlock, "\$_SESSION['expdoc_draft_'"));
+t('  and never writes them to the database itself',
+  !str_contains($impBlock, 'expdoc_save_lines'), $impBlock);
+t('  and the screen says nothing is saved yet',
+  str_contains($scr2, 'Not saved yet'));
+t('an xlsx upload is refused with an instruction, not a silent failure',
+  str_contains($scr2, 'Save As CSV'));
+t('the upload size is capped', str_contains($scr2, '2 * 1024 * 1024'));
+t('only text file types are accepted',
+  str_contains($scr2, "['csv', 'txt', 'tsv']"));
+
 
 echo "\n$P passed, $F failed\n";
 exit($F > 0 ? 1 : 0);

@@ -68,6 +68,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect('shipment_customs.php?id=' . $id . '&view=' . $view);
         }
 
+        /* CSV or an Excel paste. Both land in the editor as a draft so you
+           see and fix them before anything is stored — the same path the
+           Copy buttons use. */
+        if ($action === 'import') {
+            $text = (string)($_POST['paste'] ?? '');
+
+            if (isset($_FILES['csv']) && is_uploaded_file($_FILES['csv']['tmp_name'] ?? '')) {
+                $ext = strtolower(pathinfo((string)$_FILES['csv']['name'], PATHINFO_EXTENSION));
+                if (!in_array($ext, ['csv', 'txt', 'tsv'], true)) {
+                    throw new Exception('Upload a .csv or .txt file. An .xlsx cannot be read directly — '
+                                      . 'in Excel use Save As CSV, or just copy the rows and paste them below.');
+                }
+                if ((int)$_FILES['csv']['size'] > 2 * 1024 * 1024) throw new Exception('That file is too large.');
+                $text = (string)file_get_contents($_FILES['csv']['tmp_name']);
+            }
+
+            if (trim($text) === '') throw new Exception('Paste some rows, or choose a CSV file.');
+
+            [$rows, $notes] = expdoc_parse_csv($text, $view);
+            if (!$rows) throw new Exception(implode(' ', $notes));
+
+            $_SESSION['expdoc_draft_' . $id . '_' . $view] = $rows;
+            $_SESSION['expdoc_notes_' . $id . '_' . $view] = $notes;
+            $_SESSION['flash'] = 'Read ' . count($rows) . ' row' . (count($rows) === 1 ? '' : 's')
+                               . '. Check them and press Save — nothing is stored yet.';
+            redirect('shipment_customs.php?id=' . $id . '&view=' . $view);
+        }
+
         if ($action === 'clear') {
             [$ok, $msg] = expdoc_save_lines($id, $view, [], false);
             $_SESSION['flash'] = EXPDOC_VIEWS[$view] . ' document emptied. The memory is untouched.';
@@ -82,13 +110,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* A draft from Copy takes precedence for this one page load, then is dropped
    so a refresh shows what is actually saved. */
 $draftKey = 'expdoc_draft_' . $id . '_' . $view;
+$noteKey  = 'expdoc_notes_' . $id . '_' . $view;
 $isDraft  = false;
+$notes    = [];
 if (!empty($_SESSION[$draftKey])) {
     $lines = $_SESSION[$draftKey];
-    unset($_SESSION[$draftKey]);
+    $notes = $_SESSION[$noteKey] ?? [];
+    unset($_SESSION[$draftKey], $_SESSION[$noteKey]);
     $isDraft = true;
 } else {
     $lines = expdoc_lines($id, $view);
+}
+
+/* The template is a plain download, so it happens before any output. */
+if (isset($_GET['csv_template'])) {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="zas_' . $view . '_lines_template.csv"');
+    echo expdoc_csv_template();
+    exit;
 }
 
 $lines  = expdoc_annotate($view, $lines);
@@ -142,7 +181,13 @@ exp_tab_strip($shipment, 'customs');
 </div>
 
 <?php if ($isDraft): ?>
-  <div class="xwarn" style="margin-bottom:11px"><b>Not saved yet.</b> These lines were copied in for you to edit. Press Save when you are happy, or leave the page to discard them.</div>
+  <div class="xwarn" style="margin-bottom:11px">
+    <b>Not saved yet.</b> These lines were brought in for you to check. Press Save when you are happy,
+    or leave the page to discard them.
+    <?php if ($notes): ?>
+      <div style="margin-top:6px;font-size:11.5px;opacity:.9"><?= e(implode(' ', $notes)) ?></div>
+    <?php endif; ?>
+  </div>
 <?php endif; ?>
 
 <details class="xcard">
@@ -256,6 +301,44 @@ exp_tab_strip($shipment, 'customs');
     <button class="xbtn red">Empty it</button>
   </form>
   <?php endif; ?>
+</div>
+<?php endif; ?>
+
+<?php if ($canEdit): ?>
+<div class="xcard">
+  <h2>Bring lines in from Excel or a CSV
+    <span style="font-weight:400;color:#8a97ab;font-size:11px">— nothing is saved until you press Save</span>
+  </h2>
+
+  <form method="post" enctype="multipart/form-data">
+    <?= csrf_field() ?>
+    <input type="hidden" name="action" value="import">
+    <input type="hidden" name="shipment_id" value="<?= $id ?>">
+    <input type="hidden" name="view" value="<?= e($view) ?>">
+
+    <label class="xlabel">Paste rows straight from Excel
+      <textarea class="xin" name="paste" rows="4" style="font-family:'Space Grotesk',monospace;font-size:12px"
+        placeholder="Cotton Bed Linen&#9;630231&#9;Pcs&#9;1200&#9;11.98&#10;Cotton Terry Towels&#9;630260&#9;Pcs&#9;550&#9;11.63"></textarea>
+    </label>
+
+    <div class="xgrid" style="margin-top:11px;align-items:end">
+      <label class="xlabel">…or choose a CSV file
+        <input class="xin" type="file" name="csv" accept=".csv,.txt,.tsv">
+      </label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="xbtn">Read the rows</button>
+        <a class="xbtn sec" href="shipment_customs.php?id=<?= $id ?>&view=<?= e($view) ?>&csv_template=1">Template</a>
+      </div>
+    </div>
+  </form>
+
+  <div class="xnote" style="margin-top:11px">
+    Copy cells in Excel and paste them here — that arrives tab separated and is read as such.
+    A header row is optional: with one, columns are matched by name in any order
+    (<i>description, hs code, unit, qty, rate</i> and the usual variations). Without one they are read
+    in that order. Thousands separators and currency symbols in the numbers are ignored.
+    An exact memory match still fills in an HS code you left blank.
+  </div>
 </div>
 <?php endif; ?>
 
