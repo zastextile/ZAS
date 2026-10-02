@@ -153,11 +153,48 @@ $f = F('bl no MAEU240817221');
 t('a BL number is recognised', ($f['bl'] ?? '') === 'MAEU240817221', $f);
 t('  and is not mistaken for a container', !isset($f['container']), $f);
 
-/* 630231 is six digits; a container is four letters then seven. Neither may
-   swallow the other. */
-$f = F('SEKU6489931 630231');
+$f = F('SEKU6489931 HS 630231');
 t('a container and an HS code in one question stay separate',
   ($f['container'] ?? '') === 'SEKU6489931' && ($f['hs'] ?? '') === '630231', $f);
+
+/* ---------------------------------------------------------------------
+   SIX LOOSE DIGITS ARE NEVER AN HS CODE.
+
+   next_doc_no() builds every number in this system as PREFIX-YYMMDD-NNN,
+   so PI-260908-786, INV-260908-786 and CI-260908-455 all contain a
+   six-digit date. A bare-digits rule would answer a search for a proforma
+   with a search for an HS code. There is no such rule, and these
+   assertions exist to stop one being added back.
+   --------------------------------------------------------------------- */
+foreach (['PI-260908-786', 'INV-260908-786', 'CI-260908-455', 'CV-260908-991'] as $docNo) {
+    $f = F($docNo);
+    t($docNo . ' is a document number, not an HS code',
+      ($f['ref'] ?? '') === $docNo && !isset($f['hs']), $f);
+}
+
+$f = F('630231');
+t('six digits alone are NOT taken for an HS code', !isset($f['hs']), $f);
+$p2 = qr_parse('shipment', '630231');
+t('  and the router says so rather than guessing', qr_is_description($p2) === true, $p2);
+
+foreach (['HS 630231' => '630231', 'hs code 630231' => '630231',
+          'hs:630231' => '630231', 'tariff 630231' => '630231'] as $typed => $want) {
+    $f = F($typed);
+    t('"' . $typed . '" IS an HS code', ($f['hs'] ?? '') === $want, $f);
+}
+
+/* short_ref() prints PI-260908-786 as PI-786, which is what people read off
+   a screen and type back in. Both must find the same record. */
+$f = F('PI-786');
+t('a shortened reference is still a reference', ($f['ref'] ?? '') === 'PI-786', $f);
+eval(lift($src, 'function qr_ref_match('));
+[$rw, $rp] = qr_ref_match('pf.pi_no', 'PI-786');
+t('  and it matches the stored long number', $rp === ['PI-786', 'PI%786'], $rp);
+t('  with no trailing wildcard, so PI-786 cannot match PI-1786',
+  str_ends_with((string)$rp[1], '786') && !str_ends_with((string)$rp[1], '%'), $rp[1]);
+[$rw, $rp] = qr_ref_match('s.invoice_no', 'ZAS/5191');
+t('  and a hand-typed invoice number works the same way',
+  $rp === ['ZAS/5191', 'ZAS%5191'], $rp);
 
 /* ------------------------------------------------------------------------- */
 head('3. Dates');

@@ -107,26 +107,31 @@ function qr_parse(string $mode, string $raw): array
         $f['container'] = strtoupper(preg_replace('/\s/', '', $m[1]));
     });
 
-    /* An HS code written as such is unambiguous and goes first. */
-    $gotHs = $eat('~\bhs\s*(?:code)?\s*:?\s*(\d{6})\b~', function ($m) use (&$f) { $f['hs'] = $m[1]; });
+    /* AN HS CODE IS ONLY EVER RECOGNISED WHEN IT SAYS SO.
+     *
+     * There is no "six loose digits means HS code" rule, and there must not
+     * be one. next_doc_no() builds every document number in this system as
+     * PREFIX-YYMMDD-NNN, so PI-260908-786, INV-260908-786 and CI-260908-455
+     * all contain a six-digit date. A bare-digits fallback would answer a
+     * search for a proforma with a search for an HS code — a wrong answer
+     * wearing the shape of a right one.
+     *
+     * So: write "HS 630231" and it is an HS code. Type six digits on their
+     * own and the router says it did not understand, which is the truth. */
+    $eat('~\b(?:hs|tariff)\s*(?:code|no\.?)?\s*:?\s*(\d{6,10})\b~',
+        function ($m) use (&$f) { $f['hs'] = $m[1]; });
 
-    /* DOCUMENT NUMBERS BEFORE THE BARE SIX-DIGIT FALLBACK.
-       PI-260908-786 contains "260908", which is six digits. Read in the
-       other order the router answers a search for a proforma with a search
-       for an HS code — a wrong answer that looks like a right one. */
-    $eat('~\b(zas\s*/\s*\d+)\b~', function ($m) use (&$f) {
+    /* A document reference: a short letter prefix, a separator, then digits —
+       with or without the date block in the middle. Covers ZAS/5191 as typed
+       by hand, PI-260908-786 as generated, PI-786 as short_ref() prints it,
+       and CI/26/0099. */
+    $eat('~\b([a-z]{2,5}\s*[-/]\s*\d{1,8}(?:\s*[-/]\s*\d{1,6})?)\b~', function ($m) use (&$f) {
         $f['ref'] = strtoupper(preg_replace('/\s/', '', $m[1]));
     });
-    $eat('~\b(pi[-/]\d{4,8}[-/]\d{1,4}|pi[-/]\d{3,8}|cv[-/]?\d{3,6})\b~',
-        function ($m) use (&$f) { $f['ref'] = strtoupper($m[1]); });
 
     $eat('~\bbl\s*(?:no\.?|number)?\s*:?\s*([a-z]{3,5}\d{5,})\b~', function ($m) use (&$f) {
         $f['bl'] = strtoupper($m[1]);
     });
-
-    /* Only now, with every known document shape consumed, may six loose
-       digits be taken for an HS code. */
-    if (!$gotHs) $eat('~\b(\d{6})\b~', function ($m) use (&$f) { $f['hs'] = $m[1]; });
 
     /* --- money --- */
     $eat('~\b(?:over|above|more than|greater than|exceeding|>)\s*(?:usd|eur|gbp|pkr|rs\.?|\$)?\s*([\d,]+(?:\.\d+)?)~',
@@ -226,6 +231,23 @@ function qr_is_description(array $parsed): bool {
 
    Returns [where, params] against the aliases each mode's query uses:
    shipment -> s, proforma -> pf, costing -> cv / p. */
+/* A reference matches the stored number either whole or shortened.
+ *
+ * short_ref() prints PI-260908-786 as PI-786, and that is what people read
+ * off a screen and type back in. So a reference is matched two ways: exactly,
+ * and as prefix + anything + tail. The LIKE has no trailing wildcard, so
+ * "PI-786" cannot also match PI-260908-1786.
+ *
+ * Returns [sqlFragment, params] for one column. */
+function qr_ref_match(string $col, string $ref): array {
+    $like = null;
+    if (preg_match('~^([A-Z]{2,5})[-/](?:\d{1,8}[-/])?(\d{1,6})$~', $ref, $m)) {
+        $like = $m[1] . '%' . $m[2];
+    }
+    if ($like === null) return ["$col = ?", [$ref]];
+    return ["($col = ? OR $col LIKE ?)", [$ref, $like]];
+}
+
 function qr_where(string $mode, array $f): array
 {
     $w = []; $p = [];
@@ -239,7 +261,7 @@ function qr_where(string $mode, array $f): array
     };
 
     if ($mode === 'shipment') {
-        if (isset($f['ref']))      { $w[] = "s.invoice_no = ?"; $p[] = $f['ref']; }
+        if (isset($f['ref']))      { [$rw, $rp] = qr_ref_match('s.invoice_no', $f['ref']); $w[] = $rw; $p = array_merge($p, $rp); }
         if (isset($f['country']))  { $w[] = "s.buyer_country = ?"; $p[] = $f['country']; }
         if (isset($f['port']))     { $w[] = "s.destination_port = ?"; $p[] = $f['port']; }
         if (isset($f['buyer']))    { $w[] = "s.buyer_name = ?"; $p[] = $f['buyer']; }
@@ -298,7 +320,7 @@ function qr_where(string $mode, array $f): array
     }
 
     if ($mode === 'proforma') {
-        if (isset($f['ref']))      { $w[] = "pf.pi_no = ?"; $p[] = $f['ref']; }
+        if (isset($f['ref']))      { [$rw, $rp] = qr_ref_match('pf.pi_no', $f['ref']); $w[] = $rw; $p = array_merge($p, $rp); }
         if (isset($f['buyer']))    { $w[] = "pf.customer_name = ?"; $p[] = $f['buyer']; }
         if (isset($f['currency'])) { $w[] = "pf.currency = ?"; $p[] = $f['currency']; }
         if (isset($f['status']))   { $w[] = "pf.status = ?"; $p[] = $f['status'] === 'locked' ? 'converted' : $f['status']; }
@@ -311,7 +333,7 @@ function qr_where(string $mode, array $f): array
     }
 
     if ($mode === 'costing') {
-        if (isset($f['ref']))      { $w[] = "cv.costing_no = ?"; $p[] = $f['ref']; }
+        if (isset($f['ref']))      { [$rw, $rp] = qr_ref_match('cv.costing_no', $f['ref']); $w[] = $rw; $p = array_merge($p, $rp); }
         if (isset($f['product']))  { $w[] = "p.name = ?"; $p[] = $f['product']; }
         if (isset($f['currency'])) { $w[] = "cv.currency = ?"; $p[] = $f['currency']; }
         if (isset($f['status']))   { $w[] = "cv.status = ?"; $p[] = $f['status']; }
