@@ -24,7 +24,13 @@
   the already-loaded user row; this is that idea where no such row exists.
 */
 
-const EXP_SCHEMA_VERSION = '2';
+/* The customs and chamber half of the module. Loaded here rather than page by
+   page because the tab strip below asks it who may see the CUSTOMS tab, and a
+   tab that appears on some screens and not others is worse than no tab.
+   Including it costs nothing: the file declares functions and runs no query. */
+require_once __DIR__ . '/exportdocs.php';
+
+const EXP_SCHEMA_VERSION = '3';
 
 /* The money shape used everywhere in this module. Amounts are DECIMAL, never
    float — a float cannot hold 0.1 exactly, and a ledger that cannot add up
@@ -303,6 +309,56 @@ function exp_build_schema(): void {
        is the old, working table and gains nothing. */
     $x("ALTER TABLE shipment_documents ADD COLUMN legacy_file_id INT NULL");
     $x("CREATE INDEX idx_legacy ON shipment_documents (legacy_file_id)");
+
+    /* ------------------------------- customs and chamber documents (Phase 2)
+
+       The commercial invoice stays in shipment_items and is never written
+       from here. These are the other two documents, typed by hand: their own
+       descriptions, HS codes, quantities and rates.
+
+       Total units are checked against the commercial invoice before a
+       document may print. Total value is deliberately free — a CFR invoice
+       against an FOB declaration legitimately differs — and every save
+       records the difference in the audit log. */
+    $x("CREATE TABLE IF NOT EXISTS exp_doc_lines (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        shipment_id INT NOT NULL,
+        view VARCHAR(10) NOT NULL,
+        line_no INT NOT NULL DEFAULT 0,
+        description VARCHAR(255) NULL,
+        hs_code VARCHAR(40) NULL,
+        unit VARCHAR(40) NULL,
+        qty DECIMAL(14,3) NOT NULL DEFAULT 0,
+        rate DECIMAL(14,4) NOT NULL DEFAULT 0,
+        amount " . EXP_DEC_MONEY . " NOT NULL DEFAULT 0,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_by INT NULL,
+        updated_at DATETIME NULL,
+        FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+        INDEX idx_ship_view_line (shipment_id, view, line_no)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    /* The wording you have typed before, globally. Nothing lives in Product
+       Master: a customs invoice describes goods to Pakistan Customs, not to a
+       buyer, so a new customer inherits the whole vocabulary at once.
+       norm_key is the description with every non-alphanumeric stripped and
+       the case dropped, which is what makes two spellings one memory. */
+    $x("CREATE TABLE IF NOT EXISTS exp_doc_memory (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        view VARCHAR(10) NOT NULL,
+        norm_key VARCHAR(190) NOT NULL,
+        source_text VARCHAR(255) NULL,
+        description VARCHAR(255) NOT NULL,
+        hs_code VARCHAR(40) NULL,
+        unit VARCHAR(40) NULL,
+        times_used INT NOT NULL DEFAULT 1,
+        last_used_at DATETIME NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_view_key (view, norm_key),
+        INDEX idx_view_used (view, times_used)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     /* ------------------------------------- columns on tables that already
        exist. Every one nullable, so no existing row changes meaning and no
@@ -978,6 +1034,12 @@ function exp_tab_strip(array $shipment, string $active): void
         ['key' => 'payments',  'label' => 'PAYMENTS',  'href' => 'shipment_payments.php?id=' . $id,   'show' => exp_can('payments')],
         ['key' => 'costs',     'label' => 'COSTS',     'href' => 'shipment_costs.php?id=' . $id,      'show' => exp_can('costs')],
         ['key' => 'docs',      'label' => 'DOCS',      'href' => 'shipment_documents.php?id=' . $id,  'show' => exp_can('documents')],
+        /* Customs and Chamber are two views of one screen, so they share a
+           tab rather than taking one each — the strip is already long on a
+           phone. They ride on the Shipments & Invoices permission, not a new
+           module, because they are presentations of an invoice the user can
+           already open. */
+        ['key' => 'customs',   'label' => 'CUSTOMS',   'href' => 'shipment_customs.php?id=' . $id, 'show' => expdoc_can_view()],
         ['key' => 'timeline',  'label' => 'TIMELINE',  'href' => 'audit.php?id=' . $id,               'show' => is_admin() || is_colleague()],
     ];
 

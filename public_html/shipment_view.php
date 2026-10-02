@@ -333,6 +333,16 @@ exp_tab_strip($shipment, 'invoice');
   <?php if(!is_staff()): ?><a class="zbtn sec" target="_blank" href="invoice_print_norate.php?id=<?= e($id) ?>">Print Items (No Rate)</a><?php endif; ?>
   <?php if(!is_staff()): ?><a class="zbtn sec" target="_blank" href="packing_print.php?id=<?= e($id) ?>">Print Packing List</a><?php endif; ?>
   <?php if(is_admin()): ?><a class="zbtn sec" href="assign.php?id=<?= e($id) ?>">Assign Users</a><?php endif; ?>
+  <?php
+  /* The other two invoices. Shown only once they have lines, so the row does
+     not fill up with buttons that lead to an empty document. The CUSTOMS tab
+     is where they are built. */
+  if (expdoc_can_view()):
+      foreach (EXPDOC_VIEWS as $vk => $vn):
+          $vc = expdoc_check($id, $vk);
+          if (!$vc['can_print']) continue; ?>
+    <a class="zbtn sec" target="_blank" href="customs_print.php?id=<?= e($id) ?>&view=<?= e($vk) ?>&doc=invoice"><?= e($vn) ?> Invoice</a>
+  <?php endforeach; endif; ?>
   <a class="zbtn sec" href="audit.php?id=<?= e($id) ?>">Audit Log</a>
   <?php if(is_admin()): ?><button type="button" class="zbtn" style="background:linear-gradient(100deg,#6d5bd0,#0ea8c9)" onclick="runAICheck()">AI Check</button><?php endif; ?>
   <?php if(is_admin()): ?><a class="zbtn sec" target="_blank" href="costing_report_print.php?id=<?= e($id) ?>">View Costing Report</a><?php endif; ?>

@@ -34,12 +34,17 @@ $PAGES = [
     'shipment_board.php'     => 'board',
     'exp_settings.php'       => 'masters',
     'exp_providers.php'      => 'providers',
+    'shipment_customs.php'   => 'customs',
+    'customs_print.php'      => 'customsprint',
 ];
 foreach (array_keys($PAGES) as $p) copy($B . $p, $work . '/' . $p);
 
 /* The real libraries, so the page is wired to what it is actually wired to. */
 copy($B . 'includes/export.php',  $work . '/includes/export.php');
 copy($B . 'includes/storage.php', $work . '/includes/storage.php');
+/* export.php requires this one, so every page that includes export.php needs
+   it present — which is exactly how this harness noticed the new coupling. */
+copy($B . 'includes/exportdocs.php', $work . '/includes/exportdocs.php');
 foreach (['lov.js', 'grid.js'] as $j) if (is_file($B . 'assets/js/' . $j)) copy($B . 'assets/js/' . $j, $work . '/assets/js/' . $j);
 foreach (['lov.css', 'zskin.css'] as $c) if (is_file($B . 'assets/css/' . $c)) copy($B . 'assets/css/' . $c, $work . '/assets/css/' . $c);
 
@@ -233,6 +238,23 @@ $GLOBALS['BDB']->A = [
     'actual_arrival_date'=>null,'bl_no'=>'MAEU240817221',
   ]],
   "shipment_id, COALESCE(SUM(amount),0) s" => [['shipment_id'=>41,'s'=>30000.00]],
+  "FROM exp_doc_lines" => [
+    ['id'=>1,'shipment_id'=>41,'view'=>'customs','line_no'=>1,'description'=>'Cotton Bed Linen White',
+     'hs_code'=>'630231','unit'=>'Pcs','qty'=>1200,'rate'=>11.98,'amount'=>14376.00],
+    ['id'=>2,'shipment_id'=>41,'view'=>'customs','line_no'=>2,'description'=>'Cotton Terry Towels',
+     'hs_code'=>'630260','unit'=>'Pcs','qty'=>550,'rate'=>11.63,'amount'=>6396.50],
+  ],
+  "FROM exp_doc_memory WHERE view=? ORDER BY" => [
+    ['id'=>1,'view'=>'customs','norm_key'=>'cottonbedlinenwhite','source_text'=>'Cotton Bed Linen White',
+     'description'=>'Cotton Bed Linen White','hs_code'=>'630231','unit'=>'Pcs','times_used'=>14],
+  ],
+  "FROM exp_doc_memory WHERE view=? AND norm_key=?" => [],
+  "FROM shipment_items WHERE shipment_id=? ORDER BY line_no" => [
+    ['line_no'=>1,'product_name'=>'Flat Sheet','des_col'=>'White 300TC','optional_value'=>'',
+     'qty'=>1200,'unit'=>'Pcs','rate'=>12.00,'amount'=>14400.00],
+    ['line_no'=>2,'product_name'=>'Bath Towel','des_col'=>'500 gsm','optional_value'=>'',
+     'qty'=>550,'unit'=>'Pcs','rate'=>12.00,'amount'=>6600.00],
+  ],
   "FROM exp_meta WHERE k='schema_version'" => [['v'=>'1']],
 ];
 PHP;
@@ -251,7 +273,7 @@ head('1. Every page renders under PHP without a fatal error');
 $html = [];
 foreach ($PAGES as $page => $slug) {
     $cmd = 'cd ' . escapeshellarg($work) . ' && php -d error_reporting=E_ALL -d display_errors=1 '
-         . '-r ' . escapeshellarg('$_GET=["id"=>41,"view"=>"transit"]; $_SERVER["REQUEST_METHOD"]="GET"; include "' . $page . '";')
+         . '-r ' . escapeshellarg('$_GET=["id"=>41,"view"=>"transit","doc"=>"invoice"]; $_SERVER["REQUEST_METHOD"]="GET"; include "' . $page . '";')
          . ' 2>&1';
     $out = (string)shell_exec($cmd);
     $html[$slug] = $out;
@@ -338,6 +360,24 @@ foreach (['logistics', 'payments', 'costs', 'documents'] as $slug) {
 }
 
 /* ------------------------------------------------------- now run it in Chromium */
+
+/* The customs screen and its print. */
+ok(str_contains($html['customs'], 'Cotton Bed Linen White'), 'the customs line was not drawn');
+ok(str_contains($html['customs'], 'Commercial invoice'), 'the read-only commercial reference is missing');
+ok(str_contains($html['customs'], 'Chamber Invoice'), 'the chamber view switch is missing');
+ok(str_contains($html['customs'], 'd_desc[]') && str_contains($html['customs'], 'd_rate[]'),
+   'the customs line inputs are missing');
+ok(str_contains($html['customs'], 'ckU') && str_contains($html['customs'], 'ckV'),
+   'the units and value checks are missing');
+
+ok(str_contains($html['customsprint'], 'Cotton Bed Linen White'), 'the print did not show the line');
+ok(str_contains($html['customsprint'], 'CUSTOMS INVOICE') || stripos($html['customsprint'], 'Customs Invoice') !== false,
+   'the print is not titled as a customs invoice');
+ok(str_contains($html['customsprint'], '630231'), 'the HS code did not print');
+/* 1200 + 550 = 1750 on both sides, so this one is printable. */
+ok(!str_contains($html['customsprint'], 'cannot be printed'),
+   'the print refused even though the units match');
+
 head('3. Chromium loads every page with no JavaScript error at all');
 
 $drive = <<<'JS'

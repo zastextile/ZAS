@@ -527,8 +527,13 @@ t('the legacy listing reports what has already been brought in',
 t('  without a query per file',
   substr_count($ls, 'prepare(') === 1);
 
-t('the schema version was bumped so the new column installs',
-  str_contains($src, "EXP_SCHEMA_VERSION = '2'"));
+/* Not pinned to an exact number: legacy_file_id arrived in version 2, so what
+   matters is that the stored version is at or past it. Pinning '2' here meant
+   this failed the moment Phase 2 bumped it to 3, which told us nothing about
+   whether the column installs. */
+preg_match("~EXP_SCHEMA_VERSION = '(\d+)'~", $src, $vm);
+t('the schema version is at or past the one that adds legacy_file_id',
+  isset($vm[1]) && (int)$vm[1] >= 2, $vm[1] ?? null);
 
 
 echo "\n$P passed, $F failed\n";
