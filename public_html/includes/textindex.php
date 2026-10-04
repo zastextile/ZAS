@@ -301,7 +301,11 @@ function txt_document_status(array $docIds): array
 function txt_terms(string $q): array
 {
     $q = mb_strtolower(trim($q));
-    $q = (string)preg_replace('~[+\-><()~*"@]~', ' ', $q);
+    /* The tilde is escaped because it is also this pattern's delimiter.
+       Unescaped, it closed the character class early and PHP read the rest
+       as modifiers — the whole replacement failed and every search returned
+       no terms at all. */
+    $q = (string)preg_replace('~[+\-><()\~*"@]~', ' ', $q);
     $raw = preg_split('~[^\p{L}\p{N}/._]+~u', $q, -1, PREG_SPLIT_NO_EMPTY) ?: [];
 
     $long = []; $short = [];

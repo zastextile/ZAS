@@ -30,7 +30,7 @@
    Including it costs nothing: the file declares functions and runs no query. */
 require_once __DIR__ . '/exportdocs.php';
 
-const EXP_SCHEMA_VERSION = '5';
+const EXP_SCHEMA_VERSION = '6';
 
 /* The money shape used everywhere in this module. Amounts are DECIMAL, never
    float — a float cannot hold 0.1 exactly, and a ledger that cannot add up
@@ -422,6 +422,42 @@ function exp_build_schema(): void {
         cycle_key VARCHAR(10) NOT NULL DEFAULT '',
         is_active TINYINT(1) NOT NULL DEFAULT 0,
         updated_at DATETIME NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    /* ------------------------------------------------- text search (3b)
+
+       One table for everything searchable: a shipment and its items, a
+       proforma, a costing, a payment note, a cost note, a logistics event, a
+       service provider, and the text read out of an uploaded document. One
+       table means one index and one query rather than seven searches
+       stitched together and sorted in PHP.
+
+       shipment_id is what makes a result safe to show — a row is only ever
+       returned to someone who can already open that shipment. rate_sensitive
+       marks the rows holding money, so a search box cannot read out a cost
+       note to a user whose Costs tab is shut.
+
+       The FULLTEXT index is the point of the table. It does not cover words
+       shorter than three letters, which is a server setting that cannot be
+       changed on shared hosting, so TT, LC, DP and BL are matched directly
+       instead — see txt_search() in includes/textindex.php. */
+    $x("CREATE TABLE IF NOT EXISTS exp_text_index (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        source VARCHAR(20) NOT NULL,
+        source_id INT NOT NULL,
+        shipment_id INT NULL,
+        rate_sensitive TINYINT(1) NOT NULL DEFAULT 0,
+        title VARCHAR(255) NOT NULL DEFAULT '',
+        subtitle VARCHAR(255) NULL,
+        body MEDIUMTEXT NULL,
+        extract_status VARCHAR(20) NULL,
+        extract_note VARCHAR(255) NULL,
+        chars INT NOT NULL DEFAULT 0,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uniq_src (source, source_id),
+        INDEX idx_ship (shipment_id),
+        INDEX idx_src (source),
+        FULLTEXT KEY ft_body (title, subtitle, body)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     /* ------------------------------------- columns on tables that already

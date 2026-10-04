@@ -288,8 +288,12 @@ head('The Numbering screen');
 $set = file_get_contents($B . 'exp_settings.php');
 $setN = nocomments($set);
 t('numbering is a tab',                       str_contains($setN, "'numbering'"));
-t('the tab is in the allowed list, so the URL cannot be forced elsewhere',
-  str_contains($setN, "['lists', 'banks', 'numbering', 'storage']"));
+/* Written against the intent rather than the exact literal: pinning the
+   whole array means this breaks every time a tab is added, which is a test
+   failing for being out of date rather than for finding anything. What
+   matters is that the tab is validated against a fixed list at all. */
+t('the tab is validated against a fixed list, so the URL cannot be forced elsewhere',
+  preg_match('~in_array\(\$tab,\s*\[[^\]]*\'numbering\'[^\]]*\],\s*true\)~', $setN) === 1);
 t('the form posts through the CSRF check',    str_contains($set, 'save_numbering'));
 t('a format with no counter is rejected, or every document would share a number',
   str_contains($setN, "strpos(\$pattern, '{SEQ}') === false") || str_contains($setN, "strpos(\$pattern, '{SEQ') === false"));

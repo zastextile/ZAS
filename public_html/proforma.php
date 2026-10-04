@@ -186,6 +186,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'creat
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
     verify_csrf();
     $pfid=(int)$_POST['id'];
+
+    /* Re-index for text search after the response has gone. Registered once
+       rather than at each of this block's exits, and it swallows its own
+       errors, so it can neither slow a save nor break one. */
+    require_once __DIR__ . '/includes/textindex.php';
+    if ($pfid > 0) register_shutdown_function(function () use ($pfid) { txt_index_proforma($pfid); });
     $prodEnabled = isset($_POST['production_enabled']) ? 1 : 0;
     $showPfooter = isset($_POST['show_pfooter']) ? 1 : 0;
     // bank1_details/bank2_details (the old free-text box) are deliberately

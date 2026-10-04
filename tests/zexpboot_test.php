@@ -49,6 +49,13 @@ file_put_contents($work . '/exp_numbering_tab.php',
     "<?php \$_GET['tab'] = 'numbering'; include __DIR__ . '/exp_settings.php';\n");
 $PAGES['exp_numbering_tab.php'] = 'numbering';
 
+/* The Text Search tab, same trick. It must render when the index is empty —
+   which, with a stubbed database, is exactly the state it is in here, and is
+   also the state it will be in on the server before the first build. */
+file_put_contents($work . '/exp_text_tab.php',
+    "<?php \$_GET['tab'] = 'search'; include __DIR__ . '/exp_settings.php';\n");
+$PAGES['exp_text_tab.php'] = 'textsearch';
+
 /* The real libraries, so the page is wired to what it is actually wired to. */
 copy($B . 'includes/export.php',  $work . '/includes/export.php');
 copy($B . 'includes/storage.php', $work . '/includes/storage.php');
@@ -56,6 +63,11 @@ copy($B . 'includes/storage.php', $work . '/includes/storage.php');
    it present — which is exactly how this harness noticed the new coupling. */
 copy($B . 'includes/exportdocs.php', $work . '/includes/exportdocs.php');
 copy($B . 'includes/qrouter.php',    $work . '/includes/qrouter.php');
+/* Phase 3b. search.php, the four shipment tabs and exp_settings.php all pull
+   these in now — another coupling this harness found rather than the live
+   server finding it. */
+copy($B . 'includes/textindex.php',  $work . '/includes/textindex.php');
+copy($B . 'includes/doctext.php',    $work . '/includes/doctext.php');
 foreach (['lov.js', 'grid.js'] as $j) if (is_file($B . 'assets/js/' . $j)) copy($B . 'assets/js/' . $j, $work . '/assets/js/' . $j);
 foreach (['lov.css', 'zskin.css'] as $c) if (is_file($B . 'assets/css/' . $c)) copy($B . 'assets/css/' . $c, $work . '/assets/css/' . $c);
 

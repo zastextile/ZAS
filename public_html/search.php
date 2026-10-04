@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/ai_costing.php';
 require_once __DIR__ . '/includes/proforma_embed.php';
 require_once __DIR__ . '/includes/export.php';
 require_once __DIR__ . '/includes/qrouter.php';
+require_once __DIR__ . '/includes/textindex.php';
 require_login();
 
 if (is_staff() || is_production_staff()) {
@@ -17,6 +18,10 @@ $mode = $_GET['mode'] ?? $_POST['mode'] ?? 'costing';
 if (!in_array($mode, ['costing', 'proforma', 'shipment'], true)) $mode = 'costing';
 $q = trim($_GET['q'] ?? $_POST['q'] ?? '');
 $answer = '';
+/* Declared here, not only inside the "a question was asked" branch, because
+   the render below reads them on every page load including the empty one. */
+$textHits = [];
+$textWhy  = '';
 $matches = [];
 $costingMatches = [];
 $proformaMatches = [];
@@ -142,6 +147,41 @@ if ($q !== '') {
         }
     }
 
+    /* ------------------------------------------------- the text fallback
+
+       THIS IS WHERE THE DEAD END USED TO BE.
+
+       Before, a question the router could not turn into filters produced the
+       chip "not understood" and nothing else, and a question that parsed but
+       matched no rows produced "nothing matched those filters". Both are
+       honest and both leave you with no answer.
+
+       Now the same words are looked for in the text itself — every note,
+       remark, address and term typed into the system, and the text read out
+       of uploaded documents. It costs nothing: one indexed query, no OpenAI.
+
+       It runs in two cases, and says which:
+         - nothing parsed as a filter at all, or
+         - the filters parsed but found no records.
+       It never overrides a result. If the filters found rows, you get the
+       rows. */
+    $rowsSoFar = $mode === 'costing' ? count($costingMatches)
+               : ($mode === 'proforma' ? count($proformaMatches) : count($matches));
+
+    if ($rowsSoFar === 0) {
+        $look = $describing && $parsed['leftover'] !== '' ? $parsed['leftover'] : $q;
+        $res  = txt_search($look);
+        $textHits = $res['rows'];
+        if ($textHits) {
+            $route   = 'text';
+            $textWhy = $describing
+                ? 'Those words are not a filter, so they were looked for in your text instead.'
+                : 'No record matched those filters, so the words were looked for in your text.';
+        } elseif ($res['note'] !== '') {
+            $textWhy = $res['note'];
+        }
+    }
+
     /* ----------------------------------------------- the two paid routes
 
        Neither runs unless a button was pressed AND the monthly cap has room.
@@ -238,18 +278,28 @@ if ($q !== '') {
     }
 
     if ($answer === '') {
-        if ($describing) {
-            $answer = 'No filter was recognised in that, so nothing was looked up — and nothing was spent. '
-                    . 'If "' . $parsed['leftover'] . '" is a description rather than a code, '
+        if ($textHits) {
+            $n = count($textHits);
+            $answer = 'Found ' . $n . ' place' . ($n === 1 ? '' : 's') . ' where those words are written. '
+                    . $textWhy . ' No AI was used.';
+        } elseif ($describing) {
+            $answer = 'No filter was recognised in that, and those words are not written anywhere in your '
+                    . 'records or documents either — so nothing was spent. '
+                    . ($textWhy !== '' ? $textWhy . ' ' : '')
+                    . 'If "' . $parsed['leftover'] . '" is a description rather than something written down, '
                     . 'Search by meaning is the button for it.';
         } else {
             $answer = $rowCount
                 ? 'Found ' . $rowCount . ' record' . ($rowCount === 1 ? '' : 's') . ' from the database. No AI was used.'
-                : 'Nothing matched those filters.';
+                : 'Nothing matched those filters, and those words are not written anywhere in your records '
+                  . 'or documents either.';
         }
     }
 
-    qr_log($mode, $q, $parsed, $rowCount, $route, $spent, (int)round((microtime(true) - $t0) * 1000));
+    /* The log counts what was actually returned. A text result is a result;
+       recording it as nought found would make the router look blinder than
+       it is, and this log is what decides which patterns get built next. */
+    qr_log($mode, $q, $parsed, $rowCount ?: count($textHits), $route, $spent, (int)round((microtime(true) - $t0) * 1000));
     $budget = qr_budget();
 }
 
@@ -409,6 +459,41 @@ flash();
         <div style="margin-top:11px;padding:9px 12px;border-radius:10px;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.3);font-size:12px;color:#9a5a06"><?= e($paidNote) ?></div>
       <?php endif; ?>
     </div>
+
+    <?php if($textHits): ?>
+    <div style="color:#8a97ab;font-size:12px;margin:20px 4px 10px;text-transform:uppercase;letter-spacing:.06em">
+      Found in your text · <?= count($textHits) ?> place<?= count($textHits)===1?'':'s' ?>
+    </div>
+    <div style="border-radius:16px;background:#fff;border:1px solid #e3e9f2;overflow:hidden">
+      <?php foreach($textHits as $h): $link = txt_link($h); ?>
+        <a href="<?= e($link) ?>" style="display:block;padding:13px 16px;border-top:1px solid #f6f8fc;text-decoration:none;color:inherit"
+           onmouseover="this.style.background='#f6f8fc'" onmouseout="this.style.background='transparent'">
+          <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:4px">
+            <span style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#6d5bd0;background:rgba(109,91,208,.12);padding:3px 8px;border-radius:10px"><?= e(TXT_SOURCES[$h['source']] ?? $h['source']) ?></span>
+            <span style="font-weight:700;color:#0ea8c9"><?= e($h['title']) ?></span>
+            <?php if(trim((string)$h['subtitle']) !== ''): ?>
+              <span style="color:#8a97ab;font-size:12px"><?= e($h['subtitle']) ?></span>
+            <?php endif; ?>
+            <?php if(($h['extract_status'] ?? '') !== '' && $h['extract_status'] !== 'ok'): ?>
+              <span style="font-size:10.5px;color:#9a5a06;background:rgba(217,119,6,.12);padding:3px 8px;border-radius:10px"><?= e(DOCTEXT_STATUS[$h['extract_status']] ?? $h['extract_status']) ?></span>
+            <?php endif; ?>
+          </div>
+          <div style="font-size:12.5px;line-height:1.65;color:#5a6b82">
+            <?php /* The snippet arrives as pieces, never as markup. A document's
+                     own contents must not be able to put tags on this page. */
+                  foreach($h['snippet'] as [$piece, $isHit]):
+                    if ($isHit): ?><mark style="background:rgba(14,168,201,.22);color:#0b2a4a;font-weight:700;padding:0 2px;border-radius:3px"><?= e($piece) ?></mark><?php
+                    else: ?><?= e($piece) ?><?php endif;
+                  endforeach; ?>
+          </div>
+        </a>
+      <?php endforeach; ?>
+    </div>
+    <div style="font-size:11.5px;color:#8a97ab;margin:9px 4px 0">
+      Searched every note, address, term and document text you can see. Scanned documents hold no
+      text to search — they are listed on the Documents tab with the reason.
+    </div>
+    <?php endif; ?>
 
     <?php if($mode==='costing' && $costingMatches): ?>
     <div style="color:#8a97ab;font-size:12px;margin:20px 4px 10px;text-transform:uppercase;letter-spacing:.06em">Costing Matches · <?= count($costingMatches) ?> found</div>

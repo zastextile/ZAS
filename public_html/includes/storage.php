@@ -311,6 +311,44 @@ function exp_send_document(array $doc): void {
     exit;
 }
 
+/* ---------------------------------------------- the bytes, for the server
+
+   exp_send_document() sends a file to a browser. This hands the same bytes
+   back to PHP instead, which is what the text indexer needs: it has to read
+   inside a document without anybody downloading it.
+
+   Null, never an exception, when the file cannot be had — a document missing
+   from storage must leave the index poorer, not stop a rebuild halfway
+   through every other document.
+
+   $maxBytes refuses a file larger than the caller can use. For R2 that is
+   checked after the fetch, which is unavoidable with a plain GET; for local
+   disk it is checked before anything is read. */
+function exp_document_bytes(array $doc, int $maxBytes = 20971520): ?string
+{
+    $driver = (string)($doc['storage_driver'] ?? 'local');
+    $key    = (string)($doc['storage_key'] ?? '');
+    if ($key === '') return null;
+
+    if ($driver === 'r2') {
+        if (!exp_r2_configured()) return null;
+        [$ok, , $body] = exp_r2_fetch($key);
+        if (!$ok) return null;
+        return strlen((string)$body) > $maxBytes ? null : (string)$body;
+    }
+
+    global $config;
+    $dir  = rtrim((string)($config['upload_dir'] ?? (__DIR__ . '/../storage/uploads')), '/');
+    /* basename() for the same reason exp_send_document() uses it: the key is
+       stored data, and a key carrying ../ must not reach outside the folder. */
+    $path = $dir . '/' . basename($key);
+    if (!is_file($path) || !is_readable($path)) return null;
+    $size = (int)@filesize($path);
+    if ($size <= 0 || $size > $maxBytes) return null;
+    $b = @file_get_contents($path);
+    return $b === false ? null : $b;
+}
+
 /* ------------------------------------------------------- the connection test
 
    Admin presses a button, this writes a tiny object, reads it back, compares

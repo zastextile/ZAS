@@ -18,6 +18,16 @@ $stmt = db()->prepare("SELECT * FROM shipments WHERE id=?");
 $stmt->execute([$id]);
 $shipment = $stmt->fetch();
 
+/* KEEPING THE SEARCH INDEX CURRENT.
+ *
+ * This file redirects from several places and every one of them is a
+ * finished save, so the re-index is registered once rather than repeated at
+ * each exit. A shutdown function runs after the response, so it cannot slow
+ * the save; txt_index_shipment() swallows its own errors, so it cannot
+ * break one. */
+require_once __DIR__ . '/includes/textindex.php';
+if ($id > 0) register_shutdown_function(function () use ($id) { txt_index_shipment($id); });
+
 if (!$shipment || !can_view_shipment($id)) {
     http_response_code(404);
     exit('Shipment not found.');

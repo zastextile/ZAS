@@ -13,6 +13,7 @@
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
 require_once __DIR__ . '/includes/storage.php';
+require_once __DIR__ . '/includes/textindex.php';
 require_admin();
 exp_ensure_schema();
 
@@ -30,7 +31,7 @@ const EXP_KINDS = [
 $kind = (string)($_GET['kind'] ?? 'port_loading');
 if (!isset(EXP_KINDS[$kind])) $kind = 'port_loading';
 $tab  = (string)($_GET['tab'] ?? 'lists');
-if (!in_array($tab, ['lists', 'banks', 'numbering', 'storage'], true)) $tab = 'lists';
+if (!in_array($tab, ['lists', 'banks', 'numbering', 'search', 'storage'], true)) $tab = 'lists';
 
 /* ------------------------------------------------------------------ writes */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -167,6 +168,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* ------------------------------------------------- the text index rebuild
+
+   Done in slices, each its own request, because reading every stored
+   document means a fetch per file and that cannot finish inside one page
+   load. A rebuild that times out halfway and says nothing is worse than no
+   rebuild at all, so each slice reports where it got to and the page sends
+   itself on to the next one. */
+$rebuild = null;
+if ($tab === 'search' && isset($_GET['step'])) {
+    $step  = (string)$_GET['step'];
+    $after = (int)($_GET['after'] ?? 0);
+    $valid = array_column(TXT_STEPS, 0);
+    if (in_array($step, $valid, true)) {
+        $r = txt_rebuild_step($step, $after);
+        $i = array_search($step, $valid, true);
+        $next = $r['more'] ? ['step' => $step, 'after' => $r['last']]
+              : (isset($valid[$i + 1]) ? ['step' => $valid[$i + 1], 'after' => 0] : null);
+        $rebuild = ['step' => $step, 'done' => $r['done'], 'error' => $r['error'], 'next' => $next];
+    }
+}
+
 /* R2 self-test runs on GET so nothing is written to the database by it. */
 $r2test = null;
 if ($tab === 'storage' && isset($_GET['run_test'])) $r2test = exp_r2_selftest();
@@ -204,6 +226,7 @@ echo exp_page_css();
   <a class="ktab <?= $tab === 'lists' ? 'on' : '' ?>" href="exp_settings.php?tab=lists&kind=<?= e($kind) ?>">Lists</a>
   <a class="ktab <?= $tab === 'banks' ? 'on' : '' ?>" href="exp_settings.php?tab=banks">Our Banks</a>
   <a class="ktab <?= $tab === 'numbering' ? 'on' : '' ?>" href="exp_settings.php?tab=numbering">Numbering</a>
+  <a class="ktab <?= $tab === 'search' ? 'on' : '' ?>" href="exp_settings.php?tab=search">Text Search</a>
   <a class="ktab <?= $tab === 'storage' ? 'on' : '' ?>" href="exp_settings.php?tab=storage">Document Storage</a>
 </div>
 
@@ -495,6 +518,113 @@ echo exp_page_css();
   });
 })();
 </script>
+
+<?php elseif ($tab === 'search'): $ts = txt_stats(); ?>
+
+<div class="xcard">
+  <h2>Text Search</h2>
+  <div class="xnote">
+    When your search words are not a filter the system recognises, they are looked for in the text
+    instead — every note, address, remark and term typed anywhere, and the words inside uploaded
+    documents. It costs nothing: one indexed query, no AI.
+    <div style="margin-top:8px">
+      Records are re-indexed as they are saved. <b>Costings are the exception</b> — they update when
+      you rebuild below, not the moment you save one, because indexing them would mean changing the
+      costing screens and those are left alone.
+    </div>
+  </div>
+
+  <?php if ((int)$ts['total'] === 0): ?>
+    <div class="xwarn" style="margin-top:12px">
+      <b>The index is empty, so text search will find nothing yet.</b>
+      Press Build below. It is safe to run at any time and safe to run again.
+    </div>
+  <?php else: ?>
+    <div class="xnote" style="margin-top:12px;border-color:rgba(22,163,74,.3);background:rgba(22,163,74,.08)">
+      <b><?= number_format((int)$ts['total']) ?> things indexed.</b>
+      <?php if ($ts['built']): ?>Last updated <?= e(date('d M Y H:i', strtotime((string)$ts['built']))) ?>.<?php endif; ?>
+    </div>
+  <?php endif; ?>
+
+  <?php if ($ts['by_source']): ?>
+  <div class="xwrap" style="margin-top:14px">
+    <table class="xtable">
+      <thead><tr><th>What</th><th style="width:110px;text-align:right">Indexed</th></tr></thead>
+      <tbody>
+      <?php foreach (TXT_SOURCES as $k => $label): if (empty($ts['by_source'][$k])) continue; ?>
+        <tr><td><?= e($label) ?></td><td class="num" style="text-align:right"><?= number_format((int)$ts['by_source'][$k]) ?></td></tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+  <?php endif; ?>
+
+  <?php if ((int)$ts['docs_ok'] + (int)$ts['docs_no_text'] > 0): ?>
+    <?php $tot = (int)$ts['docs_ok'] + (int)$ts['docs_no_text']; $pct = round($ts['docs_ok'] / $tot * 100); ?>
+    <div class="<?= $pct >= 50 ? 'xnote' : 'xwarn' ?>" style="margin-top:14px">
+      <b><?= (int)$ts['docs_ok'] ?> of <?= $tot ?> documents (<?= $pct ?>%) gave up readable text.</b>
+      The other <?= (int)$ts['docs_no_text'] ?> did not, and each one says why on its shipment's
+      Documents tab. The usual reason is that the file is a scan: a photograph of a page holds no
+      text at all, and nothing short of OCR can read it.
+    </div>
+  <?php endif; ?>
+
+  <div style="margin-top:16px;display:flex;gap:9px;align-items:center;flex-wrap:wrap">
+    <a class="xbtn" href="exp_settings.php?tab=search&step=<?= e(TXT_STEPS[0][0]) ?>&after=0">
+      <?= (int)$ts['total'] === 0 ? 'Build the index' : 'Rebuild the index' ?>
+    </a>
+    <span style="color:#8a97ab;font-size:12px">
+      Runs in slices so it cannot time out. Searching keeps working while it runs.
+    </span>
+  </div>
+
+  <?php if ($rebuild !== null): ?>
+    <?php
+      $labels = [];
+      foreach (TXT_STEPS as [$k, $lbl, ]) $labels[$k] = $lbl;
+    ?>
+    <div class="xnote" style="margin-top:14px">
+      <b><?= e($labels[$rebuild['step']] ?? $rebuild['step']) ?>:</b>
+      <?= (int)$rebuild['done'] ?> indexed in this pass.
+      <?php if ($rebuild['error'] !== ''): ?>
+        <span style="color:#b8283f"><?= e($rebuild['error']) ?></span>
+      <?php endif; ?>
+      <?php if ($rebuild['next'] !== null): ?>
+        <span id="rbNext">Continuing…</span>
+        <noscript>
+          <a class="xbtn sec sm" href="exp_settings.php?tab=search&step=<?= e($rebuild['next']['step']) ?>&after=<?= (int)$rebuild['next']['after'] ?>">Continue</a>
+        </noscript>
+      <?php else: ?>
+        <b style="color:#16a34a">Finished. Everything is indexed.</b>
+      <?php endif; ?>
+    </div>
+    <?php if ($rebuild['next'] !== null): ?>
+      <script>
+      /* One slice per page load, each one navigating to the next. A meta
+         refresh would do the same; this way the link is still there with
+         scripting off, which the noscript block above provides. */
+      setTimeout(function () {
+        location.href = 'exp_settings.php?tab=search&step=<?= e($rebuild['next']['step']) ?>&after=<?= (int)$rebuild['next']['after'] ?>';
+      }, 350);
+      </script>
+    <?php endif; ?>
+  <?php endif; ?>
+</div>
+
+<div class="xcard">
+  <div class="xnote">
+    <b>What cannot be searched, and why.</b>
+    <div style="margin-top:7px">A <b>scanned PDF or a photo</b> is an image. It contains no text
+    whatsoever, so there is nothing to index. Only OCR could read it, and OCR needs either software
+    installed on this server or a paid service.</div>
+    <div style="margin-top:5px">The old <b>.doc and .xls</b> formats need a library to read.
+    Saving one as .docx or .xlsx makes it searchable immediately.</div>
+    <div style="margin-top:5px">Words of <b>one or two letters</b> — TT, LC, DP, BL — are invisible
+    to MySQL's own text index, and that limit is a server setting this host does not let us change.
+    They are matched directly instead, so they do work; they are just handled by a different half
+    of the same query.</div>
+  </div>
+</div>
 
 <?php else: /* storage */ ?>
 

@@ -21,6 +21,7 @@
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
+require_once __DIR__ . '/includes/textindex.php';
 
 $shipment = exp_open_shipment('payments');
 $id       = (int)$shipment['id'];
@@ -35,6 +36,16 @@ if (!can_see_rates()) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
+    /* KEEPING THE SEARCH INDEX CURRENT.
+     *
+     * Registered once, here, rather than bolted onto each of this page's
+     * redirects — there are several and a new one would quietly skip the
+     * index. A shutdown function runs after the response has gone, so this
+     * cannot slow the save down, and every txt_* call swallows its own
+     * errors, so it cannot break one either. Re-indexing an unchanged
+     * record is harmless: the write is an upsert keyed on the record. */
+    register_shutdown_function(function () use ($id) { txt_index_shipment_notes((int)$id); });
+
     $action = (string)($_POST['action'] ?? '');
 
     try {

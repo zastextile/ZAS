@@ -12,6 +12,7 @@
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
+require_once __DIR__ . '/includes/textindex.php';
 require_once __DIR__ . '/includes/storage.php';
 
 $shipment = exp_open_shipment('documents');
@@ -24,6 +25,17 @@ const EXP_DOC_EXT = ['pdf','xlsx','xls','csv','doc','docx','jpg','jpeg','png','w
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
+    /* KEEPING THE SEARCH INDEX CURRENT.
+     *
+     * Registered once, here, rather than bolted onto each of this page's
+     * redirects — there are several and a new one would quietly skip the
+     * index. A shutdown function runs after the response has gone, so this
+     * cannot slow the save down, and every txt_* call swallows its own
+     * errors, so it cannot break one either. Re-indexing an unchanged
+     * record is harmless: the write is an upsert keyed on the record. */
+    register_shutdown_function(function () use ($id) { txt_index_shipment_notes((int)$id);
+        foreach (exp_documents((int)$id, true) as $d) txt_index_document((int)$d['id']); });
+
     $action = (string)($_POST['action'] ?? '');
 
     try {
@@ -179,6 +191,10 @@ foreach ($docs as $d) {
     $groups[$k][] = $d;
 }
 
+/* What the text extractor made of each of these files, read in one query
+   rather than one per row. */
+$textStatus = txt_document_status(array_map(fn($d) => (int)$d['id'], $docs));
+
 $canUpload  = exp_can('documents', 'c');
 $canArchive = exp_can('documents', 'd');
 
@@ -263,6 +279,25 @@ exp_tab_strip($shipment, 'docs');
           <?= $d['uploaded_at'] ? ' &middot; ' . e(date('d M Y H:i', strtotime((string)$d['uploaded_at']))) : '' ?>
           &middot; <?= strtoupper(e((string)$d['storage_driver'])) ?>
           <?php if ($d['notes']): ?><br><?= e($d['notes']) ?><?php endif; ?>
+
+          <?php /* WHETHER THIS FILE IS SEARCHABLE, AND IF NOT, WHY.
+                   A scan holds no text. Saying so here is the difference
+                   between "the search is broken" and "there was never
+                   anything in that file to find". */
+                $xs = $textStatus[(int)$d['id']] ?? null;
+                if ($xs !== null):
+                  $st = (string)$xs['extract_status']; ?>
+            <br><?php if ($st === 'ok'): ?>
+              <span class="xpill g">Searchable</span>
+              <span style="color:#8a97ab"><?= number_format((int)$xs['chars']) ?> characters read</span>
+            <?php else: ?>
+              <span class="xpill o"><?= e(DOCTEXT_STATUS[$st] ?? $st) ?></span>
+              <?php if (trim((string)$xs['extract_note']) !== ''): ?>
+                <span style="color:#8a97ab"><?= e($xs['extract_note']) ?></span>
+              <?php endif; ?>
+            <?php endif;
+                endif; ?>
+
           <?php if ((int)$d['is_archived'] === 1 && $d['archive_reason']): ?>
             <br><span style="color:#b8283f">Archived: <?= e($d['archive_reason']) ?></span>
           <?php endif; ?>
