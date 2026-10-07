@@ -37,6 +37,7 @@ $PAGES = [
     'shipment_customs.php'   => 'customs',
     'customs_print.php'      => 'customsprint',
     'search.php'             => 'search',
+    'dashboard.php'          => 'dashboard',
 ];
 foreach (array_keys($PAGES) as $p) copy($B . $p, $work . '/' . $p);
 
@@ -68,6 +69,8 @@ copy($B . 'includes/qrouter.php',    $work . '/includes/qrouter.php');
    server finding it. */
 copy($B . 'includes/textindex.php',  $work . '/includes/textindex.php');
 copy($B . 'includes/doctext.php',    $work . '/includes/doctext.php');
+/* The dashboard's proforma contracts panel. */
+copy($B . 'includes/pfcontracts.php', $work . '/includes/pfcontracts.php');
 foreach (['lov.js', 'grid.js'] as $j) if (is_file($B . 'assets/js/' . $j)) copy($B . 'assets/js/' . $j, $work . '/assets/js/' . $j);
 foreach (['lov.css', 'zskin.css'] as $c) if (is_file($B . 'assets/css/' . $c)) copy($B . 'assets/css/' . $c, $work . '/assets/css/' . $c);
 
@@ -107,6 +110,14 @@ function short_ref($r){ return (string)$r; }
 function status_badge($s){ return '<span class="xpill b">' . e($s) . '</span>'; }
 function post_array($k){ return isset($_POST[$k]) && is_array($_POST[$k]) ? $_POST[$k] : []; }
 function fx_get_rates(){ return ['PKR' => 1.0, 'USD' => 0.00359, 'EUR' => 0.0033, 'GBP' => 0.0028]; }
+/* The dashboard reads several figures through the Redis cache helper. With
+   no Redis here it must behave as a permanent miss, which is what the real
+   one does when Redis is unreachable. */
+function cache_remember($k, $ttl, $fn){ return $fn(); }
+function cache_get($k){ return null; }
+function cache_set($k, $v, $ttl = 30){}
+function cache_bump($t){}
+function cache_version($t){ return 1; }
 function fx_last_synced_at(){ return null; }
 function costing_perm($a){ return true; }
 function create_embedding($t){ throw new Exception('create_embedding must not be called without a button'); }
@@ -155,6 +166,58 @@ $GLOBALS['BDB'] = new BDb();
 function db(){ return $GLOBALS['BDB']; }
 
 $GLOBALS['BDB']->A = [
+  /* The dashboard's own queries. Each aliases its columns, so the stub has
+     to answer in that exact shape — an unmatched query handed back a row of
+     the wrong shape and the page warned on every missing key, which is a
+     fault in this harness and not in the page.
+
+     MOST SPECIFIC FIRST: m() returns the first needle that matches, and all
+     three of these contain "PKR')) cur". */
+  "GROUP BY d, cur" => [
+    ['d'=>'2026-09-02','cur'=>'USD','sales'=>18000.00,'costed_sales'=>18000.00,'cost'=>13100.00],
+    ['d'=>'2026-09-18','cur'=>'USD','sales'=>24000.00,'costed_sales'=>24000.00,'cost'=>17900.00],
+    ['d'=>'2026-09-25','cur'=>'PKR','sales'=>1250000.00,'costed_sales'=>900000.00,'cost'=>640000.00],
+  ],
+  "COUNT(*) n FROM shipments s" => [
+    ['status'=>'draft','n'=>3], ['status'=>'submitted','n'=>1], ['status'=>'approved_locked','n'=>9],
+  ],
+  "s.packing_status, s.reopen_status" => [
+    ['id'=>42,'invoice_no'=>'ZAS/5192','buyer_name'=>'Gulf Textiles LLC',
+     'status'=>'draft','packing_status'=>'open','reopen_status'=>null],
+  ],
+  "s.buyer_name grp" => [
+    ['sid'=>41,'grp'=>'ABC Trading','status'=>'approved_locked','cur'=>'USD','amt'=>42000.00,'cost_amt'=>31000.00],
+    ['sid'=>42,'grp'=>'Gulf Textiles LLC','status'=>'draft','cur'=>'PKR','amt'=>1250000.00,'cost_amt'=>640000.00],
+  ],
+  "s.id sid, s.invoice_no" => [
+    ['sid'=>42,'invoice_no'=>'ZAS/5192','buyer_name'=>'Gulf Textiles LLC','cur'=>'PKR',
+     'dt'=>'2026-08-30','product_name'=>'Cotton Yarn 30s','amt'=>1250000.00],
+  ],
+  "si.product_name grp" => [
+    ['grp'=>'Bath Towel','cur'=>'USD','amt'=>18000.00,'cost_amt'=>13100.00],
+    ['grp'=>'Hotel Flat Sheet 300TC','cur'=>'USD','amt'=>24000.00,'cost_amt'=>17900.00],
+    ['grp'=>'Cotton Yarn 30s','cur'=>'PKR','amt'=>1250000.00,'cost_amt'=>640000.00],
+  ],
+  "GROUP BY grp, cur" => [
+    ['grp'=>'ABC Trading','cur'=>'USD','v'=>42000.00,'cv'=>42000.00,'c'=>31000.00,'n'=>2],
+  ],
+  "PKR')) cur," => [
+    ['cur'=>'USD','v'=>42000.00,'cv'=>42000.00,'c'=>31000.00],
+    ['cur'=>'PKR','v'=>1250000.00,'cv'=>900000.00,'c'=>640000.00],
+  ],
+  /* Proforma contracts (dashboard panel). Two currencies and two spellings
+     of one product, so the conversion and the folding both get exercised. */
+  "FROM proforma_invoices" => [
+    ['id'=>1,'customer_name'=>'Gulf Textiles LLC','currency'=>'USD','status'=>'converted','d'=>'2026-09-02','own_total'=>37725.00],
+    ['id'=>2,'customer_name'=>'Home Comfort','currency'=>'GBP','status'=>'confirmed','d'=>'2026-09-11','own_total'=>25900.00],
+    ['id'=>3,'customer_name'=>'Decent Textile','currency'=>'PKR','status'=>'sent','d'=>'2026-09-28','own_total'=>1776000.00],
+  ],
+  "FROM proforma_items pi" => [
+    ['proforma_id'=>1,'product_name'=>'Bath Towel','unit'=>'Pc','qty'=>7500,'amount'=>29625.00],
+    ['proforma_id'=>1,'product_name'=>'bath towels','unit'=>'pcs','qty'=>2000,'amount'=>8100.00],
+    ['proforma_id'=>2,'product_name'=>'Duvet Cover Set','unit'=>'Set','qty'=>1400,'amount'=>25900.00],
+    ['proforma_id'=>3,'product_name'=>'Cotton Yarn 30s','unit'=>'Kg','qty'=>1200,'amount'=>1776000.00],
+  ],
   "FROM shipments WHERE id=" => [[
     'id' => 41, 'invoice_no' => 'ZAS/5191', 'invoice_date' => '2026-09-20',
     'buyer_name' => 'ABC Trading', 'buyer_address' => 'Antwerp', 'buyer_country' => 'Belgium',
@@ -571,6 +634,38 @@ if (!is_array($res) || isset($res['__harness'])) {
         $errs = $res[$slug]['errors'] ?? ['no result'];
         ok(count($errs) === 0, "$page threw in the browser: " . implode(' | ', $errs));
     }
+
+    head('2b. The proforma contracts panel drew real figures');
+
+    $dh = $html['dashboard'] ?? '';
+    ok(str_contains($dh, 'Proforma Contracts'), 'the panel is on the dashboard');
+    ok(str_contains($dh, 'Contract value by customer'), 'value by customer drew');
+    ok(str_contains($dh, 'Contract value by product'),  'value by product drew');
+    ok(str_contains($dh, 'Quantity by product'),        'quantity by product drew');
+
+    /* The stub gives USD 37,725 at 1/0.00359 and GBP 25,900 at 1/0.0028 and
+       PKR 1,776,000. exp_pkr_rate() rounds to 4dp, so the expectation is
+       computed the same way rather than typed in. */
+    /* fx_get_rates() is defined inside the stubbed bootstrap written into
+       the work directory, not in this process, so the rates are repeated
+       here — and the next assertion checks they have not drifted apart. */
+    $FX = ['PKR' => 1.0, 'USD' => 0.00359, 'EUR' => 0.0033, 'GBP' => 0.0028];
+    ok(str_contains($bootstrap, "'USD' => 0.00359") && str_contains($bootstrap, "'GBP' => 0.0028"),
+       'the rates in this assertion still match the ones the stub serves');
+    $r = fn($c) => round(1 / $FX[$c], 4);
+    $want = 37725 * $r('USD') + 25900 * $r('GBP') + 1776000;
+    ok(str_contains($dh, 'PKR ' . number_format($want, 0)),
+       'the headline total converts every currency: expected PKR ' . number_format($want, 0));
+
+    /* "Bath Towel" and "bath towels" are one product typed twice. */
+    ok(str_contains($dh, 'counts Bath Towel, bath towels')
+       || str_contains($dh, 'counts bath towels, Bath Towel'),
+       'the two spellings of Bath Towel merged and the page says so');
+    ok(substr_count($dh, '>Pc<') >= 1 && substr_count($dh, '>Set<') >= 1 && substr_count($dh, '>Kg<') >= 1,
+       'Pc, Set and Kg each got their own quantity heading');
+    ok(str_contains($dh, 'counted twice'), 'the double-counting warning is shown');
+    ok(!str_contains($dh, 'Left out of the total'),
+       'with every rate configured, no currency is reported as dropped');
 
     head('4a. The numbering preview agrees with the PHP that issues the number');
 

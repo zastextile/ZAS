@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
+require_once __DIR__ . '/includes/export.php';      /* exp_pkr_rate() */
+require_once __DIR__ . '/includes/pfcontracts.php';
 require_login();
 if (is_production_staff()) { redirect('production_my_work.php'); }
 
@@ -489,6 +491,15 @@ $marginLeaders = $marginRows;
 usort($marginLeaders, fn($a, $b) => $b['pct'] <=> $a['pct']);
 $marginLeaders = array_slice($marginLeaders, 0, 3);
 
+/* ------------------------------------------------- proforma contracts
+
+   Only for people who may see a proforma AND may see money. A panel of
+   contract values is a rate screen by another name, so it obeys the same
+   two gates the Proforma screen itself does rather than inventing a third.
+   Nothing below runs at all for anyone else. */
+$pfcShow = costing_perm('proforma') && can_see_rates();
+$pfc     = $pfcShow ? pfc_summary($curFrom, $curTo) : ['ok' => false];
+
 $cardCss = 'padding:20px;border-radius:18px;background:#ffffff;border:1px solid #e3e9f2;backdrop-filter:blur(12px)';
 
 page_header('Dashboard');
@@ -913,6 +924,177 @@ flash();
   <p style="color:#8a97ab;font-size:13px;padding:30px 0;text-align:center">Need at least 2 products with dated sales in this period to plot the matrix.</p>
   <?php endif; ?>
 </div>
+
+<!-- ============================ PROFORMA CONTRACTS ============================ -->
+<?php if ($pfcShow && $pfc['ok'] && $pfc['count'] > 0):
+  $pfcTotal = (float)$pfc['total_pkr'];
+  $pfcCust  = $pfc['customers'];
+  $pfcProd  = $pfc['products'];
+  $pfcBar   = function (string $name, float $v, float $max, string $label, string $sub = ''): string {
+      $w = $max > 0 ? max(1.5, $v / $max * 100) : 0;
+      return '<div class="pfc-bar"><div class="pfc-nm" title="' . e($name) . '">' . e($name) . '</div>'
+           . '<div class="pfc-tr"><div class="pfc-fl" style="width:' . number_format($w, 1, '.', '') . '%"></div></div>'
+           . '<div class="pfc-vl">' . e($label) . ($sub !== '' ? '<small>' . e($sub) . '</small>' : '') . '</div></div>';
+  };
+  $pfcCurCol = ['USD' => '#0ea8c9', 'EUR' => '#6d5bd0', 'GBP' => '#16a34a', 'PKR' => '#d97706'];
+?>
+<style>
+.pfc-bar{display:grid;grid-template-columns:minmax(92px,150px) 1fr auto;gap:10px;align-items:center;font-size:12.5px;margin-bottom:9px}
+.pfc-nm{font-weight:600;color:#152033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.pfc-tr{background:#e3e9f2;border-radius:5px;height:17px;overflow:hidden;min-width:0}
+.pfc-fl{height:100%;border-radius:5px;background:linear-gradient(90deg,#0ea8c9,#6d5bd0)}
+.pfc-vl{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap;font-size:12px;color:#152033}
+.pfc-vl small{display:block;font-weight:500;color:#8a97ab;font-size:10.5px;text-align:right}
+.pfc-unit{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:#8a97ab;font-weight:700;margin:10px 0 2px}
+.pfc-unit:first-child{margin-top:0}
+.pfc-split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:820px){.pfc-split{grid-template-columns:1fr}}
+.pfc-k{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px;margin-bottom:16px}
+.pfc-kc{padding:14px 16px;border-radius:14px;background:#fff;border:1px solid #e3e9f2}
+.pfc-kc .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:#8a97ab;font-weight:700}
+.pfc-kc .v{font-size:22px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums;letter-spacing:-.4px;color:#152033}
+.pfc-kc .n{font-size:11.5px;color:#5a6b82;margin-top:2px}
+.pfc-note{background:rgba(14,168,201,.07);border:1px solid rgba(14,168,201,.26);border-radius:10px;padding:11px 14px;font-size:12.5px;color:#5a6b82;margin-top:14px}
+.pfc-note b{color:#152033}
+</style>
+
+<div style="margin:26px 0 10px">
+  <h2 style="font-size:15px;margin:0 0 2px">Proforma Contracts</h2>
+  <p style="color:#8a97ab;font-size:11.5px;margin:0">
+    Sent, confirmed and converted proformas in <?= e($periodLabel) ?> · converted at today's rate<?php
+      $rbits = [];
+      foreach ($pfc['rates'] as $c => $r) { if ($c !== 'PKR' && $r > 0) $rbits[] = $c . ' ' . number_format($r, 2); }
+      echo $rbits ? ' — ' . e(implode(' · ', $rbits)) : '';
+    ?>
+  </p>
+</div>
+
+<div class="pfc-k">
+  <div class="pfc-kc"><div class="k">Contracted value</div><div class="v">PKR <?= number_format($pfcTotal, 0) ?></div><div class="n"><?= (int)$pfc['count'] ?> proforma<?= $pfc['count'] === 1 ? '' : 's' ?></div></div>
+  <div class="pfc-kc"><div class="k">Customers</div><div class="v"><?= count($pfcCust) ?></div><div class="n">with a contract</div></div>
+  <div class="pfc-kc"><div class="k">Products</div><div class="v"><?= count($pfcProd) ?></div><div class="n">across all contracts</div></div>
+  <div class="pfc-kc"><div class="k">Average contract</div><div class="v">PKR <?= number_format($pfc['count'] ? $pfcTotal / $pfc['count'] : 0, 0) ?></div><div class="n">per proforma</div></div>
+</div>
+
+<div class="dash-card" style="<?= $cardCss ?>;padding:22px;margin-bottom:16px">
+  <h2 style="font-size:15px;margin:0 0 4px">Contract value by customer</h2>
+  <p style="color:#8a97ab;font-size:11.5px;margin:0 0 16px">PKR — original currency underneath</p>
+  <?php $cmax = $pfcCust ? (float)$pfcCust[0]['pkr'] : 0; ?>
+  <?php foreach ($pfcCust as $c): ?>
+    <?= $pfcBar((string)$c['name'], (float)$c['pkr'], $cmax, 'PKR ' . number_format($c['pkr'], 0),
+          ($c['mixed'] ? 'mixed currency' : $c['cur'] . ' ' . number_format($c['own'], 2)) . ' · ' . (int)$c['n'] . ' PI') ?>
+  <?php endforeach; ?>
+</div>
+
+<div class="pfc-split" style="margin-bottom:16px">
+  <div class="dash-card" style="<?= $cardCss ?>;padding:22px">
+    <h2 style="font-size:15px;margin:0 0 4px">Contract value by product</h2>
+    <p style="color:#8a97ab;font-size:11.5px;margin:0 0 16px">PKR</p>
+    <?php $pmax = $pfcProd ? (float)$pfcProd[0]['pkr'] : 0; ?>
+    <?php foreach ($pfcProd as $p): ?>
+      <?= $pfcBar((string)$p['label'], (float)$p['pkr'], $pmax, 'PKR ' . number_format($p['pkr'], 0),
+            ($pfcTotal > 0 ? number_format($p['pkr'] / $pfcTotal * 100, 1) . '%' : '')) ?>
+      <?php if (!empty($p['merged'])): ?>
+        <div style="font-size:10.5px;color:#8a97ab;margin:-5px 0 9px 0">counts <?= e(implode(', ', array_slice($p['merged'], 0, 4))) ?></div>
+      <?php endif; ?>
+    <?php endforeach; ?>
+  </div>
+
+  <div class="dash-card" style="<?= $cardCss ?>;padding:22px">
+    <h2 style="font-size:15px;margin:0 0 4px">Quantity by product</h2>
+    <p style="color:#8a97ab;font-size:11.5px;margin:0 0 16px">Each unit on its own</p>
+    <?php foreach ($pfc['qty'] as $unit => $rows):
+      $qmax = $rows ? (float)$rows[0]['qty'] : 0; ?>
+      <div class="pfc-unit"><?= e($unit) ?></div>
+      <?php foreach ($rows as $r): ?>
+        <?= $pfcBar((string)$r['label'], (float)$r['qty'], $qmax, number_format($r['qty'], 0)) ?>
+      <?php endforeach; ?>
+    <?php endforeach; ?>
+  </div>
+</div>
+
+<div class="pfc-split" style="margin-bottom:16px">
+  <div class="dash-card" style="<?= $cardCss ?>;padding:22px">
+    <h2 style="font-size:15px;margin:0 0 4px">Currency mix</h2>
+    <p style="color:#8a97ab;font-size:11.5px;margin:0 0 16px">Share of contracted value</p>
+    <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+      <?php
+        $C = 2 * M_PI * 58; $off = 0; $segs = '';
+        foreach ($pfc['currencies'] as $cur => $v) {
+            $frac = $pfcTotal > 0 ? $v / $pfcTotal : 0;
+            $col  = $pfcCurCol[$cur] ?? '#8a97ab';
+            $segs .= '<circle cx="75" cy="75" r="58" fill="none" stroke="' . $col . '" stroke-width="20"'
+                   . ' stroke-dasharray="' . number_format($frac * $C, 2, '.', '') . ' ' . number_format($C, 2, '.', '') . '"'
+                   . ' stroke-dashoffset="' . number_format(-$off * $C, 2, '.', '') . '"></circle>';
+            $off += $frac;
+        }
+      ?>
+      <svg width="150" height="150" viewBox="0 0 150 150" role="img" aria-label="Share of contracted value by currency">
+        <g transform="rotate(-90 75 75)"><circle cx="75" cy="75" r="58" fill="none" stroke="#eef1f6" stroke-width="20"></circle><?= $segs ?></g>
+      </svg>
+      <div style="font-size:12.5px;display:flex;flex-direction:column;gap:7px">
+        <?php foreach ($pfc['currencies'] as $cur => $v): ?>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="width:11px;height:11px;border-radius:3px;background:<?= e($pfcCurCol[$cur] ?? '#8a97ab') ?>;display:inline-block"></span>
+            <b style="min-width:34px"><?= e($cur) ?></b>
+            <span style="color:#5a6b82">PKR <?= number_format($v, 0) ?></span>
+            <span style="color:#8a97ab"><?= $pfcTotal > 0 ? number_format($v / $pfcTotal * 100, 1) : '0' ?>%</span>
+          </div>
+        <?php endforeach; ?>
+      </div>
+    </div>
+  </div>
+
+  <div class="dash-card" style="<?= $cardCss ?>;padding:22px">
+    <h2 style="font-size:15px;margin:0 0 4px">Customer detail</h2>
+    <p style="color:#8a97ab;font-size:11.5px;margin:0 0 16px">The same figures as a list</p>
+    <div class="scrollx">
+      <table class="ctbl">
+        <thead><tr><th>Customer</th><th>Cur</th><th class="num">PI</th><th class="num">Value (PKR)</th><th class="num">Share</th></tr></thead>
+        <tbody>
+        <?php foreach ($pfcCust as $c): ?>
+          <tr>
+            <td style="font-weight:600"><?= e($c['name']) ?></td>
+            <td><?= $c['mixed'] ? '<span style="color:#8a97ab">mixed</span>' : e($c['cur']) ?></td>
+            <td class="num"><?= (int)$c['n'] ?></td>
+            <td class="num" style="font-weight:700"><?= number_format($c['pkr'], 0) ?></td>
+            <td class="num"><?= $pfcTotal > 0 ? number_format($c['pkr'] / $pfcTotal * 100, 1) : '0' ?>%</td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="dash-card" style="<?= $cardCss ?>;padding:22px;margin-bottom:16px">
+  <div class="pfc-note" style="margin-top:0">
+    <b>Two things worth knowing.</b>
+    <div style="margin-top:6px">Quantities are never added across units. Pc, Set, Kg and Mtr each have
+    their own list and there is no grand total, because adding them would produce a number that looks
+    right and means nothing.</div>
+    <div style="margin-top:5px">A converted proforma is also a commercial invoice. This figure must
+    not be added to the sales figures above — the same business would be counted twice.</div>
+  </div>
+  <?php if (!empty($pfc['missing_rate'])): ?>
+    <div style="background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.32);border-radius:10px;padding:11px 14px;font-size:12.5px;color:#9a5a06;margin-top:12px">
+      <b>Left out of the total.</b>
+      <?php $bits = []; foreach ($pfc['missing_rate'] as $cur => $n) $bits[] = $n . ' in ' . $cur; ?>
+      <?= e(implode(', ', $bits)) ?> — no exchange rate is configured for
+      <?= count($pfc['missing_rate']) === 1 ? 'that currency' : 'those currencies' ?>, and converting at
+      zero would have quietly shrunk the figures above. Set the rate in Settings and they will appear.
+    </div>
+  <?php endif; ?>
+</div>
+<?php elseif ($pfcShow && $pfc['ok']): ?>
+<div class="dash-card" style="<?= $cardCss ?>;padding:22px;margin:26px 0 16px">
+  <h2 style="font-size:15px;margin:0 0 4px">Proforma Contracts</h2>
+  <p style="color:#8a97ab;font-size:12.5px;margin:0">
+    No sent, confirmed or converted proforma falls in <?= e($periodLabel) ?>. Drafts are not counted —
+    a draft is not a commitment.
+  </p>
+</div>
+<?php endif; ?>
 
 <!-- TOP CUSTOMERS -->
 <div class="dash-card" style="<?= $cardCss ?>;padding:22px">
