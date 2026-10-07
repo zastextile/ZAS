@@ -13,22 +13,71 @@
 
   Cloudways commonly runs Redis with ACL enabled — each app gets its own
   username/password and is restricted to keys under its own prefix (any
-  other key is rejected with NOPERM). Fill in REDIS_USERNAME/PASSWORD/PREFIX
-  below from: Server (not App) > Access Details > Redis. If your setup uses
-  a single plain password instead (no username), leave REDIS_USERNAME blank
-  and it'll fall back to plain AUTH automatically.
+  other key is rejected with NOPERM). If your setup uses a single plain
+  password instead (no username), leave redis_user blank and it falls back
+  to plain AUTH automatically.
 
   Reversible: delete this file and remove the two lines in bootstrap.php
   that reference it, and the app is back to exactly how it was.
+
+  ====================================================================
+  THE CREDENTIALS USED TO BE WRITTEN HERE, IN THE SOURCE.
+  ====================================================================
+
+  That cost a day of downtime on 7 October 2026. A hard-coded credential
+  works perfectly until the other side changes it, and then it fails
+  completely, with nothing in the application able to see it coming. When
+  the Redis password rotated, every session silently stopped being stored:
+  pages still rendered, and every single login came back "CSRF token
+  mismatch" — a message about something three steps downstream.
+
+  It was also sitting in the git repository, where a password does not
+  belong.
+
+  They now come from config.php, which is gitignored, alongside the
+  database password and the R2 keys:
+
+      'redis_host'     => '127.0.0.1',
+      'redis_port'     => 6379,
+      'redis_user'     => '...',      // Cloudways: Server > Access Details > Redis
+      'redis_pass'     => '...',
+      'redis_prefix'   => 'yourapp:', // the ACL limits this user to this prefix
+      'redis_sessions' => false,      // see below before switching this on
+
+  AND SESSIONS ARE NOW OPT-IN. redis_sessions defaults to FALSE, so the
+  session store stays on files — which is what carried the app through the
+  outage and what it is running on today. Redis takes the sessions only
+  when you deliberately switch it on, after the test on
+  Export Masters > Document Storage says it works. The cache does not wait
+  for that flag: it is safe either way, because a cache miss costs one
+  query while a session miss costs somebody's login.
 */
 
-const REDIS_HOST = '127.0.0.1';
-const REDIS_PORT = 6379;
-// From Cloudways: Server > Access Details > Redis
-const REDIS_USERNAME = 'eqjpvvvmyz';
-const REDIS_PASSWORD = 'C6HsP7s9d8';
-const REDIS_PREFIX = 'eqjpvvvmyz:'; // ACL restricts this app's user to keys under this prefix only
+/* Read once, from config.php. Kept as constants because session_check.php
+   and the rest of this file already use these names. */
+(function () {
+    $c = $GLOBALS['config'] ?? [];
+    if (!defined('REDIS_HOST'))     define('REDIS_HOST',     (string)($c['redis_host']   ?? '127.0.0.1'));
+    if (!defined('REDIS_PORT'))     define('REDIS_PORT',     (int)   ($c['redis_port']   ?? 6379));
+    if (!defined('REDIS_USERNAME')) define('REDIS_USERNAME', (string)($c['redis_user']   ?? ''));
+    if (!defined('REDIS_PASSWORD')) define('REDIS_PASSWORD', (string)($c['redis_pass']   ?? ''));
+    if (!defined('REDIS_PREFIX'))   define('REDIS_PREFIX',   (string)($c['redis_prefix'] ?? ''));
+})();
+
 const REDIS_TIMEOUT = 0.2; // seconds — fail fast, never hang a page on a dead Redis
+
+/* Is Redis configured at all? Without a password there is nothing to
+   connect with, and probing an unauthenticated localhost Redis would be a
+   guess, not a configuration. */
+function redis_configured(): bool {
+    return extension_loaded('redis') && REDIS_PASSWORD !== '';
+}
+
+/* Sessions move to Redis ONLY when config.php says so AND the credentials
+   are present. Anything less and they stay on files, which work. */
+function redis_sessions_enabled(): bool {
+    return redis_configured() && !empty($GLOBALS['config']['redis_sessions']);
+}
 
 /* A SESSION IS NOT A CACHE, AND MUST NOT FAIL FAST.
  *
@@ -133,6 +182,21 @@ function redis_session_boot(): void {
     $GLOBALS['ZAS_SESSION_FALLBACK'] = 'The php-redis extension is not loaded, so sessions are stored in files.';
     return;
   }
+  if (REDIS_PASSWORD === '') {
+    $GLOBALS['ZAS_SESSION_FALLBACK'] = 'No Redis credentials in config.php, so sessions are stored in files.';
+    return;
+  }
+  /* THE SWITCH THAT WOULD HAVE PREVENTED THE OUTAGE.
+   *
+   * Sessions only move to Redis when config.php explicitly says so. Until
+   * then they stay on files, which is the state the app recovered into and
+   * has been running on since. Switching this on is a deliberate act taken
+   * after the test on Export Masters > Document Storage passes — not a
+   * default that quietly decides where everybody's login lives. */
+  if (empty($GLOBALS['config']['redis_sessions'])) {
+    $GLOBALS['ZAS_SESSION_FALLBACK'] = 'Redis sessions are switched off in config.php, so sessions are stored in files.';
+    return;
+  }
   // ini_set only takes effect if set before session_start() — caller must call this first.
   $authQs = '';
   if (REDIS_USERNAME !== '') {
@@ -209,4 +273,70 @@ function cache_bump(string $tag): void {
   $r = redis_conn();
   if (!$r) return;
   try { $r->incr(rk("ver:$tag")); } catch (Throwable $e) {}
+}
+
+/* ------------------------------------------------- the connection test
+
+   The same shape as exp_r2_selftest(): press a button, see each step pass
+   or fail, and never see a credential. This exists because switching the
+   session store over on faith is what produced a day of "CSRF token
+   mismatch" with no way to tell why.
+
+   It checks the SESSION key prefix specifically. A Cloudways ACL can allow
+   the cache keys and refuse the session keys, and that difference is
+   invisible until every login starts failing. */
+function redis_selftest(): array {
+    $steps = [];
+    $add = function (string $n, bool $ok, string $d) use (&$steps) { $steps[] = [$n, $ok, $d]; };
+
+    if (!extension_loaded('redis')) {
+        $add('Extension', false, 'php-redis is not installed on this server.');
+        return ['ok' => false, 'steps' => $steps];
+    }
+    $add('Extension', true, 'php-redis is installed.');
+
+    if (REDIS_PASSWORD === '') {
+        $add('Settings', false, 'No redis_pass in config.php, so nothing can connect.');
+        return ['ok' => false, 'steps' => $steps];
+    }
+    $add('Settings', true, 'Host, password and prefix are present. The password is never shown here.');
+
+    $c = new Redis();
+    $t0 = microtime(true);
+    try { $ok = @$c->connect(REDIS_HOST, REDIS_PORT, 2.0); } catch (Throwable $e) { $ok = false; }
+    if (!$ok) {
+        $add('Connect', false, 'Could not reach Redis at ' . REDIS_HOST . ':' . REDIS_PORT . '. It may be stopped.');
+        return ['ok' => false, 'steps' => $steps];
+    }
+    $add('Connect', true, 'Answered in ' . round((microtime(true) - $t0) * 1000) . ' ms.');
+
+    try {
+        $auth = REDIS_USERNAME !== ''
+              ? @$c->auth(['user' => REDIS_USERNAME, 'pass' => REDIS_PASSWORD])
+              : @$c->auth(REDIS_PASSWORD);
+    } catch (Throwable $e) { $auth = false; }
+    if (!$auth) {
+        $add('Sign in', false, 'Redis refused these credentials. They have probably been rotated — Cloudways: Server > Access Details > Redis.');
+        return ['ok' => false, 'steps' => $steps];
+    }
+    $add('Sign in', true, 'Credentials accepted.');
+
+    $k = rk('selftest');
+    try { $w = @$c->setex($k, 30, 'ok'); $r = @$c->get($k); @$c->del($k); }
+    catch (Throwable $e) { $w = false; $r = null; }
+    $add('Cache key', (bool)$w && $r === 'ok', ($w && $r === 'ok')
+        ? 'Wrote a key under ' . REDIS_PREFIX . ' and read it back.'
+        : 'Could not store a key under ' . REDIS_PREFIX . '. The ACL may not allow this prefix.');
+
+    /* The one that actually decides whether logins survive. */
+    $sk = REDIS_PREFIX . 'PHPREDIS_SESSION:selftest';
+    try { $sw = @$c->setex($sk, 30, 'x'); $sr = @$c->get($sk); @$c->del($sk); }
+    catch (Throwable $e) { $sw = false; $sr = null; }
+    $add('Session key', (bool)$sw && $sr === 'x', ($sw && $sr === 'x')
+        ? 'Sessions can be stored here. Safe to switch on.'
+        : 'Redis refuses the session keys. Switching sessions on would log everybody out.');
+
+    $ok = true;
+    foreach ($steps as $s) if (!$s[1]) $ok = false;
+    return ['ok' => $ok, 'steps' => $steps];
 }

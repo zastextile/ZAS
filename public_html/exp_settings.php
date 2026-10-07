@@ -189,9 +189,11 @@ if ($tab === 'search' && isset($_GET['step'])) {
     }
 }
 
-/* R2 self-test runs on GET so nothing is written to the database by it. */
+/* Both self-tests run on GET so nothing is written to the database by them. */
 $r2test = null;
 if ($tab === 'storage' && isset($_GET['run_test'])) $r2test = exp_r2_selftest();
+$redistest = null;
+if ($tab === 'storage' && isset($_GET['run_redis']) && function_exists('redis_selftest')) $redistest = redis_selftest();
 
 $rows      = exp_masters($kind, false);
 $banks     = exp_banks(false);
@@ -677,6 +679,83 @@ echo exp_page_css();
             : '<b>R2 is not usable yet.</b> Nothing was changed and document uploads continue to work on local disk. The failing step above says what to fix.' ?>
     </div>
   <?php endif; ?>
+</div>
+
+<div class="xcard">
+  <h2>Sessions &amp; Cache (Redis)</h2>
+
+  <?php
+    $rOn   = function_exists('redis_sessions_enabled') && redis_sessions_enabled();
+    $rCfg  = function_exists('redis_configured') && redis_configured();
+    $why   = function_exists('session_fallback_reason') ? session_fallback_reason() : '';
+    $store = ini_get('session.save_handler');
+  ?>
+
+  <div class="<?= $rOn ? 'xnote' : 'xwarn' ?>" style="<?= $rOn ? 'border-color:rgba(22,163,74,.3);background:rgba(22,163,74,.08)' : '' ?>">
+    <b>Everyone's login is currently stored in: <?= strtoupper(e((string)$store)) ?>.</b>
+    <?php if ($why !== ''): ?><br><?= e($why) ?><?php endif; ?>
+  </div>
+
+  <div class="xnote" style="margin-top:12px">
+    On 7 October the Redis password changed on the server. The credentials were written into
+    <code>includes/redis.php</code>, so nothing in the app could notice — sessions silently stopped
+    being saved and every login answered <b>&ldquo;CSRF token mismatch&rdquo;</b>, which describes
+    something three steps further down. Two things changed because of that:
+    <div style="margin-top:7px">1. The credentials now live in <code>config.php</code>, with the
+    database password and the R2 keys. They are no longer in the code or the repository.</div>
+    <div style="margin-top:4px">2. <b>Redis sessions are off unless you switch them on.</b> File
+    sessions carried the app through the outage and are running it now. Redis takes the logins only
+    when you say so, after the test below passes.</div>
+  </div>
+
+  <?php if (!$rCfg): ?>
+    <div class="xnote" style="margin-top:12px">
+      <b>To use Redis</b>, add these to <code>config.php</code> on the server. They stay on the
+      server only — never in the repository, never sent to a browser.
+      <pre style="margin:10px 0 0;padding:10px;background:#fff;border:1px solid #e3e9f2;border-radius:8px;font-size:11.5px;overflow-x:auto">'redis_host'     =&gt; '127.0.0.1',
+'redis_port'     =&gt; 6379,
+'redis_user'     =&gt; '&lt;from Cloudways: Server &gt; Access Details &gt; Redis&gt;',
+'redis_pass'     =&gt; '&lt;password&gt;',
+'redis_prefix'   =&gt; '&lt;your app prefix, ending in a colon&gt;',
+'redis_sessions' =&gt; false,   // leave false until the test below passes</pre>
+    </div>
+  <?php endif; ?>
+
+  <div style="margin-top:14px">
+    <a class="xbtn" href="exp_settings.php?tab=storage&run_redis=1">Test the Redis Connection</a>
+    <span style="color:#8a97ab;font-size:12px;margin-left:8px">Signs in, writes a key, reads it back, deletes it. Never shows the password.</span>
+  </div>
+
+  <?php if ($redistest !== null): ?>
+    <div class="xwrap" style="margin-top:14px">
+      <table class="xtable">
+        <thead><tr><th style="width:120px">Step</th><th style="width:70px">Result</th><th>Detail</th></tr></thead>
+        <tbody>
+        <?php foreach ($redistest['steps'] as $s): ?>
+          <tr>
+            <td style="font-weight:600"><?= e($s[0]) ?></td>
+            <td><?= $s[1] ? '<span class="xpill g">OK</span>' : '<span class="xpill r">Failed</span>' ?></td>
+            <td><?= e($s[2]) ?></td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <div class="<?= $redistest['ok'] ? 'xnote' : 'xwarn' ?>" style="margin-top:12px">
+      <?= $redistest['ok']
+            ? '<b>Redis is healthy.</b> Every step passed, including the session keys. You can set '
+              . '<code>\'redis_sessions\' =&gt; true</code> in config.php when you want logins kept there. '
+              . 'Everyone is signed out once when you do.'
+            : '<b>Do not switch sessions on.</b> The failing step above says why. Nothing was changed '
+              . 'and logins continue to work on file sessions.' ?>
+    </div>
+  <?php endif; ?>
+
+  <div class="xnote" style="margin-top:12px">
+    <b>File sessions are a perfectly good answer.</b> Redis is faster across several servers; on one
+    server the difference is not something you will notice. If the test ever fails, leaving this off
+    costs you nothing.
+  </div>
 </div>
 
 <?php endif; ?>
