@@ -1,6 +1,15 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
-require_once __DIR__ . '/includes/export.php';      /* exp_pkr_rate() */
+/* costing.php for costing_perm(), export.php for exp_pkr_rate().
+ *
+ * bootstrap.php does NOT load costing.php — every page that needs
+ * costing_perm() requires it for itself, which is why proforma.php,
+ * search.php and users.php all carry this same line. Leaving it out took
+ * the whole dashboard down with a 500, and the boot test did not catch it
+ * because that harness stubs costing_perm(). The stub hid the missing
+ * require; zpfcontracts_test.php now checks the requires themselves. */
+require_once __DIR__ . '/includes/costing.php';
+require_once __DIR__ . '/includes/export.php';
 require_once __DIR__ . '/includes/pfcontracts.php';
 require_login();
 if (is_production_staff()) { redirect('production_my_work.php'); }

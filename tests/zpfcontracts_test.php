@@ -226,6 +226,49 @@ t('nothing is queried at all for anyone else',
   preg_match('~\$pfc\s*=\s*\$pfcShow\s*\?\s*pfc_summary~', $dashN) === 1);
 t('the markup is behind the same gate',   str_contains($dashN, 'if ($pfcShow && $pfc[\'ok\']'));
 
+head('5b. Every function the page calls is actually loadable');
+
+/* THIS SECTION EXISTS BECAUSE THE SITE WENT DOWN.
+ *
+ * costing_perm() lives in includes/costing.php. bootstrap.php does not load
+ * it — each page requires it for itself. dashboard.php did not, so the whole
+ * page fatalled with "Call to undefined function costing_perm()" and the
+ * site answered 500.
+ *
+ * The Chromium boot test passed throughout, because that harness DEFINES a
+ * stub costing_perm(). A stub cannot tell you a require is missing; it is
+ * precisely what hides one. So this check ignores stubs and follows the
+ * real require chain on disk. */
+$resolve = function (string $page) use ($B): array {
+    $seen = [];
+    $walk = function (string $file) use (&$walk, &$seen, $B) {
+        $real = realpath($file);
+        if ($real === false || isset($seen[$real])) return;
+        $seen[$real] = true;
+        $src = (string)@file_get_contents($real);
+        if (preg_match_all("~require(?:_once)?\s+__DIR__\s*\.\s*'(/[^']+\.php)'~", $src, $m)) {
+            foreach ($m[1] as $rel) $walk(dirname($real) . $rel);
+        }
+    };
+    $walk($B . $page);
+    $fns = [];
+    foreach (array_keys($seen) as $f) {
+        if (preg_match_all('~^\s*function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(~m', (string)@file_get_contents($f), $m)) {
+            foreach ($m[1] as $fn) $fns[strtolower($fn)] = basename($f);
+        }
+    }
+    return $fns;
+};
+$dashFns = $resolve('dashboard.php');
+
+t('the require chain was followed', count($dashFns) > 50, count($dashFns));
+foreach (['costing_perm', 'can_see_rates', 'pfc_summary', 'exp_pkr_rate', 'fx_get_rates', 'e'] as $fn) {
+    t("dashboard.php can actually reach $fn()", isset($dashFns[$fn]),
+      isset($dashFns[$fn]) ? null : 'NOT reachable — this is a 500 on the live site');
+}
+t('costing_perm comes from costing.php, so that file really is required',
+  ($dashFns['costing_perm'] ?? '') === 'costing.php', $dashFns['costing_perm'] ?? null);
+
 head('6. The panel');
 
 t('it uses the dashboard period, not a period of its own',
