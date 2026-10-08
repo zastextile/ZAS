@@ -192,6 +192,33 @@ function inv_ensure_schema(): void {
         INDEX(gate_id), INDEX(material_id), INDEX(product_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 
+    /* --- the photo taken at the gate ---------------------------------
+
+       A challan, a truck, a damaged carton. Taken on the phone while the
+       vehicle is still standing there, which is the only moment it can be
+       taken at all.
+
+       Its own table rather than exp_documents, because that one is keyed to
+       a shipment and a gate pass is not a shipment. Same storage underneath:
+       R2 when configured, this server's disk when not, and each row records
+       which — so a photo taken before R2 was switched on goes on working.
+
+       No public URL, like every other file here. The bytes come back through
+       a PHP page that checks permission first. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS inv_gate_photos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        gate_id INT NOT NULL,
+        storage_driver VARCHAR(20) NOT NULL DEFAULT 'local',
+        storage_key VARCHAR(500) NOT NULL,
+        original_name VARCHAR(255) NULL,
+        mime_type VARCHAR(100) NULL,
+        file_size BIGINT NULL,
+        caption VARCHAR(190) NULL,
+        uploaded_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX(gate_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
     /* --- store issue / return: location movement only --- */
     try { db()->exec("CREATE TABLE IF NOT EXISTS inv_store_move (
         id INT AUTO_INCREMENT PRIMARY KEY,

@@ -33,6 +33,11 @@ $work = __DIR__ . '/.zgateboot';
 
 /* the real page, and the real front-end files it links */
 copy($B . 'inv_gate.php',        $work . '/inv_gate.php');
+/* inv_gate.php now shows the photographs taken at the gate, so it pulls in
+   the two files that read them. Real files, not stubs: a stub would prove
+   the page can reach a function it cannot. */
+copy($B . 'includes/mobile.php',  $work . '/includes/mobile.php');
+copy($B . 'includes/storage.php', $work . '/includes/storage.php');
 copy($B . 'assets/js/lov.js',    $work . '/assets/js/lov.js');
 copy($B . 'assets/css/lov.css',  $work . '/assets/css/lov.css');
 if (is_file($B . 'assets/js/grid.js')) copy($B . 'assets/js/grid.js', $work . '/assets/js/grid.js');

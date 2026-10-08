@@ -31,6 +31,10 @@
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/inventory.php';
+/* storage.php so a photo goes to R2 when R2 is configured. Without it
+   exp_r2_configured() would be undefined and every photo would quietly
+   land on this server's disk instead. */
+require_once __DIR__ . '/includes/storage.php';
 require_once __DIR__ . '/includes/mobile.php';
 require_login();
 
@@ -148,9 +152,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
         }
 
         db()->commit();
+
+        /* AFTER the commit, deliberately. A photo that will not store must
+           not take the gate pass down with it — the pass is the record that
+           matters, the photo is evidence attached to it. Anything that goes
+           wrong is reported on the next screen, with the pass already safe. */
+        $photoMsg = '';
+        foreach (mob_photo_files('photo') as $one) {
+            [$pok, $pmsg] = mob_photo_store($id, $one, (string)($_POST['vehicle_no'] ?? ''));
+            if (!$pok && $pmsg !== '') $photoMsg = $pmsg;
+        }
+
         try { audit_log(0, 'Gate (mobile)', $id > 0 ? 'save' : 'create', '', 'Draft ' . $dirName,
                         count($lines) . ' line(s), saved from a phone'); } catch (Throwable $e) {}
         $_SESSION['flash'] = 'Saved as a draft. The office will add rates and post it.';
+        if ($photoMsg !== '') $_SESSION['error'] = 'The pass was saved, but the photo was not: ' . $photoMsg;
         redirect('m_gate.php?dir=' . $dir);
 
     } catch (Throwable $e) {
@@ -187,7 +203,8 @@ $drafts = [];
 try {
     $s = db()->prepare("SELECT g.id, g.gate_no, g.txn_type, g.gate_date, g.party_text, g.vehicle_no,
                                (SELECT COUNT(*) FROM inv_gate_items i WHERE i.gate_id=g.id) lines,
-                               (SELECT COUNT(*) FROM inv_gate_items i WHERE i.gate_id=g.id AND i.rate<=0) norate
+                               (SELECT COUNT(*) FROM inv_gate_items i WHERE i.gate_id=g.id AND i.rate<=0) norate,
+                               (SELECT COUNT(*) FROM inv_gate_photos ph WHERE ph.gate_id=g.id) photos
                           FROM inv_gate g
                          WHERE g.direction=? AND g.status='draft'
                          ORDER BY g.id DESC LIMIT 15");
@@ -235,6 +252,7 @@ mob_flash();
             <?= e($TYPES[$d['txn_type']]['label'] ?? (string)$d['txn_type']) ?>
             &middot; <?= e(date('d M', strtotime((string)$d['gate_date']))) ?>
             &middot; <?= (int)$d['lines'] ?> item<?= (int)$d['lines'] === 1 ? '' : 's' ?>
+            <?php if ((int)$d['photos'] > 0): ?>&middot; <?= (int)$d['photos'] ?> photo<?= (int)$d['photos'] === 1 ? '' : 's' ?><?php endif; ?>
             <?php if (trim((string)$d['party_text']) !== ''): ?><br><?= e((string)$d['party_text']) ?><?php endif; ?>
             <?php if (trim((string)$d['vehicle_no']) !== ''): ?> &middot; <?= e((string)$d['vehicle_no']) ?><?php endif; ?>
           </div>
@@ -252,7 +270,7 @@ mob_flash();
 
 <?php else: ?>
 
-  <form method="post" id="gf">
+  <form method="post" id="gf" enctype="multipart/form-data">
     <?= csrf_field() ?>
     <input type="hidden" name="action" value="save">
     <input type="hidden" name="dir" value="<?= e($dir) ?>">
@@ -292,6 +310,32 @@ mob_flash();
       <button type="button" class="btn sec" id="addrow" style="margin-top:14px">+ Add item</button>
       <div class="note" style="margin-top:10px">
         No rate here. The office adds rates before posting — the pass shows <b>rate pending</b> until they do.
+      </div>
+    </div>
+
+    <div class="mcard">
+      <h2>Photo of the challan</h2>
+      <?php $existing = $editId > 0 ? mob_photos($editId) : []; ?>
+      <?php if ($existing): ?>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <?php foreach ($existing as $ph): ?>
+            <a href="m_gate_photo.php?id=<?= (int)$ph['id'] ?>" target="_blank" rel="noopener">
+              <img src="m_gate_photo.php?id=<?= (int)$ph['id'] ?>" alt="Gate photo" loading="lazy"
+                   style="width:84px;height:84px;object-fit:cover;border-radius:10px;border:1px solid var(--line)">
+            </a>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
+      <label class="f" style="margin-bottom:0">
+        <span>Take a photo<?= $existing ? ' — adds to the ' . count($existing) . ' already attached' : '' ?></span>
+        <!-- capture="environment" opens the back camera straight away on a
+             phone. On a desktop the same control is an ordinary file picker,
+             so the office can attach a scan without a second screen. -->
+        <input class="in" type="file" name="photo[]" accept="image/*" capture="environment" multiple>
+      </label>
+      <div class="note" style="margin-top:8px">
+        The challan, the truck, a damaged carton. Taken now, while the vehicle is still here —
+        which is the only moment it can be taken at all.
       </div>
     </div>
 

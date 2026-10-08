@@ -189,6 +189,62 @@ if (is_array($mj)) {
       array_column($mj['icons'] ?? [], 'src'));
 }
 
+head('7b. The photo taken at the gate');
+
+$mobN2 = nocomments($mob);
+t('the form can carry a file at all',  str_contains($mg, 'enctype="multipart/form-data"'));
+t('the camera opens straight to the back lens on a phone',
+  str_contains($mg, 'capture="environment"'));
+t('and the same control is a file picker on a desktop',
+  str_contains($mg, 'type="file"') && str_contains($mg, 'accept="image/*"'));
+t('photos have their own table, not exp_documents, which is keyed to a shipment',
+  str_contains(nocomments($inv), 'CREATE TABLE IF NOT EXISTS inv_gate_photos'));
+t('each row records where its own bytes live',
+  str_contains(nocomments($inv), "storage_driver VARCHAR(20) NOT NULL DEFAULT 'local'"));
+
+/* A file arriving from a phone someone else is holding. */
+t('the bytes are checked, not the filename',   str_contains($mobN2, 'getimagesize($tmp)'));
+t('only real image types are accepted',
+  str_contains($mobN2, "['image/jpeg', 'image/png', 'image/webp']"));
+t('an upload that is not really an upload is refused',
+  str_contains($mobN2, 'is_uploaded_file($tmp)'));
+t('a size ceiling is enforced',                str_contains($mobN2, 'MOBPHOTO_MAX'));
+t('the count is capped, so one tap cannot post forty',
+  str_contains($mobN2, 'MOBPHOTO_MAX_COUNT'));
+t('nothing from the phone filename reaches the stored path',
+  str_contains($mobN2, 'bin2hex(random_bytes(16))'));
+t('the key is unguessable rather than sequential',
+  !preg_match('~\$key\s*=\s*.gate/.\s*\.\s*\$gateId\s*\.\s*.\.(jpg|png)~', $mobN2));
+t('R2 is used when configured, disk when not',
+  str_contains($mobN2, 'exp_r2_configured()') && str_contains($mobN2, 'move_uploaded_file'));
+t('and m_gate.php actually loads storage.php, or every photo would land on disk',
+  str_contains($mgN, "includes/storage.php"));
+
+t('a photo is stored only AFTER the pass is committed',
+  strpos($mgN, 'db()->commit();') < strpos($mgN, 'mob_photo_store('));
+t('a photo that fails does not lose the gate pass',
+  str_contains($mgN, 'The pass was saved, but the photo was not'));
+
+/* No public URL — the same rule the shipment documents follow. */
+$pv = (string)file_get_contents($B . 'm_gate_photo.php');
+t('photos are served by a page, never a public link', $pv !== '');
+t('which checks permission first',     str_contains($pv, "inv_perm('view')"));
+t('and refuses without it',            str_contains($pv, 'http_response_code(403)'));
+t('the id is read as an integer',      str_contains($pv, "(int)(\$_GET['id'] ?? 0)"));
+t('the photo must belong to a real gate pass',
+  str_contains($pv, 'JOIN inv_gate g ON g.id = p.gate_id'));
+t('the browser is told not to sniff the type',
+  str_contains(nocomments($mob), 'X-Content-Type-Options: nosniff'));
+t('an unexpected mime is not echoed back as a content type',
+  str_contains($mobN2, "in_array(\$mime, ['image/jpeg','image/png','image/webp'], true) ? \$mime : 'image/jpeg'"));
+
+t('the office sees them on the desktop pass, where it actually looks',
+  str_contains($gateN, 'mob_photos((int)$doc[\'id\'])'));
+t('and inv_gate.php really loads the file that defines it',
+  str_contains($gateN, "includes/mobile.php"));
+t('the drafts list shows how many are attached',
+  str_contains($mgN, 'FROM inv_gate_photos ph WHERE ph.gate_id=g.id'));
+
 head('8. Everything it calls is reachable — no stub can hide a missing require');
 
 /* Written after dashboard.php took the site down with a missing require
@@ -226,8 +282,19 @@ t('the desktop gate screen still exists',      $gate !== '');
 t('it still has its post action',              str_contains($gateN, "\$act === 'post'"));
 t('it still has its reverse action',           str_contains($gateN, "\$act === 'reverse'"));
 t('posting still needs its own permission',    str_contains($gateN, '$canPost'));
-t('the mobile screen is a separate file, so the desktop form is untouched',
-  !str_contains($gateN, 'mobile.php'));
+/* The desktop now loads mobile.php on purpose, for mob_photos() — the
+   photographs belong on the screen the office looks at. What must NOT
+   happen is the desktop being drawn with the phone shell. */
+t('the desktop still draws itself with its own layout, not the phone shell',
+  !str_contains($gateN, 'mob_header(') && !str_contains($gateN, 'mob_footer('));
+/* Every mob_ in the desktop file must be mob_photos — counted without the
+   bracket, because one use is function_exists('mob_photos'). */
+t('it uses mobile.php only to read the photos',
+  substr_count($gateN, 'mob_') === substr_count($gateN, 'mob_photos')
+  && substr_count($gateN, 'mob_photos') > 0,
+  substr_count($gateN, 'mob_') . ' mob_ vs ' . substr_count($gateN, 'mob_photos') . ' mob_photos');
+t('the phone screen is still a separate file',
+  is_file($B . 'm_gate.php') && !str_contains($gateN, 'm_gate.php?dir='));
 
 echo "\n$P passed, $F failed\n";
 exit($F > 0 ? 1 : 0);

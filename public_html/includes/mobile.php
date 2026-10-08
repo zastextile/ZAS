@@ -155,3 +155,136 @@ function mob_footer(): void
 </html>
 <?php
 }
+
+/* ====================================================== gate photographs
+
+   Kept with the mobile shell rather than in storage.php because this is
+   the only place that takes one, and storage.php is the export module's
+   file. It reuses that module's R2 functions when they are loaded and
+   falls back to this server's disk when they are not — so the photo works
+   whether or not R2 has been switched on.
+*/
+
+const MOBPHOTO_MAX = 12582912;   /* 12 MB — a phone photo is 2-5 MB */
+const MOBPHOTO_OK  = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+                      'png' => 'image/png',  'webp' => 'image/webp'];
+
+function mob_photo_dir(): string {
+    global $config;
+    $d = rtrim((string)($config['upload_dir'] ?? (__DIR__ . '/../storage/uploads')), '/') . '/gate';
+    if (!is_dir($d)) @mkdir($d, 0775, true);
+    return $d;
+}
+
+/* Takes one uploaded file and stores it against a gate pass.
+   Returns [ok, message]. Never throws — a photo that will not store must
+   not lose the gate pass it belongs to. */
+function mob_photo_store(int $gateId, array $file, string $caption = ''): array
+{
+    if ($gateId <= 0) return [false, 'No gate pass to attach to.'];
+    $err = (int)($file['error'] ?? UPLOAD_ERR_NO_FILE);
+    if ($err === UPLOAD_ERR_NO_FILE) return [false, ''];                 /* nothing chosen is not a failure */
+    if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) return [false, 'That photo is too large.'];
+    if ($err !== UPLOAD_ERR_OK) return [false, 'The photo did not upload. Try again.'];
+
+    $tmp = (string)($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) return [false, 'The photo did not arrive.'];
+    if ((int)($file['size'] ?? 0) > MOBPHOTO_MAX) return [false, 'That photo is larger than 12 MB.'];
+
+    /* Trust the bytes, not the name. getimagesize() fails on anything that
+       is not actually an image, which is the check that matters when the
+       file came off a phone someone else was holding. */
+    $info = @getimagesize($tmp);
+    if ($info === false) return [false, 'That file is not a photo.'];
+    $mime = (string)($info['mime'] ?? '');
+    if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'], true)) {
+        return [false, 'Only JPG, PNG and WEBP photos can be attached.'];
+    }
+
+    $name = (string)($file['name'] ?? 'photo.jpg');
+    $ext  = array_search($mime, MOBPHOTO_OK, true) ?: 'jpg';
+    if ($ext === 'jpeg') $ext = 'jpg';
+    /* Unguessable, and nothing from the phone's filename reaches the path. */
+    $key  = 'gate/' . $gateId . '/' . date('Y/m') . '/' . bin2hex(random_bytes(16)) . '.' . $ext;
+
+    $driver = 'local';
+    if (function_exists('exp_r2_configured') && exp_r2_configured()) {
+        [$ok, $e2] = exp_r2_put($tmp, $key, $mime);
+        if (!$ok) return [false, 'The photo could not be stored. ' . $e2];
+        $driver = 'r2';
+    } else {
+        $dest = mob_photo_dir() . '/' . basename(str_replace('/', '_', $key));
+        if (!@move_uploaded_file($tmp, $dest)) return [false, 'The photo could not be saved on the server.'];
+        $key = 'gate/' . basename($dest);
+    }
+
+    try {
+        db()->prepare("INSERT INTO inv_gate_photos
+               (gate_id, storage_driver, storage_key, original_name, mime_type, file_size, caption, uploaded_by)
+               VALUES (?,?,?,?,?,?,?,?)")
+            ->execute([$gateId, $driver, $key, mb_substr($name, 0, 255), $mime,
+                       (int)($file['size'] ?? 0), mb_substr(trim($caption), 0, 190) ?: null,
+                       (int)(current_user()['id'] ?? 0)]);
+    } catch (Throwable $e) { return [false, 'The photo was stored but could not be recorded.']; }
+
+    return [true, 'Photo attached.'];
+}
+
+/* PHP hands a multiple file input back inside out: five parallel arrays
+   rather than a list of files. This turns it the right way round, and
+   caps the count so one tap cannot post forty photographs. */
+const MOBPHOTO_MAX_COUNT = 6;
+
+function mob_photo_files(string $field): array
+{
+    $f = $_FILES[$field] ?? null;
+    if (!is_array($f) || !isset($f['name'])) return [];
+
+    if (!is_array($f['name'])) {                       /* a single input */
+        return ((int)($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) ? [] : [$f];
+    }
+
+    $out = [];
+    foreach (array_keys($f['name']) as $i) {
+        if ((int)($f['error'][$i] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) continue;
+        $out[] = [
+            'name'     => (string)($f['name'][$i] ?? ''),
+            'type'     => (string)($f['type'][$i] ?? ''),
+            'tmp_name' => (string)($f['tmp_name'][$i] ?? ''),
+            'error'    => (int)($f['error'][$i] ?? UPLOAD_ERR_NO_FILE),
+            'size'     => (int)($f['size'][$i] ?? 0),
+        ];
+        if (count($out) >= MOBPHOTO_MAX_COUNT) break;
+    }
+    return $out;
+}
+
+function mob_photos(int $gateId): array {
+    try {
+        $s = db()->prepare("SELECT * FROM inv_gate_photos WHERE gate_id=? ORDER BY id");
+        $s->execute([$gateId]);
+        return $s->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* Sends the bytes. The caller checks permission first — this only knows
+   how to read from the two places a photo can live. */
+function mob_photo_send(array $p): void
+{
+    $mime = (string)($p['mime_type'] ?? 'image/jpeg');
+    header('Content-Type: ' . (in_array($mime, ['image/jpeg','image/png','image/webp'], true) ? $mime : 'image/jpeg'));
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Disposition: inline');
+    header('Cache-Control: private, max-age=3600');
+
+    if (($p['storage_driver'] ?? 'local') === 'r2' && function_exists('exp_r2_stream')) {
+        [$ok, $e] = exp_r2_stream((string)$p['storage_key']);
+        if (!$ok) error_log('Gate photo read failed for ' . (int)$p['id'] . ': ' . $e);
+        exit;
+    }
+    $path = mob_photo_dir() . '/' . basename((string)$p['storage_key']);
+    if (!is_file($path)) { http_response_code(404); exit('Photo missing.'); }
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
+    exit;
+}

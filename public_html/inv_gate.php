@@ -11,6 +11,11 @@
 require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 require_once __DIR__ . '/includes/inventory.php';
+/* For mob_photos() — the photographs taken at the gate on a phone are
+   shown on this screen, because this is where the office looks. Defines
+   functions only; it draws nothing unless a page calls mob_header(). */
+require_once __DIR__ . '/includes/storage.php';
+require_once __DIR__ . '/includes/mobile.php';
 inv_ensure_schema();
 if (!inv_can_see()) { http_response_code(403); exit('You do not have permission to view gate passes.'); }
 
@@ -2412,6 +2417,30 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   </table></div>
 
   <?php if ($doc['remarks']): ?><p style="font-size:12.5px;color:#5a6b82;margin:14px 0 0"><b>Remarks:</b> <?= e($doc['remarks']) ?></p><?php endif; ?>
+
+  <?php
+  /* PHOTOGRAPHS TAKEN AT THE GATE.
+     Usually from the phone, while the vehicle was still standing there.
+     Shown here because that is the only place the office looks, and a
+     photo nobody sees is the same as no photo. Nothing is uploaded from
+     this screen — the camera belongs at the gate. */
+  $gphotos = function_exists('mob_photos') ? mob_photos((int)$doc['id']) : [];
+  if ($gphotos): ?>
+  <div style="margin-top:18px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#8a97ab;font-weight:700;margin-bottom:8px">
+      Taken at the gate · <?= count($gphotos) ?> photo<?= count($gphotos) === 1 ? '' : 's' ?>
+    </div>
+    <div style="display:flex;gap:9px;flex-wrap:wrap">
+      <?php foreach ($gphotos as $gp): ?>
+        <a href="m_gate_photo.php?id=<?= (int)$gp['id'] ?>" target="_blank" rel="noopener"
+           title="<?= e(trim((string)$gp['caption']) !== '' ? (string)$gp['caption'] : (string)$gp['original_name']) ?>">
+          <img src="m_gate_photo.php?id=<?= (int)$gp['id'] ?>" alt="Photo taken at the gate" loading="lazy"
+               style="width:104px;height:104px;object-fit:cover;border-radius:10px;border:1px solid #e3e9f2;display:block">
+        </a>
+      <?php endforeach; ?>
+    </div>
+  </div>
+  <?php endif; ?>
 
   <?php $links = inv_gate_links((int)$doc['id']); ?>
   <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
