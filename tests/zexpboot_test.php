@@ -38,6 +38,7 @@ $PAGES = [
     'customs_print.php'      => 'customsprint',
     'search.php'             => 'search',
     'dashboard.php'          => 'dashboard',
+    'm_gate.php'             => 'mgate',
 ];
 foreach (array_keys($PAGES) as $p) copy($B . $p, $work . '/' . $p);
 
@@ -71,6 +72,11 @@ copy($B . 'includes/textindex.php',  $work . '/includes/textindex.php');
 copy($B . 'includes/doctext.php',    $work . '/includes/doctext.php');
 /* The dashboard's proforma contracts panel. */
 copy($B . 'includes/pfcontracts.php', $work . '/includes/pfcontracts.php');
+/* The phone gate screen and its shell. inventory.php requires nothing
+   of its own, so it comes across whole rather than being stubbed —
+   which is the point: a stub cannot prove the page can reach it. */
+copy($B . 'includes/mobile.php',    $work . '/includes/mobile.php');
+copy($B . 'manifest_gate.json',     $work . '/manifest_gate.json');
 foreach (['lov.js', 'grid.js'] as $j) if (is_file($B . 'assets/js/' . $j)) copy($B . 'assets/js/' . $j, $work . '/assets/js/' . $j);
 foreach (['lov.css', 'zskin.css'] as $c) if (is_file($B . 'assets/css/' . $c)) copy($B . 'assets/css/' . $c, $work . '/assets/css/' . $c);
 
@@ -123,7 +129,6 @@ function costing_perm($a){ return true; }
 function create_embedding($t){ throw new Exception('create_embedding must not be called without a button'); }
 function gpt_answer($q, $c){ throw new Exception('gpt_answer must not be called without a button'); }
 function aic_rank_by_similarity($r, $v, $n){ return []; }
-function inv_parties($t = '', $a = true){ return [['id'=>5,'code'=>'SUP-0001','name'=>'Al-Madina Transport','party_type'=>'supplier']]; }
 
 function page_header($t){
   echo "<!doctype html><html><head><meta charset=\"utf-8\"><title>" . e($t) . "</title>";
@@ -166,6 +171,20 @@ $GLOBALS['BDB'] = new BDb();
 function db(){ return $GLOBALS['BDB']; }
 
 $GLOBALS['BDB']->A = [
+  /* The phone gate screen's item picker and party list, served to the real
+     functions in inventory.php rather than to a stub of them. */
+  "FROM inv_materials" => [
+    ['id'=>12,'code'=>'FAB-001','name'=>'Main Fabric 60x60','item_group'=>'Fabric','stage'=>'raw','uom'=>'Mtr','std_rate'=>135.00],
+    ['id'=>31,'code'=>'ACC-014','name'=>'Sewing Thread','item_group'=>'Accessories','stage'=>'raw','uom'=>'Cone','std_rate'=>110.00],
+  ],
+  "FROM inv_parties" => [
+    ['id'=>5,'code'=>'SUP-0001','name'=>'Al-Madina Transport','party_type'=>'supplier'],
+    ['id'=>6,'code'=>'CUS-0002','name'=>'Gulf Textiles LLC','party_type'=>'customer'],
+  ],
+  "FROM inv_gate g" => [
+    ['id'=>77,'gate_no'=>'GIN-2610-0003','txn_type'=>'purchase','gate_date'=>'2026-10-08',
+     'party_text'=>'Al-Madina Transport','vehicle_no'=>'LES-4471','lines'=>2,'norate'=>2],
+  ],
   /* The dashboard's own queries. Each aliases its columns, so the stub has
      to answer in that exact shape — an unmatched query handed back a row of
      the wrong shape and the page warned on every missing key, which is a
@@ -366,7 +385,12 @@ file_put_contents($work . '/includes/bootstrap.php', $bootstrap);
    this only has to exist — and the fact that it can be EMPTY is itself worth
    knowing: the export module reads one function from the inventory module and
    nothing else. */
-file_put_contents($work . '/includes/inventory.php', "<?php\n/* stub: the export module needs inv_parties() only, stubbed in bootstrap */\n");
+/* THE REAL inventory.php, not a stub.
+   It used to be stubbed because the export pages only wanted inv_parties().
+   m_gate.php needs inv_gate_types(), and the whole point of booting a page
+   is to prove it can reach what it calls — a stub proves the opposite.
+   The file requires nothing of its own, so it comes across whole. */
+copy($B . 'includes/inventory.php', $work . '/includes/inventory.php');
 
 /* search.php pulls these in. Each one's functions are stubbed in bootstrap
    above, so the files only have to exist — and the fact that they can be
@@ -383,7 +407,7 @@ head('1. Every page renders under PHP without a fatal error');
 $html = [];
 foreach ($PAGES as $page => $slug) {
     $cmd = 'cd ' . escapeshellarg($work) . ' && php -d error_reporting=E_ALL -d display_errors=1 '
-         . '-r ' . escapeshellarg('$_GET=["id"=>41,"view"=>"transit","doc"=>"invoice","mode"=>"shipment","q"=>"Belgium payment outstanding"]; $_SERVER["REQUEST_METHOD"]="GET"; include "' . $page . '";')
+         . '-r ' . escapeshellarg('$_GET=["id"=>41,"view"=>"transit","doc"=>"invoice","mode"=>"shipment","q"=>"Belgium payment outstanding","dir"=>"in"]; $_SERVER["REQUEST_METHOD"]="GET"; include "' . $page . '";')
          . ' 2>&1';
     $out = (string)shell_exec($cmd);
     $html[$slug] = $out;
@@ -564,6 +588,37 @@ const fs = require('fs');
       }
     }
 
+    if (slug === 'mgate') {
+      /* The item rows are built in the browser. If that script is wrong the
+         gatekeeper gets a form with no way to name what came through. */
+      r.probes.rowsAtStart = await pg.$$eval('.grow', els => els.length);
+      r.probes.optCount    = await pg.$eval('.grow .itm', el => el.options.length);
+      await pg.selectOption('.grow .itm', { index: 1 });
+      await pg.waitForTimeout(60);
+      /* choosing an item should fill the unit from the item itself */
+      r.probes.uomAuto = await pg.$eval('.grow .uom', el => el.value);
+      await pg.click('#addrow');
+      await pg.waitForTimeout(60);
+      r.probes.rowsAfterAdd = await pg.$$eval('.grow', els => els.length);
+      /* names must stay distinct or the second row overwrites the first */
+      r.probes.names = await pg.$$eval('.grow .qty', els => els.map(e => e.name));
+      await pg.$$eval('.grow .rm', els => els[els.length - 1].click());
+      await pg.waitForTimeout(60);
+      r.probes.rowsAfterRemove = await pg.$$eval('.grow', els => els.length);
+      /* removing the last row must leave one behind, not an empty form */
+      await pg.$$eval('.grow .rm', els => els.forEach(e => e.click()));
+      await pg.waitForTimeout(60);
+      r.probes.rowsAfterRemoveAll = await pg.$$eval('.grow', els => els.length);
+      r.probes.hasRateBox = await pg.$$eval('input,select', els =>
+        els.filter(e => /rate/i.test(e.name || '')).length);
+      /* Remove is hidden on the only row — pressing it would just put an
+         empty row back, which looks broken. */
+      r.probes.rmHiddenAtOne = await pg.$eval('.grow .rm', el => getComputedStyle(el).display);
+      await pg.click('#addrow');
+      await pg.waitForTimeout(60);
+      r.probes.rmShownAtTwo = await pg.$eval('.grow .rm', el => getComputedStyle(el).display);
+    }
+
     if (slug === 'numbering') {
       /* The preview is worked out twice — once in PHP when the number is
          actually issued, once here so you can see the format before saving.
@@ -667,6 +722,38 @@ if (!is_array($res) || isset($res['__harness'])) {
     ok(!str_contains($dh, 'Left out of the total'),
        'with every rate configured, no currency is reported as dropped');
 
+    head('2c. Gate on a phone');
+
+    $mg = $html['mgate'] ?? '';
+    ok(str_contains($mg, 'Gate Inward'), 'the phone gate screen rendered');
+    ok(str_contains($mg, 'manifest_gate.json'), 'it links its own manifest, so it installs as its own icon');
+    ok(str_contains($mg, 'name="_csrf"'), 'the form carries a CSRF token');
+    ok(str_contains($mg, 'Save as Draft'), 'the only button saves a draft');
+    ok(!preg_match('~name="action" value="post"~', $mg), 'there is no post button on the phone');
+    ok(!preg_match('~name="line\[\d+\]\[rate\]"~', $mg), 'no rate field is asked for');
+    ok(str_contains($mg, 'rate pending') || str_contains($mg, 'office adds rates'),
+       'the screen says the office adds the rates');
+    ok(str_contains($mg, 'max="' . date('Y-m-d') . '"'), 'the date cannot be set in the future');
+    ok(str_contains($mg, 'font-size:16px'), 'inputs are 16px, so iOS does not zoom on focus');
+    ok(!str_contains($mg, '<script src='), 'no framework was pulled in');
+
+    $p = $res['mgate']['probes'] ?? [];
+    ok(count($p) > 0, 'the phone form produced no probes at all');
+    ok((int)($p['rowsAtStart'] ?? 0) === 1, 'it opens with one item row ready, got ' . var_export($p['rowsAtStart'] ?? null, true));
+    ok((int)($p['optCount'] ?? 0) >= 3, 'the item picker is populated, got ' . var_export($p['optCount'] ?? null, true));
+    ok(($p['uomAuto'] ?? '') === 'Mtr', 'choosing an item fills its unit, got ' . var_export($p['uomAuto'] ?? null, true));
+    ok((int)($p['rowsAfterAdd'] ?? 0) === 2, 'Add item adds a row, got ' . var_export($p['rowsAfterAdd'] ?? null, true));
+    ok(($p['names'] ?? []) === ['line[0][qty]', 'line[1][qty]'],
+       'each row posts under its own name, got ' . var_export($p['names'] ?? null, true));
+    ok((int)($p['rowsAfterRemove'] ?? 0) === 1, 'Remove takes one away, got ' . var_export($p['rowsAfterRemove'] ?? null, true));
+    ok((int)($p['rowsAfterRemoveAll'] ?? 0) === 1,
+       'removing every row leaves one behind rather than an unusable form, got ' . var_export($p['rowsAfterRemoveAll'] ?? null, true));
+    ok((int)($p['hasRateBox'] ?? -1) === 0, 'no rate input exists anywhere on the page');
+    ok(($p['rmHiddenAtOne'] ?? '') === 'none',
+       'Remove is hidden while there is only one row, got ' . var_export($p['rmHiddenAtOne'] ?? null, true));
+    ok(($p['rmShownAtTwo'] ?? '') !== 'none' && ($p['rmShownAtTwo'] ?? '') !== '',
+       'and reappears once there are two, got ' . var_export($p['rmShownAtTwo'] ?? null, true));
+
     head('4a. The numbering preview agrees with the PHP that issues the number');
 
     /* The real renderer, lifted out of the shipped file. Writing a second
@@ -728,6 +815,6 @@ if (!is_array($res) || isset($res['__harness'])) {
        'uploading another BL draft should announce version 3, got ' . var_export($p['verNote'] ?? null, true));
 }
 
-exec('rm -rf ' . escapeshellarg($work));
+if (!getenv("ZAS_KEEP_WORK")) exec('rm -rf ' . escapeshellarg($work));
 echo "\n$P passed, $F failed\n";
 exit($F > 0 ? 1 : 0);

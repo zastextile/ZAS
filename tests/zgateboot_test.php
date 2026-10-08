@@ -77,6 +77,8 @@ final class BDb {
     public function commit(){ return true; }
     public function rollBack(){ return true; }
     public function lastInsertId(){ return '1'; }
+    /* Reached only since a missing rate stopped blocking the save. */
+    public function inTransaction(){ return false; }
 }
 function db(){ static $d = null; if (!$d) $d = new BDb(); return $d; }
 PHP;
@@ -243,14 +245,28 @@ $r = post_gate($work, [['item_key' => 'm13', 'qty' => '',  'rate' => '1.25']]);
 ok(str_contains($r, 'line 1 has no quantity'), 'an item with no quantity is refused by name: ' . trim(substr($r, -220)));
 ok(str_contains($r, 'Nothing was saved'), '  and NOTHING is saved');
 
+/* THE RATE RULE MOVED, AND THESE THREE ASSERTIONS MOVED WITH IT.
+   They used to require a rate at save time. The gate screen is now also
+   used from a phone, where whoever is at the gate knows the item, the
+   quantity and the vehicle but not the money — and a guessed rate is worse
+   than a blank one. So a rate may be missing on a DRAFT, and
+   inv_gate_post() refuses to write stock without one, which is stricter
+   than before: nothing checked rates at posting at all. */
 $r = post_gate($work, [['item_key' => 'm13', 'qty' => '10', 'rate' => '0']]);
-ok(str_contains($r, 'line 1 has no rate'), 'an item with no rate is refused too');
+ok(!str_contains($r, 'has no rate') && !str_contains($r, 'Nothing was saved'),
+   'a line with a quantity but no rate now SAVES as a draft: ' . trim(substr($r, -200)));
 
 $r = post_gate($work, [['item_key' => 'm13', 'qty' => '0', 'rate' => '0']]);
-ok(str_contains($r, 'has no quantity and no rate'), '  and both missing is said in one sentence');
+ok(str_contains($r, 'line 1 has no quantity') && !str_contains($r, 'and no rate'),
+   '  with both missing it is the quantity that is named, and only that');
+
+$r = post_gate($work, [$full, ['item_key' => 'p7', 'qty' => '', 'rate' => '1.00']]);
+ok(str_contains($r, 'line 2 has no quantity'),
+   'THE LINE NUMBER IS THE ONE ON SCREEN, got: ' . trim(substr($r, -200)));
 
 $r = post_gate($work, [$full, ['item_key' => 'p7', 'qty' => '5', 'rate' => '']]);
-ok(str_contains($r, 'line 2 has no rate'), 'THE LINE NUMBER IS THE ONE ON SCREEN, got: ' . trim(substr($r, -200)));
+ok(!str_contains($r, 'Nothing was saved'),
+   '  and a second line missing only its rate does not block the save');
 
 /* A BLANK ROW IS THE SPARE ONE AT THE BOTTOM and must never be refused —
    otherwise a row has to be deleted before every save. */

@@ -121,6 +121,12 @@ function zas_menu(): array {
                         ['label' => 'Store Issue',      'href' => 'inv_store.php?type=issue', 'show' => $inv('store') || $inv('view')],
                         ['label' => 'Store Return',     'href' => 'inv_store.php?type=return','show' => $inv('store') || $inv('view')],
                         ['label' => 'Consumption',      'href' => 'inv_consume.php',          'show' => $inv('consume') || $inv('view')],
+                        /* The phone version of the two screens above. Same
+                           tables, same permission; it only ever writes a
+                           draft and cannot post. Shown to anyone who can
+                           raise a gate pass, so a gatekeeper can find it
+                           once and then add it to their home screen. */
+                        ['label' => 'Gate on Mobile',   'href' => 'm_gate.php?dir=in',        'show' => $inv('gate')],
                     ],
                 ],
                 [

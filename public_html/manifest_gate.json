@@ -1,0 +1,20 @@
+{
+  "name": "ZAS Gate — Inward / Outward",
+  "short_name": "ZAS Gate",
+  "description": "Record what comes in and goes out at the gate. Saves a draft; the office adds rates and posts it.",
+  "start_url": "m_gate.php?dir=in",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef1f6",
+  "theme_color": "#0b2a4a",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Gate In",  "url": "m_gate.php?dir=in" },
+    { "name": "Gate Out", "url": "m_gate.php?dir=out" }
+  ]
+}

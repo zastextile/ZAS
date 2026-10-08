@@ -216,7 +216,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($vm <= 0 && $vp <= 0) continue;                 // a blank line is a spare row
             $miss = [];
             if (inv_num($ln['qty'] ?? 0)  <= 0) $miss[] = 'quantity';
-            if (inv_num($ln['rate'] ?? 0) <= 0) $miss[] = 'rate';
+            /* RATE IS NO LONGER REQUIRED HERE. IT IS REQUIRED TO POST.
+             *
+             * The gate screen is now also used from a phone, by whoever is
+             * standing at the gate. They know the item, the quantity and the
+             * vehicle. They do not know the rate, and in this app seeing
+             * rates is a permission of its own — so demanding one here meant
+             * either holding the truck or typing a number somebody guessed.
+             * A guessed rate is worse than a blank one: blank is visibly
+             * unfinished, a guess is silently wrong.
+             *
+             * So the rate moved to where it actually matters. inv_gate_post()
+             * now refuses to post any pass with a line missing a rate, which
+             * is STRICTER than before — until now nothing checked rates at
+             * posting at all, so a pass whose rate had been cleared after
+             * saving could post with a zero. */
             if ($miss) $bad[] = 'line ' . ((int)$li + 1) . ' has no ' . implode(' and no ', $miss);
         }
         if ($bad) {

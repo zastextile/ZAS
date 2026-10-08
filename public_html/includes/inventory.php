@@ -1950,6 +1950,30 @@ function inv_gate_post(int $gateId): array {
         $items = $st2->fetchAll();
         if (!$items) return ['ok' => false, 'error' => 'Add at least one item before posting.'];
 
+        /* EVERY LINE NEEDS A RATE BEFORE STOCK IS WRITTEN.
+         *
+         * Nothing used to check this at posting. The rate was demanded when
+         * the pass was saved and never looked at again, so a rate cleared
+         * after saving posted as a zero and valued that stock at nothing.
+         *
+         * It is checked here now because the gate screen is also used from a
+         * phone, where whoever is at the gate records the item, the quantity
+         * and the vehicle and leaves the money to the office. A draft is
+         * allowed to be unfinished. The stock ledger is not. */
+        $noRate = [];
+        foreach ($items as $i => $it) {
+            if ((float)$it['rate'] <= 0) {
+                $d = trim((string)($it['description'] ?? ''));
+                $noRate[] = $d !== '' ? $d : ('line ' . ($i + 1));
+            }
+        }
+        if ($noRate) {
+            return ['ok' => false, 'error' => 'A rate is needed before this can be posted — '
+                . implode(', ', array_slice($noRate, 0, 4))
+                . (count($noRate) > 4 ? ' and ' . (count($noRate) - 4) . ' more' : '')
+                . '. Open the pass and fill the rates in.'];
+        }
+
         $types = inv_gate_types($g['direction']);
         $T = $types[$g['txn_type']] ?? null;
         if (!$T) return ['ok' => false, 'error' => 'Unknown transaction type.'];
