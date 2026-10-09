@@ -35,7 +35,7 @@
 
 /* Bumped whenever the tables below change. One indexed read on a page load
    that finds the same number does nothing at all. */
-const PACK_SCHEMA_VERSION = '1';
+const PACK_SCHEMA_VERSION = '2';
 
 /* The material types a weight line can be. The team adds as many lines of
    any type as it needs — two fabrics, three fabrics, two accessories. */
@@ -137,6 +137,30 @@ function pack_ensure_schema(): void
        the desktop can find its way back to the group it came from. */
     $x("ALTER TABLE packing_items ADD COLUMN size_text VARCHAR(190) NULL");
     $x("ALTER TABLE packing_items ADD COLUMN packing_group_id INT NULL");
+
+    /* v2 — THE PER-PRODUCT RULE NEEDS SOMEWHERE TO LOOK.
+       product_key is the normalised product name, written on every save,
+       so "what has this product been packed in before" is one indexed
+       read rather than a scan with normalising done in PHP afterwards.
+       colour_label sits beside size_label because a colour is the same
+       kind of thing: a property of what is in the package, recorded
+       here and never checked against the invoice. */
+    $x("ALTER TABLE packing_groups ADD COLUMN product_key VARCHAR(160) NOT NULL DEFAULT ''");
+    $x("ALTER TABLE packing_groups ADD INDEX idx_pg_prod (product_key)");
+    $x("ALTER TABLE packing_group_sizes ADD COLUMN colour_label VARCHAR(80) NOT NULL DEFAULT ''");
+    $x("ALTER TABLE packing_weight_lines ADD COLUMN colour_label VARCHAR(80) NOT NULL DEFAULT ''");
+    $x("ALTER TABLE packing_weight_std ADD COLUMN colour_label VARCHAR(80) NOT NULL DEFAULT ''");
+
+    /* Ranges saved before this version have no key. Filling it here
+       rather than on the next save means their history is available
+       straight away, which is the whole point of history. */
+    try {
+        $rows = db()->query("SELECT id, product_name FROM packing_groups WHERE product_key = ''")->fetchAll();
+        if ($rows) {
+            $up = db()->prepare("UPDATE packing_groups SET product_key = ? WHERE id = ?");
+            foreach ($rows as $r) $up->execute([pack_product_key((string)$r['product_name']), (int)$r['id']]);
+        }
+    } catch (Throwable $e) {}
 
     try {
         db()->prepare("INSERT INTO exp_meta (k, v, updated_at) VALUES ('pack_schema_version', ?, NOW())
@@ -360,7 +384,7 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
         db()->beginTransaction();
 
         if ($groupId > 0) {
-            db()->prepare("UPDATE packing_groups SET invoice_item_id=?, product_name=?, des_col=?,
+            db()->prepare("UPDATE packing_groups SET invoice_item_id=?, product_name=?, product_key=?, des_col=?,
                     optional_value=?, unit_title=?, serial_from=?, serial_to=?, packages=?,
                     qty_mode=?, qty_per_pkg=?, total_qty=?, assorted=?, size_label=?,
                     updated_by=?, updated_at=NOW()
@@ -368,6 +392,7 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
                 ->execute([
                     (int)($in['invoice_item_id'] ?? 0) ?: null,
                     mb_substr((string)($in['product_name'] ?? ''), 0, 255),
+                    pack_product_key((string)($in['product_name'] ?? '')),
                     mb_substr((string)($in['des_col'] ?? ''), 0, 255),
                     mb_substr((string)($in['optional_value'] ?? ''), 0, 255),
                     $unit, $from, $to, $packages, $mode, $perPkg, $totalQty,
@@ -378,14 +403,15 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
             $ln = db()->prepare("SELECT COALESCE(MAX(line_no),0)+1 FROM packing_groups WHERE shipment_id=?");
             $ln->execute([$shipmentId]);
             db()->prepare("INSERT INTO packing_groups
-                    (shipment_id, line_no, invoice_item_id, product_name, des_col, optional_value,
+                    (shipment_id, line_no, invoice_item_id, product_name, product_key, des_col, optional_value,
                      unit_title, serial_from, serial_to, packages, qty_mode, qty_per_pkg, total_qty,
                      assorted, size_label, created_by, created_at, updated_by, updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?,NOW())")
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?,NOW())")
                 ->execute([
                     $shipmentId, (int)$ln->fetchColumn(),
                     (int)($in['invoice_item_id'] ?? 0) ?: null,
                     mb_substr((string)($in['product_name'] ?? ''), 0, 255),
+                    pack_product_key((string)($in['product_name'] ?? '')),
                     mb_substr((string)($in['des_col'] ?? ''), 0, 255),
                     mb_substr((string)($in['optional_value'] ?? ''), 0, 255),
                     $unit, $from, $to, $packages, $mode, $perPkg, $totalQty,
@@ -656,37 +682,111 @@ function pack_may_use(): bool
     return $ids === ['ALL'] || $ids !== [];
 }
 
-/* Sizes offered on the screen: every size this product has a costing for,
-   then every size already used anywhere in packing, then a short default
-   list so a brand new product is still usable. */
-function pack_size_options(string $productName): array
+/* ===================================== what this product is packed in
+
+   THE RULE: the sizes offered are this product's sizes, exactly.
+
+   It used to offer the product's own sizes, then every size used
+   anywhere in packing, then a made-up list ending in Queen and King.
+   So a bath towel was offered King, and a list of eighty labels from
+   other people's shipments. A dropdown that long is slower to use than
+   typing, and the wrong label picked once is wrong in the database for
+   ever.
+
+   Two sources now, both about this product and nothing else:
+     what the product master has been costed in, and
+     what this product has actually been packed in before.
+
+   HISTORY IS THE SECOND HALF OF THE RULE. A size or a colour typed once
+   is offered from then on, so the list fills itself from real use
+   rather than from someone maintaining it. Nothing is invented: a
+   product nobody has packed yet offers nothing, and the screen lets the
+   first one be typed. */
+
+/* The product master's sizes. Matched on the exact name first, because
+   that is the common case and it is one indexed read. Only if that
+   finds nothing is the normalised key tried, which is what catches
+   "Bath Towel 500GSM" against "Bath Towel 500 gsm". */
+function pack_master_sizes(string $productName): array
 {
+    static $memo = [];
+    $key = pack_product_key($productName);
+    if ($key === '') return [];
+    if (isset($memo[$key])) return $memo[$key];
+
     $out = [];
     try {
         $s = db()->prepare("SELECT DISTINCT ps.size_label
-                            FROM product_sizes ps JOIN products p ON p.id=ps.product_id
-                            WHERE p.name=? ORDER BY ps.size_label");
+                            FROM product_sizes ps JOIN products p ON p.id = ps.product_id
+                            WHERE p.name = ? AND ps.size_label <> '' ORDER BY ps.size_label");
         $s->execute([$productName]);
         $out = array_column($s->fetchAll(), 'size_label');
     } catch (Throwable $e) {}
 
+    if (!$out) {
+        /* The master list is a few hundred rows, so normalising in PHP
+           is cheaper than teaching MySQL to do it, and it is memoised
+           for the request either way. */
+        try {
+            $ids = [];
+            foreach (db()->query("SELECT id, name FROM products LIMIT 5000")->fetchAll() as $r) {
+                if (pack_product_key((string)$r['name']) === $key) $ids[] = (int)$r['id'];
+            }
+            if ($ids) {
+                $in = implode(',', array_fill(0, count($ids), '?'));
+                $s = db()->prepare("SELECT DISTINCT size_label FROM product_sizes
+                                    WHERE product_id IN ($in) AND size_label <> '' ORDER BY size_label");
+                $s->execute($ids);
+                $out = array_column($s->fetchAll(), 'size_label');
+            }
+        } catch (Throwable $e) {}
+    }
+    return $memo[$key] = $out;
+}
+
+/* What this product has been packed in before — the half of the rule
+   that needs nobody to maintain it. */
+function pack_history(string $productName, string $column): array
+{
+    $key = pack_product_key($productName);
+    if ($key === '' || !in_array($column, ['size_label', 'colour_label'], true)) return [];
     try {
-        $s = db()->query("SELECT DISTINCT size_label FROM packing_group_sizes
-                          WHERE size_label<>'' ORDER BY size_label LIMIT 80");
-        foreach ($s->fetchAll() as $r) $out[] = (string)$r['size_label'];
-    } catch (Throwable $e) {}
+        $s = db()->prepare("SELECT DISTINCT gs.$column v
+                            FROM packing_group_sizes gs
+                            JOIN packing_groups g ON g.id = gs.group_id
+                            WHERE g.product_key = ? AND gs.$column <> ''
+                            ORDER BY gs.$column LIMIT 60");
+        $s->execute([$key]);
+        return array_column($s->fetchAll(), 'v');
+    } catch (Throwable $e) { return []; }
+}
 
-    $out = array_merge($out, ['Small', 'Medium', 'Large', 'XLarge',
-                              'Single', 'Double', 'Queen', 'King']);
-
-    $seen = []; $clean = [];
-    foreach ($out as $o) {
-        $o = trim((string)$o);
-        if ($o === '') continue;
-        $k = strtolower($o);
+function pack_dedupe(array $in): array
+{
+    $seen = []; $out = [];
+    foreach ($in as $v) {
+        $v = trim((string)$v);
+        if ($v === '') continue;
+        $k = strtolower($v);
         if (isset($seen[$k])) continue;
         $seen[$k] = true;
-        $clean[] = $o;
+        $out[] = $v;
     }
-    return $clean;
+    return $out;
+}
+
+function pack_size_options(string $productName): array
+{
+    return pack_dedupe(array_merge(
+        pack_master_sizes($productName),
+        pack_history($productName, 'size_label')
+    ));
+}
+
+/* Colours have no master list to come from — nobody costs a product per
+   colour — so this is history alone. The first one is typed, and from
+   then on it is offered. */
+function pack_colour_options(string $productName): array
+{
+    return pack_dedupe(pack_history($productName, 'colour_label'));
 }

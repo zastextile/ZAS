@@ -87,6 +87,38 @@ $itStmt = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORDER 
 $itStmt->execute([$id]);
 $items = $itStmt->fetchAll();
 
+/* THE SIZE FIELD, AND THE RULE BEHIND IT.
+
+   The list is this product's sizes and nothing else — what it has been
+   costed in, and what it has actually been packed in before. A product
+   nobody has packed yet offers nothing, so the field has to let the
+   first one be typed, and what is typed becomes the list from then on.
+
+   Two controls, two names. The select carries the sentinel __new when
+   someone wants to type instead, and the server reads the text box in
+   that case. Juggling disabled attributes on two fields with one name
+   would do the same job and be a great deal easier to get wrong. */
+function pack_pick_field(array $opts, string $cur, string $selName, string $newName,
+                         string $what = 'size'): string
+{
+    $known = $opts !== [];
+    /* A size already saved that is not in the list — a product renamed,
+       or a one-off — must still show as chosen rather than silently
+       resetting to nothing. */
+    if ($cur !== '' && !in_array($cur, $opts, true)) { array_unshift($opts, $cur); $known = true; }
+
+    $h = '<select class="in" name="' . e($selName) . '" data-pick>';
+    $h .= '<option value="">' . ($known ? '— pick a ' . e($what) . ' —' : '— none on record yet —') . '</option>';
+    foreach ($opts as $o) {
+        $h .= '<option' . ($o === $cur ? ' selected' : '') . '>' . e($o) . '</option>';
+    }
+    $h .= '<option value="__new"' . (!$known ? ' selected' : '') . '>+ type a ' . e($what) . ' not in the list</option>';
+    $h .= '</select>';
+    $h .= '<input class="in" name="' . e($newName) . '" data-picknew placeholder="type the ' . e($what) . '"'
+        . ($known ? ' hidden' : '') . ' style="margin-top:8px">';
+    return $h;
+}
+
 $title = 'Packing — ' . (string)$shipment['invoice_no'];
 $back  = 'm_pack.php';
 $self  = 'm_pack.php?id=' . $id;
@@ -116,12 +148,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sizes = [];
         if ($assorted) {
             $lbl = (array)($_POST['size_label'] ?? []);
+            $new = (array)($_POST['size_new'] ?? []);
             $qty = (array)($_POST['size_qty'] ?? []);
             foreach ($lbl as $i => $l) {
-                $sizes[] = ['size_label' => (string)$l, 'qty' => (float)($qty[$i] ?? 0)];
+                $l = (string)$l;
+                if ($l === '__new') $l = trim((string)($new[$i] ?? ''));
+                $sizes[] = ['size_label' => $l, 'qty' => (float)($qty[$i] ?? 0)];
             }
         } else {
-            $sizes[] = ['size_label' => (string)($_POST['single_size'] ?? ''),
+            /* __new means "the one I typed", not a size called __new. */
+            $one = (string)($_POST['single_size'] ?? '');
+            if ($one === '__new') $one = trim((string)($_POST['single_size_new'] ?? ''));
+            $sizes[] = ['size_label' => $one,
                         'qty'        => (float)($_POST['single_qty'] ?? 0)];
         }
 
@@ -234,12 +272,7 @@ if ($tab === 'mix' && $gid > 0) {
           foreach ($show as $r):
               $q = $per ? (float)$r['qty_per_pkg'] : (float)$r['total_qty']; ?>
             <div class="mixrow">
-              <select class="in" name="size_label[]">
-                <option value="">— size —</option>
-                <?php foreach ($opts as $o): ?>
-                  <option<?= $o === (string)$r['size_label'] ? ' selected' : '' ?>><?= e($o) ?></option>
-                <?php endforeach; ?>
-              </select>
+              <div><?= pack_pick_field($opts, (string)$r['size_label'], 'size_label[]', 'size_new[]', 'size') ?></div>
               <input class="in q" type="number" inputmode="decimal" step="any" name="size_qty[]"
                      value="<?= $q > 0 ? e(rtrim(rtrim(number_format($q, 3, '.', ''), '0'), '.')) : '' ?>"
                      placeholder="qty" aria-label="Quantity">
@@ -310,9 +343,20 @@ if ($tab === 'mix' && $gid > 0) {
       document.getElementById('addsize').onclick = function () {
         var c = rows.querySelector('.mixrow').cloneNode(true);
         c.querySelectorAll('input,select').forEach(function (f) { f.value = ''; });
+        /* A cloned row must not arrive with the typed-size box already
+           open from whatever the row above was doing. */
+        c.querySelectorAll('[data-picknew]').forEach(function (b) { b.hidden = true; });
         rows.appendChild(c);
         paint();
       };
+
+      /* The same reveal as the range cards. This page is drawn and
+         exits before that script is reached, so it needs its own. */
+      rows.addEventListener('change', function (ev) {
+        if (!ev.target.matches || !ev.target.matches('[data-pick]')) return;
+        var box = ev.target.parentElement.querySelector('[data-picknew]');
+        if (box) { box.hidden = ev.target.value !== '__new'; if (!box.hidden) box.focus(); }
+      });
       paint();
     })();
     </script>
@@ -477,13 +521,9 @@ if ($tab === 'serial') {
             <span data-qtylabel>Quantity per package</span>
             <input class="in" type="number" inputmode="decimal" step="any" name="single_qty"
                    value="<?= e($num($singleQty)) ?>" data-qty></label>
-          <label class="f" data-one><span>Size</span>
-            <select class="in" name="single_size" data-size>
-              <option value="">— pick a size —</option>
-              <?php foreach ($opts as $o): ?>
-                <option<?= $single && $o === (string)$single['size_label'] ? ' selected' : '' ?>><?= e($o) ?></option>
-              <?php endforeach; ?>
-            </select></label>
+          <label class="f" data-one><span>Size — this product's own sizes</span>
+            <?= pack_pick_field($opts, (string)($single['size_label'] ?? ''),
+                                'single_size', 'single_size_new', 'size') ?></label>
 
           <div data-mix hidden>
             <div class="derv"><span data-mixhead>Assorted</span>
@@ -539,6 +579,19 @@ if ($tab === 'serial') {
         }
         mob_steps_end();
         ?>
+        <script>
+        /* "+ type a size not in the list" shows the box. One handler on
+           the document, so it covers the range cards, the assorted
+           setup and any row added later without wiring each one. */
+        document.addEventListener('change', function (ev) {
+          var sel = ev.target;
+          if (!sel.matches || !sel.matches('[data-pick]')) return;
+          var box = sel.parentElement.querySelector('[data-picknew]');
+          if (!box) return;
+          box.hidden = sel.value !== '__new';
+          if (!box.hidden) box.focus();
+        });
+        </script>
         <script>
         /* EVERY RANGE CARD, LIVE.
            Tapping a toggle changes the label and what is on screen at
