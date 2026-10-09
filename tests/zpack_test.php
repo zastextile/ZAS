@@ -43,8 +43,14 @@ function nocomments(string $s): string {
    below, that test is measuring the stub and not the app. */
 if (!function_exists('db'))           { function db() { throw new RuntimeException('no db in this test'); } }
 if (!function_exists('current_user')) { function current_user(): ?array { return ['id' => 1]; } }
-if (!function_exists('is_admin'))     { function is_admin(): bool { return false; } }
 if (!function_exists('e'))            { function e($s) { return htmlspecialchars((string)$s, ENT_QUOTES); } }
+/* Driven from globals so the permission matrix below can move the role
+   and the assignments around without four more stub files. */
+$ROLE = 'staff'; $SHIPMENTS = [];
+function is_admin(): bool            { return $GLOBALS['ROLE'] === 'admin'; }
+function is_colleague(): bool        { return $GLOBALS['ROLE'] === 'colleague'; }
+function is_production_staff(): bool { return $GLOBALS['ROLE'] === 'production_staff'; }
+function assigned_shipment_ids(): array { return $GLOBALS['SHIPMENTS']; }
 
 require_once $B . 'includes/packing.php';
 
@@ -286,6 +292,40 @@ t('the edit rule lives in one place for both screens',
   str_contains($pkN, 'function pack_may_edit'));
 t('a locked shipment is admin only',
   preg_match('~\$locked.*?return is_admin\(\);~s', $pkN) === 1);
+
+/* ======================= 10b. is there any point offering this person it
+
+   A Packing tile shown to someone who will be told "No shipment is
+   assigned to you" is a button that does nothing, which is worse than
+   no button. pack_may_use() answers whether there is anything behind
+   it — a different question from pack_may_edit(), which asks whether
+   one particular list may still be changed. */
+head('10b. The Packing tile is only offered when it leads somewhere');
+
+$case = function (string $role, array $ships) {
+    $GLOBALS['ROLE'] = $role; $GLOBALS['SHIPMENTS'] = $ships;
+    return pack_may_use();
+};
+t('production staff: never',            $case('production_staff', ['ALL']) === false);
+t('production staff with assignments: still never',
+                                        $case('production_staff', [4, 5]) === false);
+t('admin: always, they see every shipment',   $case('admin', []) === true);
+t('colleague: always, same reason',           $case('colleague', []) === true);
+t('staff with a shipment assigned: yes',      $case('staff', [5]) === true);
+t('staff with several: yes',                  $case('staff', [5, 9]) === true);
+t('staff with nothing assigned: no — the tile would be a dead end',
+                                              $case('staff', []) === false);
+/* assigned_shipment_ids() answers ['ALL'] for the roles that see
+   everything; a literal count would read that as one shipment. */
+t("the 'ALL' answer is understood, not counted",
+                                              $case('staff', ['ALL']) === true);
+$GLOBALS['ROLE'] = 'staff'; $GLOBALS['SHIPMENTS'] = [];
+
+t('the mobile home asks that question rather than guessing',
+  str_contains(nocomments((string)file_get_contents($B . 'includes/mobile.php')), 'pack_may_use()'));
+t('and m.php requires the file that answers it',
+  str_contains(nocomments((string)file_get_contents($B . 'm.php')), "includes/packing.php"),
+  'without the require the tile silently never appears');
 
 /* ================================================ 11. the require chain
    The dashboard 500 was a function called from a page that never required

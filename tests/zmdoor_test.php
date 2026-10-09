@@ -101,6 +101,12 @@ t('the packing screen still checks for itself',
 t('the door requires inventory.php, which is what defines inv_perm',
   str_contains($doorN, "includes/inventory.php"),
   'without it the gate tiles vanish and nothing says why');
+t('and packing.php, which is what defines pack_may_use',
+  str_contains($doorN, "includes/packing.php"),
+  'without it the packing tile vanishes and nothing says why');
+t('the packing tile asks whether there is anything behind it',
+  str_contains($mobN, 'pack_may_use()'),
+  'the tile is shown to anyone who is merely not production staff');
 
 /* ===================================== 4. the redirect target, in detail */
 head('4. Login cannot be aimed anywhere but a phone screen here');
@@ -239,10 +245,12 @@ function current_user(): ?array { return ['id'=>1,'name'=>'Rafiq','email'=>'r@z'
 function is_production_staff(){ return (getenv('ROLE') ?: '') === 'production_staff'; }
 function redirect($u){ echo "__REDIRECT__ $u"; exit; }
 PHP);
-/* inv_perm comes from inventory.php in the real app; here it is the one
-   thing the scenario varies. */
+/* The two files that answer "does this tile lead anywhere". Both are
+   required by the real m.php, and both are varied per scenario here. */
 file_put_contents($work . '/includes/inventory.php',
     "<?php\nfunction inv_perm(string \$w): bool { return getenv('GATE') === '1'; }\n");
+file_put_contents($work . '/includes/packing.php',
+    "<?php\nfunction pack_may_use(): bool { return getenv('PACK') === '1'; }\n");
 
 $render = function (array $env) use ($work): string {
     $pre = '';
@@ -252,14 +260,19 @@ $render = function (array $env) use ($work): string {
         . ' -r ' . escapeshellarg('$_SERVER["REQUEST_METHOD"]="GET";require "m.php";') . ' 2>&1');
 };
 
-$gateman = $render(['ROLE' => 'staff', 'GATE' => '1']);
-$packer  = $render(['ROLE' => 'staff', 'GATE' => '0']);
-$prod    = $render(['ROLE' => 'production_staff', 'GATE' => '0']);
-file_put_contents($work . '/gateman.html', $gateman);
-file_put_contents($work . '/packer.html',  $packer);
-file_put_contents($work . '/prod.html',    $prod);
+$gateman = $render(['ROLE' => 'staff', 'GATE' => '1', 'PACK' => '1']);
+$packer  = $render(['ROLE' => 'staff', 'GATE' => '0', 'PACK' => '1']);
+/* A real account that used to get a dead Packing button: staff, no gate
+   permission, and no shipment assigned to them. */
+$noship  = $render(['ROLE' => 'staff', 'GATE' => '0', 'PACK' => '0']);
+$prod    = $render(['ROLE' => 'production_staff', 'GATE' => '0', 'PACK' => '0']);
+foreach (['gateman' => $gateman, 'packer' => $packer,
+          'noship' => $noship, 'prod' => $prod] as $n => $h) {
+    file_put_contents($work . '/' . $n . '.html', $h);
+}
 
-foreach (['gateman' => $gateman, 'packer' => $packer, 'prod' => $prod] as $who => $h) {
+foreach (['gateman' => $gateman, 'packer' => $packer,
+          'noship' => $noship, 'prod' => $prod] as $who => $h) {
     t("$who: renders with no PHP complaint",
       !preg_match('~(Fatal error|Parse error|Warning:|Notice:|Deprecated:|Uncaught)~i', $h),
       preg_match('~^.*(Fatal error|Warning:|Notice:|Uncaught).*$~mi', $h, $m) ? $m[0] : null);
@@ -281,6 +294,11 @@ t('without the gate permission the gate tiles are gone',
 t('but packing is still there',
   str_contains($packer, 'Packing') && substr_count($packer, 'class="tile ') === 1,
   substr_count($packer, 'class="tile '));
+
+t('staff with no shipment assigned get no Packing tile either',
+  substr_count($noship, 'class="tile ') === 0, substr_count($noship, 'class="tile '));
+t('and are told so, instead of a button that answers "nothing assigned to you"',
+  str_contains($noship, 'no phone screen open to your account'));
 
 t('production staff get no tile at all',
   substr_count($prod, 'class="tile ') === 0, substr_count($prod, 'class="tile '));

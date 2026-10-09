@@ -23,10 +23,12 @@
   journey: tap it, sign in, arrive. The desktop is never seen.
 */
 require_once __DIR__ . '/includes/bootstrap.php';
-/* inventory.php is what defines inv_perm(), and the gate tiles are the
-   reason it is required here. Without it mob_screens() quietly drops
-   them and nobody can tell why. */
+/* These two are what answer "does this tile lead anywhere" —
+   inventory.php defines inv_perm() for the gate, packing.php defines
+   pack_may_use(). Without either, mob_screens() quietly drops that tile
+   and nobody can tell why. */
 require_once __DIR__ . '/includes/inventory.php';
+require_once __DIR__ . '/includes/packing.php';
 require_once __DIR__ . '/includes/mobile.php';
 require_login();
 

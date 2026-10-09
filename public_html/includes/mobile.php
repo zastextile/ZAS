@@ -181,15 +181,25 @@ function mob_footer(): void
    and it appears on the home page, in the installed app, and nowhere a
    user without the permission can see it.
 
-   WHY function_exists AROUND inv_perm. The gate permission lives in
-   includes/inventory.php. m.php requires that file, so the guard is not
-   what makes this work — it is only here so a part-uploaded copy of the
-   app shows fewer tiles instead of a blank error page. If the gate tiles
-   ever go missing, the missing require is the first thing to look at. */
+   A TILE IS ONLY OFFERED WHEN IT LEADS SOMEWHERE. Not merely "is this
+   screen allowed" but "will this person find anything behind it". A
+   Packing tile shown to someone with no shipment assigned is a button
+   that answers "No shipment is assigned to you", which is worse than no
+   button at all. Each screen owns that question in its own file —
+   inv_perm() for the gate, pack_may_use() for packing — so this list
+   stays a list.
+
+   WHY function_exists AROUND THEM. Those two live in inventory.php and
+   packing.php. m.php requires both, so the guards are not what make this
+   work — they are here so a part-uploaded copy of the app shows fewer
+   tiles instead of a blank error page, and a tile whose own file is
+   missing stays hidden rather than leading to a crash. If a tile ever
+   goes missing for everyone, a missing require is the first thing to
+   look at. */
 function mob_screens(): array
 {
-    $gate    = function_exists('inv_perm') && inv_perm('gate');
-    $notProd = !(function_exists('is_production_staff') && is_production_staff());
+    $gate = function_exists('inv_perm')      && inv_perm('gate');
+    $pack = function_exists('pack_may_use')  && pack_may_use();
 
     $all = [
         ['key' => 'gate_in', 'label' => 'Gate In', 'sub' => 'Record what came in',
@@ -197,7 +207,7 @@ function mob_screens(): array
         ['key' => 'gate_out', 'label' => 'Gate Out', 'sub' => 'Record what went out',
          'href' => 'm_gate.php?dir=out', 'show' => $gate, 'tone' => 'out'],
         ['key' => 'packing', 'label' => 'Packing', 'sub' => 'Serial, sizes and weight',
-         'href' => 'm_pack.php',         'show' => $notProd, 'tone' => 'pack'],
+         'href' => 'm_pack.php',         'show' => $pack, 'tone' => 'pack'],
     ];
 
     $out = [];

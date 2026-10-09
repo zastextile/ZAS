@@ -67,8 +67,18 @@ echo json_encode([
 ]);
 PHP;
 file_put_contents($work . '/emp.php', $srv);
-$port = 8731;
-$ph = proc_open('php -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($work) . ' 2>/dev/null',
+/* A FREE PORT, AND A SERVER THAT CAN BE KILLED.
+   This used to hard-code 8731 and start the server through a shell, so
+   proc_terminate() below killed the shell and left php -S holding the
+   port. The run after it then found the port taken, got a 404 from the
+   orphan, and failed eighteen assertions with nothing on screen to say
+   why. Bind :0 for a port nobody else has, and exec so there is one
+   process to terminate rather than two. */
+$probe = @stream_socket_server('tcp://127.0.0.1:0', $pe, $pm);
+$port  = $probe ? (int)substr(($nm = stream_socket_get_name($probe, false)),
+                              strrpos($nm, ':') + 1) : 8731;
+if ($probe) fclose($probe);
+$ph = proc_open('exec php -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($work) . ' 2>/dev/null',
                 [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
 for ($i = 0; $i < 60; $i++) { $c = @fsockopen('127.0.0.1', $port, $e1, $e2, 0.2); if ($c) { fclose($c); break; } usleep(100000); }
 

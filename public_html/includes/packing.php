@@ -633,6 +633,29 @@ function pack_may_edit(array $shipment): bool
     return true;
 }
 
+/* IS THERE ANY POINT SHOWING THIS PERSON THE PACKING SCREEN?
+
+   A different question from pack_may_edit(), which asks whether one
+   particular packing list may still be changed. This one asks whether
+   the account has anything to open at all, and it exists because the
+   mobile home was offering a Packing tile to people who would tap it and
+   be told "No shipment is assigned to you" — a button that does nothing
+   is worse than no button.
+
+   Production staff cannot open packing at all. Admins and colleagues see
+   every shipment, so there is always something there. Everyone else sees
+   only what has been assigned to them, so with nothing assigned there is
+   nothing to show. */
+function pack_may_use(): bool
+{
+    if (function_exists('is_production_staff') && is_production_staff()) return false;
+    if (function_exists('is_admin') && is_admin()) return true;
+    if (function_exists('is_colleague') && is_colleague()) return true;
+    if (!function_exists('assigned_shipment_ids')) return false;
+    $ids = assigned_shipment_ids();
+    return $ids === ['ALL'] || $ids !== [];
+}
+
 /* Sizes offered on the screen: every size this product has a costing for,
    then every size already used anywhere in packing, then a short default
    list so a brand new product is still usable. */
