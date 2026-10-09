@@ -219,6 +219,34 @@ function inv_ensure_schema(): void {
         INDEX(gate_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 
+    /* --- a party's standard list of items ---------------------------
+
+       What this supplier always brings, or what always goes to this
+       customer. Set once from the gate screen by saving the items already
+       on a pass, so nobody has to maintain it in a separate place.
+
+       It sits alongside the list derived from history, it does not replace
+       it: history is right about what actually happened, a standard list is
+       right about what is expected. The gate screen shows both.
+
+       Keyed on party_id when the typed name resolves to a real party, so
+       renaming the party keeps the list; on the normalised name when it does
+       not, so a name typed before the party existed still works. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS inv_party_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        party_id INT NULL,
+        party_key VARCHAR(190) NOT NULL,
+        direction ENUM('in','out') NOT NULL,
+        material_id INT NULL,
+        product_id INT NULL,
+        uom VARCHAR(20) NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_party (party_key, direction),
+        INDEX idx_pid (party_id, direction)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
     /* --- store issue / return: location movement only --- */
     try { db()->exec("CREATE TABLE IF NOT EXISTS inv_store_move (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -3334,4 +3362,99 @@ function inv_audit(string $action, $old, $new, string $reason = ''): void {
 function inv_num($v): float {
     $s = preg_replace('/[^0-9.\-]/', '', (string)$v);
     return is_numeric($s) ? (float)$s : 0.0;
+}
+
+/* ============================== a party's standard list of items =========
+
+   What this supplier always brings, or what always goes to this customer.
+   Kept beside the list derived from history rather than instead of it:
+   history is right about what happened, a standard list is right about
+   what is expected, and at a gate both are worth seeing.
+*/
+
+function inv_party_key(string $name): string {
+    return mb_substr(strtolower(trim((string)preg_replace('/\s+/', ' ', $name))), 0, 190);
+}
+
+/* The party id, when the typed name is unmistakably one party. Two parties
+   with the same name means we cannot tell which, so the name is used
+   instead — a wrong link is worse than no link. */
+function inv_party_id_for(string $name): ?int {
+    $k = trim($name);
+    if ($k === '') return null;
+    try {
+        $s = db()->prepare("SELECT id FROM inv_parties WHERE LOWER(TRIM(name)) = ? LIMIT 2");
+        $s->execute([inv_party_key($name)]);
+        $rows = $s->fetchAll();
+        return count($rows) === 1 ? (int)$rows[0]['id'] : null;
+    } catch (Throwable $e) { return null; }
+}
+
+function inv_party_standard(string $party, string $dir): array {
+    $party = trim($party);
+    if ($party === '') return [];
+    $pid = inv_party_id_for($party);
+    try {
+        if ($pid !== null) {
+            $s = db()->prepare("SELECT * FROM inv_party_items
+                                 WHERE direction=? AND (party_id=? OR party_key=?)
+                              ORDER BY sort_order, id");
+            $s->execute([$dir, $pid, inv_party_key($party)]);
+        } else {
+            $s = db()->prepare("SELECT * FROM inv_party_items
+                                 WHERE direction=? AND party_key=?
+                              ORDER BY sort_order, id");
+            $s->execute([$dir, inv_party_key($party)]);
+        }
+    } catch (Throwable $e) { return []; }
+
+    $out = [];
+    $seen = [];
+    foreach ($s->fetchAll() as $r) {
+        $k = (int)$r['material_id'] > 0 ? 'm' . (int)$r['material_id'] : 'p' . (int)$r['product_id'];
+        if ($k === 'm0' || $k === 'p0' || isset($seen[$k])) continue;   /* the OR above can return both rows */
+        $seen[$k] = true;
+        $out[] = ['k' => $k, 'u' => (string)($r['uom'] ?? '')];
+    }
+    return $out;
+}
+
+/* Replaces the whole list rather than adding to it, because that is what
+   "this is the standard list" means — and an add-only list nobody can prune
+   stops being a standard within a month. */
+function inv_party_standard_save(string $party, string $dir, array $items): array
+{
+    $party = trim($party);
+    if ($party === '')  return [false, 'Type the party name first.'];
+    if (!in_array($dir, ['in', 'out'], true)) return [false, 'Unknown direction.'];
+    if (count($items) > 40) $items = array_slice($items, 0, 40);
+
+    $pid = inv_party_id_for($party);
+    $key = inv_party_key($party);
+
+    try {
+        db()->beginTransaction();
+        $d = db()->prepare("DELETE FROM inv_party_items WHERE direction=? AND (party_key=?" . ($pid !== null ? " OR party_id=?" : "") . ")");
+        $d->execute($pid !== null ? [$dir, $key, $pid] : [$dir, $key]);
+
+        $ins = db()->prepare("INSERT INTO inv_party_items
+               (party_id, party_key, direction, material_id, product_id, uom, sort_order, created_by)
+               VALUES (?,?,?,?,?,?,?,?)");
+        $n = 0;
+        foreach ($items as $i => $it) {
+            [$mid, $pidItem] = inv_split_key((string)($it['k'] ?? ''));
+            if ($mid <= 0 && $pidItem <= 0) continue;
+            $ins->execute([$pid, $key, $dir, $mid ?: null, $pidItem ?: null,
+                           mb_substr(trim((string)($it['u'] ?? '')), 0, 20) ?: null,
+                           $i + 1, (int)(current_user()['id'] ?? 0)]);
+            $n++;
+        }
+        db()->commit();
+        return [true, $n === 0
+            ? 'The standard list for ' . $party . ' was cleared.'
+            : $n . ' item' . ($n === 1 ? '' : 's') . ' saved as the standard list for ' . $party . '.'];
+    } catch (Throwable $e) {
+        try { if (db()->inTransaction()) db()->rollBack(); } catch (Throwable $e2) {}
+        return [false, 'The standard list could not be saved.'];
+    }
 }

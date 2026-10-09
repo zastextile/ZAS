@@ -329,11 +329,67 @@ t('scoped to this direction, so an outward list is not shown on an inward pass',
 t('and capped',                        str_contains($mgN, 'LIMIT 12'));
 t('it is fetched once per party, not on every keystroke',
   str_contains($mg, 'party === recentFor'));
-t('the ajax answers are JSON and stop there',
-  substr_count($mgN, "header('Content-Type: application/json')") === 1
-  && substr_count($mgN, 'exit;') >= 3);
+/* Two JSON endpoints now — the read and the standard-list write. What
+   matters is that each declares JSON and stops, rather than falling
+   through and rendering a phone page into a fetch(). */
+$jsonHdrs = substr_count($mgN, "header('Content-Type: application/json')");
+t('every ajax path declares JSON', $jsonHdrs >= 2, $jsonHdrs);
+t('and each one ends in exit, so none falls through into the page',
+  substr_count($mgN, 'exit;') >= $jsonHdrs + 2);
 t('the ajax is behind the same login and permission as the page',
   strpos($mgN, "inv_perm('gate')") < strpos($mgN, "\$_GET['ajax']"));
+
+head('7e. A fixed standard list per party');
+
+$invN3 = nocomments($inv);
+t('the list has its own table',
+  str_contains($invN3, 'CREATE TABLE IF NOT EXISTS inv_party_items'));
+t('it is per direction, so an outward list is not offered on an inward pass',
+  str_contains($invN3, "direction ENUM('in','out') NOT NULL"));
+
+/* The link must survive a party being renamed, and must never attach to
+   the wrong party. */
+t('it keys on the party id when the name resolves to exactly one party',
+  str_contains(nocomments(lift($inv, 'function inv_party_id_for(')), 'count($rows) === 1'));
+t('two parties sharing a name resolve to nothing rather than to a guess',
+  str_contains(nocomments(lift($inv, 'function inv_party_id_for(')), 'LIMIT 2'));
+t('and the normalised name is always stored as the fallback',
+  str_contains($invN3, 'party_key VARCHAR(190) NOT NULL'));
+t('the name is normalised for case and spacing',
+  str_contains(nocomments(lift($inv, 'function inv_party_key(')), "preg_replace('/\\s+/', ' '"));
+
+$sv = nocomments(lift($inv, 'function inv_party_standard_save('));
+t('saving REPLACES the list rather than adding to it',
+  str_contains($sv, 'DELETE FROM inv_party_items'));
+t('it is one transaction, so a half-written list cannot survive',
+  str_contains($sv, 'beginTransaction()') && str_contains($sv, 'rollBack()'));
+t('the number of items is capped',   str_contains($sv, 'count($items) > 40'));
+t('a blank party name is refused',   str_contains($sv, "Type the party name first"));
+t('an unknown direction is refused', str_contains($sv, "in_array(\$dir, ['in', 'out'], true)"));
+t('clearing the list is possible and says so',
+  str_contains($sv, 'was cleared'));
+
+$rd = nocomments(lift($inv, 'function inv_party_standard('));
+t('reading matches on either the id or the name',
+  str_contains($rd, 'party_id=? OR party_key=?'));
+t('and the same item cannot come back twice from that OR',
+  str_contains($rd, 'isset($seen[$k])'));
+
+t('the phone can save the list without submitting the pass',
+  str_contains($mgN, "'savestd'") && str_contains($mg, 'id="savestd"'));
+t('that action is behind CSRF like every other write',
+  strpos($mgN, "=== 'savestd'") < strpos($mgN, 'inv_party_standard_save(')
+  && str_contains($mgN, 'verify_csrf()'));
+t('it answers JSON and stops, so the page is not re-rendered',
+  str_contains($mgN, "echo json_encode(['ok' => \$ok, 'msg' => \$msg]);"));
+t('both lists come back in one request — the gate has the worst signal',
+  str_contains($mgN, "'std' => inv_party_standard("));
+t('the picker shows the standard list',   str_contains($mg, 'Standard list for this party'));
+t('and what was actually brought before', str_contains($mg, 'Brought before with this party'));
+t('with one tap to add the whole standard list',
+  str_contains($mg, "id=\"addall\"") && str_contains($mg, "closest('#addall')"));
+t('adding fills the empty first row rather than stranding it',
+  substr_count($mg, "return !r.querySelector('.k').value;") >= 2);
 
 head('8. Everything it calls is reachable — no stub can hide a missing require');
 

@@ -88,7 +88,10 @@ if (($_GET['ajax'] ?? '') !== '') {
        the list is right without anybody maintaining it. */
     if ($_GET['ajax'] === 'recent') {
         $party = trim((string)($_GET['party'] ?? ''));
-        $out = ['ok' => true, 'keys' => []];
+        /* Both lists in one answer: the standard list this party was given,
+           and what it has actually brought. One round trip, because the gate
+           is where the signal is worst. */
+        $out = ['ok' => true, 'keys' => [], 'std' => inv_party_standard($party, $dirForRecent)];
         if ($party !== '') {
             try {
                 $st = db()->prepare(
@@ -118,6 +121,20 @@ if (($_GET['ajax'] ?? '') !== '') {
 $dir = ($_GET['dir'] ?? $_POST['dir'] ?? '') === 'out' ? 'out' : 'in';
 $TYPES = inv_gate_types($dir);
 $dirName = $dir === 'in' ? 'Gate Inward' : 'Gate Outward';
+
+/* Saving a party's standard list. Its own action, answering JSON, so the
+   gate pass being filled in is never submitted or lost by doing it. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'savestd') {
+    header('Content-Type: application/json');
+    verify_csrf();
+    $items = [];
+    foreach ((array)($_POST['k'] ?? []) as $i => $k) {
+        $items[] = ['k' => (string)$k, 'u' => (string)(($_POST['u'][$i] ?? ''))];
+    }
+    [$ok, $msg] = inv_party_standard_save((string)($_POST['party'] ?? ''), $dir, $items);
+    echo json_encode(['ok' => $ok, 'msg' => $msg]);
+    exit;
+}
 
 /* ------------------------------------------------------------------ save */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
@@ -457,7 +474,10 @@ mob_flash();
       <h2>Items</h2>
       <div id="rows"></div>
       <button type="button" class="btn sec" id="addrow" style="margin-top:14px">+ Add item</button>
-      <div class="note" style="margin-top:10px">
+      <button type="button" class="btn sec" id="savestd" style="margin-top:10px">
+        Save these as this party&rsquo;s standard list
+      </button>
+      <div class="note" style="margin-top:10px" id="stdnote">
         No rate here. The office adds rates before posting — the pass shows <b>rate pending</b> until they do.
       </div>
     </div>
@@ -539,7 +559,8 @@ mob_flash();
   var rows = document.getElementById('rows');
   var BYKEY = {}; ITEMS.forEach(function (i) { BYKEY[i.k] = i; });
   var n = 0;
-  var recent = [];          /* item keys this party has brought before */
+  var recent = [];          /* what this party has actually brought */
+  var standard = [];        /* what this party is expected to bring */
   var activeRow = null;     /* the row whose picker is open */
 
   /* ---------------------------------------------------------- searching
@@ -572,8 +593,18 @@ mob_flash();
     var box = document.getElementById('plist');
     var html = '';
 
+    /* Both lists, before any typing. The standard list first: it is what
+       somebody decided should happen, where history is only what did. */
+    if (!q && standard.length) {
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px">'
+            + '<span style="font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700">Standard list for this party</span>'
+            + '<button type="button" id="addall" style="border:0;background:none;color:var(--cyan);font-weight:700;font-size:12.5px;padding:4px 2px">Add all</button>'
+            + '</div>';
+      html += section('', standard.map(function (x) { return BYKEY[x.k]; }).filter(Boolean));
+    }
     if (!q && recent.length) {
-      html += section('Used before with this party', recent.map(function (k) { return BYKEY[k]; }).filter(Boolean));
+      html += section('Brought before with this party',
+                      recent.map(function (k) { return BYKEY[k]; }).filter(Boolean));
     }
 
     var hits = ITEMS.map(function (i) { return { i: i, s: score(i, q) }; })
@@ -592,7 +623,7 @@ mob_flash();
 
   function section(title, list) {
     if (!list.length) return '';
-    var h = '<div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700;margin:12px 0 4px">' + esc(title) + '</div>';
+    var h = title ? '<div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700;margin:12px 0 4px">' + esc(title) + '</div>' : '';
     list.forEach(function (i) {
       h += '<button type="button" class="pitem" data-k="' + esc(i.k) + '" data-u="' + esc(i.u || '') + '"'
          + ' style="display:block;width:100%;text-align:left;padding:13px 12px;border:1px solid var(--line);'
@@ -624,9 +655,27 @@ mob_flash();
     recentFor = party;
     fetch('m_gate.php?ajax=recent&dir=' + encodeURIComponent(DIR) + '&party=' + encodeURIComponent(party))
       .then(function (r) { return r.json(); })
-      .then(function (j) { recent = (j && j.keys) || []; drawList(); })
-      .catch(function () { recent = []; });
+      .then(function (j) {
+        recent   = (j && j.keys) || [];
+        standard = (j && j.std)  || [];
+        drawList();
+      })
+      .catch(function () { recent = []; standard = []; });
   }
+
+  /* Add all — the whole point of a standard list. Fills the empty first
+     row rather than leaving it stranded above the rest. */
+  document.getElementById('plist').addEventListener('click', function (e) {
+    if (!e.target.closest('#addall')) return;
+    standard.forEach(function (x) {
+      var blank = Array.prototype.find.call(rows.querySelectorAll('.grow'),
+                    function (r) { return !r.querySelector('.k').value; });
+      var row = blank || addRow();
+      setItem(row, x.k, x.u);
+    });
+    syncRemove();
+    closePicker();
+  });
 
   document.getElementById('psearch').addEventListener('input', drawList);
   document.getElementById('pclose').addEventListener('click', function (e) { e.preventDefault(); closePicker(); });
@@ -811,6 +860,38 @@ mob_flash();
                    + (pre.p ? ' &middot; ' + esc(pre.p) : '') + '</div>';
     }
   }
+
+  /* Saving the standard list. A fetch rather than a submit, so the pass
+     being filled in is not posted or lost by setting it. */
+  document.getElementById('savestd').addEventListener('click', function () {
+    var party = (document.querySelector('[name="party_text"]').value || '').trim();
+    var note  = document.getElementById('stdnote');
+    if (!party) { note.innerHTML = '<b>Type the party name first</b> — a standard list belongs to a party.'; return; }
+
+    var body = new URLSearchParams();
+    body.append('action', 'savestd');
+    body.append('dir', DIR);
+    body.append('party', party);
+    body.append('_csrf', document.querySelector('[name="_csrf"]').value);
+    var n = 0;
+    rows.querySelectorAll('.grow').forEach(function (r) {
+      var k = r.querySelector('.k').value;
+      if (!k) return;
+      body.append('k[]', k);
+      body.append('u[]', r.querySelector('.uom').value || '');
+      n++;
+    });
+    if (!n && !confirm('No items are on the pass. Clear the standard list for ' + party + '?')) return;
+
+    note.textContent = 'Saving…';
+    fetch('m_gate.php', { method: 'POST', body: body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        note.textContent = (j && j.msg) || 'Saved.';
+        recentFor = null;            /* so the picker reloads it */
+      })
+      .catch(function () { note.textContent = 'The standard list could not be saved. Check the signal.'; });
+  });
 
   /* Caught here so the answer is instant, and caught again on the server
      because a browser check is a convenience, never a guard. */
