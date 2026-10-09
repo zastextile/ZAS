@@ -100,37 +100,37 @@ $GLOBALS['ROWS'] = [
   'wlines' => [
     '101|Small'   => [['w_type'=>'Fabric','w_name'=>'Fleece 220gsm','grams'=>400],
                       ['w_type'=>'Fabric','w_name'=>'Micro peach','grams'=>160],
-                      ['w_type'=>'Fiber / filling','w_name'=>'Polyester','grams'=>90],
-                      ['w_type'=>'PVC / poly bag','w_name'=>'','grams'=>80],
-                      ['w_type'=>'Cardboard / paper','w_name'=>'Board','grams'=>60],
+                      ['w_type'=>'Fiber','w_name'=>'Polyester','grams'=>90],
+                      ['w_type'=>'PVC','w_name'=>'','grams'=>80],
+                      ['w_type'=>'Cardboard','w_name'=>'Board','grams'=>60],
                       ['w_type'=>'Accessories','w_name'=>'Label','grams'=>60]],
     '101|Medium'  => [['w_type'=>'Fabric','w_name'=>'Fleece 220gsm','grams'=>500],
                       ['w_type'=>'Fabric','w_name'=>'Micro peach','grams'=>190],
-                      ['w_type'=>'Fiber / filling','w_name'=>'Polyester','grams'=>110],
-                      ['w_type'=>'PVC / poly bag','w_name'=>'','grams'=>90],
-                      ['w_type'=>'Cardboard / paper','w_name'=>'Board','grams'=>70],
+                      ['w_type'=>'Fiber','w_name'=>'Polyester','grams'=>110],
+                      ['w_type'=>'PVC','w_name'=>'','grams'=>90],
+                      ['w_type'=>'Cardboard','w_name'=>'Board','grams'=>70],
                       ['w_type'=>'Accessories','w_name'=>'Label','grams'=>70]],
     '101|Large'   => [['w_type'=>'Fabric','w_name'=>'Fleece 220gsm','grams'=>560],
                       ['w_type'=>'Fabric','w_name'=>'Micro peach','grams'=>210],
-                      ['w_type'=>'Fiber / filling','w_name'=>'Polyester','grams'=>130],
-                      ['w_type'=>'PVC / poly bag','w_name'=>'','grams'=>100],
-                      ['w_type'=>'Cardboard / paper','w_name'=>'Board','grams'=>75],
+                      ['w_type'=>'Fiber','w_name'=>'Polyester','grams'=>130],
+                      ['w_type'=>'PVC','w_name'=>'','grams'=>100],
+                      ['w_type'=>'Cardboard','w_name'=>'Board','grams'=>75],
                       ['w_type'=>'Accessories','w_name'=>'Label','grams'=>75]],
     /* 495 g x 40 = 19.800 kg, against 21.000 - 1.200 */
     '102|152x200' => [['w_type'=>'Fabric','w_name'=>'Percale 300TC','grams'=>420],
-                      ['w_type'=>'PVC / poly bag','w_name'=>'','grams'=>30],
-                      ['w_type'=>'Cardboard / paper','w_name'=>'Insert','grams'=>40],
+                      ['w_type'=>'PVC','w_name'=>'','grams'=>30],
+                      ['w_type'=>'Cardboard','w_name'=>'Insert','grams'=>40],
                       ['w_type'=>'Accessories','w_name'=>'Label','grams'=>5]],
     /* 450 g x 200 = 90.000 kg, against 92.000 - 2.000 */
     '103|Single'  => [['w_type'=>'Fabric','w_name'=>'Terry 500gsm','grams'=>400],
-                      ['w_type'=>'PVC / poly bag','w_name'=>'','grams'=>20],
-                      ['w_type'=>'Cardboard / paper','w_name'=>'Band','grams'=>25],
+                      ['w_type'=>'PVC','w_name'=>'','grams'=>20],
+                      ['w_type'=>'Cardboard','w_name'=>'Band','grams'=>25],
                       ['w_type'=>'Accessories','w_name'=>'Label','grams'=>5]],
   ],
   /* something remembered for one product and size, and nothing for the rest */
   'std' => ['bath towel 500 gsm|Single' => [
       ['w_type'=>'Fabric','w_name'=>'Terry 500gsm','grams'=>400],
-      ['w_type'=>'PVC / poly bag','w_name'=>'','grams'=>20]]],
+      ['w_type'=>'PVC','w_name'=>'','grams'=>20]]],
 ];
 
 final class BStmt {
@@ -519,6 +519,61 @@ const path = require('path');
   });
   await p.close();
 
+  // ---------- the description behind a symbol ----------
+  p = await open('weight2.html');            // one size, four lines, names on three
+  const rowH = async () => p.locator('#wlines .wrow').evaluateAll(
+    els => els.map(e => Math.round(e.getBoundingClientRect().height)));
+  out.rowsClosed   = await rowH();
+  /* AT REST — before a single box has been opened. The first version of
+     this measured after two were open and reported 130 for a layout
+     whose tallest row is 108. */
+  out.heights = await p.locator('#wlines .wrow').evaluateAll(els => els.map(e => ({
+    h: Math.round(e.getBoundingClientRect().height),
+    named: !!e.querySelector('.nmshow')
+  })));
+  out.inputsClosed = await p.locator('#wlines .nmi').count();
+  out.shownClosed  = await p.locator('#wlines .nmshow').allInnerTexts();
+  out.dotsFilled   = await p.locator('#wlines .nt.has').count();
+  out.dotsEmpty    = await p.locator('#wlines .nt:not(.has)').count();
+  /* The glyph, not just the class — a dot that always reads "+" looks
+     identical to one that never learned there is something behind it. */
+  out.glyphs = await p.locator('#wlines .nt').evaluateAll(
+    els => els.map(e => ({ g: e.textContent.trim(), has: e.classList.contains('has') })));
+
+  // open the first line's description
+  await p.locator('#wlines .wrow').first().locator('.nt').click();
+  await p.waitForTimeout(150);
+  out.inputsOpen   = await p.locator('#wlines .nmi').count();
+  out.focused      = await p.evaluate(() => document.activeElement &&
+                       document.activeElement.classList.contains('nmi'));
+  out.openRowTaller = (await rowH())[0] > out.rowsClosed[0];
+
+  // tapping the same symbol again puts it away
+  await p.locator('#wlines .wrow').first().locator('.nt').click();
+  await p.waitForTimeout(150);
+  out.closedBySameTap = await p.locator('#wlines .nmi').count();
+  await p.locator('#wlines .wrow').first().locator('.nt').click();
+  await p.waitForTimeout(150);
+
+  // type into it, then open another: the first must keep what was typed
+  await p.locator('#wlines .nmi').fill('Micro 7668');
+  await p.locator('#wlines .wrow').nth(1).locator('.nt').click();
+  await p.waitForTimeout(150);
+  out.onlyOneOpen  = await p.locator('#wlines .nmi').count();
+  out.keptTyped    = (await p.locator('#wlines .nmshow').allInnerTexts())
+                       .some(t => t.trim() === 'Micro 7668');
+
+
+  // deleting the row whose description is open must not break the next draw
+  await p.locator('#wlines .wrow').nth(1).locator('.x').click();
+  await p.waitForTimeout(150);
+  out.afterDelete = await p.locator('#wlines .wrow').count();
+  out.deleteErrors = out.errors.length;
+  /* The deleted row was the open one. If its index is left behind, the
+     row that slid up into its place opens a box nobody asked for. */
+  out.openAfterDelete = await p.locator('#wlines .nmi').count();
+  await p.close();
+
   // ---------- the remembered breakdown, filled without a round trip ----------
   p = await open('weight3.html');
   out.stdVisible = await p.locator('#stdbtn').isVisible();
@@ -612,6 +667,59 @@ JS;
            'one field carries all three sizes on submit', array_keys((array)$posted));
         ok(is_array($posted) && array_sum(array_column($posted['Large'] ?? [], 'g')) === 850,
            'with the copied figures in it', $posted['Large'] ?? null);
+
+        /* --- the description as a symbol --- */
+        ok(($d['inputsClosed'] ?? -1) === 0,
+           'no line carries an open text box until it is asked for',
+           $d['inputsClosed'] ?? null);
+        ok(count($d['shownClosed'] ?? []) === 3
+           && in_array('Percale 300TC', $d['shownClosed'] ?? [], true),
+           'a named quality shows as a thin line of text instead',
+           $d['shownClosed'] ?? null);
+        ok(($d['dotsFilled'] ?? 0) === 3 && ($d['dotsEmpty'] ?? 0) === 1,
+           'the symbol is filled where there is a name and hollow where there is not',
+           [$d['dotsFilled'] ?? null, $d['dotsEmpty'] ?? null]);
+        /* The point of the whole change. Every line used to carry a
+           full-width box whether it was wanted or not; an unnamed line
+           is now the control row and nothing else. */
+        $hs     = $d['heights'] ?? [];
+        $unnamed = array_column(array_filter($hs, fn($r) => !$r['named']), 'h');
+        $named   = array_column(array_filter($hs, fn($r) =>  $r['named']), 'h');
+        ok($unnamed !== [] && $named !== [] && max($unnamed) < min($named),
+           'an unnamed line is shorter than a named one — the box is simply not there',
+           ['unnamed' => $unnamed, 'named' => $named]);
+        ok($unnamed !== [] && max($unnamed) <= 90,
+           'and it is one control row, not two',
+           $unnamed);
+        /* A named line shows text, not a field: a field is ~37px plus its
+           margin, the text line is 24. */
+        ok($named !== [] && $unnamed !== [] && (min($named) - max($unnamed)) <= 30,
+           'a named line costs a line of text, not a second input',
+           ['named' => min($named ?: [0]), 'unnamed' => max($unnamed ?: [0])]);
+        ok(($d['inputsOpen'] ?? 0) === 1 && ($d['openRowTaller'] ?? null) === true,
+           'tapping the symbol opens one input, on that line only',
+           [$d['inputsOpen'] ?? null, $d['openRowTaller'] ?? null]);
+        ok(($d['focused'] ?? null) === true,
+           'and puts the cursor in it, so the keyboard is already there');
+        ok(($d['closedBySameTap'] ?? -1) === 0,
+           'tapping the same symbol again puts the box away',
+           $d['closedBySameTap'] ?? null);
+        $gl = $d['glyphs'] ?? [];
+        ok($gl !== [] && count(array_filter($gl, fn($x) => $x['has'] && $x['g'] === '●')) === 3
+           && count(array_filter($gl, fn($x) => !$x['has'] && $x['g'] === '+')) === 1,
+           'the symbol itself says whether something is behind it, not just its class',
+           $gl);
+        ok(($d['onlyOneOpen'] ?? 0) === 1,
+           'opening another closes the first — one at a time, never a wall of boxes',
+           $d['onlyOneOpen'] ?? null);
+        ok(($d['keptTyped'] ?? null) === true,
+           'what was typed survives the box closing', $d['shownClosed'] ?? null);
+        ok(($d['afterDelete'] ?? 0) === 3 && (int)($d['deleteErrors'] ?? 1) === 0,
+           'deleting the line that was open does not throw on the next draw',
+           [$d['afterDelete'] ?? null, $d['deleteErrors'] ?? null]);
+        ok(($d['openAfterDelete'] ?? -1) === 0,
+           'and the row that slid up into its place does not open a box of its own',
+           $d['openAfterDelete'] ?? null);
 
         /* --- the remembered breakdown --- */
         ok(($d['stdVisible'] ?? null) === true, 'the last saved breakdown is offered');

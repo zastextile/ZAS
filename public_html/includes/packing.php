@@ -39,8 +39,13 @@ const PACK_SCHEMA_VERSION = '2';
 
 /* The material types a weight line can be. The team adds as many lines of
    any type as it needs — two fabrics, three fabrics, two accessories. */
-const PACK_WTYPES = ['Fabric', 'Fiber / filling', 'PVC / poly bag',
-                     'Cardboard / paper', 'Accessories', 'Other'];
+/* His own words, and they fit the column: "Fabric. Fiber. Pvc.
+   Accessories". The longer labels were being clipped in a dropdown that
+   has to share a row with the grams, the description symbol and the
+   delete — and a label you cannot read is not a label. Safe to change
+   while nothing is uploaded; once it is, a renamed type would orphan
+   every row already stored under the old spelling. */
+const PACK_WTYPES = ['Fabric', 'Fiber', 'PVC', 'Cardboard', 'Accessories', 'Other'];
 
 /* Matches the guard the desktop packing screen already uses. A range wider
    than this is a typing accident, not a shipment. */

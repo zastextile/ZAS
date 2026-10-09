@@ -242,10 +242,14 @@ t('a weight line is still a material, a name and grams',
   && str_contains($mpN, "class=\"in g\""));
 t('and every size goes back in one field',
   str_contains($mpN, 'name="weights_json"'));
-t('the material types are the ones asked for',
-  in_array('Fabric', PACK_WTYPES, true) && in_array('Fiber / filling', PACK_WTYPES, true)
-  && in_array('PVC / poly bag', PACK_WTYPES, true) && in_array('Accessories', PACK_WTYPES, true),
+t('the material types are the ones he asked for, in his words',
+  PACK_WTYPES === ['Fabric', 'Fiber', 'PVC', 'Cardboard', 'Accessories', 'Other'],
   PACK_WTYPES);
+/* A long label is clipped in a dropdown sharing its row with three
+   other controls, and a label you cannot read is not a label. */
+t('and none of them is too long for the row it sits in',
+  max(array_map('strlen', PACK_WTYPES)) <= 11,
+  array_combine(PACK_WTYPES, array_map('strlen', PACK_WTYPES)));
 t('a new line starts as Fabric, not as the last type in the list',
   str_contains($mp, 'rows().push({ t: TYPES[0]'), 'the new-line default is not the first type');
 t('a line worth nothing is not stored',

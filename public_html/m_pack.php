@@ -892,15 +892,27 @@ if ($tab === 'weight') {
         </form>
 
         <style>
-        .wrow{border:1px solid var(--line);border-radius:11px;padding:10px;margin-bottom:9px;background:#fff}
-        .wtop{display:grid;grid-template-columns:1fr 90px 34px;gap:8px;align-items:center}
-        .wtop .in{padding:9px 10px}
+        /* TIGHT ON PURPOSE. A weight has six or seven lines and the
+           screen has one thumb's worth of room. Nothing here is padded
+           for the sake of it. */
+        .wrow{border:1px solid var(--line);border-radius:11px;padding:8px 9px;margin-bottom:7px;background:#fff}
+        .wtop{display:grid;grid-template-columns:1fr 72px 34px 30px;gap:6px;align-items:center}
+        .wtop .in{padding:9px 8px}
         .wtop .g{text-align:right;font-variant-numeric:tabular-nums}
-        .wrow .nm{margin-top:8px}
-        .wrow .nm .in{padding:9px 10px;font-size:14px}
-        .wbal{text-align:right;font-size:11.5px;font-weight:700;margin-top:7px;font-variant-numeric:tabular-nums}
+        /* the description, as a symbol */
+        .wrow .nt{border:1px solid #cbd5e3;background:#fff;color:var(--faint);border-radius:9px;
+          height:40px;font-size:15px;font-weight:800;cursor:pointer;padding:0;line-height:1}
+        .wrow .nt.has{color:var(--cyan);border-color:rgba(14,168,201,.5)}
+        .wrow .nt.open{background:var(--cyan);color:#fff;border-color:var(--cyan)}
+        /* and, when closed and filled, as one thin readable line */
+        .wrow .nmshow{display:block;width:100%;text-align:left;border:0;background:transparent;
+          color:var(--muted);font-size:12.5px;font-weight:600;padding:5px 2px 0;cursor:pointer}
+        .wrow .nm{margin-top:7px}
+        .wrow .nm .in{padding:8px 10px;font-size:14px}
+        .wbal{text-align:right;font-size:11.5px;font-weight:700;margin-top:5px;font-variant-numeric:tabular-nums}
         .wbal.ok{color:var(--good)}.wbal.left{color:var(--muted)}.wbal.over{color:var(--bad)}
-        .wrow .x{border:0;background:transparent;color:var(--bad);font-size:22px;min-height:44px;cursor:pointer}
+        .wrow .x{border:0;background:transparent;color:var(--bad);font-size:21px;min-height:40px;
+          cursor:pointer;padding:0}
         </style>
         <script>
         (function () {
@@ -918,6 +930,7 @@ if ($tab === 'weight') {
           var at     = <?= json_encode($sz !== '' ? $sz : (string)($labels[0] ?? '')) ?>;
 
           var box   = document.getElementById('wlines');
+          var openNote = null;   /* which line has its description open, if any */
           var chips = document.getElementById('szchips');
           var appl  = document.getElementById('applychips');
           var picked = {};
@@ -951,7 +964,7 @@ if ($tab === 'weight') {
                 + esc(l) + '">' + esc(l) + (sum(LINES[l]) > 0 ? ' ✓' : '') + '</button>';
             }).join('');
             chips.querySelectorAll('.chip').forEach(function (c) {
-              c.onclick = function () { harvest(); at = c.dataset.s; picked = {}; drawAll(); };
+              c.onclick = function () { harvest(); at = c.dataset.s; picked = {}; openNote = null; drawAll(); };
             });
 
             appl.innerHTML = SIZES.filter(function (l) { return l !== at; }).map(function (l) {
@@ -1014,26 +1027,59 @@ if ($tab === 'weight') {
                         : (run < 0 ? num(-run) + ' g over' : num(run) + ' g still to fill');
                 bal = '<div class="wbal ' + cls + '">' + txt + '</div>';
               }
+
+              /* THE DESCRIPTION IS A SYMBOL, NOT A BOX.
+
+                 Fabric is three qualities on one job — fleece, micro,
+                 7668 — and filling is often two. But most lines need no
+                 description at all, and a full-width empty box on every
+                 one of them was forty wasted pixels a line and six lines
+                 a size. It is a dot now: hollow when there is nothing,
+                 filled when there is. Tapping it opens one input.
+
+                 When it is closed and holds something, the text shows as
+                 a thin line rather than a field — readable, a third of
+                 the height, and still one tap to change. */
+              var has  = (r.n || '').trim() !== '';
+              var open = openNote === i;
+              var foot = open
+                ? '<div class="nm"><input class="in nmi" value="' + esc(r.n) + '" '
+                  + 'placeholder="quality — fleece, micro, 7668 …" aria-label="Description"></div>'
+                : (has ? '<button type="button" class="nmshow">' + esc(r.n) + '</button>' : '');
+
               return '<div class="wrow" data-i="' + i + '"><div class="wtop">'
                 + '<select class="in ty">' + TYPES.map(function (t) {
                     return '<option' + (t === r.t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('')
                 + '</select>'
                 + '<input class="in g" type="number" inputmode="decimal" step="any" '
                 + 'value="' + (r.g || '') + '" placeholder="g" aria-label="Grams">'
+                + '<button type="button" class="nt' + (has ? ' has' : '') + (open ? ' open' : '') + '" '
+                + 'aria-label="' + (has ? 'Change the quality' : 'Name the quality') + '" '
+                + 'title="' + (has ? 'Change the quality' : 'Name the quality') + '">'
+                + (has ? '●' : '+') + '</button>'
                 + '<button type="button" class="x" aria-label="Remove">&times;</button></div>'
-                + '<div class="nm"><input class="in nmi" value="' + esc(r.n) + '" '
-                + 'placeholder="name — fleece, micro, polyester …" aria-label="Name"></div>'
-                + bal + '</div>';
+                + foot + bal + '</div>';
             }).join('') || '<div class="note">No line yet. Press <b>+ Add line</b> — pick Fabric, '
-                + 'name it <i>fleece</i>, put its grams. Then add a line again for <i>micro</i>, '
-                + 'then fibre, then the poly bag.</div>';
+                + 'put its grams, and tap <b>+</b> only if the quality needs naming.</div>';
 
             box.querySelectorAll('.wrow').forEach(function (d) {
               var i = +d.dataset.i;
               d.querySelector('.ty').onchange  = function () { harvest(); drawAll(); };
               d.querySelector('.g').oninput    = function () { harvest(); drawAll(); };
-              d.querySelector('.nmi').oninput  = function () { harvest(); };
-              d.querySelector('.x').onclick    = function () { harvest(); rows().splice(i, 1); drawAll(); };
+              d.querySelector('.x').onclick    = function () {
+                harvest(); rows().splice(i, 1);
+                if (openNote === i) openNote = null;
+                drawAll();
+              };
+              d.querySelector('.nt').onclick   = function () {
+                harvest(); openNote = (openNote === i) ? null : i; drawAll();
+                var f = box.querySelector('.wrow[data-i="' + i + '"] .nmi');
+                if (f) f.focus();
+              };
+              var shown = d.querySelector('.nmshow');
+              if (shown) shown.onclick = function () { harvest(); openNote = i; drawAll(); };
+              var inp = d.querySelector('.nmi');
+              if (inp) inp.oninput = function () { rows()[i].n = this.value; };
             });
             document.getElementById('perunit').textContent = num(Math.round(sum(rows()))) + ' g';
           }
@@ -1071,7 +1117,11 @@ if ($tab === 'weight') {
               if (!list[i]) return;
               list[i].t = d.querySelector('.ty').value;
               list[i].g = parseFloat(d.querySelector('.g').value) || 0;
-              list[i].n = d.querySelector('.nmi').value;
+              /* Only one description is open at a time, and the rest are
+                 not in the page at all — reading .nmi unconditionally
+                 threw the moment the box became a symbol. */
+              var nm = d.querySelector('.nmi');
+              if (nm) list[i].n = nm.value;
             });
           }
           function drawAll() { drawChips(); drawTools(); drawLines(); drawTotals(); }
