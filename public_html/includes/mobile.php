@@ -168,6 +168,43 @@ function mob_footer(): void
 <?php
 }
 
+/* ========================================================= the mobile door
+
+   THE LIST OF PHONE SCREENS, IN ONE PLACE.
+
+   A phone user should not have to walk through the desktop app to reach
+   the one screen they are allowed to use. m.php is their whole
+   application: the same login, the same password, the same permissions —
+   and nothing on it except the screens that login may open.
+
+   Every phone screen is one row here. Adding the next one is one line,
+   and it appears on the home page, in the installed app, and nowhere a
+   user without the permission can see it.
+
+   WHY function_exists AROUND inv_perm. The gate permission lives in
+   includes/inventory.php. m.php requires that file, so the guard is not
+   what makes this work — it is only here so a part-uploaded copy of the
+   app shows fewer tiles instead of a blank error page. If the gate tiles
+   ever go missing, the missing require is the first thing to look at. */
+function mob_screens(): array
+{
+    $gate    = function_exists('inv_perm') && inv_perm('gate');
+    $notProd = !(function_exists('is_production_staff') && is_production_staff());
+
+    $all = [
+        ['key' => 'gate_in', 'label' => 'Gate In', 'sub' => 'Record what came in',
+         'href' => 'm_gate.php?dir=in',  'show' => $gate, 'tone' => 'in'],
+        ['key' => 'gate_out', 'label' => 'Gate Out', 'sub' => 'Record what went out',
+         'href' => 'm_gate.php?dir=out', 'show' => $gate, 'tone' => 'out'],
+        ['key' => 'packing', 'label' => 'Packing', 'sub' => 'Serial, sizes and weight',
+         'href' => 'm_pack.php',         'show' => $notProd, 'tone' => 'pack'],
+    ];
+
+    $out = [];
+    foreach ($all as $s) if ($s['show']) $out[] = $s;
+    return $out;
+}
+
 /* ====================================================== gate photographs
 
    Kept with the mobile shell rather than in storage.php because this is

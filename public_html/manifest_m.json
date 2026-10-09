@@ -1,0 +1,21 @@
+{
+  "name": "ZAS Mobile",
+  "short_name": "ZAS Mobile",
+  "description": "The phone screens for your ZAS account — gate and packing. Same login, same permissions, no desktop menu.",
+  "start_url": "m.php",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef1f6",
+  "theme_color": "#0b2a4a",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Gate In",  "url": "m_gate.php?dir=in" },
+    { "name": "Gate Out", "url": "m_gate.php?dir=out" },
+    { "name": "Packing",  "url": "m_pack.php" }
+  ]
+}

@@ -53,7 +53,7 @@ if ($id <= 0) {
         }
     } catch (Throwable $e) { $rows = []; }
 
-    mob_header('Packing', 'index.php', 'Pick a shipment', 'manifest_pack.json');
+    mob_header('Packing', 'm.php', 'Pick a shipment', 'manifest_pack.json');
     mob_flash();
     if (!$rows) {
         echo '<div class="empty">No shipment is assigned to you.</div>';

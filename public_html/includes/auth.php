@@ -29,7 +29,23 @@ function require_login(): void {
            the query string so the login page, and the AJAX error branch that
            reads this response, can both use it. */
         $why = function_exists('session_fallback_reason') ? session_fallback_reason() : '';
-        redirect('login.php' . ($why !== '' ? '?store=down' : ''));
+
+        /* REMEMBER A PHONE SCREEN, AND ONLY A PHONE SCREEN.
+           m.php is one link people put on a home screen: tap it, sign in,
+           arrive. Without this they would be dropped on the dashboard —
+           the exact thing the mobile version exists to avoid. It is
+           limited to m*.php so there is one small, checkable set of
+           places a login can ever send somebody, and login.php checks
+           the value again before it uses it. */
+        $q = [];
+        if ($why !== '') $q['store'] = 'down';
+        $self = basename((string)($_SERVER['SCRIPT_NAME'] ?? ''));
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+            && preg_match('~^m(?:_[a-z0-9_]+)?\.php$~', $self)) {
+            $qs = (string)($_SERVER['QUERY_STRING'] ?? '');
+            $q['next'] = $self . ($qs !== '' ? '?' . $qs : '');
+        }
+        redirect('login.php' . ($q ? '?' . http_build_query($q) : ''));
     }
     // A customer account is a separate portal (customer_dashboard.php etc.)
     // with its own login/session handling — it must never fall through into

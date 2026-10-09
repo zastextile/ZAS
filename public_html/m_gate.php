@@ -361,7 +361,9 @@ $partyNames = [];
 try { foreach (inv_parties('', true) as $p) $partyNames[] = (string)$p['name']; } catch (Throwable $e) {}
 
 /* ---------------------------------------------------------------- render */
-mob_header($dirName, $isNew ? 'm_gate.php?dir=' . $dir : '',
+/* The list screen now goes home to the mobile door rather than
+   nowhere; the form screen still goes back to the list. */
+mob_header($dirName, $isNew ? 'm_gate.php?dir=' . $dir : 'm.php',
            $isNew ? ($editId > 0 ? 'Editing ' . (string)$pass['gate_no'] : 'New draft') : 'Draft entry');
 mob_flash();
 ?>
