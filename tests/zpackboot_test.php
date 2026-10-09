@@ -1172,5 +1172,35 @@ ok(str_contains($pp4, 'Save this line') && !str_contains($pp4, 'read-only'),
 ok(str_contains($pp5, 'cannot open the packing list') && !str_contains($pp5, 'pick_colour'),
    'and production staff are turned away at the door, not just shown it read-only');
 
+head('10. A file that was not uploaded, end to end');
+
+/* The real failure, reproduced: these screens are uploaded by hand, and
+   the server keeps whatever was not replaced. A copy of mobile.php that
+   predates the steps leaves the page calling a helper that is not there
+   — PHP stops mid-page, display_errors is off on the live server, and
+   the phone shows a header, a tab bar and then nothing.
+
+   A source check cannot tell a guard that runs from one somebody wrapped
+   in if (false), so this one renders the page against a crippled file. */
+$goodMobile = (string)file_get_contents($work . '/includes/mobile.php');
+file_put_contents($work . '/includes/mobile.php',
+    str_replace('function mob_steps_begin', 'function mob_steps_begin_OLD', $goodMobile));
+[$stale] = render($work, ['id' => 1, 't' => 'serial']);
+file_put_contents($work . '/includes/mobile.php', $goodMobile);
+
+ok(str_contains($stale, 'One file is out of date'),
+   'an out-of-date file is named, instead of the page going blank',
+   substr($stale, 0, 200));
+ok(str_contains($stale, 'includes/mobile.php') && str_contains($stale, 'mob_steps_begin'),
+   'it says which file and what it was looking for');
+ok(!str_contains($stale, 'Serial &amp; qty') && !str_contains($stale, 'This order:'),
+   'and it stops before drawing half a screen, which is what made it look like lost data');
+ok(str_contains($stale, '</html>'), 'the page it does send is a whole one');
+
+/* The page must be no worse off than before when nothing is missing. */
+[$fine] = render($work, ['id' => 1, 't' => 'serial']);
+ok(!str_contains($fine, 'One file is out of date') && str_contains($fine, 'This order:'),
+   'and with every file present the screen draws exactly as it did');
+
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

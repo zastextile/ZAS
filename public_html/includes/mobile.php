@@ -228,6 +228,67 @@ function mob_footer(): void
    focusable", in the console, where nobody is looking. The script below
    listens for the invalid event, opens whichever step the field is on,
    and lets the browser point at it. */
+/* WHEN A FILE WAS NOT UPLOADED, SAY SO.
+   These screens are uploaded by hand, a few files at a time, and the
+   failure mode is silent: a page calls a helper that this copy of
+   mobile.php does not have yet, PHP stops mid-page with display_errors
+   off, and what reaches the phone is a header, a tab bar and then
+   nothing. It looks like the data vanished.
+
+   So each screen says up front which helpers it needs, and if any is
+   missing it gets a plain page naming the file to upload instead of
+   half a screen. */
+/* AND WHEN IT DIES ANYWAY, SHOW THE BOSS WHY.
+   display_errors is off on the live server, and rightly so, but the
+   result is that any fatal on these screens reaches the phone as a
+   header and then blank space — indistinguishable from "the data is
+   gone". This prints the error, to an admin only, at the bottom of
+   whatever did render.
+
+   ADMIN ONLY, DELIBERATELY. A PHP error names file paths and sometimes
+   the query, which is nobody else's business. */
+function mob_show_fatal(): void
+{
+    register_shutdown_function(static function (): void {
+        $e = error_get_last();
+        if (!$e || !in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) return;
+        if (!function_exists('is_admin') || !is_admin()) return;
+        $esc = static fn($t) => htmlspecialchars((string)$t, ENT_QUOTES);
+        echo '<div style="margin:16px;padding:16px;border-radius:12px;background:#fff;'
+           . 'border:1px solid #e3e9f2;border-left:4px solid #b8283f;font:13px/1.6 ui-monospace,monospace">'
+           . '<b style="font:700 15px/1.4 system-ui,sans-serif">This screen stopped here</b><br>'
+           . $esc($e['message']) . '<br><span style="color:#5a6b82">'
+           . $esc(basename((string)$e['file'])) . ' line ' . (int)$e['line'] . '</span></div>';
+    });
+}
+
+function mob_needs(array $fns, string $file): void
+{
+    $missing = [];
+    foreach ($fns as $f) if (!function_exists($f)) $missing[] = $f;
+    if (!$missing) return;
+
+    http_response_code(500);
+    $esc = static fn($t) => htmlspecialchars((string)$t, ENT_QUOTES);
+    echo '<!doctype html><html><head><meta charset="utf-8">'
+       . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+       . '<title>One file is out of date</title><style>'
+       . 'body{font:16px/1.6 system-ui,sans-serif;margin:0;background:#eef2f7;color:#152033}'
+       . '.w{max-width:620px;margin:0 auto;padding:28px 18px}'
+       . '.c{background:#fff;border:1px solid #e3e9f2;border-left:4px solid #b8283f;'
+       . 'border-radius:14px;padding:20px}'
+       . 'h1{font-size:19px;margin:0 0 10px}code{background:#f6f8fb;border:1px solid #e3e9f2;'
+       . 'border-radius:6px;padding:2px 6px;font-size:14px}'
+       . 'p{margin:10px 0}ul{margin:10px 0;padding-left:20px}</style></head><body><div class="w">'
+       . '<div class="c"><h1>One file is out of date</h1>'
+       . '<p>This screen needs a newer <code>' . $esc($file) . '</code> than the one on the '
+       . 'server. Upload that file and reload — nothing is lost and no data has changed.</p>'
+       . '<p>What it was looking for:</p><ul>';
+    foreach ($missing as $m) echo '<li><code>' . $esc($m) . '</code></li>';
+    echo '</ul></div></div></body></html>';
+    exit;
+}
+
 function mob_steps_begin(string $id = 'msteps'): void
 {
     $GLOBALS['_mob_step_id']   = $id;

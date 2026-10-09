@@ -373,5 +373,62 @@ t('the full-screen item picker is left outside the steps',
 t('the picker is still an overlay, not something a step can hide',
   preg_match('~id="pick"[^>]*position:fixed~', $mgN) === 1);
 
+head('6. A file that was not uploaded says so, instead of going blank');
+
+/* THIS IS THE FAILURE THAT COST A MORNING. These screens are uploaded by
+   hand, a few files at a time. Miss one, and the page calls a helper
+   that copy does not have: PHP stops mid-page, display_errors is off on
+   the live server, and the phone shows a header, a tab bar and then
+   white space. It reads as "all my data is gone".
+
+   So the screen says what it needs before it draws anything. */
+$mob = (string)file_get_contents($B . 'includes/mobile.php');
+$mobN = nocomments($mob);
+
+$run = static function (string $php): string {
+    $f = tempnam(sys_get_temp_dir(), 'g') . '.php';
+    file_put_contents($f, $php);
+    $out = (string)shell_exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($f) . ' 2>&1');
+    @unlink($f);
+    return $out;
+};
+$B2 = var_export($B . 'includes/mobile.php', true);
+
+$ok1 = $run('<?php function is_admin(){return true;} require ' . $B2 . ';'
+          . ' mob_needs(["mob_header"], "includes/mobile.php"); echo "CARRIED ON";');
+t('a screen whose helpers are all present carries straight on',
+  str_contains($ok1, 'CARRIED ON'), $ok1);
+
+$bad = $run('<?php function is_admin(){return true;} require ' . $B2 . ';'
+          . ' mob_needs(["mob_header","pack_a_helper_from_a_newer_file"], "includes/packing.php");'
+          . ' echo "CARRIED ON";');
+t('a missing one stops the page rather than letting it die halfway',
+  !str_contains($bad, 'CARRIED ON'), $bad);
+t('and names the file to upload',
+  str_contains($bad, 'includes/packing.php'), $bad);
+t('and the helper it went looking for, so it is not a riddle',
+  str_contains($bad, 'pack_a_helper_from_a_newer_file'));
+t('it is a whole page, not a fragment dropped into a broken one',
+  str_contains($bad, '<!doctype html>') && str_contains($bad, '</html>'));
+t('and it says plainly that nothing was lost',
+  stripos($bad, 'nothing is lost') !== false);
+
+/* Both phone screens must actually ask. A guard nobody calls is no
+   guard at all, and this is exactly the kind of thing that rots. */
+foreach (['m_pack.php' => $mpN, 'm_gate.php' => $mgN] as $file => $src) {
+    t("$file asks for the step helpers before it draws",
+      preg_match('~mob_needs\(\[[^\]]*\x27mob_steps_begin\x27~s', $src) === 1);
+    t("$file is covered even when mobile.php is far too old to have the guard",
+      str_contains($src, "function_exists('mob_needs')"));
+}
+t('the packing screen also asks for the colour helpers it now calls',
+  preg_match('~mob_needs\(\[[^\]]*\x27pack_palette\x27~s', $mpN) === 1);
+
+/* A fatal still reaches the boss as words, not as silence. */
+t('a fatal is shown to an admin rather than leaving a blank page',
+  str_contains($mobN, 'register_shutdown_function') && str_contains($mobN, 'error_get_last'));
+t('and only to an admin, because an error names paths',
+  preg_match('~error_get_last.*?is_admin\(\)\) return;~s', $mobN) === 1);
+
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

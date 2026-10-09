@@ -25,6 +25,19 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
 require_once __DIR__ . '/includes/packing.php';
 require_once __DIR__ . '/includes/mobile.php';
+
+/* Uploaded by hand, so say plainly when a file was missed rather than
+   dying halfway down the page. See mob_needs(). */
+if (function_exists('mob_needs')) {
+    mob_show_fatal();
+    mob_needs(['mob_header', 'mob_footer', 'mob_flash',
+               'mob_steps_begin', 'mob_step', 'mob_steps_end'], 'includes/mobile.php');
+    mob_needs(['pack_palette', 'pack_unit_key', 'pack_wkey', 'pack_colour_swatch',
+               'pack_weight_missing', 'pack_dedupe'], 'includes/packing.php');
+} else {
+    http_response_code(500);
+    exit('Upload includes/mobile.php — the copy on the server is older than this screen.');
+}
 require_login();
 
 if (is_production_staff()) { http_response_code(403); exit('Production Staff cannot open the packing list.'); }

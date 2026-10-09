@@ -36,6 +36,15 @@ require_once __DIR__ . '/includes/inventory.php';
    land on this server's disk instead. */
 require_once __DIR__ . '/includes/storage.php';
 require_once __DIR__ . '/includes/mobile.php';
+
+if (function_exists('mob_needs')) {
+    mob_show_fatal();
+    mob_needs(['mob_header', 'mob_footer', 'mob_flash',
+               'mob_steps_begin', 'mob_step', 'mob_steps_end'], 'includes/mobile.php');
+} else {
+    http_response_code(500);
+    exit('Upload includes/mobile.php — the copy on the server is older than this screen.');
+}
 require_login();
 
 if (!inv_perm('gate')) {
