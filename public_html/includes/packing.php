@@ -282,40 +282,115 @@ function pack_product_key(string $name): string
     return mb_substr(trim($k), 0, 160);
 }
 
-function pack_std_get(string $productName, string $size): array
+function pack_std_get(string $productName, string $size, string $colour = ''): array
 {
     $key = pack_product_key($productName);
     if ($key === '') return [];
     try {
         $s = db()->prepare("SELECT w_type, w_name, grams FROM packing_weight_std
-                            WHERE product_key=? AND size_label=? ORDER BY line_no, id");
-        $s->execute([$key, $size]);
-        return $s->fetchAll();
+                            WHERE product_key=? AND size_label=? AND colour_label=?
+                            ORDER BY line_no, id");
+        $s->execute([$key, $size, $colour]);
+        $rows = $s->fetchAll();
+        if ($rows || $colour === '') return $rows;
+        /* A colour nobody has weighed falls back to the size on its own,
+           because the usual answer is "the same cloth, a different dye". */
+        return pack_std_get($productName, $size, '');
     } catch (Throwable $e) { return []; }
 }
 
 /* Replace, not merge: the last breakdown used IS the standard. Deleting a
    line and saving must drop it, which a merge would never do. */
-function pack_std_save(string $productName, string $size, array $lines): void
+function pack_std_save(string $productName, string $size, array $lines, string $colour = ''): void
 {
     $key = pack_product_key($productName);
     if ($key === '' || $size === '' || !$lines) return;
     try {
-        db()->prepare("DELETE FROM packing_weight_std WHERE product_key=? AND size_label=?")
-            ->execute([$key, $size]);
+        db()->prepare("DELETE FROM packing_weight_std
+                       WHERE product_key=? AND size_label=? AND colour_label=?")
+            ->execute([$key, $size, $colour]);
         $ins = db()->prepare("INSERT INTO packing_weight_std
-                 (product_key, size_label, line_no, w_type, w_name, grams, updated_by, updated_at)
-                 VALUES (?,?,?,?,?,?,?,NOW())");
+                 (product_key, size_label, colour_label, line_no, w_type, w_name, grams, updated_by, updated_at)
+                 VALUES (?,?,?,?,?,?,?,?,NOW())");
         $n = 0;
         foreach ($lines as $l) {
             $g = (float)($l['grams'] ?? 0);
             if ($g <= 0) continue;
-            $ins->execute([$key, $size, ++$n,
+            $ins->execute([$key, $size, $colour, ++$n,
                 mb_substr((string)($l['w_type'] ?? 'Fabric'), 0, 40),
                 mb_substr((string)($l['w_name'] ?? ''), 0, 120), $g,
                 (int)(current_user()['id'] ?? 0)]);
         }
     } catch (Throwable $e) { /* a standard that will not save must not lose the packing */ }
+}
+
+/* ============================= IT IS ASKED FOR ONCE, NOT EVERY TIME
+
+   "dont ask again and again if u have weight information by size or
+    color already so calculated yourself and dont ask it serial changing
+    and making more and more so only ask weight list for always new
+    product line"
+
+   A weight belongs to the product and the size, not to a serial range.
+   Splitting 1–100 into 1–99 and a short carton 100 is one run of cartons
+   described twice; being asked to weigh the same duvet again because the
+   serial changed is the app failing to remember what it was already told.
+
+   So the moment a range has its sizes, every one of them that is already
+   known is filled in silently. Two places are looked at, nearer first:
+
+     another range in THIS shipment holding the same product and size —
+     weighed ten minutes ago on the screen before, and not yet a saved
+     standard because standards are written when weights are;
+
+     the saved standard for that product and size, from any shipment.
+
+   Only what neither place knows is left empty, and the screen then asks
+   for exactly that and nothing else. */
+function pack_weight_seed(int $groupId): int
+{
+    $g = pack_group($groupId);
+    if (!$g) return 0;
+    $filled = 0;
+
+    foreach (pack_sizes($groupId) as $row) {
+        $size = (string)$row['size_label'];
+        if ($size === '') continue;
+        /* Already weighed on this range — leave it completely alone. */
+        if (pack_weight_lines($groupId, $size)) continue;
+
+        $lines = [];
+        /* 1. the same product and size, elsewhere in this shipment */
+        try {
+            $q = db()->prepare("SELECT wl.w_type, wl.w_name, wl.grams
+                                FROM packing_weight_lines wl
+                                JOIN packing_groups g2 ON g2.id = wl.group_id
+                                WHERE g2.shipment_id = ? AND g2.id <> ?
+                                  AND g2.product_key = ? AND wl.size_label = ?
+                                ORDER BY g2.id DESC, wl.line_no");
+            $q->execute([(int)$g['shipment_id'], $groupId,
+                         (string)$g['product_key'], $size]);
+            $lines = $q->fetchAll();
+        } catch (Throwable $e) {}
+
+        /* 2. the standard, from whenever it was last packed */
+        if (!$lines) $lines = pack_std_get((string)$g['product_name'], $size);
+
+        if ($lines) { pack_weight_save($groupId, $size, $lines, false); $filled++; }
+    }
+    return $filled;
+}
+
+/* What still has to be asked for. Everything else is already answered. */
+function pack_weight_missing(int $groupId): array
+{
+    $out = [];
+    foreach (pack_sizes($groupId) as $row) {
+        $size = (string)$row['size_label'];
+        if ($size === '') continue;
+        if (!pack_weight_lines($groupId, $size)) $out[] = $size;
+    }
+    return $out;
 }
 
 /* ----------------------------------------------------------------- write */
@@ -437,7 +512,16 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
         return [false, 'That range could not be saved. ' . $e->getMessage(), 0];
     }
 
-    return [true, 'Saved.', $groupId];
+    /* AFTER the commit, never inside it: pack_weight_save opens its own
+       transaction and a nested begin would throw. Every size already
+       known is filled in here, so the weight screen only ever asks about
+       something genuinely new. */
+    $seeded = pack_weight_seed($groupId);
+
+    return [true, $seeded > 0
+        ? 'Saved. ' . $seeded . ' ' . ($seeded === 1 ? 'size was' : 'sizes were')
+          . ' weighed already — those are filled in.'
+        : 'Saved.', $groupId];
 }
 
 function pack_group_delete(int $shipmentId, int $groupId): bool
@@ -465,8 +549,15 @@ function pack_weigh_save(int $groupId, float $gross, float $tare): void
     } catch (Throwable $e) {}
 }
 
-/* Replaces every line for one group and one size. */
-function pack_weight_save(int $groupId, string $size, array $lines): array
+/* Replaces every line for one group and one size.
+
+   $remember is what makes "do not ask again" true. A breakdown used is
+   a breakdown known, so it becomes the standard the moment it is saved
+   rather than waiting for the list to be approved — otherwise a
+   shipment that is weighed today and approved next week asks for the
+   same figures again in between. Seeding passes false, because copying
+   a standard onto a range is not news. */
+function pack_weight_save(int $groupId, string $size, array $lines, bool $remember = true): array
 {
     if ($size === '') return [false, 'No size to save against.'];
     try {
@@ -488,6 +579,11 @@ function pack_weight_save(int $groupId, string $size, array $lines): array
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
         return [false, 'The breakdown could not be saved.'];
+    }
+
+    if ($remember) {
+        $g = pack_group($groupId);
+        if ($g) pack_std_save((string)$g['product_name'], $size, $lines);
     }
     return [true, 'Saved.'];
 }

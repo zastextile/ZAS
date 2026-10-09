@@ -701,7 +701,14 @@ if ($tab === 'weight') {
         $perUnit = pack_per_unit($gid);
         $P       = pack_packages($g);
         $labels  = array_column($sizes, 'size_label');
-        if ($sz === '' || !in_array($sz, $labels, true)) $sz = (string)($labels[0] ?? '');
+        /* OPEN ON WHAT IS STILL MISSING. Everything already known was
+           filled in when the range was saved, so landing on a size that
+           is done and making someone hunt for the blank one is the same
+           "asking again" in a different shape. */
+        $missing = pack_weight_missing($gid);
+        if ($sz === '' || !in_array($sz, $labels, true)) {
+            $sz = (string)($missing[0] ?? ($labels[0] ?? ''));
+        }
 
         $mustKg  = (float)$g['pkg_gross'] - (float)$g['pkg_tare'];
         $qtyIn   = 0.0;
@@ -758,6 +765,30 @@ if ($tab === 'weight') {
         </div>
         <?php mob_step('Weigh one package', 'One ' . strtolower((string)$g['unit_title'])
                                           . ' on the scale, then open it'); ?>
+
+          <?php /* SAY WHAT IS LEFT, NOT WHAT THERE IS. A weight belongs
+                   to the product and the size, so it is asked for once
+                   and carried forward. This line is how someone knows
+                   there is nothing to do. */ ?>
+          <div class="mcard">
+            <?php if (!$sizes): ?>
+              <div class="note">Set the sizes on the first tab.</div>
+            <?php elseif (!$missing): ?>
+              <div class="sumrow"><span><b>Nothing new to weigh here.</b></span>
+                <b><span class="pill p">done</span></b></div>
+              <div class="note" style="margin-top:6px">
+                All <?= count($sizes) === 1 ? 'of it' : count($sizes) . ' sizes' ?> came from
+                what this product was weighed at before. Change anything only if it is wrong.
+              </div>
+            <?php else: ?>
+              <div class="sumrow">
+                <span><b><?= count($missing) ?> of <?= count($sizes) ?></b>
+                  still need<?= count($missing) === 1 ? 's' : '' ?> weighing</span>
+                <b><span class="pill w"><?= e(implode(', ', $missing)) ?></span></b></div>
+              <div class="note" style="margin-top:6px">The rest came from what this product
+                was weighed at before, and is already filled in.</div>
+            <?php endif; ?>
+          </div>
 
           <div class="mcard">
             <div class="row2">

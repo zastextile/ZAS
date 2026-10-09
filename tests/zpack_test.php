@@ -264,8 +264,11 @@ t('300TC meets 300 TC the same way',
   pack_product_key('Flat Sheet 300TC') === pack_product_key('Flat Sheet 300 tc'));
 t('and two different products still differ',
   pack_product_key('Bath Towel') !== pack_product_key('Beach Towel'));
+/* \s+ because the statement is wrapped across lines now, and the
+   colour because a standard is per product, size AND colour. */
 t('the standard is replaced, not merged — a deleted line must go',
-  preg_match('~DELETE FROM packing_weight_std WHERE product_key=\? AND size_label=\?~', $pkN) === 1);
+  preg_match('~DELETE FROM packing_weight_std\s+WHERE product_key=\? AND size_label=\? AND colour_label=\?~', $pkN) === 1,
+  'the standard is no longer replaced wholesale');
 t('it is saved when the list is approved',
   preg_match('~pack_approve.*?pack_std_save~s', $pkN) === 1);
 t('and a standard that will not save cannot lose the packing',
