@@ -49,22 +49,24 @@ $T = [
         101 => ['id'=>101,'shipment_id'=>1,'product_name'=>'Duvet Cover Set King',
                 'product_key'=>'duvet cover set king','unit_title'=>'Carton',
                 'serial_from'=>1,'serial_to'=>99,'qty_mode'=>'per','assorted'=>1,
-                'pkg_gross'=>0,'pkg_tare'=>0],
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
         102 => ['id'=>102,'shipment_id'=>1,'product_name'=>'Duvet Cover Set King',
                 'product_key'=>'duvet cover set king','unit_title'=>'Carton',
                 'serial_from'=>100,'serial_to'=>100,'qty_mode'=>'per','assorted'=>1,
-                'pkg_gross'=>0,'pkg_tare'=>0],
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
         /* a different product, same shipment — must never be borrowed from */
         103 => ['id'=>103,'shipment_id'=>1,'product_name'=>'Bath Towel 500 gsm',
                 'product_key'=>'bath towel 500 gsm','unit_title'=>'Bale',
                 'serial_from'=>200,'serial_to'=>210,'qty_mode'=>'per','assorted'=>0,
-                'pkg_gross'=>0,'pkg_tare'=>0],
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
         /* the same product in ANOTHER shipment — only the standard may cross */
         201 => ['id'=>201,'shipment_id'=>2,'product_name'=>'Duvet Cover Set King',
                 'product_key'=>'duvet cover set king','unit_title'=>'Carton',
                 'serial_from'=>1,'serial_to'=>50,'qty_mode'=>'per','assorted'=>0,
-                'pkg_gross'=>0,'pkg_tare'=>0],
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
     ],
+    /* A row is a size AND a colour now. These ranges carry no colour,
+       which is the ordinary case and must keep working untouched. */
     'sizes' => [
         101 => ['Single', 'Double'],
         102 => ['Single', 'Double', 'Queen'],   /* Queen is new to everybody */
@@ -73,10 +75,10 @@ $T = [
     ],
     'wlines' => [
         /* range 101 has been weighed on this screen already */
-        '101|Single' => [['w_type'=>'Fabric','w_name'=>'Fleece','grams'=>500],
+        '101|Single|' => [['w_type'=>'Fabric','w_name'=>'Fleece','grams'=>500],
                          ['w_type'=>'Accessories','w_name'=>'Label','grams'=>40]],
         /* another shipment's range, which must NOT be read directly */
-        '201|Single' => [['w_type'=>'Fabric','w_name'=>'Old fleece','grams'=>999]],
+        '201|Single|' => [['w_type'=>'Fabric','w_name'=>'Old fleece','grams'=>999]],
     ],
     'std' => [
         /* Double was standardised on some earlier shipment */
@@ -119,7 +121,8 @@ final class SPdo {
             return $g ? [$g] : [];
         }
         if (str_contains($q, 'FROM packing_group_sizes WHERE group_id=?')) {
-            return array_map(fn($l) => ['size_label' => $l, 'qty_per_pkg' => 1, 'total_qty' => 1],
+            return array_map(fn($l) => ['size_label' => $l, 'colour_label' => '',
+                                        'qty_per_pkg' => 1, 'total_qty' => 1],
                              $T['sizes'][(int)($a[0] ?? 0)] ?? []);
         }
         /* SELECT only. "DELETE FROM packing_weight_lines WHERE group_id=?
@@ -128,7 +131,7 @@ final class SPdo {
            ever removed — which looked exactly like the app refusing to
            overwrite. Match the verb. */
         if (str_starts_with($q, 'SELECT * FROM packing_weight_lines')) {
-            $k = ((int)($a[0] ?? 0)) . '|' . ($a[1] ?? '');
+            $k = ((int)($a[0] ?? 0)) . '|' . ($a[1] ?? '') . '|' . ($a[2] ?? '');
             return array_map(fn($r, $i) => $r + ['line_no' => $i + 1],
                              $T['wlines'][$k] ?? [], array_keys($T['wlines'][$k] ?? []));
         }
@@ -140,16 +143,18 @@ final class SPdo {
            nothing here and the mutation went unnoticed. A fake that
            answers a question the app did not ask is worse than no fake. */
         if (str_contains($q, 'FROM packing_weight_lines wl JOIN packing_groups g2')) {
-            foreach (['g2.shipment_id = ?', 'g2.id <> ?', 'g2.product_key = ?', 'wl.size_label = ?'] as $need) {
+            foreach (['g2.shipment_id = ?', 'g2.id <> ?', 'g2.product_key = ?',
+                      'wl.size_label = ?', 'wl.colour_label = ?'] as $need) {
                 if (!str_contains($q, $need)) { $GLOBALS['T']['badsql'][] = $need; return []; }
             }
-            [$ship, $self, $key, $size] = [(int)$a[0], (int)$a[1], (string)$a[2], (string)$a[3]];
+            [$ship, $self, $key, $size, $col] =
+                [(int)$a[0], (int)$a[1], (string)$a[2], (string)$a[3], (string)($a[4] ?? '')];
             $best = [];
             foreach ($T['wlines'] as $k => $rows) {
-                [$gid, $sz] = explode('|', $k);
+                [$gid, $sz, $cl] = array_pad(explode('|', $k), 3, '');
                 $g = $T['groups'][(int)$gid] ?? null;
                 if (!$g || (int)$g['shipment_id'] !== $ship || (int)$gid === $self) continue;
-                if ((string)$g['product_key'] !== $key || $sz !== $size) continue;
+                if ((string)$g['product_key'] !== $key || $sz !== $size || $cl !== $col) continue;
                 $best = $rows;
             }
             return $best;
@@ -157,13 +162,13 @@ final class SPdo {
         if (str_starts_with($q, 'SELECT w_type, w_name, grams FROM packing_weight_std')) {
             return $T['std'][($a[0] ?? '') . '|' . ($a[1] ?? '') . '|' . ($a[2] ?? '')] ?? [];
         }
-        if (str_contains($q, 'DELETE FROM packing_weight_lines WHERE group_id=? AND size_label=?')) {
-            unset($T['wlines'][((int)$a[0]) . '|' . $a[1]]); return [];
+        if (str_contains($q, 'DELETE FROM packing_weight_lines')) {
+            unset($T['wlines'][((int)$a[0]) . '|' . $a[1] . '|' . ($a[2] ?? '')]); return [];
         }
         if (str_contains($q, 'INSERT INTO packing_weight_lines')) {
-            $k = ((int)$a[0]) . '|' . $a[1];
+            $k = ((int)$a[0]) . '|' . $a[1] . '|' . ($a[2] ?? '');
             $T['wlines'][$k] = $T['wlines'][$k] ?? [];
-            $T['wlines'][$k][] = ['w_type' => $a[3], 'w_name' => $a[4], 'grams' => (float)$a[5]];
+            $T['wlines'][$k][] = ['w_type' => $a[4], 'w_name' => $a[5], 'grams' => (float)$a[6]];
             return [];
         }
         if (str_contains($q, 'DELETE FROM packing_weight_std')) {
@@ -193,8 +198,8 @@ require_once $B . 'includes/packing.php';
    not about the app. */
 function same(float $a, float $b): bool { return abs($a - $b) < 0.0001; }
 
-$grams = function (int $gid, string $size): float {
-    return array_sum(array_column(pack_weight_lines($gid, $size), 'grams'));
+$grams = function (int $gid, string $size, string $colour = ''): float {
+    return array_sum(array_column(pack_weight_lines($gid, $size, $colour), 'grams'));
 };
 
 /* ============================================= 1. the short last carton */
@@ -318,9 +323,15 @@ t('after the commit, not inside the transaction',
   'a nested transaction would throw and the range would fail to save');
 t('the depth counter came back to nothing, so nothing was left open',
   $GLOBALS['DEPTH'] === 0, $GLOBALS['DEPTH']);
-t('the weight screen opens on what is missing, not on the first size',
-  str_contains($mpN, '$missing = pack_weight_missing($gid);')
-  && str_contains($mpN, "\$sz = (string)(\$missing[0] ?? (\$labels[0] ?? ''));"));
+/* STILL OPENS ON WHAT IS MISSING. What changed is only what counts as
+   one thing to weigh: a size, or a size and a colour when the range says
+   its colours differ. The list is therefore keyed by that unit, so the
+   screen can land on it. */
+t('the weight screen opens on what is missing, not on the first one',
+  preg_match('~if \(!pack_weight_lines\(\$gid, \$u\[\x27size\x27\], \$u\[\x27colour\x27\]\)\) \$missing\[\$k\]~', $mpN) === 1
+  && str_contains($mpN, "\$sz = (string)(array_key_first(\$missing) ?? (\$labels[0] ?? ''));"));
+t('and what counts as one thing to weigh is decided in one place',
+  str_contains($mpN, 'pack_unit_key($g, $srow)') && str_contains($mpN, 'pack_wkey($g, $srow)'));
 t('and says so plainly when there is nothing to do',
   str_contains($mpN, 'Nothing new to weigh here.'));
 t('the old per-size recall button is gone, because it is automatic now',

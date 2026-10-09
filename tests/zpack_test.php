@@ -376,16 +376,30 @@ t('and m.php requires the file that answers it',
   'without the require the tile silently never appears');
 
 /* ============================ 10c. the weight field that comes from a browser
-   Every size's lines now arrive in one JSON field, which means a size
-   name arrives from the browser too. It is matched against the sizes
-   this range actually has rather than trusted. */
+   Every unit's lines arrive in one JSON field, which means the key they
+   are filed under arrives from the browser too. It is matched against
+   what this range actually has rather than trusted.
+
+   A unit is a size, or a size and a colour — the range's own switch
+   decides it, and pack_unit_key() is the one place that reads the
+   switch. The colour a breakdown is filed under therefore comes from
+   the database row, never from the post. */
 head('10c. The posted breakdown is checked, not trusted');
 
 $mpSrc = nocomments((string)file_get_contents($B . 'm_pack.php'));
-t('the sizes this range owns are read from the database first',
-  preg_match('~foreach \(pack_sizes\(\$gId\) as \$srow\) \$own\[\(string\)\$srow\[\x27size_label\x27\]\] = true;~', $mpSrc) === 1);
-t('and a size that is not one of them is skipped, not created',
-  str_contains($mpSrc, 'if (!isset($own[$sizeLabel]) || !is_array($rows)) continue;'));
+/* The save, cut out. A match across the whole file found the right words
+   in the wrong function twice before. */
+$wsave = preg_match('~if \(\$action === \x27weight\x27\).*?\n    \}~s', $mpSrc, $wm) ? $wm[0] : '';
+t('the weight save was found at all, so the checks below looked at something',
+  $wsave !== '');
+t('what this range owns is read from the database first',
+  preg_match('~foreach \(pack_sizes\(\$gId\) as \$srow\)~', $wsave) === 1
+  && str_contains($wsave, 'pack_unit_key($grp, $srow)'));
+t('and a key that is not one of them is skipped, not created',
+  str_contains($wsave, 'if (!isset($own[$unitKey]) || !is_array($rows)) continue;'));
+t('the colour it is filed under comes from that row, never from the post',
+  str_contains($wsave, '[$uSz, $uCol] = $own[$unitKey];')
+  && preg_match('~pack_weight_save\(\$gId, \$uSz, \$lines, true, \$uCol\)~', $wsave) === 1);
 t('a field that is not valid JSON is simply ignored',
   str_contains($mpSrc, 'if (is_array($sent)) {'));
 t('the material type is still forced back to the known list',

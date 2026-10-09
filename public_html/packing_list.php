@@ -1,9 +1,16 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
+/* For pack_palette() in the strip below: this page did not need the
+   packing helpers before, and calling one without this line is a fatal
+   error on the live packing list rather than a missing strip. */
+require_once __DIR__ . '/includes/packing.php';
 require_login();
 if (is_production_staff()) { http_response_code(403); exit('Production Staff cannot access the packing list.'); }
 exp_ensure_schema();
+/* One indexed read of the version marker, not a run of DDL — this page
+   reads the order's sizes and colours now, so the table has to exist. */
+pack_ensure_schema();
 
 /*
   Packing List V2.3 - Zero Balance Visible in Dashboard
@@ -585,6 +592,43 @@ if ($isStaffLayout): ?>
   <?php endif; ?>
 
   <?php if (!$invoiceItems): ?><div class="alert error">No invoice items found. Add commercial invoice items first.</div><?php endif; ?>
+
+<?php
+/* THE ORDER'S SIZES AND COLOURS, AND A WAY IN TO SET THEM.
+   The packing phone offers only what is set here, so a line that was
+   never set up leaves the packer with nothing to pick and he types —
+   which is how one colour ends up spelled three ways. This strip says
+   where it stands before anybody picks up a phone. */
+$palSet = 0; $palTot = 0;
+foreach ($invoiceItems as $pit) {
+    $palTot++;
+    $pp = pack_palette((int)$id, (int)$pit['id']);
+    if ($pp['size'] || $pp['colour']) $palSet++;
+}
+?>
+<div class="card" style="border-left:4px solid <?= $palSet === $palTot && $palTot ? '#16a34a' : '#d97706' ?>">
+  <div class="actions" style="align-items:center;gap:14px;flex-wrap:wrap">
+    <div style="flex:1;min-width:240px">
+      <b>Order sizes &amp; colours</b>
+      <p class="lead" style="margin:3px 0 0">
+        <?php if (!$palTot): ?>
+          Add the invoice lines first, then set what each one is packed in.
+        <?php elseif ($palSet === $palTot): ?>
+          Set on all <?= (int)$palTot ?> line<?= $palTot === 1 ? '' : 's' ?>.
+          The packing phones offer exactly this.
+        <?php elseif ($palSet): ?>
+          Set on <?= (int)$palSet ?> of <?= (int)$palTot ?> lines.
+          On the rest the packer has nothing to pick from and will type it himself.
+        <?php else: ?>
+          Not set on any line yet. Type the customer's sizes and colours once here —
+          the packing phones then offer only those.
+        <?php endif; ?>
+      </p>
+    </div>
+    <a class="btn<?= $palSet === $palTot && $palTot ? ' secondary' : '' ?>"
+       href="pack_palette.php?id=<?= e($id) ?>">Set sizes &amp; colours</a>
+  </div>
+</div>
   <?php if ($locked && !is_admin()): ?><div class="alert error">This shipment is locked. Staff cannot edit now.</div><?php endif; ?>
 
   <?php if (!$selectedItem): ?>
@@ -975,6 +1019,7 @@ exp_tab_strip($shipment, 'packing');
 
 <div class="card">
   <div class="actions">
+    <a class="btn secondary" href="pack_palette.php?id=<?= e($id) ?>">Order Sizes &amp; Colours</a>
     <a class="btn secondary" href="shipment_view.php?id=<?= e($id) ?>">Back to Shipment</a>
     <a class="btn secondary" href="packing_list.php">All Packing Shipments</a>
   </div>

@@ -35,7 +35,7 @@
 
 /* Bumped whenever the tables below change. One indexed read on a page load
    that finds the same number does nothing at all. */
-const PACK_SCHEMA_VERSION = '2';
+const PACK_SCHEMA_VERSION = '3';
 
 /* The material types a weight line can be. The team adds as many lines of
    any type as it needs — two fabrics, three fabrics, two accessories. */
@@ -167,6 +167,33 @@ function pack_ensure_schema(): void
         }
     } catch (Throwable $e) {}
 
+    /* v3 — THE ORDER'S OWN PALETTE.
+
+       The customer's sizes and colours arrive by email, at a desk, and
+       vary customer to customer and order to order. The office types
+       them once per invoice line; the phone then offers exactly those
+       and nothing else, so a packer in the hall never scrolls a list of
+       twenty colours looking for the two this order uses.
+
+       It is a list, not a set of columns, because an order may use two
+       sizes or nine and nobody should have to alter a table to find out. */
+    $x("CREATE TABLE IF NOT EXISTS packing_palette (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        shipment_id INT NOT NULL,
+        invoice_item_id INT NOT NULL,
+        kind VARCHAR(8) NOT NULL,              /* size | colour */
+        label VARCHAR(120) NOT NULL,
+        sort_no INT NOT NULL DEFAULT 0,
+        created_by INT NULL, created_at DATETIME NULL,
+        UNIQUE KEY uq_pal (shipment_id, invoice_item_id, kind, label),
+        KEY idx_pal (shipment_id, invoice_item_id, kind, sort_no)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    /* Whether this range's colours really weigh differently. Usually
+       they do not — the same cloth with a different dye — so one
+       breakdown per size serves every colour of it, and this stays off. */
+    $x("ALTER TABLE packing_groups ADD COLUMN weight_by_colour TINYINT(1) NOT NULL DEFAULT 0");
+
     try {
         db()->prepare("INSERT INTO exp_meta (k, v, updated_at) VALUES ('pack_schema_version', ?, NOW())
                        ON DUPLICATE KEY UPDATE v=VALUES(v), updated_at=NOW()")
@@ -209,8 +236,7 @@ function pack_contents_kg(array $g, array $sizes, array $perUnit): float
 {
     $t = 0.0;
     foreach ($sizes as $s) {
-        $lbl = (string)$s['size_label'];
-        $t += ((float)($perUnit[$lbl] ?? 0)) * pack_size_per_pkg($g, $s);
+        $t += ((float)($perUnit[pack_unit_key($g, $s)] ?? 0)) * pack_size_per_pkg($g, $s);
     }
     return $t / 1000;
 }
@@ -245,27 +271,56 @@ function pack_sizes(int $groupId): array
     } catch (Throwable $e) { return []; }
 }
 
-function pack_weight_lines(int $groupId, string $size): array
+/* THE KEY A BREAKDOWN IS FILED UNDER.
+
+   By size alone, or by size and colour when this range says its colours
+   really do weigh differently. One function so the writing, the reading
+   and the totals cannot disagree about it — which is exactly the kind of
+   disagreement that shows up as a package that will not balance. */
+function pack_wkey(array $g, array $size): array
+{
+    return [(string)$size['size_label'],
+            empty($g['weight_by_colour']) ? '' : (string)($size['colour_label'] ?? '')];
+}
+
+function pack_weight_lines(int $groupId, string $size, string $colour = ''): array
 {
     try {
         $s = db()->prepare("SELECT * FROM packing_weight_lines
-                            WHERE group_id=? AND size_label=? ORDER BY line_no, id");
-        $s->execute([$groupId, $size]);
+                            WHERE group_id=? AND size_label=? AND colour_label=?
+                            ORDER BY line_no, id");
+        $s->execute([$groupId, $size, $colour]);
         return $s->fetchAll();
     } catch (Throwable $e) { return []; }
 }
 
 /* Grams for one unit of each size in a group. */
+/* Grams for one unit of each size, or of each size and colour. Keyed
+   "size" or "size|colour" so one array serves both cases. */
 function pack_per_unit(int $groupId): array
 {
     try {
-        $s = db()->prepare("SELECT size_label, COALESCE(SUM(grams),0) g
-                            FROM packing_weight_lines WHERE group_id=? GROUP BY size_label");
+        $s = db()->prepare("SELECT size_label, colour_label, COALESCE(SUM(grams),0) g
+                            FROM packing_weight_lines WHERE group_id=?
+                            GROUP BY size_label, colour_label");
         $s->execute([$groupId]);
         $out = [];
-        foreach ($s->fetchAll() as $r) $out[(string)$r['size_label']] = (float)$r['g'];
+        foreach ($s->fetchAll() as $r) {
+            /* ?? '' because the column arrives with the schema build, and
+               a page load between the upload and that build would read
+               rows that do not have it yet. */
+            $c = (string)($r['colour_label'] ?? '');
+            $out[(string)$r['size_label'] . ($c !== '' ? '|' . $c : '')] = (float)$r['g'];
+        }
         return $out;
     } catch (Throwable $e) { return []; }
+}
+
+/* The one place that turns a size row into the key its grams sit under. */
+function pack_unit_key(array $g, array $size): string
+{
+    [$sz, $col] = pack_wkey($g, $size);
+    return $sz . ($col !== '' ? '|' . $col : '');
 }
 
 /* ------------------------------------------------------- the remembered list
@@ -329,6 +384,99 @@ function pack_std_save(string $productName, string $size, array $lines, string $
     } catch (Throwable $e) { /* a standard that will not save must not lose the packing */ }
 }
 
+/* A DOT THE COLOUR OF THE COLOUR.
+
+   Names are read; a dot is recognised. Known names get their own, and
+   anything else gets a neutral — a wrong guess at "Sand" would be worse
+   than no guess, so unknown stays grey rather than inventing a shade.
+   Matching ignores case and spacing so "off white" finds Off White. */
+function pack_colour_swatch(string $name): string
+{
+    static $map = [
+        'white' => '#f4f5f7', 'offwhite' => '#f0ece2', 'ivory' => '#efe7d4',
+        'cream' => '#f2e8d5', 'beige' => '#ddceb4', 'sand' => '#d9c7a3',
+        'grey' => '#9aa3ad', 'gray' => '#9aa3ad', 'silver' => '#c3c9d1',
+        'black' => '#23262b', 'charcoal' => '#3c4147',
+        'navy' => '#1f3356', 'blue' => '#2f6fd0', 'skyblue' => '#7fb9e8',
+        'teal' => '#0f766e', 'green' => '#2f8f4e', 'olive' => '#6b7a3a',
+        'red' => '#b8283f', 'maroon' => '#73202f', 'rust' => '#b05423',
+        'pink' => '#e39ab0', 'blush' => '#e2a3ab', 'peach' => '#f0b79a',
+        'purple' => '#6d5bd0', 'lilac' => '#b3a4e0',
+        'yellow' => '#e6c34a', 'gold' => '#c8a249', 'orange' => '#e07b39',
+        'brown' => '#7a5438', 'taupe' => '#a3927f',
+    ];
+    $k = strtolower((string)preg_replace('/[^a-z]+/i', '', $name));
+    return $map[$k] ?? '#cbd5e3';
+}
+
+/* ========================================= the order's own palette
+
+   What this invoice line is actually ordered in. The office types it
+   once from the customer's email; the phone offers exactly this and
+   nothing else. Empty means nobody has set the order up yet, and the
+   phone says so rather than offering the whole world.
+
+   It is deliberately NOT the product's history. History is what this
+   product has ever been; the palette is what this order is. */
+function pack_palette(int $shipmentId, int $itemId, string $kind = ''): array
+{
+    try {
+        if ($kind !== '') {
+            $s = db()->prepare("SELECT label FROM packing_palette
+                                WHERE shipment_id=? AND invoice_item_id=? AND kind=?
+                                ORDER BY sort_no, id");
+            $s->execute([$shipmentId, $itemId, $kind]);
+            return array_column($s->fetchAll(), 'label');
+        }
+        $s = db()->prepare("SELECT kind, label FROM packing_palette
+                            WHERE shipment_id=? AND invoice_item_id=? ORDER BY kind, sort_no, id");
+        $s->execute([$shipmentId, $itemId]);
+        $out = ['size' => [], 'colour' => []];
+        foreach ($s->fetchAll() as $r) $out[(string)$r['kind']][] = (string)$r['label'];
+        return $out;
+    } catch (Throwable $e) { return $kind !== '' ? [] : ['size' => [], 'colour' => []]; }
+}
+
+/* Replaced wholesale for one kind at a time: a colour the customer
+   dropped has to disappear, which a merge would never do. */
+function pack_palette_save(int $shipmentId, int $itemId, string $kind, array $labels): array
+{
+    if (!in_array($kind, ['size', 'colour'], true)) return [false, 'Not a size or a colour.'];
+    $clean = pack_dedupe($labels);
+    try {
+        db()->beginTransaction();
+        db()->prepare("DELETE FROM packing_palette
+                       WHERE shipment_id=? AND invoice_item_id=? AND kind=?")
+            ->execute([$shipmentId, $itemId, $kind]);
+        $ins = db()->prepare("INSERT INTO packing_palette
+                   (shipment_id, invoice_item_id, kind, label, sort_no, created_by, created_at)
+                   VALUES (?,?,?,?,?,?,NOW())");
+        $n = 0;
+        foreach ($clean as $l) {
+            $ins->execute([$shipmentId, $itemId, $kind, mb_substr($l, 0, 120), ++$n,
+                           (int)(current_user()['id'] ?? 0)]);
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return [false, 'That could not be saved. ' . $e->getMessage()];
+    }
+    return [true, count($clean) . ' ' . $kind . ($kind === 'size' ? 's' : 's') . ' saved.'];
+}
+
+/* What the office is offered to tick: this product's own sizes and
+   colours, from the master and from its history — the per-product rule,
+   unchanged. A label already in the palette is included even if it is
+   in neither, so a one-off never vanishes from its own order. */
+function pack_palette_choices(string $productName, int $shipmentId, int $itemId): array
+{
+    $pal = pack_palette($shipmentId, $itemId);
+    return [
+        'size'   => pack_dedupe(array_merge(pack_size_options($productName),   $pal['size'])),
+        'colour' => pack_dedupe(array_merge(pack_colour_options($productName), $pal['colour'])),
+    ];
+}
+
 /* ============================= IT IS ASKED FOR ONCE, NOT EVERY TIME
 
    "dont ask again and again if u have weight information by size or
@@ -357,51 +505,60 @@ function pack_weight_seed(int $groupId): int
     $g = pack_group($groupId);
     if (!$g) return 0;
     $filled = 0;
+    $done = [];
 
     foreach (pack_sizes($groupId) as $row) {
-        $size = (string)$row['size_label'];
+        [$size, $colour] = pack_wkey($g, $row);
         if ($size === '') continue;
-        /* Already weighed on this range — leave it completely alone. */
-        if (pack_weight_lines($groupId, $size)) continue;
+        /* Two rows of the same size in different colours share one
+           breakdown when colour does not change the weight — so the
+           second one is already answered by the first. */
+        if (isset($done[$size . '|' . $colour])) continue;
+        $done[$size . '|' . $colour] = true;
+        if (pack_weight_lines($groupId, $size, $colour)) continue;
 
         $lines = [];
-        /* 1. the same product and size, elsewhere in this shipment */
+        /* 1. the same product, size and colour elsewhere in this shipment */
         try {
             $q = db()->prepare("SELECT wl.w_type, wl.w_name, wl.grams
                                 FROM packing_weight_lines wl
                                 JOIN packing_groups g2 ON g2.id = wl.group_id
                                 WHERE g2.shipment_id = ? AND g2.id <> ?
                                   AND g2.product_key = ? AND wl.size_label = ?
+                                  AND wl.colour_label = ?
                                 ORDER BY g2.id DESC, wl.line_no");
             $q->execute([(int)$g['shipment_id'], $groupId,
-                         (string)$g['product_key'], $size]);
+                         (string)$g['product_key'], $size, $colour]);
             $lines = $q->fetchAll();
         } catch (Throwable $e) {}
 
-        /* 2. the standard, from whenever it was last packed */
-        if (!$lines) $lines = pack_std_get((string)$g['product_name'], $size);
+        /* 2. the standard, which falls back from a colour to its size */
+        if (!$lines) $lines = pack_std_get((string)$g['product_name'], $size, $colour);
 
-        if ($lines) { pack_weight_save($groupId, $size, $lines, false); $filled++; }
+        if ($lines) { pack_weight_save($groupId, $size, $lines, false, $colour); $filled++; }
     }
     return $filled;
 }
 
-/* What still has to be asked for. Everything else is already answered. */
+/* What still has to be asked for, as "Size" or "Size · Colour". */
 function pack_weight_missing(int $groupId): array
 {
-    $out = [];
+    $g = pack_group($groupId);
+    if (!$g) return [];
+    $out = []; $seen = [];
     foreach (pack_sizes($groupId) as $row) {
-        $size = (string)$row['size_label'];
+        [$size, $colour] = pack_wkey($g, $row);
         if ($size === '') continue;
-        if (!pack_weight_lines($groupId, $size)) $out[] = $size;
+        $k = $size . '|' . $colour;
+        if (isset($seen[$k])) continue;
+        $seen[$k] = true;
+        if (!pack_weight_lines($groupId, $size, $colour)) {
+            $out[] = $size . ($colour !== '' ? ' · ' . $colour : '');
+        }
     }
     return $out;
 }
 
-/* ----------------------------------------------------------------- write */
-
-/* Serial sanity, and no two groups owning the same carton.
-   Returns '' when the range is usable, otherwise the reason in plain words. */
 function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGroupId = 0): string
 {
     if ($from < 1)        return 'The first serial must be 1 or more.';
@@ -439,13 +596,18 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
     $assorted = !empty($in['assorted']);
     $packages = max(0, $to - $from + 1);
 
-    /* Tidy the size rows: drop the blanks, add up what is left. */
+    /* Tidy the rows: drop the blanks, add up what is left. A row is a
+       size AND a colour now — either may be empty, and both empty with
+       a quantity is still nothing, so it goes. */
     $clean = [];
     foreach ($sizes as $s) {
         $lbl = trim((string)($s['size_label'] ?? ''));
+        $col = trim((string)($s['colour_label'] ?? ''));
         $q   = (float)($s['qty'] ?? 0);
-        if ($lbl === '' || $q <= 0) continue;
-        $clean[] = ['size_label' => mb_substr($lbl, 0, 120), 'qty' => $q];
+        if (($lbl === '' && $col === '') || $q <= 0) continue;
+        $clean[] = ['size_label'   => mb_substr($lbl, 0, 120),
+                    'colour_label' => mb_substr($col, 0, 80),
+                    'qty'          => $q];
     }
     if (!$clean) {
         return [false, $assorted
@@ -467,7 +629,7 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
             db()->prepare("UPDATE packing_groups SET invoice_item_id=?, product_name=?, product_key=?, des_col=?,
                     optional_value=?, unit_title=?, serial_from=?, serial_to=?, packages=?,
                     qty_mode=?, qty_per_pkg=?, total_qty=?, assorted=?, size_label=?,
-                    updated_by=?, updated_at=NOW()
+                    weight_by_colour=?, updated_by=?, updated_at=NOW()
                    WHERE id=? AND shipment_id=?")
                 ->execute([
                     (int)($in['invoice_item_id'] ?? 0) ?: null,
@@ -477,6 +639,7 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
                     mb_substr((string)($in['optional_value'] ?? ''), 0, 255),
                     $unit, $from, $to, $packages, $mode, $perPkg, $totalQty,
                     $assorted ? 1 : 0, $assorted ? '' : $clean[0]['size_label'],
+                    !empty($in['weight_by_colour']) ? 1 : 0,
                     $uid, $groupId, $shipmentId,
                 ]);
         } else {
@@ -485,8 +648,8 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
             db()->prepare("INSERT INTO packing_groups
                     (shipment_id, line_no, invoice_item_id, product_name, product_key, des_col, optional_value,
                      unit_title, serial_from, serial_to, packages, qty_mode, qty_per_pkg, total_qty,
-                     assorted, size_label, created_by, created_at, updated_by, updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?,NOW())")
+                     assorted, size_label, weight_by_colour, created_by, created_at, updated_by, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?,NOW())")
                 ->execute([
                     $shipmentId, (int)$ln->fetchColumn(),
                     (int)($in['invoice_item_id'] ?? 0) ?: null,
@@ -496,7 +659,7 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
                     mb_substr((string)($in['optional_value'] ?? ''), 0, 255),
                     $unit, $from, $to, $packages, $mode, $perPkg, $totalQty,
                     $assorted ? 1 : 0, $assorted ? '' : $clean[0]['size_label'],
-                    $uid, $uid,
+                    !empty($in['weight_by_colour']) ? 1 : 0, $uid, $uid,
                 ]);
             $groupId = (int)db()->lastInsertId();
         }
@@ -504,11 +667,11 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
         /* The size rows are replaced wholesale — a removed size must go. */
         db()->prepare("DELETE FROM packing_group_sizes WHERE group_id=?")->execute([$groupId]);
         $ins = db()->prepare("INSERT INTO packing_group_sizes
-                   (group_id, size_label, qty_per_pkg, total_qty) VALUES (?,?,?,?)");
+                   (group_id, size_label, colour_label, qty_per_pkg, total_qty) VALUES (?,?,?,?,?)");
         foreach ($clean as $c) {
             $pp = $mode === 'per' ? $c['qty'] : ($packages > 0 ? $c['qty'] / $packages : 0);
             $tt = $mode === 'per' ? $c['qty'] * $packages : $c['qty'];
-            $ins->execute([$groupId, $c['size_label'], $pp, $tt]);
+            $ins->execute([$groupId, $c['size_label'], $c['colour_label'], $pp, $tt]);
         }
 
         db()->commit();
@@ -562,22 +725,25 @@ function pack_weigh_save(int $groupId, float $gross, float $tare): void
    shipment that is weighed today and approved next week asks for the
    same figures again in between. Seeding passes false, because copying
    a standard onto a range is not news. */
-function pack_weight_save(int $groupId, string $size, array $lines, bool $remember = true): array
+function pack_weight_save(int $groupId, string $size, array $lines,
+                          bool $remember = true, string $colour = ''): array
 {
     if ($size === '') return [false, 'No size to save against.'];
     try {
         db()->beginTransaction();
-        db()->prepare("DELETE FROM packing_weight_lines WHERE group_id=? AND size_label=?")
-            ->execute([$groupId, $size]);
+        db()->prepare("DELETE FROM packing_weight_lines
+                       WHERE group_id=? AND size_label=? AND colour_label=?")
+            ->execute([$groupId, $size, $colour]);
         $ins = db()->prepare("INSERT INTO packing_weight_lines
-                   (group_id, size_label, line_no, w_type, w_name, grams) VALUES (?,?,?,?,?,?)");
+                   (group_id, size_label, colour_label, line_no, w_type, w_name, grams)
+                   VALUES (?,?,?,?,?,?,?)");
         $n = 0;
         foreach ($lines as $l) {
             $g = (float)($l['grams'] ?? 0);
             if ($g <= 0) continue;
             $type = (string)($l['w_type'] ?? 'Fabric');
             if (!in_array($type, PACK_WTYPES, true)) $type = 'Other';
-            $ins->execute([$groupId, $size, ++$n, $type,
+            $ins->execute([$groupId, $size, $colour, ++$n, $type,
                            mb_substr(trim((string)($l['w_name'] ?? '')), 0, 120), $g]);
         }
         db()->commit();
@@ -588,7 +754,7 @@ function pack_weight_save(int $groupId, string $size, array $lines, bool $rememb
 
     if ($remember) {
         $g = pack_group($groupId);
-        if ($g) pack_std_save((string)$g['product_name'], $size, $lines);
+        if ($g) pack_std_save((string)$g['product_name'], $size, $lines, $colour);
     }
     return [true, 'Saved.'];
 }
@@ -731,15 +897,23 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
                 . number_format($t['qty'], 2) . ' pieces.'];
 }
 
-/* "King", or "2 Small, 4 Medium, 4 Large" — what the print shows. */
+/* "King", "White King", or "2 White Small, 4 Navy Large" — what the
+   print shows. A colour is part of what is in the carton, so it belongs
+   on the line; a range with no colours reads exactly as it did before. */
 function pack_size_text(array $g, array $sizes): string
 {
     if (!$sizes) return '';
-    if (empty($g['assorted'])) return (string)$sizes[0]['size_label'];
+    $one = static function (array $s): string {
+        $t = trim((string)$s['size_label']);
+        $c = trim((string)($s['colour_label'] ?? ''));
+        if ($t === '') return $c;
+        return $c === '' ? $t : $c . ' ' . $t;
+    };
+    if (empty($g['assorted'])) return $one($sizes[0]);
     $bits = [];
     foreach ($sizes as $s) {
         $q = pack_size_per_pkg($g, $s);
-        $bits[] = rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.') . ' ' . $s['size_label'];
+        $bits[] = rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.') . ' ' . $one($s);
     }
     return implode(', ', $bits);
 }

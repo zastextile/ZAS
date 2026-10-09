@@ -149,21 +149,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($assorted) {
             $lbl = (array)($_POST['size_label'] ?? []);
             $new = (array)($_POST['size_new'] ?? []);
+            $col = (array)($_POST['colour_label'] ?? []);
             $qty = (array)($_POST['size_qty'] ?? []);
             foreach ($lbl as $i => $l) {
                 $l = (string)$l;
                 if ($l === '__new') $l = trim((string)($new[$i] ?? ''));
-                $sizes[] = ['size_label' => $l, 'qty' => (float)($qty[$i] ?? 0)];
+                $sizes[] = ['size_label'   => $l,
+                            'colour_label' => trim((string)($col[$i] ?? '')),
+                            'qty'          => (float)($qty[$i] ?? 0)];
             }
         } else {
             /* __new means "the one I typed", not a size called __new. */
             $one = (string)($_POST['single_size'] ?? '');
             if ($one === '__new') $one = trim((string)($_POST['single_size_new'] ?? ''));
-            $sizes[] = ['size_label' => $one,
-                        'qty'        => (float)($_POST['single_qty'] ?? 0)];
+            $sizes[] = ['size_label'   => $one,
+                        'colour_label' => trim((string)($_POST['single_colour'] ?? '')),
+                        'qty'          => (float)($_POST['single_qty'] ?? 0)];
         }
 
         [$ok, $msg] = pack_group_save($id, [
+            'weight_by_colour' => !empty($_POST['weight_by_colour']),
             'invoice_item_id' => $itemId,
             'product_name'    => (string)$item['product_name'],
             'des_col'         => (string)($item['des_col'] ?? ''),
@@ -196,18 +201,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         pack_weigh_save($gId, (float)($_POST['pkg_gross'] ?? 0), (float)($_POST['pkg_tare'] ?? 0));
 
-        /* Only sizes this range actually has. The field arrives from a
-           browser, so the size names in it are checked against the
-           database rather than trusted — a name that is not one of this
-           range's sizes is dropped, not created. */
+        /* Only units this range actually has. The field arrives from a
+           browser, so every key in it is checked against the database
+           rather than trusted — a name that is not one of this range's
+           own is dropped, not created.
+
+           A UNIT IS A SIZE, OR A SIZE AND A COLOUR. Which one is not
+           decided here: pack_unit_key() decides it in one place, from
+           the range's own switch, so the screen, the save and the
+           seeding can never disagree about where a breakdown is filed. */
         $own = [];
-        foreach (pack_sizes($gId) as $srow) $own[(string)$srow['size_label']] = true;
+        foreach (pack_sizes($gId) as $srow) {
+            [$uSz, $uCol] = pack_wkey($grp, $srow);
+            if ($uSz === '') continue;
+            $own[pack_unit_key($grp, $srow)] = [$uSz, $uCol];
+        }
 
         $sent = json_decode((string)($_POST['weights_json'] ?? ''), true);
         if (is_array($sent)) {
-            foreach ($sent as $sizeLabel => $rows) {
-                $sizeLabel = (string)$sizeLabel;
-                if (!isset($own[$sizeLabel]) || !is_array($rows)) continue;
+            foreach ($sent as $unitKey => $rows) {
+                $unitKey = (string)$unitKey;
+                if (!isset($own[$unitKey]) || !is_array($rows)) continue;
+                [$uSz, $uCol] = $own[$unitKey];
                 $lines = [];
                 foreach ($rows as $r) {
                     if (!is_array($r)) continue;
@@ -215,7 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 'w_name' => (string)($r['n'] ?? ''),
                                 'grams'  => (float)($r['g'] ?? 0)];
                 }
-                pack_weight_save($gId, $sizeLabel, $lines);
+                pack_weight_save($gId, $uSz, $lines, true, $uCol);
             }
         }
         $_SESSION['flash'] = 'Weight saved.';
@@ -238,11 +253,26 @@ if ($tab === 'mix' && $gid > 0) {
     $g = pack_group($gid);
     if (!$g || (int)$g['shipment_id'] !== $id) { http_response_code(404); exit('Range not found.'); }
     $sizes = pack_sizes($gid);
-    $opts  = pack_size_options((string)$g['product_name']);
     $P     = pack_packages($g);
     $per   = $g['qty_mode'] === 'per';
 
-    mob_header('Assorted — ' . $g['unit_title'] . ' ' . (int)$g['serial_from'] . '–' . (int)$g['serial_to'],
+    /* The order's own sizes and colours. If the office has not set the
+       order up, fall back to the product's list rather than offering an
+       empty screen — the packer is never stuck. */
+    $pal  = pack_palette($id, (int)$g['invoice_item_id']);
+    $pSz  = $pal['size']   ?: pack_size_options((string)$g['product_name']);
+    $pCol = $pal['colour'];
+
+    /* What one package should come to, so the tapping has a target.
+       Per package: the figure already on the range. Direct: the whole
+       total, because in that mode the mix IS the total. */
+    $target = $per ? (float)$g['qty_per_pkg'] : (float)$g['total_qty'];
+
+    /* One word for it, and it is the user's own: "assorted". A screen
+       that says "Mixed" here and "Assorted" elsewhere is two things to
+       learn for one idea. */
+    mob_header('Assorted — ' . $g['unit_title'] . ' '
+               . (int)$g['serial_from'] . '–' . (int)$g['serial_to'],
                $self, (string)$g['product_name'], 'manifest_pack.json');
     mob_flash();
     ?>
@@ -256,42 +286,56 @@ if ($tab === 'mix' && $gid > 0) {
       <input type="hidden" name="serial_from" value="<?= (int)$g['serial_from'] ?>">
       <input type="hidden" name="serial_to" value="<?= (int)$g['serial_to'] ?>">
       <input type="hidden" name="qty_mode" value="<?= e((string)$g['qty_mode']) ?>">
-      <input type="hidden" name="assorted" value="1">
+      <input type="hidden" name="size_mode" value="mix">
+      <input type="hidden" name="weight_by_colour" id="wbc" value="<?= (int)!empty($g['weight_by_colour']) ?>">
+      <?php /* The tapping builds these, one hidden row per combination. */ ?>
+      <div id="rows"></div>
 
       <div class="mcard">
-        <h2><?= $per ? 'Sizes in one ' . e(strtolower((string)$g['unit_title']))
-                     : 'Sizes across the whole range' ?></h2>
-        <div class="note" style="margin-bottom:12px">
-          <?= $per
-            ? 'What one ' . e(strtolower((string)$g['unit_title'])) . ' holds. Every one in this serial range is packed the same.'
-            : 'Direct qty — split the total between the sizes.' ?>
+        <h2><?= $per ? 'What one ' . e(strtolower((string)$g['unit_title'])) . ' holds'
+                     : 'What this range holds in total' ?></h2>
+        <div class="note" style="margin-bottom:13px">
+          <?= $pCol ? 'Tap a colour, then tap a size once for every piece.'
+                    : 'Tap a size once for every piece.' ?>
         </div>
-        <div id="rows">
-          <?php
-          $show = $sizes ?: [['size_label' => '', 'qty_per_pkg' => 0, 'total_qty' => 0]];
-          foreach ($show as $r):
-              $q = $per ? (float)$r['qty_per_pkg'] : (float)$r['total_qty']; ?>
-            <div class="mixrow">
-              <div><?= pack_pick_field($opts, (string)$r['size_label'], 'size_label[]', 'size_new[]', 'size') ?></div>
-              <input class="in q" type="number" inputmode="decimal" step="any" name="size_qty[]"
-                     value="<?= $q > 0 ? e(rtrim(rtrim(number_format($q, 3, '.', ''), '0'), '.')) : '' ?>"
-                     placeholder="qty" aria-label="Quantity">
-              <button type="button" class="x" aria-label="Remove">&times;</button>
-            </div>
-          <?php endforeach; ?>
+
+        <?php if ($pCol): ?>
+          <span class="flab">Colour</span>
+          <div class="pad" id="colPad"></div>
+        <?php endif; ?>
+
+        <span class="flab" style="margin-top:13px">Size</span>
+        <div class="pad" id="szPad"></div>
+
+        <div class="meter" id="meter">
+          <div class="big"><span id="mLeft">—</span><b id="mCount">—</b></div>
+          <div class="bar"><i id="mBar" style="width:0%"></i></div>
+          <div class="msg" id="mMsg"></div>
         </div>
-        <button type="button" class="btn sec" id="addsize" style="margin-top:4px">+ Add a size</button>
-        <div class="tot"><span id="foot">—</span><b id="tot">—</b></div>
+
+        <div id="tally"></div>
       </div>
 
+      <?php if ($pCol): ?>
+        <div class="mcard">
+          <h2>Do these colours weigh differently?</h2>
+          <div class="note" style="margin-bottom:12px">Usually not — the same cloth, a different
+            dye. Leave it off and one breakdown per size serves every colour of it.</div>
+          <div class="seg" id="wbcSeg">
+            <button type="button" data-v="0">Same for every colour</button>
+            <button type="button" data-v="1">Each colour differs</button>
+          </div>
+        </div>
+      <?php endif; ?>
+
       <?php if ($canEdit): ?>
-        <button class="btn go" type="submit">Save this set</button>
+        <button class="btn go" type="submit">Save this range</button>
       <?php endif; ?>
     </form>
 
     <?php if ($canEdit): ?>
     <form method="post" style="margin-top:10px"
-          onsubmit="return confirm('Turn assorted off? The set of sizes is dropped.')">
+          onsubmit="return confirm('Back to one size and colour? The mix is dropped.')">
       <?= csrf_field() ?>
       <input type="hidden" name="action" value="group">
       <input type="hidden" name="shipment_id" value="<?= $id ?>">
@@ -301,63 +345,163 @@ if ($tab === 'mix' && $gid > 0) {
       <input type="hidden" name="serial_from" value="<?= (int)$g['serial_from'] ?>">
       <input type="hidden" name="serial_to" value="<?= (int)$g['serial_to'] ?>">
       <input type="hidden" name="qty_mode" value="<?= e((string)$g['qty_mode']) ?>">
+      <input type="hidden" name="size_mode" value="one">
       <input type="hidden" name="single_size" value="<?= e((string)($sizes[0]['size_label'] ?? '')) ?>">
+      <input type="hidden" name="single_colour" value="<?= e((string)($sizes[0]['colour_label'] ?? '')) ?>">
       <input type="hidden" name="single_qty"
              value="<?= e((string)($per ? ($sizes[0]['qty_per_pkg'] ?? 0) : ($sizes[0]['total_qty'] ?? 0))) ?>">
-      <button class="btn red" type="submit">Turn assorted off — one size only</button>
+      <button class="btn red" type="submit">One size and colour instead</button>
     </form>
     <?php endif; ?>
 
     <style>
-      .mixrow{display:grid;grid-template-columns:1fr 78px 38px;gap:8px;align-items:center;margin-bottom:8px}
-      .mixrow .in{padding:10px}
-      .mixrow .x{border:0;background:transparent;color:var(--bad);font-size:22px;min-height:44px;cursor:pointer}
-      .tot{display:flex;justify-content:space-between;font-size:13.5px;font-weight:700;
-           border-top:1px solid var(--line);padding-top:10px;margin-top:8px}
-      .tot span{color:var(--muted);font-weight:600}
+      .pad{display:flex;gap:8px;flex-wrap:wrap}
+      .pad button{border:2px solid var(--line);background:#fff;color:var(--ink);border-radius:14px;
+        padding:0 16px;height:58px;font-size:16px;font-weight:800;cursor:pointer;
+        display:inline-flex;align-items:center;gap:8px;position:relative;min-width:88px;
+        justify-content:center}
+      .pad button.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+      .pad button:active{transform:scale(.96)}
+      .pad .cnt{position:absolute;top:-8px;right:-8px;min-width:24px;height:24px;border-radius:12px;
+        background:var(--cyan);color:#fff;font-size:12.5px;font-weight:800;
+        display:grid;place-items:center;padding:0 6px;border:2px solid var(--bg)}
+      .sw{width:17px;height:17px;border-radius:50%;border:1px solid rgba(0,0,0,.22);flex:0 0 17px}
+      .meter{border-radius:14px;padding:14px;margin-top:15px;border:2px solid var(--line);background:#f6f8fb}
+      .meter .big{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+      .meter .big span{font-size:13px;font-weight:800;color:var(--muted)}
+      .meter .big b{font-size:30px;font-variant-numeric:tabular-nums;letter-spacing:-.8px}
+      .bar{height:9px;border-radius:5px;background:#d7dfea;margin-top:10px;overflow:hidden}
+      .bar i{display:block;height:100%;background:var(--cyan);transition:width .18s}
+      .meter.done{border-color:var(--good);background:rgba(22,163,74,.09)}
+      .meter.done .bar i{background:var(--good)}
+      .meter.over{border-color:var(--bad);background:rgba(184,40,63,.08)}
+      .meter.over .bar i{background:var(--bad)}
+      .meter .msg{font-size:14px;font-weight:800;margin-top:9px}
+      .c-good{color:var(--good)}.c-warn{color:var(--muted)}.c-bad{color:var(--bad)}
+      .tl{display:grid;grid-template-columns:1fr auto auto auto;gap:10px;align-items:center;
+        padding:10px 0;border-top:1px solid var(--line)}
+      .tl .who{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:700;min-width:0}
+      .tl .n{font-size:18px;font-weight:800;min-width:28px;text-align:center;font-variant-numeric:tabular-nums}
+      .tl button{width:44px;height:44px;border-radius:11px;border:2px solid var(--line);background:#fff;
+        color:var(--ink);font-size:22px;font-weight:800;cursor:pointer;line-height:1}
+      .seg{display:flex;border:2px solid #cbd5e3;border-radius:12px;overflow:hidden}
+      .seg button{flex:1;border:0;background:transparent;color:var(--muted);font-size:14px;
+        font-weight:800;padding:14px 8px;cursor:pointer;min-height:54px}
+      .seg button.on{background:var(--cyan);color:#fff}
     </style>
     <script>
     (function () {
-      var P = <?= (int)$P ?>, per = <?= $per ? 'true' : 'false' ?>, u = <?= json_encode(strtolower((string)$g['unit_title'])) ?>;
-      var rows = document.getElementById('rows');
-      function sum() {
-        var t = 0;
-        rows.querySelectorAll('.q').forEach(function (i) { t += parseFloat(i.value) || 0; });
-        return t;
-      }
-      function paint() {
-        var s = sum();
-        document.getElementById('foot').textContent = per
-          ? s + ' per ' + u + ' × ' + P + ' ' + u
-          : 'split across ' + P + ' ' + u;
-        document.getElementById('tot').textContent = (per ? s * P : s).toLocaleString('en-US');
-      }
-      rows.addEventListener('input', paint);
-      rows.addEventListener('change', paint);
-      rows.addEventListener('click', function (ev) {
-        if (!ev.target.classList.contains('x')) return;
-        if (rows.querySelectorAll('.mixrow').length > 1) ev.target.closest('.mixrow').remove();
-        else { ev.target.closest('.mixrow').querySelectorAll('input,select').forEach(function (f) { f.value = ''; }); }
-        paint();
-      });
-      document.getElementById('addsize').onclick = function () {
-        var c = rows.querySelector('.mixrow').cloneNode(true);
-        c.querySelectorAll('input,select').forEach(function (f) { f.value = ''; });
-        /* A cloned row must not arrive with the typed-size box already
-           open from whatever the row above was doing. */
-        c.querySelectorAll('[data-picknew]').forEach(function (b) { b.hidden = true; });
-        rows.appendChild(c);
-        paint();
-      };
+      /* ONE TAP IS ONE PIECE. No keyboard, no cursor, no decimal point —
+         the thing being counted is whole pieces going into a carton, and
+         a thumb is the right instrument for it. */
+      var SIZES   = <?= json_encode(array_values($pSz)) ?>;
+      var COLOURS = <?= json_encode(array_values($pCol)) ?>;
+      var SWATCH  = <?= json_encode(array_combine(
+                          array_values($pCol),
+                          array_map('pack_colour_swatch', array_values($pCol))) ?: new stdClass()) ?>;
+      var TARGET  = <?= json_encode(round($target, 3)) ?>;
+      var UNIT    = <?= json_encode(strtolower((string)$g['unit_title'])) ?>;
+      var PER     = <?= $per ? 'true' : 'false' ?>;
+      var MIX     = <?= json_encode(array_map(static function (array $r) use ($per) {
+                        return ['s' => (string)$r['size_label'],
+                                'c' => (string)($r['colour_label'] ?? ''),
+                                'q' => (float)($per ? $r['qty_per_pkg'] : $r['total_qty'])];
+                      }, $sizes)) ?>;
+      var picked = COLOURS.length ? COLOURS[0] : '';
 
-      /* The same reveal as the range cards. This page is drawn and
-         exits before that script is reached, so it needs its own. */
-      rows.addEventListener('change', function (ev) {
-        if (!ev.target.matches || !ev.target.matches('[data-pick]')) return;
-        var box = ev.target.parentElement.querySelector('[data-picknew]');
-        if (box) { box.hidden = ev.target.value !== '__new'; if (!box.hidden) box.focus(); }
-      });
-      paint();
+      var $ = function (i) { return document.getElementById(i); };
+      function esc(t) { return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+      function num(n) { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+      function hex(c) { return SWATCH[c] || '#cbd5e3'; }
+      function total() { return MIX.reduce(function (a, m) { return a + (+m.q || 0); }, 0); }
+      function at(s, c) { for (var i = 0; i < MIX.length; i++)
+                            if (MIX[i].s === s && MIX[i].c === c) return i; return -1; }
+      function bump(s, c, by) {
+        var i = at(s, c);
+        if (i < 0) { if (by < 0) return; MIX.push({ s: s, c: c, q: 0 }); i = MIX.length - 1; }
+        MIX[i].q += by;
+        if (MIX[i].q <= 0) MIX.splice(i, 1);
+        draw();
+      }
+
+      function draw() {
+        if (COLOURS.length) {
+          $('colPad').innerHTML = COLOURS.map(function (c) {
+            var n = MIX.filter(function (m) { return m.c === c; })
+                       .reduce(function (a, m) { return a + m.q; }, 0);
+            return '<button type="button" data-c="' + esc(c) + '" class="' + (c === picked ? 'on' : '') + '">'
+              + '<i class="sw" style="background:' + hex(c) + '"></i>' + esc(c)
+              + (n ? '<i class="cnt">' + num(n) + '</i>' : '') + '</button>';
+          }).join('');
+          $('colPad').querySelectorAll('button').forEach(function (b) {
+            b.onclick = function () { picked = b.dataset.c; draw(); };
+          });
+        }
+
+        $('szPad').innerHTML = SIZES.map(function (s) {
+          var i = at(s, picked), n = i < 0 ? 0 : MIX[i].q;
+          return '<button type="button" data-s="' + esc(s) + '">' + esc(s)
+            + (n ? '<i class="cnt">' + num(n) + '</i>' : '') + '</button>';
+        }).join('') || '<span class="note">No size set for this order yet.</span>';
+        $('szPad').querySelectorAll('button').forEach(function (b) {
+          b.onclick = function () { bump(b.dataset.s, picked, 1); };
+        });
+
+        /* The carton must come out exact. It says how far off it is at
+           every tap rather than letting a short carton be saved. */
+        var have = total(), m = $('meter');
+        m.className = 'meter' + (TARGET > 0 && have === TARGET ? ' done'
+                               : (TARGET > 0 && have > TARGET ? ' over' : ''));
+        $('mLeft').textContent  = PER ? 'In this ' + UNIT : 'Across this range';
+        $('mCount').textContent = TARGET > 0 ? num(have) + ' / ' + num(TARGET) : num(have);
+        $('mBar').style.width = (TARGET > 0 ? Math.min(100, have / TARGET * 100) : 0) + '%';
+        $('mMsg').className = 'msg ' + (TARGET <= 0 ? 'c-warn'
+                            : (have === TARGET ? 'c-good' : (have > TARGET ? 'c-bad' : 'c-warn')));
+        $('mMsg').textContent = TARGET <= 0
+          ? 'Set the quantity on the range first, so this has something to come to.'
+          : (have === TARGET ? 'Complete.'
+            : (have > TARGET ? num(have - TARGET) + ' too many — take some out.'
+                             : num(TARGET - have) + ' still to place.'));
+
+        $('tally').innerHTML = MIX.length ? MIX.map(function (mm, i) {
+          return '<div class="tl" data-i="' + i + '">'
+            + '<span class="who">'
+            + (mm.c ? '<i class="sw" style="background:' + hex(mm.c) + '"></i>' + esc(mm.c) + ' ' : '')
+            + esc(mm.s) + '</span>'
+            + '<button type="button" class="minus">−</button>'
+            + '<span class="n">' + num(mm.q) + '</span>'
+            + '<button type="button" class="plus">+</button></div>';
+        }).join('') : '<p class="note" style="margin-top:12px">Nothing in it yet.</p>';
+        $('tally').querySelectorAll('.tl').forEach(function (d) {
+          var mm = MIX[+d.dataset.i];
+          d.querySelector('.minus').onclick = function () { bump(mm.s, mm.c, -1); };
+          d.querySelector('.plus').onclick  = function () { bump(mm.s, mm.c, 1); };
+        });
+
+        /* The hidden rows the server reads. Rebuilt from the tally every
+           time, so what is posted is always what is on screen. */
+        $('rows').innerHTML = MIX.map(function (mm) {
+          return '<input type="hidden" name="size_label[]" value="' + esc(mm.s) + '">'
+            + '<input type="hidden" name="colour_label[]" value="' + esc(mm.c) + '">'
+            + '<input type="hidden" name="size_qty[]" value="' + mm.q + '">';
+        }).join('');
+      }
+
+      var seg = document.getElementById('wbcSeg');
+      if (seg) {
+        var paintSeg = function () {
+          seg.querySelectorAll('button').forEach(function (b) {
+            b.classList.toggle('on', b.dataset.v === $('wbc').value);
+          });
+        };
+        seg.querySelectorAll('button').forEach(function (b) {
+          b.onclick = function () { $('wbc').value = b.dataset.v; paintSeg(); };
+        });
+        paintSeg();
+      }
+
+      draw();
     })();
     </script>
     <?php
@@ -382,6 +526,11 @@ if (!$canEdit) {
 .ptab{flex:1;padding:11px 4px;border-radius:11px;border:1px solid #cbd5e3;background:#fff;
   color:var(--muted);font-weight:700;font-size:13px;text-align:center;text-decoration:none}
 .ptab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+/* the order's scope, stated before any field is touched */
+.scope{background:rgba(14,168,201,.09);border:1px solid rgba(14,168,201,.3);border-radius:13px;
+  padding:12px 14px;margin-bottom:13px}
+.scope b{font-size:15px;display:block}
+.scope span{display:block;font-size:12.5px;color:var(--muted);margin-top:3px;font-weight:600}
 .derv{background:#f6f8fb;border:1px solid var(--line);border-radius:10px;padding:9px 11px;
   font-size:13px;font-weight:700;display:flex;justify-content:space-between;gap:8px;margin-bottom:11px}
 .derv span{color:var(--muted);font-weight:600}
@@ -444,7 +593,18 @@ if ($tab === 'serial') {
             $from = $last + 1; $to = $last + 1;
         }
 
-        $opts = pack_size_options($new ? '' : (string)$g['product_name']);
+        /* THE ORDER'S PALETTE, NOT THE PRODUCT'S WHOLE HISTORY.
+           The office set these from the customer's email; this screen
+           shows exactly them. Only when the order has not been set up
+           does it fall back to the product's own list, so a packer is
+           never stuck in front of an empty screen. */
+        $itemId  = $new ? 0 : (int)$g['invoice_item_id'];
+        $pal     = $itemId ? pack_palette($id, $itemId) : ['size' => [], 'colour' => []];
+        $fromPal = $pal['size'] !== [] || $pal['colour'] !== [];
+        $opts    = $pal['size'] !== []
+                 ? $pal['size']
+                 : pack_size_options($new ? '' : (string)$g['product_name']);
+        $cols    = $pal['colour'];
         $single = $sizes[0] ?? null;
         $singleQty = $single ? ($mode === 'per' ? (float)$single['qty_per_pkg'] : (float)$single['total_qty']) : 0;
         $num = function (float $v): string {
@@ -521,16 +681,28 @@ if ($tab === 'serial') {
             <span data-qtylabel>Quantity per package</span>
             <input class="in" type="number" inputmode="decimal" step="any" name="single_qty"
                    value="<?= e($num($singleQty)) ?>" data-qty></label>
-          <label class="f" data-one><span>Size — this product's own sizes</span>
+          <label class="f" data-one><span>Size<?= $fromPal ? ' — from this order' : " — this product's own sizes" ?></span>
             <?= pack_pick_field($opts, (string)($single['size_label'] ?? ''),
                                 'single_size', 'single_size_new', 'size') ?></label>
+          <?php if ($cols): ?>
+            <label class="f" data-one><span>Colour — from this order</span>
+              <select class="in" name="single_colour">
+                <option value="">— no colour —</option>
+                <?php foreach ($cols as $c): ?>
+                  <option<?= $c === (string)($single['colour_label'] ?? '') ? ' selected' : '' ?>><?= e($c) ?></option>
+                <?php endforeach; ?>
+              </select></label>
+          <?php else: ?>
+            <input type="hidden" name="single_colour" value="<?= e((string)($single['colour_label'] ?? '')) ?>">
+          <?php endif; ?>
 
           <div data-mix hidden>
             <div class="derv"><span data-mixhead>Assorted</span>
               <b><?= e($new ? '' : (pack_size_text($g, $sizes) ?: 'not set up yet')) ?></b></div>
             <?php if (!$new): ?>
               <a class="lnk" href="<?= e($self) ?>&t=mix&g=<?= $gidL ?>">
-                <span><b>Set up the sizes</b><small>Small 2, Medium 4, Large 4 — for this serial range</small></span>
+                <span><b>Tap in what one <?= e(strtolower($unit)) ?> holds</b>
+                  <small>a colour, then a size, once per piece</small></span>
                 <span class="chev">&rsaquo;</span></a>
             <?php endif; ?>
           </div>
@@ -562,6 +734,30 @@ if ($tab === 'serial') {
     if (!$items) {
         echo '<div class="empty">This invoice has no items yet. Add them on the desktop first.</div>';
     } else {
+        /* SAY THE SCOPE BEFORE ANYTHING IS TAPPED. The packer should
+           know the whole world of this order in one line, rather than
+           discovering it a dropdown at a time. */
+        $palAll = ['size' => [], 'colour' => []];
+        foreach ($items as $it) {
+            $pp = pack_palette($id, (int)$it['id']);
+            $palAll['size']   = array_merge($palAll['size'],   $pp['size']);
+            $palAll['colour'] = array_merge($palAll['colour'], $pp['colour']);
+        }
+        $palAll['size']   = pack_dedupe($palAll['size']);
+        $palAll['colour'] = pack_dedupe($palAll['colour']);
+        $ns = count($palAll['size']); $nc = count($palAll['colour']);
+        echo '<div class="scope">';
+        if ($ns || $nc) {
+            echo '<b>This order: ' . $ns . ' size' . ($ns === 1 ? '' : 's')
+               . ' and ' . $nc . ' colour' . ($nc === 1 ? '' : 's') . '</b>'
+               . '<span>' . e(implode(', ', $palAll['size']))
+               . ($nc ? '   ·   ' . e(implode(', ', $palAll['colour'])) : '') . '</span>';
+        } else {
+            echo '<b>This order has no sizes or colours set yet</b>'
+               . '<span>The office sets them on Order sizes &amp; colours. '
+               . 'Until then this screen offers the whole product list.</span>';
+        }
+        echo '</div>';
         /* One range to a screen. Each carries its own form and its own
            Save, so a range is finished before the next one is looked at
            — which is also how the cartons are actually packed. */
@@ -700,19 +896,42 @@ if ($tab === 'weight') {
         $sizes   = pack_sizes($gid);
         $perUnit = pack_per_unit($gid);
         $P       = pack_packages($g);
-        $labels  = array_column($sizes, 'size_label');
+
+        /* ONE ROW PER THING THAT HAS ITS OWN WEIGHT.
+           With the per-colour switch off that is one row per size, and
+           four colours of Single are one question asked once — which is
+           what he asked for. With it on it is one row per size AND
+           colour, because then they genuinely differ.
+
+           The quantity is summed, not taken from the first row: with the
+           switch off, 4 White Single and 2 Navy Single are 6 Singles in
+           the carton, and weighing 4 of them would be wrong. */
+        $units = [];
+        foreach ($sizes as $srow) {
+            $k = pack_unit_key($g, $srow);
+            [$uSz, $uCol] = pack_wkey($g, $srow);
+            if ($uSz === '') continue;
+            if (!isset($units[$k])) {
+                $units[$k] = ['size' => $uSz, 'colour' => $uCol, 'qty' => 0.0,
+                              'label' => $uCol === '' ? $uSz : $uCol . ' ' . $uSz];
+            }
+            $units[$k]['qty'] += pack_size_per_pkg($g, $srow);
+        }
+        $labels  = array_keys($units);
         /* OPEN ON WHAT IS STILL MISSING. Everything already known was
            filled in when the range was saved, so landing on a size that
            is done and making someone hunt for the blank one is the same
            "asking again" in a different shape. */
-        $missing = pack_weight_missing($gid);
+        $missing = [];
+        foreach ($units as $k => $u) {
+            if (!pack_weight_lines($gid, $u['size'], $u['colour'])) $missing[$k] = $u['label'];
+        }
         if ($sz === '' || !in_array($sz, $labels, true)) {
-            $sz = (string)($missing[0] ?? ($labels[0] ?? ''));
+            $sz = (string)(array_key_first($missing) ?? ($labels[0] ?? ''));
         }
 
         $mustKg  = (float)$g['pkg_gross'] - (float)$g['pkg_tare'];
-        $qtyIn   = 0.0;
-        foreach ($sizes as $srow) if ((string)$srow['size_label'] === $sz) $qtyIn = pack_size_per_pkg($g, $srow);
+        $qtyIn   = (float)($units[$sz]['qty'] ?? 0);
         $contents = pack_contents_kg($g, $sizes, $perUnit);
 
         /* EVERY SIZE'S FIGURES GO DOWN WITH THE PAGE.
@@ -723,18 +942,19 @@ if ($tab === 'weight') {
         $allLines = [];
         $allStd   = [];
         $perPkg   = [];
-        foreach ($sizes as $srow) {
-            $l = (string)$srow['size_label'];
-            $allLines[$l] = array_map(static function (array $r): array {
+        $unitName = [];
+        foreach ($units as $k => $u) {
+            $allLines[$k] = array_map(static function (array $r): array {
                 return ['t' => (string)$r['w_type'], 'n' => (string)$r['w_name'], 'g' => (float)$r['grams']];
-            }, pack_weight_lines($gid, $l));
-            $std = pack_std_get((string)$g['product_name'], $l);
+            }, pack_weight_lines($gid, $u['size'], $u['colour']));
+            $std = pack_std_get((string)$g['product_name'], $u['size'], $u['colour']);
             if ($std) {
-                $allStd[$l] = array_map(static function (array $r): array {
+                $allStd[$k] = array_map(static function (array $r): array {
                     return ['t' => (string)$r['w_type'], 'n' => (string)$r['w_name'], 'g' => (float)$r['grams']];
                 }, $std);
             }
-            $perPkg[$l] = pack_size_per_pkg($g, $srow);
+            $perPkg[$k]   = $u['qty'];
+            $unitName[$k] = $u['label'];
         }
         ?>
         <form method="post" id="wform">
@@ -777,12 +997,12 @@ if ($tab === 'weight') {
               <div class="sumrow"><span><b>Nothing new to weigh here.</b></span>
                 <b><span class="pill p">done</span></b></div>
               <div class="note" style="margin-top:6px">
-                All <?= count($sizes) === 1 ? 'of it' : count($sizes) . ' sizes' ?> came from
+                All <?= count($units) === 1 ? 'of it' : count($units) . ' of them' ?> came from
                 what this product was weighed at before. Change anything only if it is wrong.
               </div>
             <?php else: ?>
               <div class="sumrow">
-                <span><b><?= count($missing) ?> of <?= count($sizes) ?></b>
+                <span><b><?= count($missing) ?> of <?= count($units) ?></b>
                   still need<?= count($missing) === 1 ? 's' : '' ?> weighing</span>
                 <b><span class="pill w"><?= e(implode(', ', $missing)) ?></span></b></div>
               <div class="note" style="margin-top:6px">The rest came from what this product
@@ -801,20 +1021,24 @@ if ($tab === 'weight') {
             </div>
             <div class="derv"><span>So the contents must come to</span><b id="must"><?= number_format($mustKg, 3) ?> kg</b></div>
             <div class="derv"><span>Inside one package</span><b><?php
+              /* The units, not the raw rows: with the per-colour switch
+                 off, "4 White Single + 2 Navy Single" is 6 Singles and
+                 reading it as two things to weigh is the old mistake. */
               $bits = [];
-              foreach ($sizes as $srow) {
-                  $bits[] = rtrim(rtrim(number_format(pack_size_per_pkg($g, $srow), 2, '.', ''), '0'), '.')
-                          . ' ' . $srow['size_label'];
+              foreach ($units as $u) {
+                  $bits[] = rtrim(rtrim(number_format($u['qty'], 2, '.', ''), '0'), '.')
+                          . ' ' . $u['label'];
               }
               echo e($bits ? implode(' + ', $bits) : 'no size yet');
             ?></b></div>
           </div>
 
-          <?php if (count($sizes) > 1):
-                  /* Only an assorted range gets this step — with one size
-                     there is nothing to choose and a screen asking you to
-                     choose it would be a screen for nothing. */
-                  mob_step('Which size', 'Switches at once — nothing is saved until you press Save'); ?>
+          <?php if (count($units) > 1):
+                  /* UNITS, NOT SIZES. A range of three colours of one
+                     size, weighing the same, is ONE unit — and a step
+                     asking which of the one to pick is a screen for
+                     nothing. */
+                  mob_step('Which one', 'Switches at once — nothing is saved until you press Save'); ?>
             <div class="mcard">
               <div class="chips" id="szchips"></div>
               <div class="note" style="margin-top:10px">A tick means that size already has its weights.</div>
@@ -871,15 +1095,15 @@ if ($tab === 'weight') {
           </div>
           <div class="formula" id="pkgformula"><?php
             $f = '';
-            foreach ($sizes as $srow) {
-                $l = (string)$srow['size_label'];
-                $pu = (float)($perUnit[$l] ?? 0);
-                $qp = pack_size_per_pkg($g, $srow);
-                $f .= str_pad($l, 14) . number_format($pu) . ' g  x ' . rtrim(rtrim(number_format($qp, 2, '.', ''), '0'), '.')
+            foreach ($units as $k => $u) {
+                $pu = (float)($perUnit[$k] ?? 0);
+                $qp = (float)$u['qty'];
+                $f .= str_pad($u['label'], 18) . number_format($pu) . ' g  x '
+                    . rtrim(rtrim(number_format($qp, 2, '.', ''), '0'), '.')
                     . '  = ' . number_format($pu * $qp / 1000, 3) . " kg\n";
             }
-            $f .= str_pad('', 14) . 'contents  ' . number_format($contents, 3) . " kg\n"
-                . str_pad('', 14) . '+ package ' . number_format((float)$g['pkg_tare'], 3) . " kg\n\n"
+            $f .= str_pad('', 18) . 'contents  ' . number_format($contents, 3) . " kg\n"
+                . str_pad('', 18) . '+ package ' . number_format((float)$g['pkg_tare'], 3) . " kg\n\n"
                 . 'NET   = ' . number_format($contents, 3) . ' x ' . number_format($P)
                 . ' = ' . number_format($contents * $P, 3) . " kg\n"
                 . 'GROSS = NET + (' . number_format((float)$g['pkg_tare'], 3) . ' x ' . number_format($P) . ') = '
@@ -921,7 +1145,11 @@ if ($tab === 'weight') {
              it sit in one package. All of it came down with the page, so
              switching size, copying a breakdown or applying one to four
              sizes at once costs nothing and loses nothing. */
-          var SIZES  = <?= json_encode(array_map('strval', array_column($sizes, 'size_label'))) ?>;
+          /* The keys the server files a breakdown under, and the names
+             a packer reads. They differ the moment colour is involved:
+             the key is "Single|Navy", the name is "Navy Single". */
+          var SIZES  = <?= json_encode(array_map('strval', array_keys($units))) ?>;
+          var NAMES  = <?= json_encode((object)$unitName) ?>;
           var LINES  = <?= json_encode((object)$allLines) ?>;
           var STD    = <?= json_encode((object)$allStd) ?>;
           var PERPKG = <?= json_encode((object)array_map(static fn($v) => round($v, 4), $perPkg)) ?>;
@@ -940,6 +1168,9 @@ if ($tab === 'weight') {
               return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; });
           }
           function num(n) { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+          /* THE NAME, NEVER THE KEY. The key is "Single|Navy" and a
+             packer must never be shown that — he reads "Navy Single". */
+          function nm(k) { return NAMES[k] || k; }
           function kg(v)  { return (Math.round(v * 1000) / 1000).toFixed(3); }
           function rows() { return (LINES[at] = LINES[at] || []); }
           function sum(list) {
@@ -961,7 +1192,7 @@ if ($tab === 'weight') {
             if (!chips) return;
             chips.innerHTML = SIZES.map(function (l) {
               return '<button type="button" class="chip' + (l === at ? ' on' : '') + '" data-s="'
-                + esc(l) + '">' + esc(l) + (sum(LINES[l]) > 0 ? ' ✓' : '') + '</button>';
+                + esc(l) + '">' + esc(nm(l)) + (sum(LINES[l]) > 0 ? ' ✓' : '') + '</button>';
             }).join('');
             chips.querySelectorAll('.chip').forEach(function (c) {
               c.onclick = function () { harvest(); at = c.dataset.s; picked = {}; openNote = null; drawAll(); };
@@ -969,8 +1200,8 @@ if ($tab === 'weight') {
 
             appl.innerHTML = SIZES.filter(function (l) { return l !== at; }).map(function (l) {
               return '<button type="button" class="chip' + (picked[l] ? ' on' : '') + '" data-s="'
-                + esc(l) + '">' + (picked[l] ? '✓ ' : '') + esc(l) + '</button>';
-            }).join('') || '<span class="note">No other size in this range.</span>';
+                + esc(l) + '">' + (picked[l] ? '✓ ' : '') + esc(nm(l)) + '</button>';
+            }).join('') || '<span class="note">Nothing else in this range to copy to.</span>';
             appl.querySelectorAll('.chip').forEach(function (c) {
               c.onclick = function () {
                 picked[c.dataset.s] = !picked[c.dataset.s];
@@ -983,8 +1214,8 @@ if ($tab === 'weight') {
           function drawTools() {
             var head = document.getElementById('wsizehead');
             var sub  = document.getElementById('wsizesub');
-            head.textContent = 'One unit of ' + (at || '—');
-            sub.textContent  = (+PERPKG[at] || 0) + ' of this size in each package';
+            head.textContent = 'One unit of ' + (at ? nm(at) : '—');
+            sub.textContent  = (+PERPKG[at] || 0) + ' of these in each package';
 
             var std = document.getElementById('stdbtn');
             std.hidden = !STD[at];
@@ -999,7 +1230,11 @@ if ($tab === 'weight') {
             cb.hidden = others.length === 0;
             cf.hidden = true;
             cf.innerHTML = '<option value="">— copy the lines from —</option>'
-              + others.map(function (l) { return '<option>' + esc(l) + '</option>'; }).join('');
+              /* value is the key the lines are stored under; the text is
+                 what a packer reads. One <option> doing both jobs meant
+                 the name had to be the key. */
+              + others.map(function (l) {
+                  return '<option value="' + esc(l) + '">' + esc(nm(l)) + '</option>'; }).join('');
             cb.onclick = function () { cf.hidden = !cf.hidden; };
             cf.onchange = function () {
               if (!this.value) return;
@@ -1098,11 +1333,11 @@ if ($tab === 'weight') {
             document.getElementById('pkgformula').textContent =
                 SIZES.map(function (l) {
                   var pu = Math.round(sum(LINES[l])), q = +PERPKG[l] || 0;
-                  return (l + '              ').slice(0, 14) + num(pu) + ' g  x ' + q
+                  return (nm(l) + '                  ').slice(0, 18) + num(pu) + ' g  x ' + q
                        + '  = ' + kg(pu * q / 1000) + ' kg';
                 }).join('\n')
-              + '\n' + '              contents  ' + kg(c) + ' kg'
-              + '\n' + '            + package ' + kg(TARE) + ' kg'
+              + '\n' + '                  contents  ' + kg(c) + ' kg'
+              + '\n' + '                + package ' + kg(TARE) + ' kg'
               + '\n\nNET   = ' + kg(c) + ' x ' + num(PKGS) + ' = ' + kg(c * PKGS) + ' kg'
               + '\nGROSS = NET + (' + kg(TARE) + ' x ' + num(PKGS) + ') = '
               + kg(c * PKGS + TARE * PKGS) + ' kg';
@@ -1140,14 +1375,14 @@ if ($tab === 'weight') {
             harvest();
             var to = Object.keys(picked).filter(function (k) { return picked[k]; });
             var msg = document.getElementById('applymsg');
-            if (!to.length) { msg.textContent = 'Tick the sizes that weigh the same first.'; return; }
-            if (!sum(rows())) { msg.textContent = 'There is nothing to copy yet — fill this size in first.'; return; }
+            if (!to.length) { msg.textContent = 'Tick the ones that weigh the same first.'; return; }
+            if (!sum(rows())) { msg.textContent = 'There is nothing to copy yet — fill this one in first.'; return; }
             to.forEach(function (l) {
               LINES[l] = rows().map(function (r) { return { t: r.t, n: r.n, g: r.g }; });
             });
             picked = {};
             drawAll();
-            msg.textContent = 'Copied to ' + to.join(', ') + '. Nothing is written until you press Save.';
+            msg.textContent = 'Copied to ' + to.map(nm).join(', ') + '. Nothing is written until you press Save.';
           };
 
           /* One field carries the lot. Filled at the last moment so it is
@@ -1180,7 +1415,7 @@ if ($tab === 'approve') {
     ?>
     <div class="mcard">
       <div style="overflow-x:auto"><table class="bk">
-        <tr><th>Serial</th><th>Size</th><th class="n">Per pkg</th><th class="n">Qty</th><th class="n">g / unit</th></tr>
+        <tr><th>Serial</th><th>What is in it</th><th class="n">Per pkg</th><th class="n">Qty</th><th class="n">g / unit</th></tr>
         <?php if (!$groups): ?>
           <tr><td colspan="5" style="color:var(--faint)">Nothing yet</td></tr>
         <?php else: foreach ($groups as $g):
@@ -1191,10 +1426,15 @@ if ($tab === 'approve') {
             <tr>
               <td><?= $first ? e(mb_substr((string)$g['unit_title'], 0, 3)) . ' ' . (int)$g['serial_from']
                                . '–' . (int)$g['serial_to'] : '' ?></td>
-              <td><?= e((string)$srow['size_label']) ?></td>
+              <td><?= e(trim(((string)($srow['colour_label'] ?? '')) . ' '
+                              . (string)$srow['size_label'])) ?></td>
               <td class="n"><?= rtrim(rtrim(number_format(pack_size_per_pkg($g, $srow), 2, '.', ''), '0'), '.') ?></td>
               <td class="n"><?= number_format(pack_size_per_pkg($g, $srow) * pack_packages($g)) ?></td>
-              <td class="n"><?= number_format((float)($pu[(string)$srow['size_label']] ?? 0)) ?></td>
+              <?php /* The same key the weight was filed under, which is
+                       the size alone or the size and the colour — reading
+                       it by size alone showed 0 g for every colour of a
+                       range whose colours weigh differently. */ ?>
+              <td class="n"><?= number_format((float)($pu[pack_unit_key($g, $srow)] ?? 0)) ?></td>
             </tr>
           <?php $first = false; endforeach; endforeach; endif; ?>
       </table></div>

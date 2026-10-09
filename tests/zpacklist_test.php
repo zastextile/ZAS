@@ -260,8 +260,15 @@ t('ranges saved before the column existed are filled in once',
 t('colour has a column beside size, in all three places',
   substr_count($pkN, "ADD COLUMN colour_label VARCHAR(80)") === 3,
   substr_count($pkN, "ADD COLUMN colour_label VARCHAR(80)"));
-t('and the schema version was bumped, or none of it is built',
-  str_contains($pkN, "PACK_SCHEMA_VERSION = '2'"));
+/* Pinning the exact number meant every later change broke a test that
+   was not about that change. What matters is that the marker moved past
+   the version these columns arrived in — otherwise an existing database
+   skips the whole build and the columns are simply not there. */
+t('the schema version is past the one these columns arrived in',
+  (int)PACK_SCHEMA_VERSION >= 2, PACK_SCHEMA_VERSION);
+t('and the guard still reads it before doing any work',
+  preg_match("~SELECT v FROM exp_meta WHERE k='pack_schema_version'.*?=== PACK_SCHEMA_VERSION\) return;~s", $pkN) === 1,
+  'the schema would be rebuilt on every page load');
 
 head('5. The first one can always be typed');
 
@@ -280,8 +287,21 @@ t('and does the same for every row of an assorted set',
   str_contains($mpN, "if (\$l === '__new') \$l = trim((string)(\$new[\$i] ?? ''));"));
 t('__new is never stored as if it were a size',
   !preg_match("~'size_label' => '__new'~", $mpN));
-t('a row added to the assorted set does not arrive with the box already open',
-  str_contains($mpN, "c.querySelectorAll('[data-picknew]').forEach"));
+/* THE ASSORTED SET HAS NO TYPED ROWS ANY MORE. It is tapped — a colour
+   pad and a size pad — so there is no row to add and no text box to
+   arrive open. What replaced that rule is that the pads are the only way
+   in, which is checked here rather than described. */
+t('the assorted set is tapped, not typed',
+  str_contains($mpN, 'id="szPad"') && str_contains($mpN, 'id="colPad"'));
+t('and has no select or input to type a size into',
+  !preg_match('~<(input|select)[^>]*name="size_label\[\]"~',
+              (string)preg_replace('~<script\b[^>]*>.*?</script>~is', ' ', $mpN)));
+/* The single-size picker still has one, and it must still open only
+   when the sentinel is chosen — that rule did not go anywhere. */
+t('the one remaining typed picker opens only when "type a new one" is chosen',
+  str_contains($mpN, "box.hidden = sel.value !== '__new';"));
+t('and it is wired on the document, so a card drawn later is covered too',
+  str_contains($mpN, "if (!sel.matches || !sel.matches('[data-pick]')) return;"));
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

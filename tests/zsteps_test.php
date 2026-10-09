@@ -322,8 +322,11 @@ t('the approve tab is stepped',
 t('every steps_begin is closed',
   substr_count($mpN, 'mob_steps_begin(') === substr_count($mpN, 'mob_steps_end('),
   [substr_count($mpN, 'mob_steps_begin('), substr_count($mpN, 'mob_steps_end(')]);
-t('a single-size range gets no "which size" step to choose from one thing',
-  preg_match('~count\(\$sizes\) > 1\):.*?mob_step\(\x27Which size\x27~s', $mpN) === 1);
+/* ONE UNIT, NOT ONE SIZE. Three colours of one size that weigh the same
+   are one thing to weigh, so that range gets no step either — a screen
+   asking which of the one to pick is a screen for nothing. */
+t('a range with only one thing to weigh gets no step asking which one',
+  preg_match('~count\(\$units\) > 1\):.*?mob_step\(\x27Which one\x27~s', $mpN) === 1);
 /* The recall button used to be a second form, which cannot be nested,
    so it became a submit inside the one form. Then the whole weight
    screen stopped needing a round trip at all and it became an ordinary
