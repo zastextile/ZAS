@@ -30,7 +30,37 @@ function t(string $n, bool $c, $got = null): void {
 }
 function head(string $n): void { echo "\n$n\n"; }
 function nocomments(string $s): string {
-    return (string)preg_replace(['~/\*.*?\*/~s', '~//[^\n]*~'], ' ', $s);
+    /* THE NAIVE STRIPPER ATE REAL CODE.
+       It used one regex for block comments and one for line comments.
+       But a phone's file input carries accept="image" followed by a
+       slash and a star, and that opens a block comment which never
+       closes — so the regex paired it with the next genuine closer
+       forty lines later and swallowed everything between. Across this
+       app that is twenty-four files, thirty-one thousand bytes in the
+       worst of them, and the damage is invisible: a str_contains goes
+       false and somebody notices, but a !str_contains goes true and the
+       assertion passes for nothing at all.
+
+       PHP's own tokenizer knows a comment from inline HTML, so an
+       attribute value cannot fool it. JavaScript comments are stripped
+       afterwards, inside script blocks only, because those mislead a
+       test exactly the same way. */
+    $out = '';
+    foreach (token_get_all($s) as $t) {
+        if (is_array($t)) {
+            if ($t[0] === T_COMMENT || $t[0] === T_DOC_COMMENT) { $out .= ' '; continue; }
+            $out .= $t[1];
+        } else {
+            $out .= $t;
+        }
+    }
+    /* script AND style: a CSS comment misleads a test exactly as a
+       JavaScript one does — these very tests were matching the words
+       "translateX" and "swipe" inside a comment that says the code
+       must never use them. */
+    return (string)preg_replace_callback('~<(script|style)\b[^>]*>.*?</\1>~is', function ($m) {
+        return (string)preg_replace(['~/\*.*?\*/~s', '~//[^\n]*~'], ' ', $m[0]);
+    }, $out);
 }
 function lift(string $src, string $from): string {
     $a = strpos($src, $from); if ($a === false) return '';

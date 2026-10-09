@@ -143,8 +143,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         redirect($self);
     }
 
-    /* ---- the weighed package and one size's breakdown ---- */
-    if ($action === 'weight') {
+    /* ---- the weighed package and one size's breakdown ----
+       The recall button lives inside this same form now, because the
+       weight screen is one form spread over several steps and a second
+       form cannot be nested inside the first. It is matched on its own
+       name rather than on a second action value, so there is no relying
+       on which of two identically named fields PHP keeps. */
+    if ($action === 'weight' && !isset($_POST['recall'])) {
         $g = (int)($_POST['group_id'] ?? 0);
         $grp = pack_group($g);
         if (!$grp || (int)$grp['shipment_id'] !== $id) { http_response_code(404); exit('Range not found.'); }
@@ -169,7 +174,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ---- fill this size from the last time the product was packed ---- */
-    if ($action === 'recall') {
+    if (isset($_POST['recall'])) {
         $g = (int)($_POST['group_id'] ?? 0);
         $grp = pack_group($g);
         $size = (string)($_POST['size_label'] ?? '');
@@ -511,11 +516,22 @@ if ($tab === 'serial') {
     if (!$items) {
         echo '<div class="empty">This invoice has no items yet. Add them on the desktop first.</div>';
     } else {
-        foreach ($groups as $g) $card($g);
-        if ($canEdit) $card(null);
-        echo '<div class="mcard"><div class="note">Packing starts from the serial. '
-           . '1 to 100 means 100 cartons — the count is never typed. When some packages '
-           . 'differ, add another range; that is all a different serial is.</div></div>';
+        /* One range to a screen. Each carries its own form and its own
+           Save, so a range is finished before the next one is looked at
+           — which is also how the cartons are actually packed. */
+        mob_steps_begin('serialsteps');
+        foreach ($groups as $g) {
+            mob_step((string)$g['unit_title'] . ' ' . (int)$g['serial_from'] . '–' . (int)$g['serial_to']);
+            $card($g);
+        }
+        if ($canEdit) {
+            mob_step('New range', 'Carries on from where the last one ended');
+            $card(null);
+            echo '<div class="mcard"><div class="note">Packing starts from the serial. '
+               . '1 to 100 means 100 cartons — the count is never typed. When some packages '
+               . 'differ, add another range; that is all a different serial is.</div></div>';
+        }
+        mob_steps_end();
     }
 }
 
@@ -541,8 +557,19 @@ if ($tab === 'weight') {
         $contents = pack_contents_kg($g, $sizes, $perUnit);
         $hasStd  = $sz !== '' && pack_std_get((string)$g['product_name'], $sz) !== [];
         ?>
+        <form method="post" id="wform">
+          <?= csrf_field() ?>
+          <input type="hidden" name="action" value="weight">
+          <input type="hidden" name="shipment_id" value="<?= $id ?>">
+          <input type="hidden" name="group_id" value="<?= $gid ?>">
+          <input type="hidden" name="size_label" value="<?= e($sz) ?>">
+        <?php
+        /* The form opens before the steps and closes after them, so one
+           submit carries every field whichever step it was typed on. */
+        mob_steps_begin('weightsteps');
+        mob_step('Which range', 'Weight is set per serial range, not per carton');
+        ?>
         <div class="mcard">
-          <h2>Which serial range</h2>
           <select class="in" onchange="location.href=this.value">
             <?php foreach ($groups as $og): ?>
               <option value="<?= e($self) ?>&amp;t=weight&amp;g=<?= (int)$og['id'] ?>"
@@ -552,18 +579,10 @@ if ($tab === 'weight') {
             <?php endforeach; ?>
           </select>
         </div>
-
-        <form method="post" id="wform">
-          <?= csrf_field() ?>
-          <input type="hidden" name="action" value="weight">
-          <input type="hidden" name="shipment_id" value="<?= $id ?>">
-          <input type="hidden" name="group_id" value="<?= $gid ?>">
-          <input type="hidden" name="size_label" value="<?= e($sz) ?>">
+        <?php mob_step('Weigh one package', 'One ' . strtolower((string)$g['unit_title'])
+                                          . ' on the scale, then open it'); ?>
 
           <div class="mcard">
-            <h2>Weigh one package</h2>
-            <div class="note" style="margin-bottom:12px">One <?= e(strtolower((string)$g['unit_title'])) ?>
-              on the scale, then open it.</div>
             <div class="row2">
               <label class="f"><span>Package gross kg</span>
                 <input class="in" type="number" inputmode="decimal" step="0.001" id="pg" name="pkg_gross"
@@ -583,10 +602,12 @@ if ($tab === 'weight') {
             ?></b></div>
           </div>
 
-          <?php if (count($sizes) > 1): ?>
+          <?php if (count($sizes) > 1):
+                  /* Only an assorted range gets this step — with one size
+                     there is nothing to choose and a screen asking you to
+                     choose it would be a screen for nothing. */
+                  mob_step('Which size', 'An assorted package holds sizes that do not weigh the same'); ?>
             <div class="mcard">
-              <h2>Which size</h2>
-              <div class="note" style="margin-bottom:10px">An assorted package holds sizes that do not weigh the same.</div>
               <div class="chips">
                 <?php foreach ($sizes as $srow): $l = (string)$srow['size_label']; ?>
                   <a class="chip<?= $l === $sz ? ' on' : '' ?>"
@@ -595,11 +616,19 @@ if ($tab === 'weight') {
                 <?php endforeach; ?>
               </div>
             </div>
+          <?php endif;
+          mob_step('What one unit is made of', 'Add a line for every material. Grams.'); ?>
+
+          <?php if ($canEdit && $hasStd): ?>
+            <?php /* Inside the one form, matched on its own name — see the
+                     handler. A nested form would be invalid HTML and the
+                     browser would drop it silently. */ ?>
+            <button class="btn sec" type="submit" name="recall" value="1" style="margin-bottom:12px">
+              Use the last saved breakdown for
+              <?= e((string)$g['product_name']) ?> <?= e($sz) ?></button>
           <?php endif; ?>
 
           <div class="mcard">
-            <h2>One unit of <?= e($sz ?: '—') ?></h2>
-            <div class="note" style="margin-bottom:12px">Add a line for every material. Grams.</div>
             <div id="wlines"></div>
             <button class="btn sec" type="button" id="addline">+ Add line</button>
             <div class="derv" style="margin-top:12px"><span>This unit comes to</span><b id="perunit">0 g</b></div>
@@ -608,22 +637,10 @@ if ($tab === 'weight') {
           <?php if ($canEdit && $sz !== ''): ?>
             <button class="btn go" type="submit">Save the weight</button>
           <?php endif; ?>
-        </form>
 
-        <?php if ($canEdit && $hasStd): ?>
-          <form method="post" style="margin-top:10px">
-            <?= csrf_field() ?>
-            <input type="hidden" name="action" value="recall">
-            <input type="hidden" name="shipment_id" value="<?= $id ?>">
-            <input type="hidden" name="group_id" value="<?= $gid ?>">
-            <input type="hidden" name="size_label" value="<?= e($sz) ?>">
-            <button class="btn sec" type="submit">Use the last saved breakdown for
-              <?= e((string)$g['product_name']) ?> <?= e($sz) ?></button>
-          </form>
-        <?php endif; ?>
+        <?php mob_step('The whole package', 'What the lines add up to against the scale'); ?>
 
-        <div class="mcard" style="margin-top:12px">
-          <h2>The whole package</h2>
+        <div class="mcard">
           <div class="sumrow"><span>The lines add up to</span><b><?= number_format($contents, 3) ?> kg</b></div>
           <div class="sumrow"><span>They must come to</span><b><?= number_format($mustKg, 3) ?> kg</b></div>
           <div class="sumrow"><span><b>Balance</b></span><b><?php
@@ -650,6 +667,9 @@ if ($tab === 'weight') {
             echo e($f);
           ?></div>
         </div>
+
+        <?php mob_steps_end(); ?>
+        </form>
 
         <style>
         .wrow{border:1px solid var(--line);border-radius:11px;padding:10px;margin-bottom:9px;background:#fff}
@@ -754,9 +774,17 @@ if ($tab === 'weight') {
 if ($tab === 'approve') {
     $t = pack_totals($id);
     ?>
+    <form method="post">
+      <?= csrf_field() ?>
+      <input type="hidden" name="action" value="approve">
+      <input type="hidden" name="shipment_id" value="<?= $id ?>">
+    <?php
+    /* The form wraps the steps so the final figures post from whichever
+       step they were typed on. */
+    mob_steps_begin('approvesteps');
+    mob_step('What saves', 'Size by size, against its serial range');
+    ?>
     <div class="mcard">
-      <h2>What goes to the backend</h2>
-      <div class="note" style="margin-bottom:10px">Size by size, against its serial range.</div>
       <div style="overflow-x:auto"><table class="bk">
         <tr><th>Serial</th><th>Size</th><th class="n">Per pkg</th><th class="n">Qty</th><th class="n">g / unit</th></tr>
         <?php if (!$groups): ?>
@@ -778,22 +806,17 @@ if ($tab === 'approve') {
       </table></div>
     </div>
 
+    <?php mob_step('Calculated', 'What the packing team\'s figures produce'); ?>
     <div class="mcard">
-      <h2>Calculated from the packing team&rsquo;s figures</h2>
       <div class="sumrow"><span>Total packages</span><b><?= number_format($t['packages']) ?></b></div>
       <div class="sumrow"><span>Total quantity</span><b><?= number_format($t['qty'], 2) ?></b></div>
       <div class="sumrow"><span>Net weight</span><b><?= number_format($t['net'], 3) ?> kg</b></div>
       <div class="sumrow"><span>Gross weight</span><b><?= number_format($t['gross'], 3) ?> kg</b></div>
     </div>
 
-    <form method="post">
-      <?= csrf_field() ?>
-      <input type="hidden" name="action" value="approve">
-      <input type="hidden" name="shipment_id" value="<?= $id ?>">
+      <?php mob_step('Final figures', 'You may change these — up to '
+                     . (int)PACK_TOLERANCE_PCT . '% difference is accepted'); ?>
       <div class="mcard">
-        <h2>Final figures</h2>
-        <div class="note" style="margin-bottom:12px">You may change these. A difference up to
-          <?= (int)PACK_TOLERANCE_PCT ?>% is accepted.</div>
         <div class="row2">
           <label class="f"><span>Net kg</span>
             <input class="in" type="number" inputmode="decimal" step="0.001" name="final_net" id="fn"
@@ -805,8 +828,8 @@ if ($tab === 'approve') {
         <div id="dev"></div>
       </div>
 
+      <?php mob_step('Before you approve'); ?>
       <div class="mcard">
-        <h2>Before you approve</h2>
         <?php if ($t['unfinished']): foreach ($t['unfinished'] as $u): ?>
           <div class="sumrow"><span><?= e($u) ?></span><b><span class="pill w">accepted</span></b></div>
         <?php endforeach; else: ?>
@@ -819,6 +842,8 @@ if ($tab === 'approve') {
       <?php if ($canEdit): ?>
         <button class="btn go" type="submit">Approve and save the packing list</button>
       <?php endif; ?>
+
+    <?php mob_steps_end(); ?>
     </form>
 
     <script>

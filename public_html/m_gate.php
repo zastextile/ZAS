@@ -419,6 +419,14 @@ mob_flash();
     <input type="hidden" name="action" value="save">
     <input type="hidden" name="dir" value="<?= e($dir) ?>">
     <input type="hidden" name="id" value="<?= (int)$editId ?>">
+    <?php
+    /* One screen at a time. The form opens before the steps and closes
+       after them, so a single Save carries every field whichever screen
+       it was typed on. The item picker below stays OUTSIDE — it is a
+       full-screen overlay of its own and must not be a step. */
+    mob_steps_begin('gatesteps');
+    mob_step('The pass', 'Type, date, vehicle and who it is with');
+    ?>
 
     <div class="mcard">
       <label class="f"><span>Type <i class="req">*</i></span>
@@ -455,6 +463,8 @@ mob_flash();
       $typeContract = [];
       foreach ($TYPES as $k => $t) $typeContract[$k] = (string)($t['contract'] ?? '');
     ?>
+    <?php mob_step('Against a contract?', 'Leave it off for a one-off'); ?>
+
     <div class="mcard" id="ccard">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <h2 style="margin:0">Against a contract?</h2>
@@ -472,8 +482,9 @@ mob_flash();
       </div>
     </div>
 
+    <?php mob_step('Items', 'What actually came through the gate'); ?>
+
     <div class="mcard">
-      <h2>Items</h2>
       <div id="rows"></div>
       <button type="button" class="btn sec" id="addrow" style="margin-top:14px">+ Add item</button>
       <button type="button" class="btn sec" id="savestd" style="margin-top:10px">
@@ -484,8 +495,9 @@ mob_flash();
       </div>
     </div>
 
+    <?php mob_step('Photo of the challan', 'Taken now, while the vehicle is still here'); ?>
+
     <div class="mcard">
-      <h2>Photo of the challan</h2>
       <?php $existing = $editId > 0 ? mob_photos($editId) : []; ?>
       <?php if ($existing): ?>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
@@ -510,6 +522,8 @@ mob_flash();
       </div>
     </div>
 
+    <?php mob_step('Remarks and save'); ?>
+
     <div class="mcard">
       <label class="f" style="margin-bottom:0"><span>Remarks</span>
         <textarea class="in" name="remarks" placeholder="Anything worth recording"><?= e((string)($pass['remarks'] ?? '')) ?></textarea>
@@ -518,6 +532,8 @@ mob_flash();
 
     <button class="btn go" type="submit">Save as Draft</button>
     <a class="btn sec" href="m_gate.php?dir=<?= e($dir) ?>" style="margin-top:10px">Cancel</a>
+
+    <?php mob_steps_end(); ?>
   </form>
 
   <!-- The item picker. A full screen of its own, because a 900-row native

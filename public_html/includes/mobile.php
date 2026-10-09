@@ -120,6 +120,44 @@ textarea.in{min-height:72px;resize:vertical}
 body.is-offline #offline{display:block}
 body.is-offline .btn.go{opacity:.5;pointer-events:none}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ===================================================== one screen at a time
+
+   A phone screen full of cards means thumbing past four things to reach
+   the fifth and losing your place every time the page reloads. These
+   turn a page into steps: one on screen, Back and Next at the bottom
+   where the thumb already is.
+
+   NOTHING EVER MOVES SIDEWAYS. The step that arrives rises from below
+   and fades in — translateY only, never translateX — and both the step
+   container and the page body refuse horizontal overflow. A sideways
+   swipe on a form is how a half-typed figure gets lost.
+
+   overflow-x is set here and NOT on html or body: an overflow on an
+   ancestor silently kills position:sticky, and the header and the step
+   bar both depend on it. */
+.msteps{overflow-x:hidden;max-width:100%}
+.mstep{display:none}
+.mstep.on{display:block;animation:mstepin .22s ease-out}
+@keyframes mstepin{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.mstep.on{animation:none}}
+
+.mprog{display:flex;align-items:center;gap:9px;margin:0 0 13px}
+.mprog .bars{display:flex;gap:4px;flex:1;min-width:0}
+.mprog .bars i{flex:1;height:4px;border-radius:3px;background:#d7dfea;transition:background .2s}
+.mprog .bars i.done{background:var(--cyan)}
+.mprog .cnt{font-size:11.5px;font-weight:700;color:var(--faint);white-space:nowrap}
+.mstep > h2.sh{font-size:17px;margin:0 0 3px;letter-spacing:-.2px}
+.mstep > p.ss{font-size:12.5px;color:var(--faint);margin:0 0 13px}
+
+.mnav{position:sticky;bottom:0;z-index:20;display:flex;gap:10px;
+  margin:16px -14px 0;padding:11px 14px calc(11px + var(--safe-b));
+  background:var(--bg);border-top:1px solid var(--line)}
+.mnav button{flex:1;min-height:50px;padding:14px;border:0;border-radius:13px;
+  font-weight:700;font-size:16px;cursor:pointer}
+.mnav .nb{flex:0 0 34%;background:#fff;color:var(--navy);border:1px solid #cbd5e3}
+.mnav .nn{background:linear-gradient(100deg,var(--cyan),var(--violet));color:#fff}
+.mnav button[disabled]{opacity:.4}
 </style>
 </head>
 <body>
@@ -166,6 +204,145 @@ function mob_footer(): void
 </body>
 </html>
 <?php
+}
+
+/* ==================================================== one screen at a time
+
+   USE
+     mob_steps_begin();
+     mob_step('Serial', 'Where this run of cartons starts');
+         ... anything ...
+     mob_step('Quantity');
+         ... anything ...
+     mob_steps_end();
+
+   Each step is one screenful. Back and Next sit at the bottom. The last
+   step shows no Next — the page puts its own Save or Approve button
+   there, so the thing that writes to the database is always a button the
+   page wrote, never one the shell guessed at.
+
+   A FORM MAY SPAN STEPS. Hidden steps are display:none, not detached, so
+   every field still posts. That creates one trap worth knowing about: a
+   required field on a step you cannot see makes the browser refuse to
+   submit AND refuse to say why — "an invalid form control is not
+   focusable", in the console, where nobody is looking. The script below
+   listens for the invalid event, opens whichever step the field is on,
+   and lets the browser point at it. */
+function mob_steps_begin(string $id = 'msteps'): void
+{
+    $GLOBALS['_mob_step_id']   = $id;
+    $GLOBALS['_mob_step_open'] = false;
+    echo '<div class="msteps" id="' . e($id) . '">' . "\n";
+    echo '  <div class="mprog" role="status" aria-live="polite">'
+       . '<span class="bars"></span><span class="cnt"></span></div>' . "\n";
+    echo '  <div class="mstepwrap">' . "\n";
+}
+
+function mob_step(string $title = '', string $sub = ''): void
+{
+    if (!empty($GLOBALS['_mob_step_open'])) echo "  </section>\n";
+    echo '  <section class="mstep"' . ($title !== '' ? ' data-label="' . e($title) . '"' : '') . '>' . "\n";
+    if ($title !== '') echo '    <h2 class="sh">' . e($title) . '</h2>' . "\n";
+    if ($sub   !== '') echo '    <p class="ss">' . e($sub) . '</p>' . "\n";
+    $GLOBALS['_mob_step_open'] = true;
+}
+
+function mob_steps_end(string $nextLabel = 'Next'): void
+{
+    if (!empty($GLOBALS['_mob_step_open'])) echo "  </section>\n";
+    $GLOBALS['_mob_step_open'] = false;
+    $id = (string)($GLOBALS['_mob_step_id'] ?? 'msteps');
+    ?>
+  </div>
+  <div class="mnav">
+    <button type="button" class="nb" data-mstep="back">Back</button>
+    <button type="button" class="nn" data-mstep="next"><?= e($nextLabel) ?></button>
+  </div>
+</div>
+<script>
+(function () {
+  /* By id, not document.currentScript.closest() — this script tag sits
+     after the container closes, so closest() would find nothing and the
+     steps would silently never start. */
+  var box = document.getElementById(<?= json_encode($id) ?>);
+  if (!box) return;
+  var steps = [].slice.call(box.querySelectorAll('.mstep'));
+  if (!steps.length) return;
+  var bars = box.querySelector('.mprog .bars');
+  var cnt  = box.querySelector('.mprog .cnt');
+  var back = box.querySelector('[data-mstep="back"]');
+  var next = box.querySelector('[data-mstep="next"]');
+  var at = 0;
+
+  steps.forEach(function () { bars.appendChild(document.createElement('i')); });
+  var pips = [].slice.call(bars.children);
+  if (steps.length < 2) box.querySelector('.mprog').hidden = true;
+
+  function render(i, keepScroll) {
+    at = Math.max(0, Math.min(steps.length - 1, i));
+    steps.forEach(function (s, n) { s.classList.toggle('on', n === at); });
+    pips.forEach(function (p, n) { p.classList.toggle('done', n <= at); });
+    var label = steps[at].getAttribute('data-label') || '';
+    cnt.textContent = (at + 1) + ' of ' + steps.length + (label ? ' · ' + label : '');
+    back.disabled = at === 0;
+    /* The page owns the button that saves, so the shell stands down on
+       the last step rather than offering a Next that does nothing. */
+    next.hidden = at === steps.length - 1;
+    if (!keepScroll) window.scrollTo(0, 0);
+  }
+
+  /* Only the step in front of the user is checked. Checking the whole
+     form here would stop them on a field they cannot see. */
+  function badField(scope) {
+    var els = scope.querySelectorAll('input,select,textarea');
+    for (var i = 0; i < els.length; i++) {
+      if (els[i].willValidate && !els[i].checkValidity()) return els[i];
+    }
+    return null;
+  }
+
+  /* render() draws. go() draws AND records a history entry, so the
+     phone's own Back button walks the steps. Keeping them apart matters:
+     popstate must redraw without pushing, or going back would add a new
+     entry each time and Back would never leave the page. */
+  function go(i, keepScroll) {
+    var was = at;
+    render(i, keepScroll);
+    if (at !== was && at > 0) history.pushState({ mstep: at }, '');
+  }
+
+  next.addEventListener('click', function () {
+    var bad = badField(steps[at]);
+    if (bad) { bad.reportValidity(); return; }
+    go(at + 1);
+  });
+  back.addEventListener('click', function () { go(at - 1); });
+
+  /* A required field on a hidden step: the browser blocks the submit and
+     says nothing the user can see. Open its step so it can be pointed at. */
+  var reported = false;
+  box.addEventListener('invalid', function (ev) {
+    var st = ev.target.closest ? ev.target.closest('.mstep') : null;
+    if (!st) return;
+    var i = steps.indexOf(st);
+    if (i < 0 || i === at) return;
+    if (reported) return;
+    reported = true;
+    go(i);
+    setTimeout(function () { reported = false; ev.target.reportValidity(); }, 0);
+  }, true);
+
+  /* The phone's own Back button steps back instead of leaving the page.
+     Nothing is pushed for the first step, so Back from there still does
+     what it always did and nobody is trapped. */
+  window.addEventListener('popstate', function (e) {
+    render(e.state && typeof e.state.mstep === 'number' ? e.state.mstep : 0, true);
+  });
+
+  render(0);
+})();
+</script>
+    <?php
 }
 
 /* ========================================================= the mobile door
