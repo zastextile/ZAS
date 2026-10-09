@@ -96,12 +96,23 @@ foreach (['txn_type', 'gate_date', 'party_text', 'vehicle_no', 'remarks'] as $f)
     t("the form has $f", str_contains($mg, 'name="' . $f . '"'), $f);
 }
 /* Everything the office owns must NOT be here. */
-foreach (['rate', 'article', 'lot_no', 'packing', 'contract_id', 'proforma_id',
+/* contract_id is no longer on this list: the phone now offers the contract
+   deliberately, because a line without one counts against nothing. It is a
+   hidden field set by tapping a contract, and the server re-checks it. */
+foreach (['article', 'lot_no', 'packing', 'proforma_id',
           'location_id', 'verified_by', 'security_by', 'override_reason'] as $f) {
     t("the phone never asks for $f", !str_contains($mg, 'name="' . $f . '"'), $f);
 }
-t('no rate is written on a line — it stays at the column default',
-  str_contains($mgN, 'uom, rate, ownership') && str_contains($mgN, 'VALUES (?,?,?,?,?,?,0,?,?)'));
+t('the contract is carried, but as a hidden field the server re-checks',
+  str_contains($mg, 'name="contract_id"') && str_contains($mg, 'type="hidden"'));
+t('a rate is still never typed by hand',
+  !preg_match('~name="line\[[^]]*\]\[rate\]"~', $mg));
+/* The rule is no longer "always zero" but "only ever from a contract".
+   A rate the gatekeeper could type is still the thing being prevented. */
+t('a rate reaches a line only when a contract supplied it',
+  str_contains($mgN, "\$cItem > 0 && \$cRate > 0 ? \$cRate : 0.0"));
+t('and the posted rate value is never read straight from the form',
+  !preg_match("~inv_num\(\\\$ln\['rate'\]~", $mgN));
 
 head('5. The rate rule moved, and tightened');
 
@@ -244,6 +255,85 @@ t('and inv_gate.php really loads the file that defines it',
   str_contains($gateN, "includes/mobile.php"));
 t('the drafts list shows how many are attached',
   str_contains($mgN, 'FROM inv_gate_photos ph WHERE ph.gate_id=g.id'));
+
+head('7c. Against a contract');
+
+/* WHY THIS SECTION IS THE MOST IMPORTANT ONE IN THE FILE.
+ *
+ * inv_contract_lines() measures progress by summing gate lines whose
+ * contract_item_id is set:
+ *
+ *   WHERE (gi.contract_id = ? OR (gi.contract_id IS NULL AND g.contract_id = ?))
+ *     AND g.status = 'posted' AND gi.contract_item_id IS NOT NULL
+ *
+ * A line without a contract_item_id counts against NOTHING. The contract
+ * reads as undelivered for ever, and you would go on delivering against it
+ * with the screen saying there was balance left. Before this change every
+ * line the phone wrote was such a line. */
+t('the counting rule is still the one described above',
+  str_contains(nocomments($inv), 'gi.contract_item_id IS NOT NULL'));
+
+t('a line taken from a contract carries the contract item id',
+  str_contains($mgN, "'citem'       => \$cItem > 0 ? \$cItem : null"));
+t('and the contract id, so the OR in that query matches either way',
+  str_contains($mgN, "\$l['citem'] ? \$cid : null, \$l['citem']"));
+t('the insert really writes both columns',
+  str_contains($mgN, 'contract_id, contract_item_id'));
+t('the header records the contract too',
+  str_contains($mgN, 'contract_id=?') && str_contains($mgN, 'remarks, contract_id, status'));
+
+/* The rate comes from the contract, which is what lets a contract-built
+   pass post without the office touching it. */
+t('the contract rate is carried onto the line',
+  str_contains($mgN, "'rate'        => \$cItem > 0 && \$cRate > 0 ? \$cRate : 0.0"));
+t('and the amount is computed from it rather than left at zero',
+  str_contains($mgN, "round(\$l['qty'] * \$l['rate'], 2)"));
+t('a line NOT from a contract still has no rate — the office fills it',
+  str_contains($mgN, '? $cRate : 0.0'));
+
+/* The contract id arrived from a browser, so it is checked. */
+t('the contract must exist',           str_contains($mgN, 'SELECT contract_type, status FROM inv_contracts WHERE id=?'));
+t('it must match the type being raised',
+  str_contains($mgN, "(string)\$crow['contract_type'] !== \$want"));
+t('it must still be open',             str_contains($mgN, "['active', 'draft'], true)"));
+t('and a contract that fails any of those is dropped, not trusted',
+  str_contains($mgN, '$cid = 0;'));
+
+/* Only lines still outstanding are offered. */
+t('a fully delivered contract line is not offered at the gate',
+  str_contains($mgN, "(float)\$l['balance'] <= 0) continue"));
+t('the contract list is limited to open contracts',
+  str_contains($mgN, "c.status IN ('active','draft')"));
+t('and capped',                        str_contains($mgN, 'LIMIT 120'));
+
+head('7d. Finding an item, and remembering what this party brings');
+
+t('there is a search box, not a 900-row dropdown',
+  str_contains($mg, 'id="psearch"'));
+t('the picker is its own screen',      str_contains($mg, 'id="pick"'));
+t('hidden really hides it — an inline display: would otherwise win',
+  str_contains(nocomments($mob), '[hidden]{display:none!important}'));
+t('three ways of matching are implemented',
+  str_contains($mg, 'function score(') && str_contains($mg, 'function subseq('));
+t('search ignores case and punctuation',
+  str_contains($mg, "replace(/[^a-z0-9]+/g, ' ')"));
+t('the results are capped so a blank search cannot paint 900 rows',
+  str_contains($mg, '.slice(0, 80)'));
+
+t('what a party brought before is read from what was recorded',
+  str_contains($mgN, 'FROM inv_gate_items gi') && str_contains($mgN, 'g.party_text = ?'));
+t('ordered by how often, then how recently',
+  str_contains($mgN, 'ORDER BY n DESC, last_id DESC'));
+t('scoped to this direction, so an outward list is not shown on an inward pass',
+  str_contains($mgN, 'g.direction = ?'));
+t('and capped',                        str_contains($mgN, 'LIMIT 12'));
+t('it is fetched once per party, not on every keystroke',
+  str_contains($mg, 'party === recentFor'));
+t('the ajax answers are JSON and stop there',
+  substr_count($mgN, "header('Content-Type: application/json')") === 1
+  && substr_count($mgN, 'exit;') >= 3);
+t('the ajax is behind the same login and permission as the page',
+  strpos($mgN, "inv_perm('gate')") < strpos($mgN, "\$_GET['ajax']"));
 
 head('8. Everything it calls is reachable — no stub can hide a missing require');
 

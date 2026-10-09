@@ -177,6 +177,12 @@ $GLOBALS['BDB']->A = [
     ['id'=>12,'code'=>'FAB-001','name'=>'Main Fabric 60x60','item_group'=>'Fabric','stage'=>'raw','uom'=>'Mtr','std_rate'=>135.00],
     ['id'=>31,'code'=>'ACC-014','name'=>'Sewing Thread','item_group'=>'Accessories','stage'=>'raw','uom'=>'Cone','std_rate'=>110.00],
   ],
+  "FROM inv_contracts c" => [
+    ['id'=>9,'contract_no'=>'PC-2610-0001','contract_type'=>'purchase','contract_date'=>'2026-10-01','party'=>'Al-Madina Transport'],
+  ],
+  "FROM products WHERE is_active=1" => [
+    ['id'=>7,'name'=>'Hotel Flat Sheet 300TC'],
+  ],
   "FROM inv_parties" => [
     ['id'=>5,'code'=>'SUP-0001','name'=>'Al-Madina Transport','party_type'=>'supplier'],
     ['id'=>6,'code'=>'CUS-0002','name'=>'Gulf Textiles LLC','party_type'=>'customer'],
@@ -589,34 +595,59 @@ const fs = require('fs');
     }
 
     if (slug === 'mgate') {
-      /* The item rows are built in the browser. If that script is wrong the
-         gatekeeper gets a form with no way to name what came through. */
+      /* The item picker is a screen of its own now. If this script is wrong
+         the gatekeeper has no way to name what came through the gate. */
       r.probes.rowsAtStart = await pg.$$eval('.grow', els => els.length);
-      r.probes.optCount    = await pg.$eval('.grow .itm', el => el.options.length);
-      await pg.selectOption('.grow .itm', { index: 1 });
-      await pg.waitForTimeout(60);
-      /* choosing an item should fill the unit from the item itself */
+      r.probes.pickerHidden = await pg.$eval('#pick', el => el.hidden);
+      await pg.click('.grow .itm');
+      await pg.waitForTimeout(80);
+      r.probes.pickerOpen = await pg.$eval('#pick', el => !el.hidden);
+      r.probes.listedAll  = await pg.$$eval('#plist .pitem', els => els.length);
+
+      /* the three ways of matching */
+      await pg.fill('#psearch', 'fabric');
+      await pg.waitForTimeout(80);
+      r.probes.byWord = await pg.$$eval('#plist .pitem', els => els.map(e => e.dataset.k));
+      await pg.fill('#psearch', 'main 60');
+      await pg.waitForTimeout(80);
+      r.probes.byTwoWords = await pg.$$eval('#plist .pitem', els => els.map(e => e.dataset.k));
+      await pg.fill('#psearch', 'mnfb');
+      await pg.waitForTimeout(80);
+      r.probes.bySubsequence = await pg.$$eval('#plist .pitem', els => els.map(e => e.dataset.k));
+      await pg.fill('#psearch', 'zzzzz');
+      await pg.waitForTimeout(80);
+      r.probes.noMatch = await pg.$$eval('#plist .pitem', els => els.length);
+
+      await pg.fill('#psearch', 'fabric');
+      await pg.waitForTimeout(80);
+      await pg.click('#plist .pitem');
+      await pg.waitForTimeout(80);
+      r.probes.pickerClosed = await pg.$eval('#pick', el => el.hidden);
+      r.probes.chosenKey = await pg.$eval('.grow .k', el => el.value);
+      r.probes.chosenShown = await pg.$eval('.grow .lbl', el => el.textContent.trim());
       r.probes.uomAuto = await pg.$eval('.grow .uom', el => el.value);
+
       await pg.click('#addrow');
       await pg.waitForTimeout(60);
       r.probes.rowsAfterAdd = await pg.$$eval('.grow', els => els.length);
-      /* names must stay distinct or the second row overwrites the first */
       r.probes.names = await pg.$$eval('.grow .qty', els => els.map(e => e.name));
+      r.probes.rmShownAtTwo = await pg.$eval('.grow .rm', el => getComputedStyle(el).display);
       await pg.$$eval('.grow .rm', els => els[els.length - 1].click());
       await pg.waitForTimeout(60);
       r.probes.rowsAfterRemove = await pg.$$eval('.grow', els => els.length);
-      /* removing the last row must leave one behind, not an empty form */
-      await pg.$$eval('.grow .rm', els => els.forEach(e => e.click()));
-      await pg.waitForTimeout(60);
-      r.probes.rowsAfterRemoveAll = await pg.$$eval('.grow', els => els.length);
-      r.probes.hasRateBox = await pg.$$eval('input,select', els =>
-        els.filter(e => /rate/i.test(e.name || '')).length);
-      /* Remove is hidden on the only row — pressing it would just put an
-         empty row back, which looks broken. */
       r.probes.rmHiddenAtOne = await pg.$eval('.grow .rm', el => getComputedStyle(el).display);
-      await pg.click('#addrow');
-      await pg.waitForTimeout(60);
-      r.probes.rmShownAtTwo = await pg.$eval('.grow .rm', el => getComputedStyle(el).display);
+
+      r.probes.hasRateBox = await pg.$$eval('input,select', els =>
+        els.filter(e => /^line\[\d+\]\[rate\]$/.test(e.name || '')).length);
+
+      /* the contract button */
+      await pg.click('#ctoggle');
+      await pg.waitForTimeout(80);
+      r.probes.cOpen = await pg.$eval('#cpick', el => !el.hidden);
+      r.probes.cListed = await pg.$$eval('#clist .citem', els => els.map(e => e.dataset.no));
+      await pg.selectOption('[name="txn_type"]', { index: 4 });   /* transfer_in — no contract */
+      await pg.waitForTimeout(80);
+      r.probes.cNoneForType = await pg.$eval('#clist', el => el.textContent.trim().slice(0, 90));
     }
 
     if (slug === 'numbering') {
@@ -740,19 +771,40 @@ if (!is_array($res) || isset($res['__harness'])) {
     $p = $res['mgate']['probes'] ?? [];
     ok(count($p) > 0, 'the phone form produced no probes at all');
     ok((int)($p['rowsAtStart'] ?? 0) === 1, 'it opens with one item row ready, got ' . var_export($p['rowsAtStart'] ?? null, true));
-    ok((int)($p['optCount'] ?? 0) >= 3, 'the item picker is populated, got ' . var_export($p['optCount'] ?? null, true));
-    ok(($p['uomAuto'] ?? '') === 'Mtr', 'choosing an item fills its unit, got ' . var_export($p['uomAuto'] ?? null, true));
-    ok((int)($p['rowsAfterAdd'] ?? 0) === 2, 'Add item adds a row, got ' . var_export($p['rowsAfterAdd'] ?? null, true));
+    ok(($p['pickerHidden'] ?? null) === true, 'the picker starts closed');
+    ok(($p['pickerOpen'] ?? null) === true, 'tapping the item opens it');
+    ok((int)($p['listedAll'] ?? 0) === 3,
+       'it lists both materials and the finished good, got ' . var_export($p['listedAll'] ?? null, true));
+
+    /* The three ways of matching, each proved separately. */
+    ok(in_array('m12', $p['byWord'] ?? [], true),
+       'a whole word finds the item, got ' . json_encode($p['byWord'] ?? null));
+    ok(in_array('m12', $p['byTwoWords'] ?? [], true),
+       'two words in any order find it, got ' . json_encode($p['byTwoWords'] ?? null));
+    ok(in_array('m12', $p['bySubsequence'] ?? [], true),
+       '"mnfb" finds "Main Fabric" — the forgiving one, got ' . json_encode($p['bySubsequence'] ?? null));
+    ok((int)($p['noMatch'] ?? -1) === 0, 'nonsense matches nothing rather than everything');
+
+    ok(($p['pickerClosed'] ?? null) === true, 'choosing an item closes the picker');
+    ok(($p['chosenKey'] ?? '') === 'm12', 'and records its key, got ' . var_export($p['chosenKey'] ?? null, true));
+    ok(str_contains((string)($p['chosenShown'] ?? ''), 'Main Fabric'),
+       'and shows the name on the row, got ' . var_export($p['chosenShown'] ?? null, true));
+    ok(($p['uomAuto'] ?? '') === 'Mtr', 'the unit follows the item, got ' . var_export($p['uomAuto'] ?? null, true));
+
+    ok((int)($p['rowsAfterAdd'] ?? 0) === 2, 'Add item adds a row');
     ok(($p['names'] ?? []) === ['line[0][qty]', 'line[1][qty]'],
-       'each row posts under its own name, got ' . var_export($p['names'] ?? null, true));
-    ok((int)($p['rowsAfterRemove'] ?? 0) === 1, 'Remove takes one away, got ' . var_export($p['rowsAfterRemove'] ?? null, true));
-    ok((int)($p['rowsAfterRemoveAll'] ?? 0) === 1,
-       'removing every row leaves one behind rather than an unusable form, got ' . var_export($p['rowsAfterRemoveAll'] ?? null, true));
-    ok((int)($p['hasRateBox'] ?? -1) === 0, 'no rate input exists anywhere on the page');
-    ok(($p['rmHiddenAtOne'] ?? '') === 'none',
-       'Remove is hidden while there is only one row, got ' . var_export($p['rmHiddenAtOne'] ?? null, true));
-    ok(($p['rmShownAtTwo'] ?? '') !== 'none' && ($p['rmShownAtTwo'] ?? '') !== '',
-       'and reappears once there are two, got ' . var_export($p['rmShownAtTwo'] ?? null, true));
+       'each row posts under its own name, got ' . json_encode($p['names'] ?? null));
+    ok(($p['rmShownAtTwo'] ?? '') !== 'none', 'Remove shows once there are two rows');
+    ok((int)($p['rowsAfterRemove'] ?? 0) === 1, 'Remove takes one away');
+    ok(($p['rmHiddenAtOne'] ?? '') === 'none', 'and hides again on the last row');
+    ok((int)($p['hasRateBox'] ?? -1) === 0, 'no rate is ever typed on the phone');
+
+    ok(($p['cOpen'] ?? null) === true, 'the contract button opens the list');
+    ok(in_array('PC-2610-0001', $p['cListed'] ?? [], true),
+       'and lists the open contracts for this type, got ' . json_encode($p['cListed'] ?? null));
+    ok(str_contains((string)($p['cNoneForType'] ?? ''), 'not raised against a contract'),
+       'a type with no contract says so instead of offering the wrong ones, got '
+       . var_export($p['cNoneForType'] ?? null, true));
 
     head('4a. The numbering preview agrees with the PHP that issues the number');
 

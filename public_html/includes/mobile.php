@@ -48,6 +48,12 @@ function mob_header(string $title, string $back = '', string $sub = ''): void
   --safe-t:env(safe-area-inset-top,0px); --safe-b:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* hidden only gives display:none as a browser DEFAULT, which any inline
+   display: beats. The full-screen item picker sets display:flex inline, so
+   without this it was visible permanently — covering the whole form, with
+   nothing on the page reachable. Made !important so the attribute always
+   wins, whatever a layout style says. */
+[hidden]{display:none!important}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
   font:15px/1.5 "Inter","Segoe UI",system-ui,-apple-system,sans-serif}
 /* 16px is the smallest size iOS will not zoom into on focus. Anything

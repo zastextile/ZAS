@@ -46,6 +46,75 @@ if (!inv_perm('gate')) {
     exit;
 }
 
+$dirForRecent = ($_GET['dir'] ?? '') === 'out' ? 'out' : 'in';
+
+/* ------------------------------------------------------- small answers
+
+   Two things are fetched rather than sent with the page: a contract's
+   lines, and what this party has brought before. Both depend on a choice
+   made after the page loaded, and preloading every contract's lines for
+   every party would be a megabyte to carry a few rows. */
+if (($_GET['ajax'] ?? '') !== '') {
+    header('Content-Type: application/json');
+
+    if ($_GET['ajax'] === 'contract') {
+        $cid = (int)($_GET['id'] ?? 0);
+        $out = ['ok' => false, 'lines' => []];
+        if ($cid > 0) {
+            foreach (inv_contract_lines($cid) as $l) {
+                /* A line already fully delivered is no use at a gate. */
+                if ((float)$l['balance'] <= 0) continue;
+                $out['lines'][] = [
+                    'id'   => (int)$l['id'],
+                    'k'    => (int)$l['material_id'] > 0 ? 'm' . (int)$l['material_id'] : 'p' . (int)$l['product_id'],
+                    'n'    => (string)$l['item'],
+                    'u'    => (string)$l['uom'],
+                    'r'    => (float)$l['rate'],
+                    'bal'  => (float)$l['balance'],
+                    'qty'  => (float)$l['qty'],
+                    'done' => (float)$l['done'],
+                ];
+            }
+            $out['ok'] = true;
+        }
+        echo json_encode($out);
+        exit;
+    }
+
+    /* WHAT THIS PARTY HAS BROUGHT BEFORE.
+       The whole point of the request: a supplier delivers the same four
+       things every week, and hunting for them in a list of nine hundred on
+       a phone is the slow part. Read from what was actually recorded, so
+       the list is right without anybody maintaining it. */
+    if ($_GET['ajax'] === 'recent') {
+        $party = trim((string)($_GET['party'] ?? ''));
+        $out = ['ok' => true, 'keys' => []];
+        if ($party !== '') {
+            try {
+                $st = db()->prepare(
+                    "SELECT gi.material_id, gi.product_id, COUNT(*) n, MAX(g.id) last_id
+                       FROM inv_gate_items gi
+                       JOIN inv_gate g ON g.id = gi.gate_id
+                      WHERE g.party_text = ? AND g.direction = ?
+                        AND (gi.material_id IS NOT NULL OR gi.product_id IS NOT NULL)
+                   GROUP BY gi.material_id, gi.product_id
+                   ORDER BY n DESC, last_id DESC
+                      LIMIT 12");
+                $st->execute([$party, $dirForRecent]);
+                foreach ($st->fetchAll() as $r) {
+                    $out['keys'][] = (int)$r['material_id'] > 0
+                        ? 'm' . (int)$r['material_id'] : 'p' . (int)$r['product_id'];
+                }
+            } catch (Throwable $e) {}
+        }
+        echo json_encode($out);
+        exit;
+    }
+
+    echo json_encode(['ok' => false]);
+    exit;
+}
+
 $dir = ($_GET['dir'] ?? $_POST['dir'] ?? '') === 'out' ? 'out' : 'in';
 $TYPES = inv_gate_types($dir);
 $dirName = $dir === 'in' ? 'Gate Inward' : 'Gate Outward';
@@ -58,6 +127,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
     $type = array_key_exists((string)($_POST['txn_type'] ?? ''), $TYPES)
           ? (string)$_POST['txn_type'] : array_key_first($TYPES);
     $date = ($_POST['gate_date'] ?? '') !== '' ? (string)$_POST['gate_date'] : date('Y-m-d');
+    $cid  = (int)($_POST['contract_id'] ?? 0);
+
+    /* The contract must be one this type can actually be raised against,
+       and it must be open. Checked on the server because the value came
+       from a browser. */
+    if ($cid > 0) {
+        $want = (string)($TYPES[$type]['contract'] ?? '');
+        try {
+            $cs = db()->prepare("SELECT contract_type, status FROM inv_contracts WHERE id=?");
+            $cs->execute([$cid]);
+            $crow = $cs->fetch();
+        } catch (Throwable $e) { $crow = null; }
+        if (!$crow || $want === '' || (string)$crow['contract_type'] !== $want
+            || !in_array((string)$crow['status'], ['active', 'draft'], true)) {
+            $cid = 0;
+        }
+    }
 
     /* The same two date guards the desktop applies. A phone's clock can be
        wrong and a backdated pass is how stock history gets rewritten. */
@@ -81,12 +167,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
             if ($mid <= 0 && $pid <= 0) continue;
             $qty = inv_num($ln['qty'] ?? 0);
             if ($qty <= 0) { $err = 'Line ' . ((int)$i + 1) . ' has an item but no quantity.'; break; }
+            /* A LINE TAKEN FROM A CONTRACT CARRIES THE CONTRACT WITH IT.
+             *
+             * This is the whole reason the contract button exists.
+             * inv_contract_lines() counts progress from gate lines whose
+             * contract_item_id is set — a line without one counts against
+             * nothing, so the contract reads as undelivered for ever and
+             * you would over-deliver against it with the screen saying it
+             * was fine. Carrying both ids is what makes the delivery
+             * count.
+             *
+             * The rate comes with it too, which is why a pass built from a
+             * contract needs nothing from the office before posting. */
+            $cItem = (int)($ln['citem'] ?? 0);
+            $cRate = inv_num($ln['crate'] ?? 0);
             $lines[] = [
                 'material_id' => $mid ?: null,
                 'product_id'  => $pid ?: null,
                 'description' => mb_substr(trim((string)($ln['desc'] ?? '')), 0, 300),
                 'qty'         => $qty,
                 'uom'         => mb_substr(trim((string)($ln['uom'] ?? '')), 0, 20),
+                'citem'       => $cItem > 0 ? $cItem : null,
+                'rate'        => $cItem > 0 && $cRate > 0 ? $cRate : 0.0,
             ];
         }
         if ($err === '' && !$lines) $err = 'Add at least one item.';
@@ -118,24 +220,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
         $own = $TYPES[$type]['own'] ?? 'own';
         if ($id > 0) {
             db()->prepare("UPDATE inv_gate SET txn_type=?, gate_date=?, gate_time=?, party_text=?,
-                           vehicle_no=?, remarks=?, updated_at=NOW() WHERE id=?")
+                           vehicle_no=?, remarks=?, contract_id=?, updated_at=NOW() WHERE id=?")
                 ->execute([$type, $date, date('H:i:s'),
                            mb_substr(trim((string)($_POST['party_text'] ?? '')), 0, 190) ?: null,
                            mb_substr(trim((string)($_POST['vehicle_no'] ?? '')), 0, 60) ?: null,
                            mb_substr(trim((string)($_POST['remarks'] ?? '')), 0, 2000) ?: null,
-                           $id]);
+                           $cid ?: null, $id]);
         } else {
             $no  = inv_next_no($dir === 'in' ? 'prefix_gate_in' : 'prefix_gate_out', 'inv_gate', 'gate_no');
             $uid = (int)(current_user()['id'] ?? 0);
             db()->prepare("INSERT INTO inv_gate
                    (gate_no, direction, txn_type, gate_date, gate_time, party_text, vehicle_no,
-                    remarks, status, prepared_by, created_by)
-                   VALUES (?,?,?,?,?,?,?,?,'draft',?,?)")
+                    remarks, contract_id, status, prepared_by, created_by)
+                   VALUES (?,?,?,?,?,?,?,?,?,'draft',?,?)")
                 ->execute([$no, $dir, $type, $date, date('H:i:s'),
                            mb_substr(trim((string)($_POST['party_text'] ?? '')), 0, 190) ?: null,
                            mb_substr(trim((string)($_POST['vehicle_no'] ?? '')), 0, 60) ?: null,
                            mb_substr(trim((string)($_POST['remarks'] ?? '')), 0, 2000) ?: null,
-                           $uid, $uid]);
+                           $cid ?: null, $uid, $uid]);
             $id = (int)db()->lastInsertId();
         }
 
@@ -144,11 +246,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
            of 0 — that is what "rate pending" means, and posting refuses it. */
         db()->prepare("DELETE FROM inv_gate_items WHERE gate_id=?")->execute([$id]);
         $ins = db()->prepare("INSERT INTO inv_gate_items
-               (gate_id, material_id, product_id, description, qty, uom, rate, ownership, sort_order)
-               VALUES (?,?,?,?,?,?,0,?,?)");
+               (gate_id, material_id, product_id, description, qty, uom, rate, amount,
+                ownership, sort_order, contract_id, contract_item_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
         foreach ($lines as $k => $l) {
+            /* rate stays 0 unless the contract supplied one — that is what
+               "rate pending" means, and posting refuses it. */
             $ins->execute([$id, $l['material_id'], $l['product_id'], $l['description'],
-                           $l['qty'], $l['uom'], $own, $k + 1]);
+                           $l['qty'], $l['uom'], $l['rate'], round($l['qty'] * $l['rate'], 2),
+                           $own, $k + 1,
+                           $l['citem'] ? $cid : null, $l['citem']]);
         }
 
         db()->commit();
@@ -214,6 +321,24 @@ try {
 
 $items = [];
 try { $items = inv_opening_items(); } catch (Throwable $e) { $items = []; }
+
+/* Open contracts, grouped by the contract type each gate type maps to.
+   Only the header — the lines are fetched when one is chosen. */
+$contracts = [];
+try {
+    $wantTypes = [];
+    foreach ($TYPES as $k => $t) if (($t['contract'] ?? '') !== '') $wantTypes[$t['contract']] = true;
+    if ($wantTypes) {
+        $in = implode(',', array_fill(0, count($wantTypes), '?'));
+        $cs = db()->prepare("SELECT c.id, c.contract_no, c.contract_type, c.contract_date, p.name party
+                               FROM inv_contracts c
+                          LEFT JOIN inv_parties p ON p.id = c.party_id
+                              WHERE c.contract_type IN ($in) AND c.status IN ('active','draft')
+                           ORDER BY c.id DESC LIMIT 120");
+        $cs->execute(array_keys($wantTypes));
+        $contracts = $cs->fetchAll();
+    }
+} catch (Throwable $e) { $contracts = []; }
 
 $partyNames = [];
 try { foreach (inv_parties('', true) as $p) $partyNames[] = (string)$p['name']; } catch (Throwable $e) {}
@@ -304,6 +429,30 @@ mob_flash();
       </label>
     </div>
 
+    <?php
+      /* Which contract types this screen's types map to, so the list can
+         be narrowed the moment a type is chosen rather than offering a
+         purchase contract on a sale. */
+      $typeContract = [];
+      foreach ($TYPES as $k => $t) $typeContract[$k] = (string)($t['contract'] ?? '');
+    ?>
+    <div class="mcard" id="ccard">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <h2 style="margin:0">Against a contract?</h2>
+        <button type="button" id="ctoggle" class="btn sec" style="width:auto;padding:9px 16px;min-height:44px;font-size:14px">Choose</button>
+      </div>
+      <input type="hidden" name="contract_id" id="cid" value="<?= (int)($pass['contract_id'] ?? 0) ?>">
+      <div id="cpick" hidden style="margin-top:12px">
+        <input class="in" id="csearch" placeholder="Search contract no. or party" autocomplete="off">
+        <div id="clist" style="max-height:260px;overflow:auto;margin-top:10px"></div>
+      </div>
+      <div id="cchosen" hidden style="margin-top:12px"></div>
+      <div class="note" style="margin-top:10px" id="cnote">
+        Pick the contract and its items come with their <b>rates</b> and what is still outstanding —
+        and the delivery counts against the contract. Leave it off for a one-off.
+      </div>
+    </div>
+
     <div class="mcard">
       <h2>Items</h2>
       <div id="rows"></div>
@@ -349,6 +498,20 @@ mob_flash();
     <a class="btn sec" href="m_gate.php?dir=<?= e($dir) ?>" style="margin-top:10px">Cancel</a>
   </form>
 
+  <!-- The item picker. A full screen of its own, because a 900-row native
+       dropdown on a phone is a scroll with no search in it. -->
+  <div id="pick" hidden style="position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column">
+    <div class="mh" style="position:static">
+      <a class="bk" href="#" id="pclose" aria-label="Close">&#8249;</a>
+      <h1>Choose an item</h1>
+    </div>
+    <div style="padding:12px 14px 0">
+      <input class="in" id="psearch" placeholder="Type any part of the code or name" autocomplete="off"
+             autocapitalize="off" autocorrect="off" spellcheck="false">
+    </div>
+    <div id="plist" style="flex:1;overflow:auto;padding:10px 14px calc(16px + var(--safe-b))"></div>
+  </div>
+
   <script>
   /* The item rows. Built in the browser from one list sent with the page —
      no second request, because the gate is exactly where the signal is
@@ -362,19 +525,130 @@ mob_flash();
         'q' => rtrim(rtrim(number_format((float)$l['qty'], 3, '.', ''), '0'), '.'),
         'u' => (string)($l['uom'] ?? ''),
         'd' => (string)($l['description'] ?? ''),
+        'ci' => (int)($l['contract_item_id'] ?? 0),
+        'cr' => (float)($l['rate'] ?? 0),
       ], $pLines), JSON_UNESCAPED_UNICODE) ?>;
+  var CONTRACTS = <?= json_encode(array_map(fn($c) => [
+        'id' => (int)$c['id'], 'no' => (string)$c['contract_no'],
+        't' => (string)$c['contract_type'], 'p' => (string)($c['party'] ?? ''),
+        'd' => (string)($c['contract_date'] ?? ''),
+      ], $contracts), JSON_UNESCAPED_UNICODE) ?>;
+  var TYPEC = <?= json_encode($typeContract, JSON_UNESCAPED_UNICODE) ?>;
+  var DIR = <?= json_encode($dir) ?>;
 
   var rows = document.getElementById('rows');
+  var BYKEY = {}; ITEMS.forEach(function (i) { BYKEY[i.k] = i; });
   var n = 0;
+  var recent = [];          /* item keys this party has brought before */
+  var activeRow = null;     /* the row whose picker is open */
 
-  function optionsHtml(sel) {
-    var h = '<option value="">— choose an item —</option>';
-    for (var i = 0; i < ITEMS.length; i++) {
-      var it = ITEMS[i];
-      h += '<option value="' + it.k + '" data-u="' + (it.u || '') + '"'
-         + (it.k === sel ? ' selected' : '') + '>' + it.n.replace(/</g, '&lt;') + '</option>';
+  /* ---------------------------------------------------------- searching
+     Three ways to match, best first:
+       1. the whole phrase appears                 "flat sheet"
+       2. every word appears somewhere, any order  "sheet 300"
+       3. the letters appear in order              "mnfb" -> MaiN FaBric
+     The third is what makes it forgiving of how people actually type on a
+     phone, without pretending to be a spell checker. */
+  function norm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+
+  function subseq(hay, needle) {
+    var i = 0;
+    for (var j = 0; j < hay.length && i < needle.length; j++) if (hay[j] === needle[i]) i++;
+    return i === needle.length;
+  }
+
+  function score(item, q) {
+    if (!q) return 1;
+    var h = norm(item.n);
+    if (h.indexOf(q) !== -1) return 100 - h.indexOf(q);
+    var words = q.split(' ').filter(Boolean);
+    if (words.length && words.every(function (w) { return h.indexOf(w) !== -1; })) return 50;
+    if (subseq(h.replace(/ /g, ''), q.replace(/ /g, ''))) return 10;
+    return 0;
+  }
+
+  function drawList() {
+    var q = norm(document.getElementById('psearch').value);
+    var box = document.getElementById('plist');
+    var html = '';
+
+    if (!q && recent.length) {
+      html += section('Used before with this party', recent.map(function (k) { return BYKEY[k]; }).filter(Boolean));
     }
+
+    var hits = ITEMS.map(function (i) { return { i: i, s: score(i, q) }; })
+                    .filter(function (x) { return x.s > 0; })
+                    .sort(function (a, b) { return b.s - a.s; })
+                    .slice(0, 80)
+                    .map(function (x) { return x.i; });
+
+    html += section(q ? (hits.length + ' match' + (hits.length === 1 ? '' : 'es')) : 'All items', hits);
+    if (!hits.length) html += '<div class="empty">Nothing matches &ldquo;' + esc(document.getElementById('psearch').value) + '&rdquo;.</div>';
+    box.innerHTML = html;
+  }
+
+  function esc(t) { return String(t).replace(/[&<>"]/g, function (c) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+
+  function section(title, list) {
+    if (!list.length) return '';
+    var h = '<div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700;margin:12px 0 4px">' + esc(title) + '</div>';
+    list.forEach(function (i) {
+      h += '<button type="button" class="pitem" data-k="' + esc(i.k) + '" data-u="' + esc(i.u || '') + '"'
+         + ' style="display:block;width:100%;text-align:left;padding:13px 12px;border:1px solid var(--line);'
+         + 'border-radius:11px;background:#fff;margin-bottom:7px;min-height:48px;color:var(--ink)">'
+         + esc(i.n) + (i.u ? '<span style="color:var(--faint);font-size:12px"> &middot; ' + esc(i.u) + '</span>' : '')
+         + '</button>';
+    });
     return h;
+  }
+
+  function openPicker(row) {
+    activeRow = row;
+    document.getElementById('psearch').value = '';
+    document.getElementById('pick').hidden = false;
+    drawList();
+    /* Not focused on purpose: the keyboard springing up over the list is
+       the thing people complain about. Tap the box to search. */
+    loadRecent();
+  }
+  function closePicker() { document.getElementById('pick').hidden = true; activeRow = null; }
+
+  /* What this party brought before. Asked for once per party, after the
+     name has been typed — which is why it is a request and not baked into
+     the page. */
+  var recentFor = null;
+  function loadRecent() {
+    var party = (document.querySelector('[name="party_text"]').value || '').trim();
+    if (party === '' || party === recentFor) { return; }
+    recentFor = party;
+    fetch('m_gate.php?ajax=recent&dir=' + encodeURIComponent(DIR) + '&party=' + encodeURIComponent(party))
+      .then(function (r) { return r.json(); })
+      .then(function (j) { recent = (j && j.keys) || []; drawList(); })
+      .catch(function () { recent = []; });
+  }
+
+  document.getElementById('psearch').addEventListener('input', drawList);
+  document.getElementById('pclose').addEventListener('click', function (e) { e.preventDefault(); closePicker(); });
+  document.getElementById('plist').addEventListener('click', function (e) {
+    var b = e.target.closest('.pitem');
+    if (!b || !activeRow) return;
+    setItem(activeRow, b.dataset.k, b.dataset.u);
+    closePicker();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !document.getElementById('pick').hidden) closePicker();
+  });
+
+  /* ------------------------------------------------------------- rows */
+  function setItem(row, key, uom) {
+    var it = BYKEY[key];
+    row.querySelector('.k').value = key || '';
+    row.querySelector('.d').value = it ? it.n : '';
+    row.querySelector('.lbl').textContent = it ? it.n : '— choose an item —';
+    row.querySelector('.lbl').style.color = it ? 'var(--ink)' : 'var(--faint)';
+    var u = row.querySelector('.uom');
+    if (!u.dataset.touched && (uom || (it && it.u))) u.value = uom || it.u;
   }
 
   function addRow(v) {
@@ -385,38 +659,35 @@ mob_flash();
     d.style.cssText = 'border-top:1px solid var(--line);padding-top:12px;margin-top:12px';
     d.innerHTML =
       '<label class="f"><span>Item <i class="req">*</i></span>'
-    + '<select class="in itm" name="line[' + i + '][item_key]">' + optionsHtml(v.k) + '</select></label>'
+    + '<button type="button" class="in itm" style="text-align:left;min-height:50px">'
+    + '<span class="lbl" style="color:var(--faint)">— choose an item —</span></button></label>'
+    + '<input type="hidden" class="k" name="line[' + i + '][item_key]" value="">'
+    + '<input type="hidden" class="d" name="line[' + i + '][desc]" value="">'
+    + '<input type="hidden" class="ci" name="line[' + i + '][citem]" value="' + (v.ci || '') + '">'
+    + '<input type="hidden" class="cr" name="line[' + i + '][crate]" value="' + (v.cr || '') + '">'
     + '<div style="display:flex;gap:10px">'
     + '  <label class="f" style="flex:1.3"><span>Quantity <i class="req">*</i></span>'
     + '    <input class="in qty" type="number" inputmode="decimal" step="0.001" min="0" name="line[' + i + '][qty]" value="' + (v.q || '') + '"></label>'
     + '  <label class="f" style="flex:1"><span>Unit</span>'
     + '    <input class="in uom" name="line[' + i + '][uom]" value="' + (v.u || '') + '" placeholder="Pc"></label>'
     + '</div>'
-    + '<input type="hidden" name="line[' + i + '][desc]" value="">'
+    + (v.ci ? '<div class="note" style="margin:-4px 0 10px">From the contract &middot; rate ' + (v.cr || 0) + (v.bal !== undefined ? ' &middot; ' + v.bal + ' outstanding' : '') + '</div>' : '')
     + '<button type="button" class="btn red rm" style="padding:10px;min-height:44px;font-size:14px">Remove this item</button>';
     rows.appendChild(d);
-    syncRemove();
 
-    var sel = d.querySelector('.itm'), uom = d.querySelector('.uom'), desc = d.querySelector('input[name$="[desc]"]');
-    function fill() {
-      var o = sel.options[sel.selectedIndex];
-      if (!o || !o.value) { desc.value = ''; return; }
-      desc.value = o.textContent;
-      /* The unit follows the item unless somebody has typed their own. */
-      if (!uom.dataset.touched && o.dataset.u) uom.value = o.dataset.u;
-    }
+    var uom = d.querySelector('.uom');
     uom.addEventListener('input', function () { uom.dataset.touched = '1'; });
-    sel.addEventListener('change', fill);
-    if (v.k) fill();
+    d.querySelector('.itm').addEventListener('click', function () { openPicker(d); });
+    if (v.k) setItem(d, v.k, v.u);
     d.querySelector('.rm').addEventListener('click', function () {
       d.remove();
-      if (!rows.children.length) addRow();   /* never leave an unusable form */
+      if (!rows.children.length) addRow();
       syncRemove();
     });
+    syncRemove();
+    return d;
   }
 
-  /* Remove is pointless on the only row — taking it away just puts an empty
-     one back. Hidden rather than removed so the row markup stays identical. */
   function syncRemove() {
     var all = rows.querySelectorAll('.grow');
     all.forEach(function (r) {
@@ -427,12 +698,126 @@ mob_flash();
   document.getElementById('addrow').addEventListener('click', function () { addRow(); });
   if (START.length) { START.forEach(addRow); } else { addRow(); }
 
+  /* --------------------------------------------------------- contracts */
+  var typeSel = document.querySelector('[name="txn_type"]');
+  var cidIn   = document.getElementById('cid');
+
+  function openContracts() {
+    var want = TYPEC[typeSel.value] || '';
+    var box  = document.getElementById('clist');
+    var q    = norm(document.getElementById('csearch').value);
+    if (!want) {
+      box.innerHTML = '<div class="empty">A ' + esc(typeSel.options[typeSel.selectedIndex].text)
+                    + ' is not raised against a contract.</div>';
+      return;
+    }
+    var list = CONTRACTS.filter(function (c) {
+      if (c.t !== want) return false;
+      if (!q) return true;
+      return norm(c.no + ' ' + c.p).indexOf(q) !== -1;
+    });
+    if (!list.length) { box.innerHTML = '<div class="empty">No open contract matches.</div>'; return; }
+    box.innerHTML = list.map(function (c) {
+      return '<button type="button" class="citem" data-id="' + c.id + '" data-no="' + esc(c.no) + '"'
+           + ' style="display:block;width:100%;text-align:left;padding:12px;border:1px solid var(--line);'
+           + 'border-radius:11px;background:#fff;margin-bottom:7px;min-height:48px;color:var(--ink)">'
+           + '<b>' + esc(c.no) + '</b>'
+           + (c.p ? '<span style="color:var(--muted);font-size:12.5px"> &middot; ' + esc(c.p) + '</span>' : '')
+           + (c.d ? '<div style="color:var(--faint);font-size:11.5px">' + esc(c.d) + '</div>' : '')
+           + '</button>';
+    }).join('');
+  }
+
+  document.getElementById('ctoggle').addEventListener('click', function () {
+    var pick = document.getElementById('cpick');
+    pick.hidden = !pick.hidden;
+    this.textContent = pick.hidden ? 'Choose' : 'Close';
+    if (!pick.hidden) openContracts();
+  });
+  document.getElementById('csearch').addEventListener('input', openContracts);
+  typeSel.addEventListener('change', function () {
+    if (!document.getElementById('cpick').hidden) openContracts();
+  });
+
+  document.getElementById('clist').addEventListener('click', function (e) {
+    var b = e.target.closest('.citem');
+    if (!b) return;
+    var id = b.dataset.id;
+    cidIn.value = id;
+    document.getElementById('cpick').hidden = true;
+    document.getElementById('ctoggle').textContent = 'Change';
+    var chosen = document.getElementById('cchosen');
+    chosen.hidden = false;
+    chosen.innerHTML = '<div class="note">Loading the contract&rsquo;s items…</div>';
+
+    fetch('m_gate.php?ajax=contract&id=' + encodeURIComponent(id))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var L = (j && j.lines) || [];
+        if (!L.length) {
+          chosen.innerHTML = '<div class="note"><b>' + esc(b.dataset.no) + '</b> — nothing outstanding on it.</div>';
+          return;
+        }
+        chosen.innerHTML = '<div class="note" style="margin-bottom:8px"><b>' + esc(b.dataset.no)
+          + '</b> — tick what is on the vehicle. Quantity starts at what is outstanding; change it if less came.</div>'
+          + L.map(function (l, ix) {
+              return '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--line);'
+                   + 'border-radius:11px;background:#fff;margin-bottom:7px">'
+                   + '<input type="checkbox" class="cl" data-ix="' + ix + '" style="width:20px;height:20px;margin-top:2px;accent-color:#0ea8c9">'
+                   + '<span style="flex:1;min-width:0"><b style="font-size:13.5px">' + esc(l.n) + '</b>'
+                   + '<div style="color:var(--muted);font-size:12px">' + l.bal + ' ' + esc(l.u || '')
+                   + ' outstanding &middot; rate ' + l.r + '</div></span></label>';
+            }).join('')
+          + '<button type="button" class="btn sec" id="caddsel">Add the ticked items</button>';
+
+        document.getElementById('caddsel').addEventListener('click', function () {
+          var added = 0;
+          chosen.querySelectorAll('.cl:checked').forEach(function (cb) {
+            var l = L[+cb.dataset.ix];
+            /* An empty first row is filled rather than left behind. */
+            var blank = Array.prototype.find.call(rows.querySelectorAll('.grow'),
+                          function (r) { return !r.querySelector('.k').value; });
+            var row = blank || addRow();
+            setItem(row, l.k, l.u);
+            row.querySelector('.qty').value = l.bal;
+            row.querySelector('.ci').value  = l.id;
+            row.querySelector('.cr').value  = l.r;
+            if (!row.querySelector('.cfrom')) {
+              var tag = document.createElement('div');
+              tag.className = 'note cfrom';
+              tag.style.cssText = 'margin:-4px 0 10px';
+              tag.innerHTML = 'From the contract &middot; rate ' + l.r + ' &middot; ' + l.bal + ' outstanding';
+              row.querySelector('.rm').before(tag);
+            }
+            cb.checked = false;
+            added++;
+          });
+          syncRemove();
+          if (added) document.getElementById('rows').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      })
+      .catch(function () {
+        chosen.innerHTML = '<div class="note">The contract could not be loaded. Check the signal and try again.</div>';
+      });
+  });
+
+  if (cidIn.value && cidIn.value !== '0') {
+    var pre = CONTRACTS.filter(function (c) { return String(c.id) === String(cidIn.value); })[0];
+    if (pre) {
+      document.getElementById('ctoggle').textContent = 'Change';
+      var ch = document.getElementById('cchosen');
+      ch.hidden = false;
+      ch.innerHTML = '<div class="note">Against contract <b>' + esc(pre.no) + '</b>'
+                   + (pre.p ? ' &middot; ' + esc(pre.p) : '') + '</div>';
+    }
+  }
+
   /* Caught here so the answer is instant, and caught again on the server
      because a browser check is a convenience, never a guard. */
   document.getElementById('gf').addEventListener('submit', function (e) {
     var ok = false, half = 0;
     rows.querySelectorAll('.grow').forEach(function (r) {
-      var k = r.querySelector('.itm').value, q = parseFloat(r.querySelector('.qty').value || '0');
+      var k = r.querySelector('.k').value, q = parseFloat(r.querySelector('.qty').value || '0');
       if (k && q > 0) ok = true;
       if (k && !(q > 0)) half++;
     });
