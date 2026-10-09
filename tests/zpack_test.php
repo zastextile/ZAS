@@ -130,9 +130,13 @@ t('and direct works back to 10 in each carton',
 
 /* The point of the toggle: in direct mode the per-package field is not on
    the screen at all, so the two figures cannot disagree. */
-t('direct mode asks for a total, not a per-package figure',
-  str_contains($mpN, "\$mode === 'direct' ? 'Total quantity' : 'Quantity per package'"),
-  'the single quantity label is not switched by the mode');
+/* The label is no longer chosen by PHP — it is rewritten the instant the
+   toggle is tapped, which is the whole point of this round. The page
+   provides the hook; zpackboot_test drives it in a browser. */
+t('the quantity label is a hook the script rewrites',
+  str_contains($mpN, 'data-qtylabel')
+  && str_contains($mpN, "label.textContent = per ? ('Quantity per ' + lu) : 'Total quantity';"),
+  'the label is not switched by the toggle');
 t('there is exactly one quantity input outside the assorted setup',
   substr_count($mpN, 'name="single_qty"') === 2,  /* the field, and the hidden carry-over */
   substr_count($mpN, 'name="single_qty"'));
@@ -233,15 +237,17 @@ t('a size with no breakdown counts as nothing, not as the others',
 t('net and gross are not asked for on the packing screen',
   !preg_match('~name="net_weight"|name="gross_weight"~', $mpN),
   'a net or gross input survived');
-t('the weight lines are typed material, name and grams',
-  str_contains($mpN, 'name="w_type[]"') && str_contains($mpN, 'name="w_name[]"')
-  && str_contains($mpN, 'name="w_grams[]"'));
+t('a weight line is still a material, a name and grams',
+  str_contains($mpN, "class=\"in ty\"") && str_contains($mpN, "class=\"in nmi\"")
+  && str_contains($mpN, "class=\"in g\""));
+t('and every size goes back in one field',
+  str_contains($mpN, 'name="weights_json"'));
 t('the material types are the ones asked for',
   in_array('Fabric', PACK_WTYPES, true) && in_array('Fiber / filling', PACK_WTYPES, true)
   && in_array('PVC / poly bag', PACK_WTYPES, true) && in_array('Accessories', PACK_WTYPES, true),
   PACK_WTYPES);
 t('a new line starts as Fabric, not as the last type in the list',
-  str_contains($mp, "ROWS.push({ t: TYPES[0]"), 'the new-line default is not the first type');
+  str_contains($mp, 'rows().push({ t: TYPES[0]'), 'the new-line default is not the first type');
 t('a line worth nothing is not stored',
   preg_match('~if \(\$g <= 0\) continue;~', $pkN) === 1);
 
@@ -265,7 +271,12 @@ t('it is saved when the list is approved',
 t('and a standard that will not save cannot lose the packing',
   preg_match('~function pack_std_save.*?catch \(Throwable \$e\) \{~s', $pkN) === 1);
 t('the screen offers it only when something is remembered',
-  str_contains($mpN, '$hasStd') && str_contains($mpN, 'pack_std_get('));
+  str_contains($mpN, 'pack_std_get(')
+  && str_contains($mpN, 'if ($std) {')
+  && str_contains($mpN, 'std.hidden = !STD[at];'));
+t('and filling from it is instant, with no round trip',
+  !preg_match('~name="recall"~', $mpN),
+  'the recall button still posts');
 
 /* ====================================================== 8. the ten per cent */
 head('8. The approver may overrule, within ten per cent');
@@ -357,6 +368,27 @@ t('and m.php requires the file that answers it',
   str_contains(nocomments((string)file_get_contents($B . 'm.php')), "includes/packing.php"),
   'without the require the tile silently never appears');
 
+/* ============================ 10c. the weight field that comes from a browser
+   Every size's lines now arrive in one JSON field, which means a size
+   name arrives from the browser too. It is matched against the sizes
+   this range actually has rather than trusted. */
+head('10c. The posted breakdown is checked, not trusted');
+
+$mpSrc = nocomments((string)file_get_contents($B . 'm_pack.php'));
+t('the sizes this range owns are read from the database first',
+  preg_match('~foreach \(pack_sizes\(\$gId\) as \$srow\) \$own\[\(string\)\$srow\[\x27size_label\x27\]\] = true;~', $mpSrc) === 1);
+t('and a size that is not one of them is skipped, not created',
+  str_contains($mpSrc, 'if (!isset($own[$sizeLabel]) || !is_array($rows)) continue;'));
+t('a field that is not valid JSON is simply ignored',
+  str_contains($mpSrc, 'if (is_array($sent)) {'));
+t('the material type is still forced back to the known list',
+  str_contains($pkN, 'if (!in_array($type, PACK_WTYPES, true)) $type = \'Other\';'));
+t('the range still has to belong to this shipment',
+  str_contains($mpSrc, "if (!\$grp || (int)\$grp['shipment_id'] !== \$id)"));
+t('nothing is written straight from the request into a query',
+  !preg_match('~weights_json.{0,200}(prepare|exec)\(~s', $mpSrc),
+  'the raw field reaches a query');
+
 /* ================================================ 11. the require chain
    The dashboard 500 was a function called from a page that never required
    the file defining it — and the boot test passed because the harness had
@@ -437,8 +469,11 @@ t('deleting a range takes its weights with it',
   'a removed range leaves its weight lines behind');
 t('a size that is renamed carries its weight lines across',
   str_contains($mp, "g.wt[old]") === false, 'leftover demo code in the app file');
-t('no stray demo wording reached the app',
-  !preg_match('~nothing is saved|sample data~i', $mp), 'demo text in the shipped screen');
+/* The demo banner, not the words on their own — the app legitimately
+   says "nothing is saved until you press Save", which is true and worth
+   saying, and the old pattern flagged it. */
+t('no stray demo banner reached the app',
+  !preg_match('~DEMO\s*·|sample data~i', $mp), 'demo text in the shipped screen');
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

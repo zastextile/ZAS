@@ -240,38 +240,50 @@ foreach ($pages as $name => $get) {
     ok(!str_contains($out, '__REDIRECT__'), "$name does not bail out to a redirect");
 }
 
-head('2. The serial produces the count, on the page');
+head('2. The serial produces the count — in the markup, and on screen');
 
+/* THESE MOVED INTO THE BROWSER, and the reason matters: the derived
+   lines are no longer written by PHP. The toggles are live now, so the
+   package count, the quantity label and the total are produced by the
+   script the moment anything changes. Asserting on the HTML string
+   would only prove the placeholders exist. Section 7 drives them. */
 $ser = $html['serial'];
-ok(str_contains($ser, 'Carton 1 to 100') && str_contains($ser, '100 carton'),
-   'range 1 shows Carton 1 to 100 = 100 carton');
-ok(str_contains($ser, 'Carton 101 to 225') && str_contains($ser, '125 carton'),
-   'range 2 shows 125 from its serials');
-ok(str_contains($ser, 'Bale 226 to 245') && str_contains($ser, '20 bale'),
-   'range 3 shows 20 from its serials');
-ok(substr_count($ser, 'name="serial_from"') === 4,
+/* An <input> tag, not the string — the page's own script contains
+   querySelector('[name="serial_from"]') and a plain count caught that
+   too, which is how this assertion first went wrong. */
+ok(preg_match_all('~<input[^>]*name="serial_from"~', $ser) === 4,
    'three ranges plus the add-another card, each asking for a serial',
-   substr_count($ser, 'name="serial_from"'));
-ok(!preg_match('~name="packages"~', $ser), 'nothing on the page types a package count');
-
-/* The add-another card starts where the last range ended. */
-ok(preg_match('~name="serial_from"[^>]*value="246"~', $ser) === 1,
+   preg_match_all('~<input[^>]*name="serial_from"~', $ser));
+ok(!preg_match('~<input[^>]*name="packages"~', $ser),
+   'nothing on the page types a package count');
+ok(preg_match('~<input[^>]*name="serial_from"[^>]*value="246"~', $ser) === 1,
    'the next range is offered starting at 246',
    preg_match_all('~name="serial_from"[^>]*value="(\d*)"~', $ser, $mm) ? $mm[1] : null);
-
-head('3. Per package and direct ask different questions');
-
-/* Range 2 plus the empty add-another card, which starts on Per package. */
-ok(substr_count($ser, 'Quantity per package') === 2,
-   'the per-package question appears only where that mode is on',
-   substr_count($ser, 'Quantity per package'));
-ok(substr_count($ser, 'Total quantity') === 1,
-   'exactly one range asks for a total (range 3, on direct)',
-   substr_count($ser, 'Total quantity'));
-ok(str_contains($ser, '40.00 per carton &times; 125') || str_contains($ser, '40.00 per carton × 125'),
-   'range 2 shows its multiplication');
-ok(str_contains($ser, '4,000.00 over 20 bale'), 'range 3 shows its division');
 ok(!preg_match('~fix(ed)?\s*qty~i', $ser), 'no fixed-quantity wording anywhere');
+
+head('3. Both toggles are present on every range, and carry the choice');
+
+ok(preg_match_all('~<input[^>]*name="qty_mode"~', $ser) === 8,
+   'per package / direct qty on all four cards',
+   preg_match_all('~<input[^>]*name="qty_mode"~', $ser));
+ok(preg_match_all('~<input[^>]*name="size_mode"~', $ser) === 8,
+   'one size / assorted on all four cards',
+   preg_match_all('~<input[^>]*name="size_mode"~', $ser));
+/* The tag, not the word — the script's own querySelector('[data-qtylabel]')
+   is in this page too, and counting the word found five on four cards. */
+ok(preg_match_all('~<span[^>]*data-qtylabel~', $ser) === 4,
+   'and a label for the script to rewrite on each',
+   preg_match_all('~<span[^>]*data-qtylabel~', $ser));
+/* Without a script every field is still there and still posts. */
+ok(preg_match_all('~<input[^>]*name="single_qty"~', $ser) === 4
+   && preg_match_all('~<select[^>]*name="single_size"~', $ser) === 4,
+   'the quantity and size fields exist on every card, script or no script');
+/* A required field that a toggle hides cannot be filled in, and the
+   browser then refuses to submit without saying why. */
+ok(!preg_match('~<input[^>]*name="single_qty"[^>]*required~', $ser)
+   && !preg_match('~<select[^>]*name="single_size"[^>]*required~', $ser),
+   'neither is marked required, because a toggle can hide them',
+   'a hidden required field makes the form look dead');
 
 head('4. Assorted is a page of its own, and it adds up');
 
@@ -285,28 +297,37 @@ ok(str_contains($mix, 'value="2"') && str_contains($mix, 'value="4"'),
 ok(str_contains($ser, '2 Small, 4 Medium, 4 Large'),
    'and the serial tab shows the mix without opening it');
 
-head('5. Weight — the lines fill the package');
+head('5. Weight — every size comes down with the page');
 
 $w1 = $html['weight'];
 ok(str_contains($w1, '2 Small + 4 Medium + 4 Large'), 'what is inside one package is spelled out');
-ok(str_contains($w1, '10.420 kg'), 'the contents must come to 10.420 kg', null);
-/* class="chips" is the container, not a chip — match the boundary. */
-ok(preg_match_all('~class="chip[ "]~', $w1) === 3, 'one size chip per size',
-   preg_match_all('~class="chip[ "]~', $w1));
+ok(str_contains($w1, '10.420 kg'), 'the contents must come to 10.420 kg');
 ok(str_contains($w1, 'balanced'), 'and the package balances');
+/* The chips are built by the script from this, so the data is what
+   matters in the markup. */
+ok(preg_match('~var SIZES\s*=\s*\["Small","Medium","Large"\]~', $w1) === 1,
+   'all three sizes are carried down', null);
+ok(str_contains($w1, 'Fleece 220gsm') && str_contains($w1, 'Micro peach'),
+   'with every size\'s lines, not just the one being looked at');
+ok(substr_count($w1, '"Small":') >= 1 && substr_count($w1, '"Large":') >= 1,
+   'keyed by size, ready to switch without a page load');
+ok(str_contains($w1, 'name="weights_json"'),
+   'and one field carries them all back');
+ok(!preg_match('~name="recall"~', $w1),
+   'the recall button no longer posts — it fills from what is already here');
 
 $w2 = $html['weight2'];
 ok(str_contains($w2, '19.800 kg'), 'range 2: 495 g x 40 is 19.800 kg');
-ok(preg_match_all('~class="chip[ "]~', $w2) === 0, 'a single-size range shows no size chips',
-   preg_match_all('~class="chip[ "]~', $w2));
 ok(str_contains($w2, 'Percale 300TC'), 'its lines come back with their names');
+ok(preg_match('~var SIZES\s*=\s*\["152x200"\]~', $w2) === 1,
+   'a single-size range carries one size', null);
 
 $w3 = $html['weight3'];
 ok(str_contains($w3, '90.000 kg'), 'range 3: 450 g x 200 is 90.000 kg');
-ok(str_contains($w3, 'Use the last saved breakdown'),
-   'and the remembered breakdown is offered for the product that has one');
-ok(!str_contains($w2, 'Use the last saved breakdown'),
-   'but not for a product that has none');
+ok(preg_match('~var STD\s*=\s*\{"Single":~', $w3) === 1,
+   'the remembered breakdown comes down for the product that has one', null);
+ok(preg_match('~var STD\s*=\s*\{\}~', $w2) === 1,
+   'and not for a product that has none', null);
 
 head('6. Approve adds the three ranges up');
 
@@ -388,6 +409,216 @@ JS;
            'from 10 per carton', $got['mix']['mixfoot'] ?? null);
         ok(str_contains($got['approve']['dev'] ?? '', 'same as calculated'),
            'approve opens with no deviation', $got['approve']['dev'] ?? null);
+    }
+}
+
+/* ===================================== 8. the toggles, driven for real
+   The whole point of this round is that nothing waits for a save. A
+   markup check cannot tell a live toggle from a dead one — both have the
+   radio — so these are clicked. */
+head('8. Live toggles, live size switching, copy and apply-to-many');
+
+if ($node === '' || !is_dir($root . '/playwright')) {
+    echo "  (skipped — playwright not available)\n";
+} else {
+    $drive = <<<'JS'
+const { chromium } = require('playwright');
+const path = require('path');
+(async () => {
+  const dir = process.argv[2];
+  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const out = { errors: [] };
+  const open = async (f) => {
+    const p = await b.newPage({ viewport: { width: 390, height: 844 } });
+    p.on('pageerror', e => out.errors.push(f + ': ' + e));
+    await p.goto('file://' + path.join(dir, f));
+    await p.waitForTimeout(250);
+    // Every step shown at once. Walking the steps is zsteps_test's job;
+    // what is being driven here is what the toggles do, and a control on
+    // a hidden step cannot be clicked.
+    await p.evaluate(() => document.querySelectorAll('.mstep')
+                             .forEach(s => s.classList.add('on')));
+    await p.waitForTimeout(120);
+    return p;
+  };
+
+  // ---------- the serial cards ----------
+  let p = await open('serial.html');
+  const cards = p.locator('form.mcard');
+  const c2 = cards.nth(1);                       // Carton 101-225, per package, one size
+  const read = async (c) => ({
+    label:  await c.locator('[data-qtylabel]').innerText(),
+    qty:    await c.locator('[data-qty]').inputValue(),
+    serial: (await c.locator('[data-serial]').innerText()).replace(/\n/g, ' | '),
+    total:  (await c.locator('[data-total]').innerText()).replace(/\n/g, ' | '),
+    oneVisible: await c.locator('[data-one]').first().isVisible(),
+    mixVisible: await c.locator('[data-mix]').isVisible(),
+  });
+
+  out.c2start = await read(c2);
+  // flip to Direct qty
+  // tap the label, which is what a thumb hits — the radio itself is
+  // deliberately invisible inside the segmented control.
+  await c2.locator('.seg span', { hasText: 'Direct qty' }).click();
+  await p.waitForTimeout(150);
+  out.c2direct = await read(c2);
+  // and back
+  await c2.locator('.seg span', { hasText: 'Per package' }).click();
+  await p.waitForTimeout(150);
+  out.c2back = await read(c2);
+  // widen the serial by one carton
+  await c2.locator('[name="serial_to"]').fill('226');
+  await p.waitForTimeout(150);
+  out.c2wider = await read(c2);
+  await c2.locator('[name="serial_to"]').fill('225');
+  await p.waitForTimeout(120);
+  // flip to Assorted
+  await c2.locator('.seg span', { hasText: 'Assorted' }).click();
+  await p.waitForTimeout(150);
+  out.c2mix = await read(c2);
+
+  // card 1 arrives already assorted
+  out.c1start = await read(cards.nth(0));
+  await p.close();
+
+  // ---------- the weight screen, three sizes ----------
+  p = await open('weight.html');
+  const chipTexts = async () => (await p.locator('#szchips .chip').allInnerTexts()).map(t => t.trim());
+  out.chips = await chipTexts();
+  out.perUnitSmall = await p.locator('#perunit').innerText();
+  out.linesSmall   = await p.locator('#wlines .wrow').count();
+
+  await p.locator('#szchips .chip', { hasText: 'Medium' }).click();
+  await p.waitForTimeout(200);
+  out.perUnitMedium = await p.locator('#perunit').innerText();
+  out.headMedium    = await p.locator('#wsizehead').innerText();
+  out.stillSamePage = !p.url().includes('?');        // no navigation happened
+
+  // copy Small's breakdown into Medium
+  await p.locator('#copybtn').click(); await p.waitForTimeout(120);
+  await p.locator('#copyfrom').selectOption('Small'); await p.waitForTimeout(220);
+  out.perUnitAfterCopy = await p.locator('#perunit').innerText();
+
+  // tick Large and apply this breakdown to it
+  await p.locator('#applychips .chip', { hasText: 'Large' }).click(); await p.waitForTimeout(120);
+  await p.locator('#applybtn').click(); await p.waitForTimeout(220);
+  out.applyMsg = await p.locator('#applymsg').innerText();
+  await p.locator('#szchips .chip', { hasText: 'Large' }).click(); await p.waitForTimeout(200);
+  out.perUnitLarge = await p.locator('#perunit').innerText();
+  out.totalsAfter  = (await p.locator('#pkgtotals').innerText()).replace(/\n/g, ' | ');
+
+  // applying with nothing ticked must say so rather than do nothing
+  await p.locator('#applybtn').click(); await p.waitForTimeout(150);
+  out.applyNone = await p.locator('#applymsg').innerText();
+
+  // what the form would post
+  out.posted = await p.evaluate(() => {
+    const f = document.getElementById('wform');
+    f.dispatchEvent(new Event('submit', { cancelable: true }));
+    return document.getElementById('wjson').value;
+  });
+  await p.close();
+
+  // ---------- the remembered breakdown, filled without a round trip ----------
+  p = await open('weight3.html');
+  out.stdVisible = await p.locator('#stdbtn').isVisible();
+  out.beforeStd  = await p.locator('#wlines .wrow').count();
+  await p.locator('#stdbtn').click(); await p.waitForTimeout(200);
+  out.afterStd   = await p.locator('#wlines .wrow').count();
+  out.stdNoNav   = !p.url().includes('?');
+  await p.close();
+
+  await b.close();
+  console.log(JSON.stringify(out));
+})();
+JS;
+    file_put_contents($work . '/drive.js', $drive);
+    $raw = shell_exec('cd ' . escapeshellarg(__DIR__) . ' && NODE_PATH=' . escapeshellarg($root)
+                    . ' node ' . escapeshellarg($work . '/drive.js') . ' ' . escapeshellarg($work) . ' 2>&1');
+    $d = json_decode((string)$raw, true);
+
+    if (!is_array($d)) {
+        ok(false, 'chromium drove the page', substr((string)$raw, 0, 700));
+    } else {
+        ok(($d['errors'] ?? null) === [], 'no javascript error while driving', $d['errors'] ?? null);
+
+        /* --- the quantity toggle --- */
+        /* innerText gives what is on screen, and the label style is
+           text-transform:uppercase — so compare without case. */
+        ok(strcasecmp((string)($d['c2start']['label'] ?? ''), 'Quantity per carton') === 0,
+           'per package: the label names the package', $d['c2start'] ?? null);
+        ok(str_contains((string)($d['c2start']['total'] ?? ''), '40 per carton × 125')
+           && str_contains((string)($d['c2start']['total'] ?? ''), '5,000'),
+           'and the total is worked out on the spot', $d['c2start']['total'] ?? null);
+
+        ok(strcasecmp((string)($d['c2direct']['label'] ?? ''), 'Total quantity') === 0,
+           'direct: the label changes the instant it is tapped', $d['c2direct'] ?? null);
+        ok(($d['c2direct']['qty'] ?? '') === '5000',
+           'and the figure is converted, not left meaning something else',
+           $d['c2direct']['qty'] ?? null);
+        ok(str_contains((string)($d['c2direct']['total'] ?? ''), 'over 125 carton'),
+           'the total line reads the other way round now', $d['c2direct']['total'] ?? null);
+        ok(($d['c2back']['qty'] ?? '') === '40',
+           'flipping back gives 40 a carton again, not 5,000', $d['c2back']['qty'] ?? null);
+
+        /* --- the serial, live --- */
+        ok(str_contains((string)($d['c2wider']['serial'] ?? ''), '126'),
+           'one more carton on the serial re-counts at once', $d['c2wider']['serial'] ?? null);
+        ok(str_contains((string)($d['c2wider']['total'] ?? ''), '5,040'),
+           'and the total follows it', $d['c2wider']['total'] ?? null);
+
+        /* --- the size toggle --- */
+        ok(($d['c2start']['oneVisible'] ?? null) === true
+           && ($d['c2start']['mixVisible'] ?? null) === false,
+           'one size: the size and quantity are on screen', $d['c2start'] ?? null);
+        ok(($d['c2mix']['oneVisible'] ?? null) === false
+           && ($d['c2mix']['mixVisible'] ?? null) === true,
+           'assorted: they vanish and the set-up link appears, with no save',
+           $d['c2mix'] ?? null);
+        ok(($d['c1start']['mixVisible'] ?? null) === true
+           && ($d['c1start']['oneVisible'] ?? null) === false,
+           'a range saved as assorted opens that way', $d['c1start'] ?? null);
+
+        /* --- switching size on the weight screen --- */
+        ok(($d['chips'] ?? []) === ['Small ✓', 'Medium ✓', 'Large ✓'],
+           'a chip per size, ticked where the weights are in', $d['chips'] ?? null);
+        ok(($d['perUnitSmall'] ?? '') === '850 g', 'Small comes to 850 g', $d['perUnitSmall'] ?? null);
+        ok(($d['perUnitMedium'] ?? '') === '1,030 g',
+           'tapping Medium shows 1,030 g — no page load', $d['perUnitMedium'] ?? null);
+        ok(str_contains((string)($d['headMedium'] ?? ''), 'Medium'),
+           'and the heading follows', $d['headMedium'] ?? null);
+        ok(($d['stillSamePage'] ?? null) === true, 'nothing navigated');
+
+        /* --- copy, and apply to many --- */
+        ok(($d['perUnitAfterCopy'] ?? '') === '850 g',
+           'Copy from Small puts 850 g into Medium', $d['perUnitAfterCopy'] ?? null);
+        ok(str_contains((string)($d['applyMsg'] ?? ''), 'Copied to Large')
+           && str_contains((string)($d['applyMsg'] ?? ''), 'until you press Save'),
+           'applying to a ticked size says what it did, and what it did not',
+           $d['applyMsg'] ?? null);
+        ok(($d['perUnitLarge'] ?? '') === '850 g',
+           'and Large really has it', $d['perUnitLarge'] ?? null);
+        ok(str_contains((string)($d['applyNone'] ?? ''), 'Tick the sizes'),
+           'applying with nothing ticked says so instead of doing nothing quietly',
+           $d['applyNone'] ?? null);
+
+        /* 850 g in all three now: 850x2 + 850x4 + 850x4 = 8.500 kg */
+        ok(str_contains((string)($d['totalsAfter'] ?? ''), '8.500 kg'),
+           'the package total follows every copy', $d['totalsAfter'] ?? null);
+
+        /* --- what would actually be posted --- */
+        $posted = json_decode((string)($d['posted'] ?? ''), true);
+        ok(is_array($posted) && count($posted) === 3,
+           'one field carries all three sizes on submit', array_keys((array)$posted));
+        ok(is_array($posted) && array_sum(array_column($posted['Large'] ?? [], 'g')) === 850,
+           'with the copied figures in it', $posted['Large'] ?? null);
+
+        /* --- the remembered breakdown --- */
+        ok(($d['stdVisible'] ?? null) === true, 'the last saved breakdown is offered');
+        ok((int)($d['beforeStd'] ?? -1) === 4 && (int)($d['afterStd'] ?? 0) === 2,
+           'and one tap replaces the lines with it',
+           [$d['beforeStd'] ?? null, $d['afterStd'] ?? null]);
+        ok(($d['stdNoNav'] ?? null) === true, 'without a round trip');
     }
 }
 

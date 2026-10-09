@@ -108,7 +108,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect($self);
         }
 
-        $assorted = !empty($_POST['assorted']);
+        /* Two screens say this, in their own words: the range card sends
+           size_mode because it is a live toggle, the assorted setup page
+           sends assorted because that is all it is for. Either counts.
+           Turning assorted off sends neither, which is the point. */
+        $assorted = ($_POST['size_mode'] ?? '') === 'mix' || !empty($_POST['assorted']);
         $sizes = [];
         if ($assorted) {
             $lbl = (array)($_POST['size_label'] ?? []);
@@ -143,51 +147,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         redirect($self);
     }
 
-    /* ---- the weighed package and one size's breakdown ----
-       The recall button lives inside this same form now, because the
-       weight screen is one form spread over several steps and a second
-       form cannot be nested inside the first. It is matched on its own
-       name rather than on a second action value, so there is no relying
-       on which of two identically named fields PHP keeps. */
-    if ($action === 'weight' && !isset($_POST['recall'])) {
-        $g = (int)($_POST['group_id'] ?? 0);
-        $grp = pack_group($g);
+    /* ---- the weighed package, and every size's breakdown at once ----
+       One save for the whole package. It has to be all of them together,
+       because "these four sizes weigh the same" is one action on screen
+       and would be four round trips otherwise. */
+    if ($action === 'weight') {
+        $gId = (int)($_POST['group_id'] ?? 0);
+        $grp = pack_group($gId);
         if (!$grp || (int)$grp['shipment_id'] !== $id) { http_response_code(404); exit('Range not found.'); }
 
-        pack_weigh_save($g, (float)($_POST['pkg_gross'] ?? 0), (float)($_POST['pkg_tare'] ?? 0));
+        pack_weigh_save($gId, (float)($_POST['pkg_gross'] ?? 0), (float)($_POST['pkg_tare'] ?? 0));
 
-        $size = (string)($_POST['size_label'] ?? '');
-        if ($size !== '') {
-            $t = (array)($_POST['w_type'] ?? []);
-            $n = (array)($_POST['w_name'] ?? []);
-            $gr = (array)($_POST['w_grams'] ?? []);
-            $lines = [];
-            foreach ($t as $i => $ty) {
-                $lines[] = ['w_type' => (string)$ty,
-                            'w_name' => (string)($n[$i] ?? ''),
-                            'grams'  => (float)($gr[$i] ?? 0)];
+        /* Only sizes this range actually has. The field arrives from a
+           browser, so the size names in it are checked against the
+           database rather than trusted — a name that is not one of this
+           range's sizes is dropped, not created. */
+        $own = [];
+        foreach (pack_sizes($gId) as $srow) $own[(string)$srow['size_label']] = true;
+
+        $sent = json_decode((string)($_POST['weights_json'] ?? ''), true);
+        if (is_array($sent)) {
+            foreach ($sent as $sizeLabel => $rows) {
+                $sizeLabel = (string)$sizeLabel;
+                if (!isset($own[$sizeLabel]) || !is_array($rows)) continue;
+                $lines = [];
+                foreach ($rows as $r) {
+                    if (!is_array($r)) continue;
+                    $lines[] = ['w_type' => (string)($r['t'] ?? 'Fabric'),
+                                'w_name' => (string)($r['n'] ?? ''),
+                                'grams'  => (float)($r['g'] ?? 0)];
+                }
+                pack_weight_save($gId, $sizeLabel, $lines);
             }
-            pack_weight_save($g, $size, $lines);
         }
         $_SESSION['flash'] = 'Weight saved.';
-        redirect($self . '&t=weight&g=' . $g . '&s=' . rawurlencode($size));
-    }
-
-    /* ---- fill this size from the last time the product was packed ---- */
-    if (isset($_POST['recall'])) {
-        $g = (int)($_POST['group_id'] ?? 0);
-        $grp = pack_group($g);
-        $size = (string)($_POST['size_label'] ?? '');
-        if ($grp && (int)$grp['shipment_id'] === $id && $size !== '') {
-            $std = pack_std_get((string)$grp['product_name'], $size);
-            if ($std) {
-                pack_weight_save($g, $size, $std);
-                $_SESSION['flash'] = 'Filled from the last saved breakdown.';
-            } else {
-                $_SESSION['error'] = 'Nothing is remembered for that product and size yet.';
-            }
-        }
-        redirect($self . '&t=weight&g=' . $g . '&s=' . rawurlencode($size));
+        redirect($self . '&t=weight&g=' . $gId);
     }
 
     if ($action === 'approve') {
@@ -451,49 +445,61 @@ if ($tab === 'serial') {
             <input class="in" type="number" inputmode="numeric" name="serial_to"
                    value="<?= $to ?: '' ?>" placeholder="to" aria-label="To" required>
           </div>
-          <?php if (!$new): ?>
-            <div class="derv"><span><?= e($unit) ?> <?= $from ?> to <?= $to ?></span>
-              <b><?= number_format($P) ?> <?= e(strtolower($unit)) ?></b></div>
-          <?php endif; ?>
+          <div class="derv" data-serial><span>—</span><b>—</b></div>
 
+          <?php /* BOTH TOGGLES ARE LIVE.
+                   The fields and their labels change the moment one is
+                   tapped — nothing is decided on the server and nothing
+                   waits for a save. The radios carry the choice to the
+                   server as they always did; the script below only
+                   decides what is on screen. With no script at all every
+                   field is still present and still posts, so the form
+                   degrades to the plain version rather than to nothing. */ ?>
+          <span class="flab">Quantity</span>
           <div class="seg">
             <label><input type="radio" name="qty_mode" value="per"<?= $mode === 'per' ? ' checked' : '' ?>><span>Per package</span></label>
             <label><input type="radio" name="qty_mode" value="direct"<?= $mode === 'direct' ? ' checked' : '' ?>><span>Direct qty</span></label>
           </div>
 
-          <?php if ($asrt): ?>
-            <div class="derv"><span><?= $mode === 'per' ? 'Assorted, per ' . e(strtolower($unit)) : 'Assorted, total' ?></span>
-              <b><?= e(pack_size_text($g, $sizes) ?: 'not set up yet') ?></b></div>
-            <a class="lnk" href="<?= e($self) ?>&t=mix&g=<?= $gidL ?>">
-              <span><b>Change the assorted set</b><small>Sizes and quantities for this serial range</small></span>
-              <span class="chev">&rsaquo;</span></a>
-          <?php else: ?>
-            <label class="f"><span><?= $mode === 'direct' ? 'Total quantity' : 'Quantity per package' ?></span>
-              <input class="in" type="number" inputmode="decimal" step="any" name="single_qty"
-                     value="<?= e($num($singleQty)) ?>" required></label>
-            <label class="f"><span>Size</span>
-              <select class="in" name="single_size" required>
-                <option value="">— pick a size —</option>
-                <?php foreach ($opts as $o): ?>
-                  <option<?= $single && $o === (string)$single['size_label'] ? ' selected' : '' ?>><?= e($o) ?></option>
-                <?php endforeach; ?>
-              </select></label>
+          <span class="flab">Sizes in one package</span>
+          <div class="seg">
+            <label><input type="radio" name="size_mode" value="one"<?= $asrt ? '' : ' checked' ?>
+                   <?= $new ? '' : '' ?>><span>One size</span></label>
+            <label><input type="radio" name="size_mode" value="mix"<?= $asrt ? ' checked' : '' ?>
+                   <?= $new ? ' disabled' : '' ?>><span>Assorted</span></label>
+          </div>
+
+          <?php /* One input, two meanings — which is exactly why the label
+                   has to change with the toggle rather than after it. The
+                   figure is converted when the mode flips, so 10 a carton
+                   over 100 cartons becomes 1,000 and back again. */ ?>
+          <label class="f" data-one>
+            <span data-qtylabel>Quantity per package</span>
+            <input class="in" type="number" inputmode="decimal" step="any" name="single_qty"
+                   value="<?= e($num($singleQty)) ?>" data-qty></label>
+          <label class="f" data-one><span>Size</span>
+            <select class="in" name="single_size" data-size>
+              <option value="">— pick a size —</option>
+              <?php foreach ($opts as $o): ?>
+                <option<?= $single && $o === (string)$single['size_label'] ? ' selected' : '' ?>><?= e($o) ?></option>
+              <?php endforeach; ?>
+            </select></label>
+
+          <div data-mix hidden>
+            <div class="derv"><span data-mixhead>Assorted</span>
+              <b><?= e($new ? '' : (pack_size_text($g, $sizes) ?: 'not set up yet')) ?></b></div>
             <?php if (!$new): ?>
               <a class="lnk" href="<?= e($self) ?>&t=mix&g=<?= $gidL ?>">
-                <span><b>One size per <?= e(strtolower($unit)) ?></b><small>Tap if this range is assorted</small></span>
+                <span><b>Set up the sizes</b><small>Small 2, Medium 4, Large 4 — for this serial range</small></span>
                 <span class="chev">&rsaquo;</span></a>
-            <?php else: ?>
-              <div class="note" style="margin-bottom:11px">Save the range first, then it can be made assorted.</div>
             <?php endif; ?>
+          </div>
+          <?php if ($new): ?>
+            <div class="note" style="margin-bottom:11px" data-newnote>
+              Add the range with one size first. Assorted can be set up the moment it exists.</div>
           <?php endif; ?>
 
-          <?php if (!$new): ?>
-            <div class="derv">
-              <span><?= $mode === 'per'
-                ? number_format((float)$g['qty_per_pkg'], 2) . ' per ' . e(strtolower($unit)) . ' &times; ' . number_format($P)
-                : number_format((float)$g['total_qty'], 2) . ' over ' . number_format($P) . ' ' . e(strtolower($unit)) ?></span>
-              <b><?= number_format((float)$g['total_qty'], 2) ?></b></div>
-          <?php endif; ?>
+          <div class="derv" data-total><span>—</span><b>—</b></div>
 
           <?php if ($canEdit): ?>
             <button class="btn go" type="submit"><?= $new ? 'Add this range' : 'Save this range' ?></button>
@@ -532,6 +538,100 @@ if ($tab === 'serial') {
                . 'differ, add another range; that is all a different serial is.</div></div>';
         }
         mob_steps_end();
+        ?>
+        <script>
+        /* EVERY RANGE CARD, LIVE.
+           Tapping a toggle changes the label and what is on screen at
+           once. Typing a serial re-counts the packages at once. Nothing
+           here waits for a save, and nothing here decides what is sent:
+           the radios and inputs are the same ones the server already
+           read, so a phone with the script blocked still posts a
+           complete, correct form. */
+        (function () {
+          document.querySelectorAll('form.mcard').forEach(function (card) {
+            var unitI = card.querySelector('[name="unit_title"]');
+            var fromI = card.querySelector('[name="serial_from"]');
+            var toI   = card.querySelector('[name="serial_to"]');
+            var qtyI  = card.querySelector('[data-qty]');
+            if (!unitI || !fromI || !toI || !qtyI) return;   /* not a range card */
+
+            var modeR  = card.querySelectorAll('[name="qty_mode"]');
+            var sizeR  = card.querySelectorAll('[name="size_mode"]');
+            var label  = card.querySelector('[data-qtylabel]');
+            var serial = card.querySelector('[data-serial]');
+            var total  = card.querySelector('[data-total]');
+            var mixBox = card.querySelector('[data-mix]');
+            var mixHd  = card.querySelector('[data-mixhead]');
+            var note   = card.querySelector('[data-newnote]');
+            var ones   = card.querySelectorAll('[data-one]');
+            var pill   = card.querySelector('.pill');
+            var was    = mode();
+
+            function mode() {
+              for (var i = 0; i < modeR.length; i++) if (modeR[i].checked) return modeR[i].value;
+              return 'per';
+            }
+            function assorted() {
+              for (var i = 0; i < sizeR.length; i++) if (sizeR[i].checked) return sizeR[i].value === 'mix';
+              return false;
+            }
+            function unit()  { return (unitI.value.trim() || 'Carton'); }
+            function pkgs()  { var n = (+toI.value || 0) - (+fromI.value || 0) + 1; return n > 0 ? n : 0; }
+            function num(n)  { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+
+            function paint() {
+              var u = unit(), lu = u.toLowerCase(), P = pkgs(), per = mode() === 'per', mix = assorted();
+
+              if (pill) pill.textContent = num(P) + ' ' + lu;
+              serial.firstElementChild.textContent = P
+                ? u + ' ' + fromI.value + ' to ' + toI.value
+                : 'Serial is not right yet';
+              serial.lastElementChild.textContent = P ? num(P) + ' ' + lu : 'to must be ≥ from';
+
+              /* the label IS the difference between the two modes */
+              label.textContent = per ? ('Quantity per ' + lu) : 'Total quantity';
+
+              ones.forEach(function (el) { el.hidden = mix; });
+              if (mixBox) mixBox.hidden = !mix;
+              if (note)   note.hidden = !mix;
+              if (mixHd)  mixHd.textContent = per ? ('Assorted, per ' + lu) : 'Assorted, total';
+
+              var q = +qtyI.value || 0;
+              if (mix) {
+                total.firstElementChild.textContent = 'Set the sizes to see the total';
+                total.lastElementChild.textContent  = '—';
+              } else {
+                var t = per ? q * P : q;
+                total.firstElementChild.textContent = per
+                  ? num(q) + ' per ' + lu + ' × ' + num(P)
+                  : num(q) + ' over ' + num(P) + ' ' + lu;
+                total.lastElementChild.textContent = num(t);
+              }
+            }
+
+            /* Flipping the mode converts the figure rather than leaving a
+               per-carton number sitting in a box that now means a total. */
+            function flipped() {
+              var now = mode(), P = pkgs(), q = +qtyI.value || 0;
+              if (now !== was && q > 0 && P > 0) {
+                qtyI.value = now === 'direct'
+                  ? String(Math.round(q * P * 1000) / 1000)
+                  : String(Math.round(q / P * 1000) / 1000);
+              }
+              was = now;
+              paint();
+            }
+
+            modeR.forEach(function (r) { r.addEventListener('change', flipped); });
+            sizeR.forEach(function (r) { r.addEventListener('change', paint); });
+            [unitI, fromI, toI, qtyI].forEach(function (el) {
+              el.addEventListener('input', paint);
+            });
+            paint();
+          });
+        })();
+        </script>
+        <?php
     }
 }
 
@@ -553,16 +653,40 @@ if ($tab === 'weight') {
         $mustKg  = (float)$g['pkg_gross'] - (float)$g['pkg_tare'];
         $qtyIn   = 0.0;
         foreach ($sizes as $srow) if ((string)$srow['size_label'] === $sz) $qtyIn = pack_size_per_pkg($g, $srow);
-        $lines   = $sz !== '' ? pack_weight_lines($gid, $sz) : [];
         $contents = pack_contents_kg($g, $sizes, $perUnit);
-        $hasStd  = $sz !== '' && pack_std_get((string)$g['product_name'], $sz) !== [];
+
+        /* EVERY SIZE'S FIGURES GO DOWN WITH THE PAGE.
+           Switching size used to be a page load each time, which on a
+           phone in a packing hall is three seconds of nothing and a lost
+           place in the form. All of it is carried once and switched in
+           the browser, and one Save writes them all back. */
+        $allLines = [];
+        $allStd   = [];
+        $perPkg   = [];
+        foreach ($sizes as $srow) {
+            $l = (string)$srow['size_label'];
+            $allLines[$l] = array_map(static function (array $r): array {
+                return ['t' => (string)$r['w_type'], 'n' => (string)$r['w_name'], 'g' => (float)$r['grams']];
+            }, pack_weight_lines($gid, $l));
+            $std = pack_std_get((string)$g['product_name'], $l);
+            if ($std) {
+                $allStd[$l] = array_map(static function (array $r): array {
+                    return ['t' => (string)$r['w_type'], 'n' => (string)$r['w_name'], 'g' => (float)$r['grams']];
+                }, $std);
+            }
+            $perPkg[$l] = pack_size_per_pkg($g, $srow);
+        }
         ?>
         <form method="post" id="wform">
           <?= csrf_field() ?>
           <input type="hidden" name="action" value="weight">
           <input type="hidden" name="shipment_id" value="<?= $id ?>">
           <input type="hidden" name="group_id" value="<?= $gid ?>">
-          <input type="hidden" name="size_label" value="<?= e($sz) ?>">
+          <?php /* Every size's lines in one field, filled in on submit.
+                   One save for the whole package rather than one per size
+                   — which is also the only way "the same weight for these
+                   four sizes" can be a single action. */ ?>
+          <input type="hidden" name="weights_json" id="wjson" value="">
         <?php
         /* The form opens before the steps and closes after them, so one
            submit carries every field whichever step it was typed on. */
@@ -606,50 +730,62 @@ if ($tab === 'weight') {
                   /* Only an assorted range gets this step — with one size
                      there is nothing to choose and a screen asking you to
                      choose it would be a screen for nothing. */
-                  mob_step('Which size', 'An assorted package holds sizes that do not weigh the same'); ?>
+                  mob_step('Which size', 'Switches at once — nothing is saved until you press Save'); ?>
             <div class="mcard">
-              <div class="chips">
-                <?php foreach ($sizes as $srow): $l = (string)$srow['size_label']; ?>
-                  <a class="chip<?= $l === $sz ? ' on' : '' ?>"
-                     href="<?= e($self) ?>&t=weight&g=<?= $gid ?>&s=<?= e(rawurlencode($l)) ?>">
-                    <?= e($l) ?><?= ($perUnit[$l] ?? 0) > 0 ? ' &#10003;' : '' ?></a>
-                <?php endforeach; ?>
-              </div>
+              <div class="chips" id="szchips"></div>
+              <div class="note" style="margin-top:10px">A tick means that size already has its weights.</div>
+            </div>
+
+            <div class="mcard">
+              <h2>Same weight for more than one size</h2>
+              <div class="note" style="margin-bottom:10px">When sizes weigh the same, fill one in and
+                tick the others — the whole breakdown is copied across.</div>
+              <div class="chips" id="applychips"></div>
+              <button class="btn sec" type="button" id="applybtn" style="margin-top:11px">
+                Use this breakdown for the ticked sizes</button>
+              <div class="note" id="applymsg" style="margin-top:9px"></div>
             </div>
           <?php endif;
           mob_step('What one unit is made of', 'Add a line for every material. Grams.'); ?>
 
-          <?php if ($canEdit && $hasStd): ?>
-            <?php /* Inside the one form, matched on its own name — see the
-                     handler. A nested form would be invalid HTML and the
-                     browser would drop it silently. */ ?>
-            <button class="btn sec" type="submit" name="recall" value="1" style="margin-bottom:12px">
-              Use the last saved breakdown for
-              <?= e((string)$g['product_name']) ?> <?= e($sz) ?></button>
-          <?php endif; ?>
-
           <div class="mcard">
+            <h2 id="wsizehead">One unit</h2>
+            <div class="note" style="margin-bottom:12px" id="wsizesub"></div>
+            <div class="row2" style="margin-bottom:12px">
+              <?php /* Both of these fill the lines without touching the
+                       server: everything they need came down with the
+                       page. Nothing is written until Save. */ ?>
+              <button class="btn sec sm" type="button" id="stdbtn" hidden>Use last saved</button>
+              <button class="btn sec sm" type="button" id="copybtn" hidden>Copy from…</button>
+            </div>
+            <select class="in" id="copyfrom" hidden style="margin-bottom:12px"></select>
+
             <div id="wlines"></div>
             <button class="btn sec" type="button" id="addline">+ Add line</button>
             <div class="derv" style="margin-top:12px"><span>This unit comes to</span><b id="perunit">0 g</b></div>
           </div>
 
-          <?php if ($canEdit && $sz !== ''): ?>
+          <?php if ($canEdit): ?>
             <button class="btn go" type="submit">Save the weight</button>
           <?php endif; ?>
 
         <?php mob_step('The whole package', 'What the lines add up to against the scale'); ?>
 
+        <?php /* Rendered by PHP so the page is right before any script
+                 runs, then kept in step by the script as lines are typed.
+                 Two ids are all it needs. */ ?>
         <div class="mcard">
-          <div class="sumrow"><span>The lines add up to</span><b><?= number_format($contents, 3) ?> kg</b></div>
-          <div class="sumrow"><span>They must come to</span><b><?= number_format($mustKg, 3) ?> kg</b></div>
-          <div class="sumrow"><span><b>Balance</b></span><b><?php
-            $d = $contents - $mustKg;
-            echo abs($d) < 0.0005
-              ? '<span class="pill p">balanced</span>'
-              : '<span class="pill w">' . ($d > 0 ? '+' : '') . number_format($d, 3) . ' kg</span>';
-          ?></b></div>
-          <div class="formula"><?php
+          <div id="pkgtotals">
+            <div class="sumrow"><span>The lines add up to</span><b><?= number_format($contents, 3) ?> kg</b></div>
+            <div class="sumrow"><span>They must come to</span><b><?= number_format($mustKg, 3) ?> kg</b></div>
+            <div class="sumrow"><span><b>Balance</b></span><b><?php
+              $d = $contents - $mustKg;
+              echo abs($d) < 0.0005
+                ? '<span class="pill p">balanced</span>'
+                : '<span class="pill w">' . ($d > 0 ? '+' : '') . number_format($d, 3) . ' kg</span>';
+            ?></b></div>
+          </div>
+          <div class="formula" id="pkgformula"><?php
             $f = '';
             foreach ($sizes as $srow) {
                 $l = (string)$srow['size_label'];
@@ -685,85 +821,209 @@ if ($tab === 'weight') {
         <script>
         (function () {
           var TYPES = <?= json_encode(PACK_WTYPES) ?>;
-          var ROWS  = <?= json_encode(array_map(function ($l) {
-                            return ['t' => (string)$l['w_type'], 'n' => (string)$l['w_name'],
-                                    'g' => (float)$l['grams']]; }, $lines)) ?>;
-          var QTY   = <?= json_encode(round($qtyIn, 4)) ?>;
-          /* the line-by-line fill only means something when the whole
-             package is one size — otherwise the balance is a package
-             figure and is shown on the card below. */
-          var SINGLE = <?= count($sizes) === 1 ? 'true' : 'false' ?>;
-          var box = document.getElementById('wlines');
+          /* Every size, its lines, its remembered standard and how many of
+             it sit in one package. All of it came down with the page, so
+             switching size, copying a breakdown or applying one to four
+             sizes at once costs nothing and loses nothing. */
+          var SIZES  = <?= json_encode(array_map('strval', array_column($sizes, 'size_label'))) ?>;
+          var LINES  = <?= json_encode((object)$allLines) ?>;
+          var STD    = <?= json_encode((object)$allStd) ?>;
+          var PERPKG = <?= json_encode((object)array_map(static fn($v) => round($v, 4), $perPkg)) ?>;
+          var TARE   = <?= json_encode(round((float)$g['pkg_tare'], 3)) ?>;
+          var PKGS   = <?= (int)$P ?>;
+          var at     = <?= json_encode($sz !== '' ? $sz : (string)($labels[0] ?? '')) ?>;
 
-          function must() {
-            var g = parseFloat(document.getElementById('pg').value) || 0;
-            var t = parseFloat(document.getElementById('pt').value) || 0;
-            return (g - t);
-          }
+          var box   = document.getElementById('wlines');
+          var chips = document.getElementById('szchips');
+          var appl  = document.getElementById('applychips');
+          var picked = {};
+
           function esc(s) {
             return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
               return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; });
           }
-          function paint() {
-            var mustG = (SINGLE && QTY > 0) ? must() * 1000 / QTY : 0, run = mustG, tot = 0;
-            box.innerHTML = ROWS.map(function (r, i) {
-              tot += (+r.g || 0);
+          function num(n) { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+          function kg(v)  { return (Math.round(v * 1000) / 1000).toFixed(3); }
+          function rows() { return (LINES[at] = LINES[at] || []); }
+          function sum(list) {
+            return (list || []).reduce(function (a, r) { return a + (+r.g || 0); }, 0);
+          }
+          function must() {
+            var gr = parseFloat(document.getElementById('pg').value) || 0;
+            var tr = parseFloat(document.getElementById('pt').value) || 0;
+            return gr - tr;
+          }
+          /* What the lines say one package holds, across every size. */
+          function contents() {
+            var t = 0;
+            SIZES.forEach(function (l) { t += sum(LINES[l]) * (+PERPKG[l] || 0); });
+            return t / 1000;
+          }
+
+          function drawChips() {
+            if (!chips) return;
+            chips.innerHTML = SIZES.map(function (l) {
+              return '<button type="button" class="chip' + (l === at ? ' on' : '') + '" data-s="'
+                + esc(l) + '">' + esc(l) + (sum(LINES[l]) > 0 ? ' ✓' : '') + '</button>';
+            }).join('');
+            chips.querySelectorAll('.chip').forEach(function (c) {
+              c.onclick = function () { harvest(); at = c.dataset.s; picked = {}; drawAll(); };
+            });
+
+            appl.innerHTML = SIZES.filter(function (l) { return l !== at; }).map(function (l) {
+              return '<button type="button" class="chip' + (picked[l] ? ' on' : '') + '" data-s="'
+                + esc(l) + '">' + (picked[l] ? '✓ ' : '') + esc(l) + '</button>';
+            }).join('') || '<span class="note">No other size in this range.</span>';
+            appl.querySelectorAll('.chip').forEach(function (c) {
+              c.onclick = function () {
+                picked[c.dataset.s] = !picked[c.dataset.s];
+                document.getElementById('applymsg').textContent = '';
+                drawChips();
+              };
+            });
+          }
+
+          function drawTools() {
+            var head = document.getElementById('wsizehead');
+            var sub  = document.getElementById('wsizesub');
+            head.textContent = 'One unit of ' + (at || '—');
+            sub.textContent  = (+PERPKG[at] || 0) + ' of this size in each package';
+
+            var std = document.getElementById('stdbtn');
+            std.hidden = !STD[at];
+            std.onclick = function () {
+              LINES[at] = STD[at].map(function (r) { return { t: r.t, n: r.n, g: r.g }; });
+              drawAll();
+            };
+
+            var others = SIZES.filter(function (l) { return l !== at && sum(LINES[l]) > 0; });
+            var cb = document.getElementById('copybtn');
+            var cf = document.getElementById('copyfrom');
+            cb.hidden = others.length === 0;
+            cf.hidden = true;
+            cf.innerHTML = '<option value="">— copy the lines from —</option>'
+              + others.map(function (l) { return '<option>' + esc(l) + '</option>'; }).join('');
+            cb.onclick = function () { cf.hidden = !cf.hidden; };
+            cf.onchange = function () {
+              if (!this.value) return;
+              LINES[at] = (LINES[this.value] || []).map(function (r) { return { t: r.t, n: r.n, g: r.g }; });
+              cf.hidden = true;
+              drawAll();
+            };
+          }
+
+          function drawLines() {
+            /* The line-by-line fill only means something when the package
+               holds one size. Otherwise the remainder belongs to the whole
+               package, and it is shown there instead. */
+            var single = SIZES.length === 1;
+            var q = +PERPKG[at] || 0;
+            var mustG = (single && q > 0) ? must() * 1000 / q : 0;
+            var run = mustG;
+
+            box.innerHTML = rows().map(function (r, i) {
               var bal = '';
               if (mustG > 0) {
                 run -= (+r.g || 0);
                 var cls = Math.abs(run) < 0.5 ? 'ok' : (run < 0 ? 'over' : 'left');
                 var txt = Math.abs(run) < 0.5 ? '0 g — balanced ✓'
-                        : (run < 0 ? Math.round(-run).toLocaleString('en-US') + ' g over'
-                                   : Math.round(run).toLocaleString('en-US') + ' g still to fill');
+                        : (run < 0 ? num(-run) + ' g over' : num(run) + ' g still to fill');
                 bal = '<div class="wbal ' + cls + '">' + txt + '</div>';
               }
               return '<div class="wrow" data-i="' + i + '"><div class="wtop">'
-                + '<select class="in" name="w_type[]">' + TYPES.map(function (t) {
+                + '<select class="in ty">' + TYPES.map(function (t) {
                     return '<option' + (t === r.t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('')
                 + '</select>'
-                + '<input class="in g" type="number" inputmode="decimal" step="any" name="w_grams[]" '
+                + '<input class="in g" type="number" inputmode="decimal" step="any" '
                 + 'value="' + (r.g || '') + '" placeholder="g" aria-label="Grams">'
                 + '<button type="button" class="x" aria-label="Remove">&times;</button></div>'
-                + '<div class="nm"><input class="in" name="w_name[]" value="' + esc(r.n) + '" '
+                + '<div class="nm"><input class="in nmi" value="' + esc(r.n) + '" '
                 + 'placeholder="name — fleece, micro, polyester …" aria-label="Name"></div>'
                 + bal + '</div>';
             }).join('') || '<div class="note">No line yet. Press <b>+ Add line</b> — pick Fabric, '
                 + 'name it <i>fleece</i>, put its grams. Then add a line again for <i>micro</i>, '
                 + 'then fibre, then the poly bag.</div>';
-            document.getElementById('perunit').textContent = Math.round(tot).toLocaleString('en-US') + ' g';
-            document.getElementById('must').textContent = must().toFixed(3) + ' kg';
-          }
-          /* Read the fields back into ROWS before any redraw, or typing in
-             one box would be thrown away when another one changes. */
-          function harvest() {
+
             box.querySelectorAll('.wrow').forEach(function (d) {
               var i = +d.dataset.i;
-              if (!ROWS[i]) return;
-              ROWS[i].t = d.querySelector('select').value;
-              ROWS[i].g = parseFloat(d.querySelector('.g').value) || 0;
-              ROWS[i].n = d.querySelector('.nm input').value;
+              d.querySelector('.ty').onchange  = function () { harvest(); drawAll(); };
+              d.querySelector('.g').oninput    = function () { harvest(); drawAll(); };
+              d.querySelector('.nmi').oninput  = function () { harvest(); };
+              d.querySelector('.x').onclick    = function () { harvest(); rows().splice(i, 1); drawAll(); };
+            });
+            document.getElementById('perunit').textContent = num(Math.round(sum(rows()))) + ' g';
+          }
+
+          function drawTotals() {
+            document.getElementById('must').textContent = kg(must()) + ' kg';
+            var c = contents(), d = c - must();
+            var el = document.getElementById('pkgtotals');
+            if (!el) return;
+            el.innerHTML =
+                '<div class="sumrow"><span>The lines add up to</span><b>' + kg(c) + ' kg</b></div>'
+              + '<div class="sumrow"><span>They must come to</span><b>' + kg(must()) + ' kg</b></div>'
+              + '<div class="sumrow"><span><b>Balance</b></span><b><span class="pill '
+              + (Math.abs(d) < 0.0005 ? 'p">balanced' : 'w">' + (d > 0 ? '+' : '') + kg(d) + ' kg')
+              + '</span></b></div>';
+            document.getElementById('pkgformula').textContent =
+                SIZES.map(function (l) {
+                  var pu = Math.round(sum(LINES[l])), q = +PERPKG[l] || 0;
+                  return (l + '              ').slice(0, 14) + num(pu) + ' g  x ' + q
+                       + '  = ' + kg(pu * q / 1000) + ' kg';
+                }).join('\n')
+              + '\n' + '              contents  ' + kg(c) + ' kg'
+              + '\n' + '            + package ' + kg(TARE) + ' kg'
+              + '\n\nNET   = ' + kg(c) + ' x ' + num(PKGS) + ' = ' + kg(c * PKGS) + ' kg'
+              + '\nGROSS = NET + (' + kg(TARE) + ' x ' + num(PKGS) + ') = '
+              + kg(c * PKGS + TARE * PKGS) + ' kg';
+          }
+
+          /* Read the boxes back before any redraw, or typing in one would
+             be thrown away the moment another changes. */
+          function harvest() {
+            var list = rows();
+            box.querySelectorAll('.wrow').forEach(function (d) {
+              var i = +d.dataset.i;
+              if (!list[i]) return;
+              list[i].t = d.querySelector('.ty').value;
+              list[i].g = parseFloat(d.querySelector('.g').value) || 0;
+              list[i].n = d.querySelector('.nmi').value;
             });
           }
-          box.addEventListener('input', function (ev) {
-            if (!ev.target.classList.contains('g')) { harvest(); return; }
-            harvest(); paint();
-          });
-          box.addEventListener('change', function () { harvest(); paint(); });
-          box.addEventListener('click', function (ev) {
-            if (!ev.target.classList.contains('x')) return;
-            harvest();
-            ROWS.splice(+ev.target.closest('.wrow').dataset.i, 1);
-            paint();
-          });
+          function drawAll() { drawChips(); drawTools(); drawLines(); drawTotals(); }
+
           document.getElementById('addline').onclick = function () {
             harvest();
-            ROWS.push({ t: TYPES[0], n: '', g: 0 });   /* Fabric — change it on the line */
-            paint();
+            rows().push({ t: TYPES[0], n: '', g: 0 });   /* Fabric — change it on the line */
+            drawAll();
           };
           ['pg', 'pt'].forEach(function (f) {
-            document.getElementById(f).addEventListener('input', function () { harvest(); paint(); });
+            document.getElementById(f).addEventListener('input', function () { harvest(); drawAll(); });
           });
-          paint();
+
+          var ab = document.getElementById('applybtn');
+          if (ab) ab.onclick = function () {
+            harvest();
+            var to = Object.keys(picked).filter(function (k) { return picked[k]; });
+            var msg = document.getElementById('applymsg');
+            if (!to.length) { msg.textContent = 'Tick the sizes that weigh the same first.'; return; }
+            if (!sum(rows())) { msg.textContent = 'There is nothing to copy yet — fill this size in first.'; return; }
+            to.forEach(function (l) {
+              LINES[l] = rows().map(function (r) { return { t: r.t, n: r.n, g: r.g }; });
+            });
+            picked = {};
+            drawAll();
+            msg.textContent = 'Copied to ' + to.join(', ') + '. Nothing is written until you press Save.';
+          };
+
+          /* One field carries the lot. Filled at the last moment so it is
+             always what is on screen. */
+          document.getElementById('wform').addEventListener('submit', function () {
+            harvest();
+            document.getElementById('wjson').value = JSON.stringify(LINES);
+          });
+
+          drawAll();
         })();
         </script>
         <?php

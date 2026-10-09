@@ -324,13 +324,18 @@ t('every steps_begin is closed',
   [substr_count($mpN, 'mob_steps_begin('), substr_count($mpN, 'mob_steps_end(')]);
 t('a single-size range gets no "which size" step to choose from one thing',
   preg_match('~count\(\$sizes\) > 1\):.*?mob_step\(\x27Which size\x27~s', $mpN) === 1);
-t('the recall button moved inside the one form, since a nested form is invalid',
-  str_contains($mpN, 'name="recall" value="1"')
-  && !preg_match('~<form[^>]*>(?:(?!</form>).)*<form~s', $mpN),
-  'a form is nested inside another form');
-t('and the handler matches it on its own name, not on a duplicate action',
-  str_contains($mpN, "isset(\$_POST['recall'])")
-  && str_contains($mpN, "\$action === 'weight' && !isset(\$_POST['recall'])"));
+/* The recall button used to be a second form, which cannot be nested,
+   so it became a submit inside the one form. Then the whole weight
+   screen stopped needing a round trip at all and it became an ordinary
+   button. What still matters is that no form is nested in another. */
+t('no form is nested inside another form',
+  !preg_match('~<form[^>]*>(?:(?!</form>).)*<form~s', $mpN),
+  'a nested form would be dropped by the browser without a word');
+t('the recall button no longer posts anything',
+  !preg_match('~name="recall"~', $mpN) && !str_contains($mpN, "isset(\$_POST['recall'])"));
+t('and the weight screen posts once, for every size together',
+  str_contains($mpN, 'name="weights_json"')
+  && substr_count($mpN, "<button class=\"btn go\" type=\"submit\">Save the weight") === 1);
 
 head('5. The gate form is stepped too, with the picker left out of it');
 
