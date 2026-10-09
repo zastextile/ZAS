@@ -20,7 +20,13 @@
   nothing here needs one. It is a form.
 */
 
-function mob_header(string $title, string $back = '', string $sub = ''): void
+/* $manifest is the only reason this signature grew. Each phone screen is
+   its own installed app on the home screen — Gate and Packing are used by
+   different people and want different names and start pages — and a PWA
+   gets that from its manifest. It defaults to the gate's so every screen
+   written before this one keeps working untouched. */
+function mob_header(string $title, string $back = '', string $sub = '',
+                    string $manifest = 'manifest_gate.json'): void
 {
     $u = function_exists('current_user') ? (current_user() ?: []) : [];
     ?><!doctype html>
@@ -34,7 +40,7 @@ function mob_header(string $title, string $back = '', string $sub = ''): void
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="manifest_gate.json">
+<link rel="manifest" href="<?= e($manifest) ?>">
 <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
 <title><?= e($title) ?></title>
 <style>

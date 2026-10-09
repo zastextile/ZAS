@@ -43,6 +43,10 @@ function zas_menu(): array {
                 ['label' => 'New Shipment',      'href' => 'shipment_form.php', 'show' => $office],
                 ['label' => 'Shipments',         'href' => 'shipments.php',     'show' => $notProd],
                 ['label' => 'Packing List',      'href' => 'packing_list.php',  'show' => $notProd],
+                /* The phone version. Same shipments, same permission — it
+                   asks the questions in the order the packing team meets
+                   them, starting at the serial. */
+                ['label' => 'Packing on Mobile', 'href' => 'm_pack.php',        'show' => $notProd],
                 ['label' => 'Proforma Invoices', 'href' => 'proforma.php',      'show' => $office],
                 ['label' => 'CSV Import',        'href' => 'import_excel.php',  'show' => $office],
                 /* The four per-shipment tabs are not listed here — they are
