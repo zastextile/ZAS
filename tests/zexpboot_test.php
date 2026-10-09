@@ -544,8 +544,23 @@ const fs = require('fs');
       if (!/favicon|ERR_FILE_NOT_FOUND|ERR_FAILED|net::|blocked by CORS|Cross origin/i.test(t)) errs.push('console: ' + t);
     }});
 
+    /* A control that cannot be clicked is waited for, and the default
+       wait is thirty seconds. Ten probes against a page that changed
+       shape is five minutes of a test looking like it is working. Five
+       seconds is plenty against a local file, and it turns a silent
+       stall into a named failure. */
+    pg.setDefaultTimeout(5000);
+
     await pg.goto('file://' + path.join(work, slug + '.html'), { waitUntil: 'load' });
     await pg.waitForTimeout(120);
+
+    /* The phone screens show one step at a time now. Walking the steps is
+       zsteps_test's job; what this file probes is what the controls do,
+       and a control on a hidden step cannot be clicked. Pages without
+       steps are untouched by this. */
+    await pg.evaluate(() => document.querySelectorAll('.mstep')
+                              .forEach(s => s.classList.add('on')));
+    await pg.waitForTimeout(60);
 
     const r = { errors: errs, probes: {} };
 
