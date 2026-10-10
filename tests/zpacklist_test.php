@@ -283,16 +283,18 @@ t('a size already saved but no longer in the list still shows as chosen',
   'editing a range would silently blank its size');
 t('the server reads the typed one when the sentinel is sent',
   str_contains($mpN, "if (\$one === '__new') \$one = trim((string)(\$_POST['single_size_new'] ?? ''));"));
-t('and does the same for every row of an assorted set',
-  str_contains($mpN, "if (\$l === '__new') \$l = trim((string)(\$new[\$i] ?? ''));"));
+/* The assortment has no sentinel to read: its rows are the line's own
+   sizes and colours, each a fixed label beside a number box. */
+t('the assortment rows are the line\'s own labels, with nothing to type a size into',
+  str_contains($mpN, "rowsFor(lp.size, keepS, 'asz')")
+  && str_contains($mpN, "'_label[]\" value=\"' + esc(lbl)"));
 t('__new is never stored as if it were a size',
   !preg_match("~'size_label' => '__new'~", $mpN));
-/* THE ASSORTED SET HAS NO TYPED ROWS ANY MORE. It is tapped — a colour
-   pad and a size pad — so there is no row to add and no text box to
-   arrive open. What replaced that rule is that the pads are the only way
-   in, which is checked here rather than described. */
-t('the assorted set is tapped, not typed',
-  str_contains($mpN, 'id="szPad"') && str_contains($mpN, 'id="colPad"'));
+/* THE ASSORTED SET LIVES IN THE CARD: a size list and a colour list,
+   each a row per label the office set for the line, with a number box.
+   No row is added by hand and no text box arrives open. */
+t('the assorted set is a size list and a colour list inside the card',
+  str_contains($mpN, 'data-asizes') && str_contains($mpN, 'data-acols'));
 t('and has no select or input to type a size into',
   !preg_match('~<(input|select)[^>]*name="size_label\[\]"~',
               (string)preg_replace('~<script\b[^>]*>.*?</script>~is', ' ', $mpN)));

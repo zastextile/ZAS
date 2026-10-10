@@ -133,12 +133,18 @@ t('and direct works back to 10 in each carton',
 /* The label is no longer chosen by PHP — it is rewritten the instant the
    toggle is tapped, which is the whole point of this round. The page
    provides the hook; zpackboot_test drives it in a browser. */
-t('the quantity label is a hook the script rewrites',
+/* The label follows BOTH toggles now: in assorted mode the one box is
+   the total pieces both assortments must add up to. */
+t('the quantity label is a hook the script rewrites, for both toggles',
   str_contains($mpN, 'data-qtylabel')
-  && str_contains($mpN, "label.textContent = per ? ('Quantity per ' + lu) : 'Total quantity';"),
+  && str_contains($mpN, "(per ? ('Total pieces per ' + lu) : 'Total pieces')")
+  && str_contains($mpN, "(per ? ('Quantity per ' + lu) : 'Total quantity')"),
   'the label is not switched by the toggle');
-t('there is exactly one quantity input outside the assorted setup',
-  substr_count($mpN, 'name="single_qty"') === 2,  /* the field, and the hidden carry-over */
+/* One box, common to both modes — "Total pieces per carton remains
+   visible in both". The old tap page and its hidden carry-over are gone. */
+t('there is exactly one quantity input, common to both modes',
+  substr_count($mpN, 'name="single_qty"') === 1
+  && preg_match('~<label class="f">\s*<span data-qtylabel>~', $mpN) === 1,
   substr_count($mpN, 'name="single_qty"'));
 t('nothing on the screen mentions a fixed quantity',
   !preg_match('~fix(ed)?\s*qty~i', $mpN), 'a fixed-qty wording survived');
@@ -173,9 +179,13 @@ t('a single-size range prints its one size',
   pack_size_text(['assorted' => 0] + $g100, $per) === 'King',
   pack_size_text(['assorted' => 0] + $g100, $per));
 
-t('assorted is set up on a page of its own',
-  str_contains($mpN, "\$tab === 'mix'") && str_contains($mpN, 't=mix&g='),
-  'no separate assorted setup');
+/* SINCE CHANGED, AT AFNAN'S WORD: assorted is set up inside the range
+   card, with no page of its own and no reload. The old address only
+   sends you back to the card. */
+t('assorted is set up inside the range card, not on a page of its own',
+  str_contains($mpN, 'data-mix') && !str_contains($mpN, 't=mix&g=')
+  && preg_match('~if \(\$tab === \x27mix\x27\) \{\s*redirect\(~', $mpN) === 1,
+  'a separate assorted page is still there');
 t('and the size-by-size figures are what save',
   str_contains($pkN, 'INSERT INTO packing_group_sizes'));
 

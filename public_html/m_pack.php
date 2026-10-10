@@ -469,6 +469,10 @@ a.btn.sm{display:block;text-align:center;text-decoration:none;flex:1}
   padding:7px 0;border-bottom:1px solid var(--line)}
 .arow b{font-size:16px}
 .arow .in{text-align:right;font-size:18px;font-weight:800;padding:11px 12px}
+.many{display:grid;grid-template-columns:1fr 1fr;column-gap:12px}
+.many .arow{grid-template-columns:1fr 76px;gap:6px}
+.many .arow b{font-size:15px;overflow-wrap:anywhere}
+.many .arow .in{padding:10px 9px}
 .asum{margin-top:8px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:800;
   background:#f6f8fb;border:1px solid var(--line);color:var(--muted)}
 .asum.ok{color:var(--good);background:rgba(22,163,74,.08);border-color:rgba(22,163,74,.35)}
@@ -736,8 +740,11 @@ if ($tab === 'serial') {
                    assortments must add up to. */ ?>
           <label class="f">
             <span data-qtylabel>Quantity per package</span>
-            <input class="in" type="number" inputmode="decimal" step="any" name="single_qty"
-                   value="<?= e($num($singleQty)) ?>" data-qty></label>
+            <?php /* text with a decimal keypad, not type=number — the
+                     number box's arrows are what made weights hard to
+                     type, and this box is typed in just as often */ ?>
+            <input class="in" type="text" inputmode="decimal" autocomplete="off" name="single_qty"
+                   value="<?= e($num($singleQty)) ?>" data-qty onfocus="this.select()"></label>
           <div class="note" data-palnote style="margin:-2px 0 10px"><?php
             if ($itemId === 0) echo 'Pick the invoice line first — its sizes and colours follow.';
             elseif ($fromPal) echo e(count($opts) . ' size' . (count($opts) === 1 ? '' : 's') . ' and '
@@ -985,6 +992,11 @@ if ($tab === 'serial') {
                 || '<div class="note">This line has no sizes set — the office sets them on Order sizes &amp; colours.</div>';
               aCols.innerHTML = rowsFor(lp.colour, keepC, 'acol');
               aColBox.hidden = !aCols.children.length;
+              /* A LONG LIST IN TWO COLUMNS. A line with sixteen sizes was a
+                 page and a half of rows on a phone; side by side it is
+                 half that, and every box is still a full thumb wide. */
+              aSizes.classList.toggle('many', aSizes.children.length > 6);
+              aCols.classList.toggle('many', aCols.children.length > 6);
               [aSizes, aCols].forEach(function (b) {
                 b.querySelectorAll('.arow .in').forEach(function (inp) {
                   inp.addEventListener('input', paint);
@@ -1042,7 +1054,7 @@ if ($tab === 'serial') {
               if (colBox && colSel && colSel.options.length < 2) colBox.hidden = true;
               if (mixBox) mixBox.hidden = !mix;
 
-              var q = +qtyI.value || 0;
+              var q = parseFloat(String(qtyI.value).replace(',', '.')) || 0;
               /* the assortment: both lists against the total, said live */
               mixBad = false;
               if (aBox) {
@@ -1100,7 +1112,7 @@ if ($tab === 'serial') {
             /* Flipping the mode converts the figure rather than leaving a
                per-carton number sitting in a box that now means a total. */
             function flipped() {
-              var now = mode(), P = pkgs(), q = +qtyI.value || 0;
+              var now = mode(), P = pkgs(), q = parseFloat(String(qtyI.value).replace(",", ".")) || 0;
               if (now !== was && q > 0 && P > 0) {
                 qtyI.value = now === 'direct'
                   ? String(Math.round(q * P * 1000) / 1000)
