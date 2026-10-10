@@ -55,6 +55,30 @@ $T = [
        first shipment. Every "did it leak" question below needs all three
        to exist, or it proves nothing. */
     'groups' => [
+        /* "MANY SERIAL RANGES, ONE ITEM": invoice line 31 packed as
+           Carton 1–99, Carton 100 (with an extra size) and Roll 1–5 */
+        301 => ['id'=>301,'shipment_id'=>3,'invoice_item_id'=>31,
+                'product_name'=>'Bath Towel 500 gsm','product_key'=>'bath towel 500 gsm',
+                'unit_title'=>'Carton','serial_from'=>1,'serial_to'=>99,
+                'qty_mode'=>'per','qty_per_pkg'=>10,'total_qty'=>990,'assorted'=>0,
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
+        302 => ['id'=>302,'shipment_id'=>3,'invoice_item_id'=>31,
+                'product_name'=>'Bath Towel 500 gsm','product_key'=>'bath towel 500 gsm',
+                'unit_title'=>'Carton','serial_from'=>100,'serial_to'=>100,
+                'qty_mode'=>'per','qty_per_pkg'=>12,'total_qty'=>12,'assorted'=>1,
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
+        303 => ['id'=>303,'shipment_id'=>3,'invoice_item_id'=>31,
+                'product_name'=>'Bath Towel 500 gsm','product_key'=>'bath towel 500 gsm',
+                'unit_title'=>'Roll','serial_from'=>1,'serial_to'=>5,
+                'qty_mode'=>'per','qty_per_pkg'=>40,'total_qty'=>200,'assorted'=>0,
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
+        /* the SAME product on another line (a different colour on the
+           invoice) — its weight must not move when line 31's does */
+        304 => ['id'=>304,'shipment_id'=>3,'invoice_item_id'=>32,
+                'product_name'=>'Bath Towel 500 gsm','product_key'=>'bath towel 500 gsm',
+                'unit_title'=>'Carton','serial_from'=>200,'serial_to'=>210,
+                'qty_mode'=>'per','qty_per_pkg'=>10,'total_qty'=>110,'assorted'=>0,
+                'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0],
         101 => ['id'=>101,'shipment_id'=>1,'invoice_item_id'=>11,
                 'product_name'=>'Duvet Cover Set King','product_key'=>'duvet cover set king',
                 'unit_title'=>'Carton','serial_from'=>1,'serial_to'=>100,
@@ -74,6 +98,10 @@ $T = [
     ],
     /* size AND colour on every row */
     'sizes' => [
+        301 => [['Single', '', 10]],
+        302 => [['Single', '', 10], ['Double', '', 2]],
+        303 => [['Single', '', 40]],
+        304 => [['Single', '', 10]],
         101 => [['Single', 'White', 4], ['Single', 'Navy', 2], ['Double', 'White', 4]],
         102 => [['70x140', '', 50]],
         201 => [['Single', 'White', 6], ['Single', 'Navy', 4]],
@@ -97,6 +125,8 @@ $T = [
        the lookup miss and the whole master list silently vanish. */
     'master'  => ['Duvet Cover Set King' => ['King', 'Single', 'Double']],
     'badsql'  => [],
+    /* a carton typed by hand on the desktop, in shipment 3 */
+    'desk'    => [['shipment_id' => 3, 'pack_unit_title' => 'Carton', 'carton_from' => 500, 'carton_to' => 510]],
 ];
 $GLOBALS['T'] = $T;
 $GLOBALS['DEPTH'] = 0;
@@ -166,10 +196,43 @@ final class CPdo {
            refuses the save instead of waving it through */
         if (str_contains($q, 'SELECT unit_title, serial_from, serial_to FROM packing_groups')) {
             if (!empty($GLOBALS['BREAKCHECK'])) throw new RuntimeException('lost connection');
+            /* THE KIND IS IN THE QUERY, or the fake would answer a
+               question the app did not ask */
+            if (!str_contains($q, 'LOWER(TRIM(unit_title))=?')) { $T['badsql'][] = 'serial: kind'; return []; }
             foreach ($T['groups'] as $g) {
                 if ((int)$g['shipment_id'] !== (int)$a[0] || (int)$g['id'] === (int)$a[1]) continue;
+                if (mb_strtolower(trim((string)$g['unit_title'])) !== (string)$a[4]) continue;
                 if ((int)$g['serial_from'] <= (int)$a[2] && (int)$g['serial_to'] >= (int)$a[3]) return [$g];
             }
+            return [];
+        }
+        /* rows typed by hand on the desktop packing list */
+        if (str_contains($q, 'FROM packing_items') && str_contains($q, 'packing_group_id IS NULL')) {
+            foreach ($T['desk'] ?? [] as $d) {
+                if ((int)$d['shipment_id'] !== (int)$a[0]) continue;
+                if (mb_strtolower(trim($d['pack_unit_title'] ?: 'Carton')) !== (string)$a[3]) continue;
+                if ((int)$d['carton_from'] <= (int)$a[1] && (int)$d['carton_to'] >= (int)$a[2])
+                    return [['unit_title' => $d['pack_unit_title'], 'serial_from' => $d['carton_from'],
+                             'serial_to' => $d['carton_to']]];
+            }
+            return [];
+        }
+        /* every range of one invoice line */
+        if (str_contains($q, 'FROM packing_groups WHERE shipment_id=? AND invoice_item_id=?')) {
+            $out = [];
+            foreach ($T['groups'] as $g) {
+                if ((int)$g['shipment_id'] === (int)$a[0] && (int)$g['invoice_item_id'] === (int)$a[1]) $out[] = $g;
+            }
+            usort($out, fn($x, $y) => $x['serial_from'] <=> $y['serial_from'] ?: $x['id'] <=> $y['id']);
+            return $out;
+        }
+        if (str_starts_with($q, 'UPDATE packing_groups SET pkg_tare=?')) {
+            $id = (int)end($a);
+            if (isset($T['groups'][$id])) $T['groups'][$id]['pkg_tare'] = (float)$a[0];
+            return [];
+        }
+        if (str_starts_with($q, 'UPDATE packing_groups SET pkg_gross=?')) {
+            if (isset($T['groups'][(int)$a[1]])) $T['groups'][(int)$a[1]]['pkg_gross'] = (float)$a[0];
             return [];
         }
         if (str_contains($q, 'FROM packing_groups WHERE id=?')) {
@@ -534,7 +597,7 @@ t('the HTML form escapes the name and sets the hint italic',
 
 t('a range clear of every other is allowed', pack_serial_problem(1, 200, 205) === '',
   pack_serial_problem(1, 200, 205));
-t('one that touches another\'s numbers is refused, whatever kind of package',
+t('one that touches another\'s numbers, of the same kind, is refused',
   str_contains(pack_serial_problem(1, 100, 101), 'already used by Carton 1–100'),
   pack_serial_problem(1, 100, 101));
 t('editing a range does not clash with itself', pack_serial_problem(1, 1, 100, 101) === '',
@@ -544,6 +607,92 @@ $fc = pack_serial_problem(1, 900, 905);
 $GLOBALS['BREAKCHECK'] = false;
 t('a check that cannot run refuses the save instead of letting a duplicate through',
   str_contains($fc, 'could not be checked'), $fc);
+
+/* ======================================= 7. one item, one weight */
+head('7. Weight once per invoice line, however many ranges it has');
+
+/* "I need to upload weight only one time for each item in the invoice,
+    even if they have many serial ranges, because the weight formula
+    does not change." */
+pack_weight_save(301, 'Single', [['w_type'=>'Fabric','w_name'=>'Terry','grams'=>450],
+                                 ['w_type'=>'Accessories','w_name'=>'Label','grams'=>10]], false);
+t('weighed once on Carton 1–99 …', names(pack_weight_lines(301, 'Single')) === ['Terry', 'Label'],
+  names(pack_weight_lines(301, 'Single')));
+t('… and Carton 100 has it without being asked', names(pack_weight_lines(302, 'Single')) === ['Terry', 'Label'],
+  names(pack_weight_lines(302, 'Single')));
+t('… and so does Roll 1–5, a different kind of package of the same line',
+  names(pack_weight_lines(303, 'Single')) === ['Terry', 'Label'], names(pack_weight_lines(303, 'Single')));
+t('the same product on ANOTHER invoice line is left alone — it is another item',
+  pack_weight_lines(304, 'Single') === [], names(pack_weight_lines(304, 'Single')));
+
+/* change it from any range of the line, and all of them follow */
+pack_weight_save(303, 'Single', [['w_type'=>'Fabric','w_name'=>'Terry heavy','grams'=>470]], false);
+t('a correction made on the Roll reaches the cartons too',
+  names(pack_weight_lines(301, 'Single')) === ['Terry heavy'] && names(pack_weight_lines(302, 'Single')) === ['Terry heavy'],
+  [names(pack_weight_lines(301, 'Single')), names(pack_weight_lines(302, 'Single'))]);
+t('and still not the other line', pack_weight_lines(304, 'Single') === []);
+
+/* the empty package: once per line AND kind */
+pack_tare_save(301, 'carton ', 1.2);
+t('the empty carton is set on every carton range of the line',
+  $GLOBALS['T']['groups'][301]['pkg_tare'] == 1.2 && $GLOBALS['T']['groups'][302]['pkg_tare'] == 1.2,
+  [$GLOBALS['T']['groups'][301]['pkg_tare'], $GLOBALS['T']['groups'][302]['pkg_tare']]);
+t('but not on the roll — an empty roll core is a different thing',
+  (float)$GLOBALS['T']['groups'][303]['pkg_tare'] === 0.0, $GLOBALS['T']['groups'][303]['pkg_tare']);
+t('nor on another line\'s carton', (float)$GLOBALS['T']['groups'][304]['pkg_tare'] === 0.0);
+pack_tare_save(303, 'Roll', 0.3);
+
+/* GROSS IS WORKED OUT. Carton 1–99 holds 10 Singles at 470 g = 4.700 kg,
+   plus the 1.2 kg carton. Nobody typed 5.9. */
+pack_gross_refresh(301);
+t('gross per carton is the contents plus the empty carton, worked out',
+  abs((float)$GLOBALS['T']['groups'][301]['pkg_gross'] - 5.9) < 0.0001, $GLOBALS['T']['groups'][301]['pkg_gross']);
+t('the roll is worked out from its own quantity: 40 x 470 g + 0.3 kg',
+  abs((float)$GLOBALS['T']['groups'][303]['pkg_gross'] - 19.1) < 0.0001, $GLOBALS['T']['groups'][303]['pkg_gross']);
+t('Carton 100 has a size nobody has weighed yet, and it is named as missing',
+  pack_weight_missing(302) === ['Double'], pack_weight_missing(302));
+
+/* a range added later is filled from its line, not asked — and from ITS
+   line, not from another line of the same product, which here weighs
+   something else. Without that difference the two sources give the same
+   answer and the rule cannot be seen. */
+pack_weight_save(304, 'Single', [['w_type'=>'Fabric','w_name'=>'Other line towel','grams'=>520]], false);
+$GLOBALS['T']['groups'][305] = ['id'=>305,'shipment_id'=>3,'invoice_item_id'=>31,
+    'product_name'=>'Bath Towel 500 gsm','product_key'=>'bath towel 500 gsm',
+    'unit_title'=>'Carton','serial_from'=>101,'serial_to'=>120,
+    'qty_mode'=>'per','qty_per_pkg'=>10,'total_qty'=>200,'assorted'=>0,
+    'pkg_gross'=>0,'pkg_tare'=>0,'weight_by_colour'=>0];
+$GLOBALS['T']['sizes'][305] = [['Single', '', 10]];
+pack_weight_seed(305);
+t('a new range of the line arrives with ITS line\'s weight, not the other line\'s',
+  names(pack_weight_lines(305, 'Single')) === ['Terry heavy'], names(pack_weight_lines(305, 'Single')));
+t('and the line\'s empty carton', (float)$GLOBALS['T']['groups'][305]['pkg_tare'] === 1.2,
+  $GLOBALS['T']['groups'][305]['pkg_tare']);
+t('and its gross worked out — nothing asked', abs((float)$GLOBALS['T']['groups'][305]['pkg_gross'] - 5.9) < 0.0001,
+  $GLOBALS['T']['groups'][305]['pkg_gross']);
+
+/* ========================================== 8. numbers per package kind */
+head('8. A package number once per kind of package');
+
+/* "Do not allow the same serial or the same carton number to repeat in
+    the same shipment — but the same number can be used if the package
+    type is different, like a roll." */
+t('Carton 1–50 is refused where Carton 1–99 already is',
+  str_contains(pack_serial_problem(3, 1, 50, 0, 'Carton'), 'already used by Carton 1–99'),
+  pack_serial_problem(3, 1, 50, 0, 'Carton'));
+t('but Bale 1–50 is fine beside it — a different kind of package',
+  pack_serial_problem(3, 1, 50, 0, 'Bale') === '', pack_serial_problem(3, 1, 50, 0, 'Bale'));
+t('Roll 3 is refused, because Roll 1–5 has it',
+  str_contains(pack_serial_problem(3, 3, 3, 0, 'Roll'), 'Roll 1–5'), pack_serial_problem(3, 3, 3, 0, 'Roll'));
+t('the kind is matched without case or spaces — " carton" is a Carton',
+  pack_serial_problem(3, 5, 6, 0, ' carton') !== '', pack_serial_problem(3, 5, 6, 0, ' carton'));
+t('a carton typed by hand on the desktop counts too',
+  str_contains(pack_serial_problem(3, 505, 506, 0, 'Carton'), 'Carton (desktop) 500–510'),
+  pack_serial_problem(3, 505, 506, 0, 'Carton'));
+t('and the message says a different kind may reuse the number',
+  str_contains(pack_serial_problem(3, 1, 2, 0, 'Carton'), 'different kind'));
+t('the app named the kind in its query', !in_array('serial: kind', $GLOBALS['T']['badsql'], true),
+  $GLOBALS['T']['badsql']);
 
 echo "\n" . ($F === 0 ? "ALL PASS   ($P checks)\n" : "FAILED  $F   (" . ($P + $F) . " checks)\n");
 exit($F === 0 ? 0 : 1);

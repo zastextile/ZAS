@@ -116,12 +116,37 @@ function zas_pack_recalc_totals_v21(int $shipmentId): void {
         ]);
 }
 
-function zas_pack_serial_counts_v21(int $shipmentId): array {
-    $stmt = db()->prepare("SELECT carton_from, carton_to FROM packing_items WHERE shipment_id=? ORDER BY id");
-    $stmt->execute([$shipmentId]);
+/*
+  V2.4 — A PACKAGE NUMBER ONCE PER KIND OF PACKAGE (was: twice, any kind).
+
+  "Do not allow the same serial or the same carton number to repeat in
+   the same shipment — but the same number can be used if the package
+   type is different, like a roll."
+
+  So the count is now taken per kind of package ($unitTitle, compared
+  without case or spaces), and a number already used once by that kind
+  is refused. It also counts the ranges entered on the packing phone
+  that are not yet approved — approved ones are already rows here — so
+  the desktop and the phone cannot hand out the same carton number.
+  Everything else in this function is as it was.
+*/
+function zas_pack_serial_counts_v21(int $shipmentId, string $unitTitle = 'Carton'): array {
+    $kind = mb_strtolower(trim($unitTitle !== '' ? $unitTitle : 'Carton'));
+    $stmt = db()->prepare("SELECT carton_from, carton_to FROM packing_items WHERE shipment_id=?
+                           AND LOWER(TRIM(COALESCE(NULLIF(pack_unit_title,''),'Carton')))=? ORDER BY id");
+    $stmt->execute([$shipmentId, $kind]);
+    $rows = $stmt->fetchAll();
+    try {
+        $g = db()->prepare("SELECT serial_from AS carton_from, serial_to AS carton_to FROM packing_groups
+                            WHERE shipment_id=? AND LOWER(TRIM(unit_title))=?
+                              AND id NOT IN (SELECT packing_group_id FROM packing_items
+                                             WHERE shipment_id=? AND packing_group_id IS NOT NULL)");
+        $g->execute([$shipmentId, $kind, $shipmentId]);
+        $rows = array_merge($rows, $g->fetchAll());
+    } catch (Throwable $e) { /* no phone ranges table yet — nothing to add */ }
 
     $counts = [];
-    foreach ($stmt->fetchAll() as $r) {
+    foreach ($rows as $r) {
         $from = (int)$r['carton_from'];
         $to = (int)$r['carton_to'];
 
@@ -144,7 +169,8 @@ function zas_pack_find_over_serials_v21(array $currentCounts, int $from, int $to
 
     for ($s = $from; $s <= $to; $s++) {
         $newCount = ($currentCounts[$s] ?? 0) + 1;
-        if ($newCount > 2) {
+        /* V2.4: once per kind of package (was "> 2", which allowed two uses) */
+        if ($newCount > 1) {
             $bad[] = $s;
             if (count($bad) >= 10) break;
         }
@@ -442,12 +468,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_r
 
         zas_pack_validate_qty_v21($id, $itemId, $it, $totalQty);
 
-        $counts = zas_pack_serial_counts_v21($id);
+        $counts = zas_pack_serial_counts_v21($id, $unitTitle);
         $badSerials = zas_pack_find_over_serials_v21($counts, $from, $to);
         if ($badSerials) {
             if ($badSerials[0] === 'invalid') throw new Exception('Serial range is not correct.');
             if ($badSerials[0] === 'too_large') throw new Exception('Serial range is too large.');
-            throw new Exception('Serial number already used 2 times. Third use not allowed. Problem serials: ' . implode(', ', $badSerials));
+            throw new Exception($unitTitle . ' number already used on this shipment. A number can be used once per kind of package — the same number is fine only for a different kind, like a Roll. Problem serials: ' . implode(', ', $badSerials));
         }
 
         db()->beginTransaction();

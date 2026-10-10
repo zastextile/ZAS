@@ -443,7 +443,10 @@ function mob_steps_end(string $nextLabel = 'Next'): void
     render(e.state && typeof e.state.mstep === 'number' ? e.state.mstep : 0, true);
   });
 
-  render(0);
+  /* "#s2" opens the third step — how Edit on the Approve tab lands on
+     the right range of the serial tab. */
+  var mh = /^#s(\d+)$/.exec(location.hash || '');
+  render(mh ? +mh[1] : 0);
 })();
 </script>
     <?php

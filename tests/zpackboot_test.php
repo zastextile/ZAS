@@ -119,7 +119,9 @@ $GLOBALS['ROWS'] = [
      'serial_from'=>226,'serial_to'=>245,'packages'=>3,'qty_mode'=>'direct','qty_per_pkg'=>200,'total_qty'=>4000,
      'assorted'=>0,'size_label'=>'Single','pkg_gross'=>92.000,'pkg_tare'=>2.000],
   ],
-  /* TWO RANGES OF ONE SIZE IN TWO COLOURS, and the only difference
+  /* TWO RANGES OF ONE SIZE IN TWO COLOURS, each its own invoice line
+     (14 and 15 — the weight is the line's now, so sharing line 11 would
+     make them one weight with range 101), and the only difference
      between them is the switch.
 
      104 says the colours weigh differently, so it is two things to
@@ -127,11 +129,11 @@ $GLOBALS['ROWS'] = [
      asked once — and the ten in the carton are ten Singles, not six
      and four. That is the rule he asked for, in a fixture. */
   'cgroups' => [
-    ['id'=>104,'shipment_id'=>1,'line_no'=>4,'invoice_item_id'=>11,'product_name'=>'Duvet Cover Set King',
+    ['id'=>104,'shipment_id'=>1,'line_no'=>4,'invoice_item_id'=>14,'product_name'=>'Duvet Cover Set King',
      'des_col'=>'Fleece + micro, printed','optional_value'=>'HS 6302.31','unit_title'=>'Carton',
      'serial_from'=>300,'serial_to'=>310,'packages'=>0,'qty_mode'=>'per','qty_per_pkg'=>10,'total_qty'=>110,
      'assorted'=>1,'size_label'=>'','pkg_gross'=>10.400,'pkg_tare'=>1.000,'weight_by_colour'=>1],
-    ['id'=>105,'shipment_id'=>1,'line_no'=>5,'invoice_item_id'=>11,'product_name'=>'Duvet Cover Set King',
+    ['id'=>105,'shipment_id'=>1,'line_no'=>5,'invoice_item_id'=>15,'product_name'=>'Duvet Cover Set King',
      'des_col'=>'Fleece + micro, printed','optional_value'=>'HS 6302.31','unit_title'=>'Carton',
      'serial_from'=>400,'serial_to'=>410,'packages'=>0,'qty_mode'=>'per','qty_per_pkg'=>10,'total_qty'=>110,
      'assorted'=>1,'size_label'=>'','pkg_gross'=>10.400,'pkg_tare'=>1.000,'weight_by_colour'=>0],
@@ -246,13 +248,21 @@ final class BPdo {
                fixture rather than about the app. */
             /* CLASHDATA: an old overlap already sitting in the data, the
                way one saved before the rule was tight would. */
+            /* SHARELINE: range 102 is a second range of invoice line 11,
+               so one line has two ranges and one weight */
+            if (getenv('SHARELINE')) {
+                $g2 = $R['groups']; $g2[1]['invoice_item_id'] = 11; return $g2;
+            }
             if (getenv('CLASHDATA')) {
                 $g2 = $R['groups']; $g2[1]['serial_from'] = 90; return $g2;
             }
             return getenv('COLOURRANGES') ? array_merge($R['groups'], $R['cgroups']) : $R['groups'];
         }
         if (str_contains($q, 'FROM packing_groups WHERE id=?')) {
-            foreach ($R['groups'] as $g) if ((int)$g['id'] === (int)($a[0] ?? 0)) return [$g];
+            foreach ($R['groups'] as $g) if ((int)$g['id'] === (int)($a[0] ?? 0)) {
+                if (getenv('SHARELINE') && (int)$g['id'] === 102) $g['invoice_item_id'] = 11;
+                return [$g];
+            }
             return [];
         }
         if (str_contains($q, 'FROM packing_group_sizes WHERE group_id=?')) {
@@ -480,9 +490,14 @@ ok(str_contains($ser, '2 Small, 4 Medium, 4 Large'),
 head('5. Weight — every size comes down with the page');
 
 $w1 = $html['weight'];
-ok(str_contains($w1, '2 Small + 4 Medium + 4 Large'), 'what is inside one package is spelled out');
-ok(str_contains($w1, '10.420 kg'), 'the contents must come to 10.420 kg');
-ok(str_contains($w1, 'balanced'), 'and the package balances');
+/* GROSS IS WORKED OUT, NOT TYPED. 2x850 + 4x1030 + 4x1150 = 10.420 kg
+   of contents, plus the 1.000 kg carton — no scale figure asked. */
+ok(str_contains($w1, '10.420 contents + 1.000 package'),
+   'one package is its contents by the breakdown plus the empty carton');
+ok(str_contains($w1, '11.420 kg each'), 'so 11.420 kg gross each, worked out');
+ok(!str_contains($w1, 'name="pkg_gross"'), 'and no gross is typed per range any more');
+ok(str_contains($w1, 'name="tare[Carton]"'),
+   'the empty carton is asked once for the line');
 /* The chips are built by the script from this, so the data is what
    matters in the markup. */
 ok(preg_match('~var SIZES\s*=\s*\["Small","Medium","Large"\]~', $w1) === 1,
@@ -497,13 +512,13 @@ ok(!preg_match('~name="recall"~', $w1),
    'the recall button no longer posts — it fills from what is already here');
 
 $w2 = $html['weight2'];
-ok(str_contains($w2, '19.800 kg'), 'range 2: 495 g x 40 is 19.800 kg');
+ok(str_contains($w2, '19.800 contents'), 'range 2: 495 g x 40 is 19.800 kg');
 ok(str_contains($w2, 'Percale 300TC'), 'its lines come back with their names');
 ok(preg_match('~var SIZES\s*=\s*\["152x200"\]~', $w2) === 1,
    'a single-size range carries one size', null);
 
 $w3 = $html['weight3'];
-ok(str_contains($w3, '90.000 kg'), 'range 3: 450 g x 200 is 90.000 kg');
+ok(str_contains($w3, '90.000 contents'), 'range 3: 450 g x 200 is 90.000 kg');
 ok(preg_match('~var STD\s*=\s*\{"Single":~', $w3) === 1,
    'the remembered breakdown comes down for the product that has one', null);
 ok(preg_match('~var STD\s*=\s*\{\}~', $w2) === 1,
@@ -626,11 +641,13 @@ JS;
         foreach ($got as $name => $r) {
             ok($r['errors'] === [], "$name has no javascript error", $r['errors']);
         }
-        /* range 2 is one size, so the fill runs line by line down to zero */
         ok(($got['weight2']['wlines'] ?? 0) === 4, 'range 2 draws its four weight lines',
            $got['weight2']['wlines'] ?? null);
-        ok(str_contains(implode(' ', $got['weight2']['balances'] ?? []), 'balanced'),
-           'and the last line reads balanced', $got['weight2']['balances'] ?? null);
+        /* There is no scale figure per range to run down to any more, so
+           no line claims to "balance" against one. */
+        ok(trim(implode('', $got['weight2']['balances'] ?? [])) === '',
+           'no line claims a balance against a scale figure that is no longer asked',
+           $got['weight2']['balances'] ?? null);
         ok(($got['weight2']['perunit'] ?? '') === '495 g', 'one unit comes to 495 g',
            $got['weight2']['perunit'] ?? null);
         /* range 1 is assorted, so the per-line fill is not claimed */
@@ -651,9 +668,9 @@ JS;
         ok(($got['weight4']['whead'] ?? '') === 'One unit of White Single',
            'the heading over the lines names the colour and the size, not the key',
            $got['weight4']['whead'] ?? null);
-        ok(($got['weight4']['wsub'] ?? '') === '6 of these in each package',
+        ok(($got['weight4']['wsub'] ?? '') === '6 of these in each package · used in 1 range of this line',
            'and says how many of them are in the carton', $got['weight4']['wsub'] ?? null);
-        ok(($got['weight5']['wsub'] ?? '') === '10 of these in each package',
+        ok(($got['weight5']['wsub'] ?? '') === '10 of these in each package · used in 1 range of this line',
            'which on the range whose colours match is ten, not six',
            $got['weight5']['wsub'] ?? null);
         ok(($got['weight4']['beforeCopy'] ?? '') === '900 g'
@@ -961,7 +978,7 @@ JS;
            $d['applyNone'] ?? null);
 
         /* 850 g in all three now: 850x2 + 850x4 + 850x4 = 8.500 kg */
-        ok(str_contains((string)($d['totalsAfter'] ?? ''), '8.500 kg'),
+        ok(str_contains((string)($d['totalsAfter'] ?? ''), '8.500 contents'),
            'the package total follows every copy', $d['totalsAfter'] ?? null);
 
         /* --- what would actually be posted --- */
@@ -1114,11 +1131,10 @@ ok(preg_match('~<td>Navy Single</td>.*?<td class="n">1,000</td>~s', $ap) === 1,
 /* The same carton weight by both routes, which is the point: the switch
    changes how often you are asked, not what the carton weighs. */
 foreach (['differ' => $w4, 'same' => $w5] as $what => $pg) {
-    ok(preg_match('~The lines add up to</span><b>([\d.,]+) kg~', $pg, $km) === 1
-       && $km[1] === '9.400',
-       "the carton comes to 9.400 kg whether the colours $what", $km[1] ?? null);
-    ok(str_contains($pg, 'pill p">balanced'),
-       "and balances against the scale either way ($what)");
+    ok(str_contains($pg, '9.400 contents + 1.000 package'),
+       "the carton holds 9.400 kg whether the colours $what");
+    ok(str_contains($pg, '10.400 kg each'),
+       "and comes to 10.400 kg gross either way ($what), worked out rather than typed");
 }
 
 head('9. The desktop screen the office types the order on');
@@ -1463,6 +1479,102 @@ ok(($r12['c1total'] ?? '') === '1,000',
    'the assorted range shows its total from the saved sizes, not "set the sizes"', $r12['c1total'] ?? null);
 ok(str_contains((string)($r12['afterEdit'] ?? ''), 'Carton 101–225'),
    'Edit on the summary opens that range', $r12['afterEdit'] ?? null);
+
+head('13. One weight per invoice line; numbers per kind; edit from Approve');
+
+/* The weight tab is about the invoice LINE. */
+$w13 = $html['weight'];
+ok(preg_match('~<select class="in" onchange="location.href=this.value">(.*?)</select>~s', $w13, $sel13) === 1
+   && substr_count($sel13[1], '<option') === 3,
+   'the weight tab lists each invoice line once, not each range', substr_count($sel13[1] ?? '', '<option'));
+ok(str_contains($sel13[1] ?? '', '#1 Duvet Cover Set King') && str_contains($sel13[1] ?? '', '· 1 range'),
+   'named by line, with how many ranges share it');
+ok(str_contains($w13, 'Weight is set once per invoice line'),
+   'and it says so where the line is picked');
+ok(str_contains($w13, 'Shared by') && str_contains($w13, 'Carton 1–100'),
+   'and names the ranges that will use it');
+
+/* Approve: every range, with Edit, Delete and Edit weight — outside the
+   approve form, because a form inside a form is not allowed. */
+$ap13 = $html['approve'];
+ok(str_contains($ap13, 'All ranges (3) — edit, delete or change a weight'),
+   'Approve opens with every range, ready to edit');
+ok(str_contains($ap13, 't=serial#s0') && str_contains($ap13, 't=serial#s2'),
+   'each Edit opens that range on the serial tab');
+ok(substr_count($ap13, '>Edit weight</a>') === 3, 'and each has an Edit weight');
+ok(substr_count($ap13, '>Delete</button>') === 3, 'and a Delete');
+$apForms = preg_split('~<form~', $ap13);
+$depth = 0; $nested = false;
+foreach (preg_split('~(<form\b|</form>)~', $ap13, -1, PREG_SPLIT_DELIM_CAPTURE) as $tok) {
+    if ($tok === '<form') { $depth++; if ($depth > 1) $nested = true; }
+    elseif ($tok === '</form>') $depth--;
+}
+ok(!$nested, 'and no form ends up inside another form');
+
+$js13 = <<<'JS'
+const { chromium } = require('playwright');
+const path = require('path');
+(async () => {
+  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
+  const errs = []; p.on('pageerror', e => errs.push(String(e)));
+  await p.goto('file://' + path.join(process.argv[2], 'serial12.html'));
+  await p.waitForTimeout(250);
+  await p.evaluate(() => document.querySelectorAll('.mstep').forEach(s => s.classList.add('on')));
+  const cn = p.locator('form.mcard').nth(3);
+  const out = { errs };
+  // Carton 50–60 clashes with Carton 1–100 …
+  await cn.locator('[name="serial_from"]').fill('50'); await cn.locator('[name="serial_to"]').fill('60');
+  await p.waitForTimeout(60);
+  out.cartonClash = await cn.locator('[data-clash]').isVisible();
+  // … but Roll 50–60 does not: a different kind of package may reuse it
+  await cn.locator('[name="unit_title"]').fill('Roll');
+  await p.waitForTimeout(60);
+  out.rollClash = await cn.locator('[data-clash]').isVisible();
+  out.rollSave  = await cn.locator('button[type="submit"]').isEnabled();
+  // and " carton" is still a carton
+  await cn.locator('[name="unit_title"]').fill(' carton');
+  await p.waitForTimeout(60);
+  out.caseClash = await cn.locator('[data-clash]').isVisible();
+
+  // Edit from Approve lands on that range: #s1 is the second range.
+  // A blank page first — the same page with only a # added is not a new
+  // load, so the steps would never read it.
+  await p.goto('about:blank');
+  await p.goto('file://' + path.join(process.argv[2], 'serial12.html') + '#s1');
+  await p.waitForTimeout(250);
+  out.hashStep = (await p.locator('.mstep.on').innerText()).split('\n')[0];
+  console.log(JSON.stringify(out));
+  await b.close();
+})();
+JS;
+file_put_contents($work . '/s13.js', $js13);
+$r13 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
+        . escapeshellarg($work . '/s13.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
+ok(is_array($r13) && $r13['errs'] === [], 'no javascript error', $r13);
+ok(($r13['cartonClash'] ?? false) === true, 'Carton 50–60 is flagged where Carton 1–100 already is');
+ok(($r13['rollClash'] ?? true) === false && ($r13['rollSave'] ?? false) === true,
+   'but Roll 50–60 is allowed — the same number on a different kind of package');
+ok(($r13['caseClash'] ?? false) === true, 'and " carton" is still a Carton');
+ok(str_contains((string)($r13['hashStep'] ?? ''), 'Carton 101–225'),
+   'Edit from Approve opens the serial tab at that range', $r13['hashStep'] ?? null);
+
+/* ONE LINE, TWO RANGES — the case he described. */
+[$wsh] = render($work, ['id' => 1, 't' => 'weight', 'g' => 101], 'm_pack.php', 'SHARELINE=1');
+ok(preg_match('~<select class="in" onchange="location.href=this.value">(.*?)</select>~s', $wsh, $ssh) === 1
+   && substr_count($ssh[1], '<option') === 2,
+   'two ranges of one line are one entry in the weight list, not two',
+   substr_count($ssh[1] ?? '', '<option'));
+ok(str_contains($ssh[1] ?? '', '· 2 ranges'), 'and it says two ranges share it');
+ok(preg_match('~Shared by\s+Carton 1–100, Carton 101–225\.~', $wsh) === 1, 'naming both');
+$ush = preg_match('~var SIZES  = (\[.*?\]);~s', $wsh, $mush) ? json_decode($mush[1], true) : null;
+ok($ush === ['Small', 'Medium', 'Large', '152x200'],
+   'every size either range holds is weighed here, once', $ush);
+ok(str_contains($wsh, '10.420 contents') && str_contains($wsh, '19.800 contents'),
+   'and each range is worked out from its own quantities');
+[$wsh2] = render($work, ['id' => 1, 't' => 'weight', 'g' => 102], 'm_pack.php', 'SHARELINE=1');
+ok(preg_match('~var SIZES  = (\[.*?\]);~s', $wsh2, $mush2) && json_decode($mush2[1], true) === $ush,
+   'opening it from the other range shows the same one weight');
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

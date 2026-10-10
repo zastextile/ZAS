@@ -358,8 +358,13 @@ t('  and the staff mobile layout is left alone',
   substr_count($pl, 'exp_tab_strip') === 1);
 t('  and the over-pack guard is untouched', str_contains($pl, 'zas_pack_validate_qty_v21($id, $itemId, $it, $totalQty)'));
 t('  and the serial-reuse guard is untouched', str_contains($pl, 'zas_pack_find_over_serials_v21($counts, $from, $to)'));
-t('  and a third use of a serial is still refused',
-  str_contains($pl, 'Serial number already used 2 times'));
+/* The rule itself changed at afnan's request (V2.4): a package number
+   once per kind of package, not twice of any kind. "Do not allow the
+   same serial ... to repeat in the same shipment, but the same number
+   can be used if the package type is different, like a roll." */
+t('  and a serial is refused the second time for the same kind of package',
+  str_contains($pl, 'if ($newCount > 1) {')
+  && str_contains($pl, 'zas_pack_serial_counts_v21($id, $unitTitle)'));
 
 /* The unguarded packing write that used to live in shipment_save.php. */
 $ss = file_get_contents($B . 'shipment_save.php');

@@ -135,6 +135,78 @@ function pack_pick_field(array $opts, string $cur, string $selName, string $newN
     return $h;
 }
 
+/* EVERY RANGE ON ONE LIST, with Edit and Delete.
+
+   Shown on the New range step (where someone is when they wonder what is
+   already done) and on Approve ("final approval: allow edit, delete,
+   update, overall, easily"). Each row says its invoice line, quantity and
+   whether the line has its weight — weight lives on its own tab and was
+   otherwise invisible. On the serial tab Edit jumps to the range's step;
+   on Approve it opens the serial tab at that range. Approve also gets an
+   Edit weight per line. */
+function pack_summary_html(array $groups, array $items, bool $canEdit, int $id, string $self,
+                           bool $onSerial): string
+{
+    if (!$groups) return '';
+    ob_start();
+    $byId = [];
+    foreach ($items as $it) $byId[(int)$it['id']] = $it;
+    $sumP = 0; $sumQ = 0.0;
+    echo '<div class="mcard"><h2 style="margin:0 0 4px">Already packed</h2>'
+       . '<div class="note" style="margin-bottom:10px">Every range on this invoice. '
+       . 'Tap Edit to change one.</div>';
+    foreach ($groups as $gi => $og) {
+        $oP = pack_packages($og); $sumP += $oP; $sumQ += (float)$og['total_qty'];
+        $oSizes = pack_sizes((int)$og['id']);
+        $it = $byId[(int)$og['invoice_item_id']] ?? null;
+        /* a clash already in the data — saved before the rule was
+           tight, or by the desktop — is shown, not hidden */
+        $clashW = '';
+        foreach ($groups as $og2) {
+            if ((int)$og2['id'] === (int)$og['id']) continue;
+            /* the same number is fine on a different kind of package */
+            if (mb_strtolower(trim((string)$og2['unit_title'])) !== mb_strtolower(trim((string)$og['unit_title']))) continue;
+            if ((int)$og2['serial_from'] <= (int)$og['serial_to']
+                && (int)$og2['serial_to'] >= (int)$og['serial_from']) {
+                $clashW = $og2['unit_title'] . ' ' . (int)$og2['serial_from'] . '–' . (int)$og2['serial_to'];
+                break;
+            }
+        }
+        $gross = (float)$og['pkg_gross'];
+        echo '<div class="sumr' . ($clashW !== '' ? ' bad' : '') . '">'
+           . '<div class="sumt"><b>' . e((string)$og['unit_title']) . ' '
+           . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . '</b>'
+           . '<span class="pill v">' . number_format($oP) . '</span></div>'
+           . '<div class="sumi">' . ($it ? pack_item_html($it) : e((string)$og['product_name'])) . '</div>'
+           . '<div class="sumq">' . number_format((float)$og['total_qty']) . ' in total'
+           . ($oSizes ? ' · ' . e(pack_size_text($og, $oSizes)) : '') . '</div>'
+           . '<div class="sumw">' . ($gross > 0
+                ? 'Weighed: ' . number_format($gross, 3) . ' kg gross per ' . e(strtolower((string)$og['unit_title']))
+                : '<a href="' . e($self) . '&amp;t=weight&amp;g=' . (int)$og['id'] . '">Not weighed yet — Weight tab</a>')
+           . '</div>'
+           . ($clashW !== '' ? '<div class="clash" style="margin:8px 0 0">Shares package numbers with '
+                              . e($clashW) . '. A number can be used once per kind of package — change one of them.</div>' : '');
+        if ($canEdit) {
+            echo '<div class="suma">'
+           . ($onSerial
+               ? '<button type="button" class="btn sec sm" data-mstep-go="' . (int)$gi . '">Edit</button>'
+               : '<a class="btn sec sm" href="' . e($self) . '&amp;t=serial#s' . (int)$gi . '">Edit</a>'
+                 . '<a class="btn sec sm" href="' . e($self) . '&amp;t=weight&amp;g=' . (int)$og['id'] . '">Edit weight</a>')
+               . '<form method="post" onsubmit="return confirm(\'Remove ' . e((string)$og['unit_title']) . ' '
+               . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . ' and its weights?\')">'
+               . csrf_field()
+               . '<input type="hidden" name="action" value="group_delete">'
+               . '<input type="hidden" name="shipment_id" value="' . (int)$id . '">'
+               . '<input type="hidden" name="group_id" value="' . (int)$og['id'] . '">'
+               . '<button class="btn red sm" type="submit">Delete</button></form></div>';
+        }
+        echo '</div>';
+    }
+    echo '<div class="sumtot"><span>' . count($groups) . ' range' . (count($groups) === 1 ? '' : 's')
+       . '</span><b>' . number_format($sumP) . ' packages · ' . number_format($sumQ) . ' pcs</b></div></div>';
+    return (string)ob_get_clean();
+}
+
 $title = 'Packing — ' . (string)$shipment['invoice_no'];
 $back  = 'm_pack.php';
 $self  = 'm_pack.php?id=' . $id;
@@ -184,7 +256,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         [$ok, $msg] = pack_group_save($id, [
-            'weight_by_colour' => !empty($_POST['weight_by_colour']),
+            /* only the assorted page asks it; null means "leave the line's
+               answer as it is" rather than "off" */
+            'weight_by_colour' => isset($_POST['weight_by_colour']) ? !empty($_POST['weight_by_colour']) : null,
             'invoice_item_id' => $itemId,
             'product_name'    => (string)$item['product_name'],
             'des_col'         => (string)($item['des_col'] ?? ''),
@@ -211,26 +285,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        because "these four sizes weigh the same" is one action on screen
        and would be four round trips otherwise. */
     if ($action === 'weight') {
+        /* ONE INVOICE LINE AT A TIME. The range posted is any range of the
+           line; the breakdown and the empty-package weights go to every
+           range of that line, and gross is worked out for each. */
         $gId = (int)($_POST['group_id'] ?? 0);
         $grp = pack_group($gId);
         if (!$grp || (int)$grp['shipment_id'] !== $id) { http_response_code(404); exit('Range not found.'); }
+        $sibs = pack_siblings($grp);
 
-        pack_weigh_save($gId, (float)($_POST['pkg_gross'] ?? 0), (float)($_POST['pkg_tare'] ?? 0));
+        /* The empty package, once per kind the line uses. */
+        foreach ((array)($_POST['tare'] ?? []) as $kind => $kg) {
+            pack_tare_save($gId, (string)$kind, (float)$kg);
+        }
 
-        /* Only units this range actually has. The field arrives from a
-           browser, so every key in it is checked against the database
-           rather than trusted — a name that is not one of this range's
-           own is dropped, not created.
+        /* Only units the line's ranges actually have. The field arrives
+           from a browser, so every key in it is checked against the
+           database rather than trusted — a name that is not one of this
+           line's own is dropped, not created.
 
            A UNIT IS A SIZE, OR A SIZE AND A COLOUR. Which one is not
            decided here: pack_unit_key() decides it in one place, from
            the range's own switch, so the screen, the save and the
            seeding can never disagree about where a breakdown is filed. */
         $own = [];
-        foreach (pack_sizes($gId) as $srow) {
-            [$uSz, $uCol] = pack_wkey($grp, $srow);
-            if ($uSz === '') continue;
-            $own[pack_unit_key($grp, $srow)] = [$uSz, $uCol];
+        foreach ($sibs as $sg) {
+            foreach (pack_sizes((int)$sg['id']) as $srow) {
+                [$uSz, $uCol] = pack_wkey($sg, $srow);
+                if ($uSz === '') continue;
+                $own[pack_unit_key($sg, $srow)] = [$uSz, $uCol];
+            }
         }
 
         $sent = json_decode((string)($_POST['weights_json'] ?? ''), true);
@@ -249,7 +332,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 pack_weight_save($gId, $uSz, $lines, true, $uCol);
             }
         }
-        $_SESSION['flash'] = 'Weight saved.';
+        pack_gross_refresh($gId);
+        $_SESSION['flash'] = count($sibs) > 1
+            ? 'Weight saved for all ' . count($sibs) . ' ranges of this line.'
+            : 'Weight saved.';
         redirect($self . '&t=weight&g=' . $gId);
     }
 
@@ -544,6 +630,9 @@ if (!$canEdit) {
 .ptab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
 /* the order's scope, stated before any field is touched */
 .btn.sm{padding:10px 12px;font-size:14px}
+a.btn.sm{display:block;text-align:center;text-decoration:none;flex:1}
+.allr{margin-bottom:14px}.allr>summary{cursor:pointer;font-weight:800;font-size:14px;
+  padding:12px 14px;border-radius:12px;background:#fff;border:1px solid var(--line);margin-bottom:10px}
 .sumr{border-top:1px solid var(--line);padding:11px 0}
 .sumr.bad{background:rgba(184,40,63,.04)}
 .sumt{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:15px}
@@ -908,55 +997,7 @@ if ($tab === 'serial') {
            from here. */
         if ($groups) {
             if (!$canEdit) mob_step('All ranges');
-            $byId = [];
-            foreach ($items as $it) $byId[(int)$it['id']] = $it;
-            $sumP = 0; $sumQ = 0.0;
-            echo '<div class="mcard"><h2 style="margin:0 0 4px">Already packed</h2>'
-               . '<div class="note" style="margin-bottom:10px">Every range on this invoice. '
-               . 'Tap Edit to change one.</div>';
-            foreach ($groups as $gi => $og) {
-                $oP = pack_packages($og); $sumP += $oP; $sumQ += (float)$og['total_qty'];
-                $oSizes = pack_sizes((int)$og['id']);
-                $it = $byId[(int)$og['invoice_item_id']] ?? null;
-                /* a clash already in the data — saved before the rule was
-                   tight, or by the desktop — is shown, not hidden */
-                $clashW = '';
-                foreach ($groups as $og2) {
-                    if ((int)$og2['id'] === (int)$og['id']) continue;
-                    if ((int)$og2['serial_from'] <= (int)$og['serial_to']
-                        && (int)$og2['serial_to'] >= (int)$og['serial_from']) {
-                        $clashW = $og2['unit_title'] . ' ' . (int)$og2['serial_from'] . '–' . (int)$og2['serial_to'];
-                        break;
-                    }
-                }
-                $gross = (float)$og['pkg_gross'];
-                echo '<div class="sumr' . ($clashW !== '' ? ' bad' : '') . '">'
-                   . '<div class="sumt"><b>' . e((string)$og['unit_title']) . ' '
-                   . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . '</b>'
-                   . '<span class="pill v">' . number_format($oP) . '</span></div>'
-                   . '<div class="sumi">' . ($it ? pack_item_html($it) : e((string)$og['product_name'])) . '</div>'
-                   . '<div class="sumq">' . number_format((float)$og['total_qty']) . ' in total'
-                   . ($oSizes ? ' · ' . e(pack_size_text($og, $oSizes)) : '') . '</div>'
-                   . '<div class="sumw">' . ($gross > 0
-                        ? 'Weighed: ' . number_format($gross, 3) . ' kg gross per ' . e(strtolower((string)$og['unit_title']))
-                        : '<a href="' . e($self) . '&amp;t=weight&amp;g=' . (int)$og['id'] . '">Not weighed yet — Weight tab</a>')
-                   . '</div>'
-                   . ($clashW !== '' ? '<div class="clash" style="margin:8px 0 0">Shares package numbers with '
-                                      . e($clashW) . '. Each number can be used once — change one of them.</div>' : '');
-                if ($canEdit) {
-                    echo '<div class="suma"><button type="button" class="btn sec sm" data-mstep-go="' . (int)$gi . '">Edit</button>'
-                       . '<form method="post" onsubmit="return confirm(\'Remove ' . e((string)$og['unit_title']) . ' '
-                       . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . ' and its weights?\')">'
-                       . csrf_field()
-                       . '<input type="hidden" name="action" value="group_delete">'
-                       . '<input type="hidden" name="shipment_id" value="' . (int)$id . '">'
-                       . '<input type="hidden" name="group_id" value="' . (int)$og['id'] . '">'
-                       . '<button class="btn red sm" type="submit">Delete</button></form></div>';
-                }
-                echo '</div>';
-            }
-            echo '<div class="sumtot"><span>' . count($groups) . ' range' . (count($groups) === 1 ? '' : 's')
-               . '</span><b>' . number_format($sumP) . ' packages · ' . number_format($sumQ) . ' pcs</b></div></div>';
+            echo pack_summary_html($groups, $items, $canEdit, $id, $self, true);
         }
         mob_steps_end();
         ?>
@@ -1070,18 +1111,20 @@ if ($tab === 'serial') {
                 total.lastElementChild.textContent = num(t);
               }
 
-              /* NO PACKAGE NUMBER TWICE — of any kind. Carton 5 and Bale 5
-                 are the same number on the same shipment's paperwork. */
+              /* A PACKAGE NUMBER ONCE PER KIND OF PACKAGE. Carton 1–50
+                 twice is refused; Carton 1–50 beside Roll 1–50 is fine. */
               var f = +fromI.value || 0, t2 = +toI.value || 0, hit = null;
+              var myKind = unit().toLowerCase();
               if (f > 0 && t2 >= f) {
                 for (var k = 0; k < taken.length; k++) {
+                  if (String(taken[k][2] || 'Carton').trim().toLowerCase() !== myKind) continue;
                   if (taken[k][0] <= t2 && taken[k][1] >= f) { hit = taken[k]; break; }
                 }
               }
               if (clash) {
                 clash.hidden = !hit;
                 clash.textContent = hit ? ('Already used: ' + hit[2] + ' ' + hit[0] + '–' + hit[1]
-                  + '. Every package number can be used once.') : '';
+                  + '. A number can be used once per kind of package — a different kind, like a Roll, may reuse it.') : '';
               }
               if (save) save.disabled = !!hit;
 
@@ -1182,29 +1225,60 @@ if ($tab === 'weight') {
         foreach ($groups as $cand) if ((int)$cand['id'] === $gid) $g = $cand;
         if (!$g) { $g = $groups[0]; $gid = (int)$g['id']; }
 
-        $sizes   = pack_sizes($gid);
-        $perUnit = pack_per_unit($gid);
-        $P       = pack_packages($g);
+        /* ONE INVOICE LINE, ONE WEIGHT.
+           "Weight only one time for each item in the invoice, even if
+            they have many serial ranges — the formula does not change."
+           The screen is about the LINE the chosen range belongs to: every
+           size any of its ranges holds, weighed once, and the empty weight
+           of each kind of package the line uses. Each range's net and
+           gross are then worked out from its own quantities. */
+        $sibs = [];
+        foreach ($groups as $cand) {
+            if ((int)$g['invoice_item_id'] > 0
+                ? (int)$cand['invoice_item_id'] === (int)$g['invoice_item_id']
+                : (int)$cand['id'] === $gid) $sibs[] = $cand;
+        }
+        if (!$sibs) $sibs = [$g];
+        $lineItem = null;
+        foreach ($items as $it) if ((int)$it['id'] === (int)$g['invoice_item_id']) $lineItem = $it;
 
-        /* ONE ROW PER THING THAT HAS ITS OWN WEIGHT.
+        /* ONE ROW PER THING THAT HAS ITS OWN WEIGHT, across the line.
            With the per-colour switch off that is one row per size, and
-           four colours of Single are one question asked once — which is
-           what he asked for. With it on it is one row per size AND
-           colour, because then they genuinely differ.
-
-           The quantity is summed, not taken from the first row: with the
-           switch off, 4 White Single and 2 Navy Single are 6 Singles in
-           the carton, and weighing 4 of them would be wrong. */
-        $units = [];
-        foreach ($sizes as $srow) {
-            $k = pack_unit_key($g, $srow);
-            [$uSz, $uCol] = pack_wkey($g, $srow);
-            if ($uSz === '') continue;
-            if (!isset($units[$k])) {
-                $units[$k] = ['size' => $uSz, 'colour' => $uCol, 'qty' => 0.0,
-                              'label' => $uCol === '' ? $uSz : $uCol . ' ' . $uSz];
+           four colours of Single are one question asked once. With it on
+           it is one row per size AND colour, because then they differ. */
+        $units = []; $unitHome = []; $ranges = []; $kinds = [];
+        foreach ($sibs as $sg) {
+            $sgSizes = pack_sizes((int)$sg['id']);
+            $q = [];
+            foreach ($sgSizes as $srow) {
+                $k = pack_unit_key($sg, $srow);
+                [$uSz, $uCol] = pack_wkey($sg, $srow);
+                if ($uSz === '') continue;
+                if (!isset($units[$k])) {
+                    $units[$k] = ['size' => $uSz, 'colour' => $uCol,
+                                  'label' => $uCol === '' ? $uSz : $uCol . ' ' . $uSz];
+                    $unitHome[$k] = (int)$sg['id'];
+                }
+                /* summed, not first-row: with the switch off, 4 White
+                   Single and 2 Navy Single are 6 Singles in the carton */
+                $q[$k] = ($q[$k] ?? 0) + pack_size_per_pkg($sg, $srow);
             }
-            $units[$k]['qty'] += pack_size_per_pkg($g, $srow);
+            $kind = trim((string)$sg['unit_title']) ?: 'Carton';
+            $kk = mb_strtolower($kind);
+            if (!isset($kinds[$kk])) $kinds[$kk] = ['label' => $kind, 'kg' => (float)$sg['pkg_tare']];
+            elseif ($kinds[$kk]['kg'] <= 0) $kinds[$kk]['kg'] = (float)$sg['pkg_tare'];
+            $holds = [];
+            foreach ($q as $k => $qq) {
+                $holds[] = rtrim(rtrim(number_format($qq, 2, '.', ''), '0'), '.') . ' ' . $units[$k]['label'];
+            }
+            $ranges[] = ['id' => (int)$sg['id'], 'kind' => $kk,
+                         'label' => $kind . ' ' . (int)$sg['serial_from'] . '–' . (int)$sg['serial_to'],
+                         'P' => pack_packages($sg),
+                         /* what one package holds, in the units weighed —
+                            "6 White Single + 4 Navy Single", or "10 Single"
+                            when the colours weigh the same */
+                         'holds' => implode(' + ', $holds),
+                         'q' => array_map(static fn($v) => round($v, 4), $q)];
         }
         $labels  = array_keys($units);
         /* OPEN ON WHAT IS STILL MISSING. Everything already known was
@@ -1213,37 +1287,36 @@ if ($tab === 'weight') {
            "asking again" in a different shape. */
         $missing = [];
         foreach ($units as $k => $u) {
-            if (!pack_weight_lines($gid, $u['size'], $u['colour'])) $missing[$k] = $u['label'];
+            if (!pack_weight_lines($unitHome[$k], $u['size'], $u['colour'])) $missing[$k] = $u['label'];
         }
         if ($sz === '' || !in_array($sz, $labels, true)) {
             $sz = (string)(array_key_first($missing) ?? ($labels[0] ?? ''));
         }
 
-        $mustKg  = (float)$g['pkg_gross'] - (float)$g['pkg_tare'];
-        $qtyIn   = (float)($units[$sz]['qty'] ?? 0);
-        $contents = pack_contents_kg($g, $sizes, $perUnit);
-
-        /* EVERY SIZE'S FIGURES GO DOWN WITH THE PAGE.
-           Switching size used to be a page load each time, which on a
-           phone in a packing hall is three seconds of nothing and a lost
-           place in the form. All of it is carried once and switched in
-           the browser, and one Save writes them all back. */
+        /* EVERY SIZE'S FIGURES GO DOWN WITH THE PAGE, switched in the
+           browser, and one Save writes them all back. */
         $allLines = [];
         $allStd   = [];
-        $perPkg   = [];
         $unitName = [];
         foreach ($units as $k => $u) {
             $allLines[$k] = array_map(static function (array $r): array {
                 return ['t' => (string)$r['w_type'], 'n' => (string)$r['w_name'], 'g' => (float)$r['grams']];
-            }, pack_weight_lines($gid, $u['size'], $u['colour']));
+            }, pack_weight_lines($unitHome[$k], $u['size'], $u['colour']));
             $std = pack_std_get((string)$g['product_name'], $u['size'], $u['colour']);
             if ($std) {
                 $allStd[$k] = array_map(static function (array $r): array {
                     return ['t' => (string)$r['w_type'], 'n' => (string)$r['w_name'], 'g' => (float)$r['grams']];
                 }, $std);
             }
-            $perPkg[$k]   = $u['qty'];
             $unitName[$k] = $u['label'];
+        }
+        /* A unit in one range only: how many of it in that range's package.
+           Used to say "6 of these in each carton" when that is one figure. */
+        $perPkg = [];
+        foreach ($units as $k => $u) {
+            $vals = [];
+            foreach ($ranges as $r) if (isset($r['q'][$k])) $vals[] = $r['q'][$k];
+            $perPkg[$k] = count(array_unique($vals)) === 1 ? $vals[0] : 0;
         }
         ?>
         <form method="post" id="wform">
@@ -1260,32 +1333,43 @@ if ($tab === 'weight') {
         /* The form opens before the steps and closes after them, so one
            submit carries every field whichever step it was typed on. */
         mob_steps_begin('weightsteps');
-        mob_step('Which range', 'Weight is set per serial range, not per carton');
+        mob_step('Which item', 'Weight is set once per invoice line — every range of it uses it');
         ?>
         <div class="mcard">
           <select class="in" onchange="location.href=this.value">
-            <?php /* named by invoice line too — two ranges of "Bath Towel"
-                     in different colours must not look the same here */
-                  $byIdW = [];
+            <?php /* ONE ENTRY PER INVOICE LINE, not per range — the line is
+                     what has a weight. Each says how many ranges share it. */
+                  $byIdW = []; $seenLine = [];
                   foreach ($items as $it) $byIdW[(int)$it['id']] = $it;
                   foreach ($groups as $og):
-                    $wit = $byIdW[(int)$og['invoice_item_id']] ?? null; ?>
-              <option value="<?= e($self) ?>&amp;t=weight&amp;g=<?= (int)$og['id'] ?>"
-                <?= (int)$og['id'] === $gid ? ' selected' : '' ?>>
-                <?= e((string)$og['unit_title']) ?> <?= (int)$og['serial_from'] ?>–<?= (int)$og['serial_to'] ?>
-                · <?= e($wit ? pack_item_label($wit)['text'] : (string)$og['product_name']) ?></option>
+                    $lk = (int)$og['invoice_item_id'] > 0 ? 'i' . (int)$og['invoice_item_id'] : 'g' . (int)$og['id'];
+                    if (isset($seenLine[$lk])) continue;
+                    $seenLine[$lk] = true;
+                    $nR = 0;
+                    foreach ($groups as $o2) {
+                        $lk2 = (int)$o2['invoice_item_id'] > 0 ? 'i' . (int)$o2['invoice_item_id'] : 'g' . (int)$o2['id'];
+                        if ($lk2 === $lk) $nR++;
+                    }
+                    $wit = $byIdW[(int)$og['invoice_item_id']] ?? null;
+                    $isThis = (int)$og['invoice_item_id'] > 0
+                        ? (int)$og['invoice_item_id'] === (int)$g['invoice_item_id']
+                        : (int)$og['id'] === $gid; ?>
+              <option value="<?= e($self) ?>&amp;t=weight&amp;g=<?= (int)$og['id'] ?>"<?= $isThis ? ' selected' : '' ?>>
+                <?= e($wit ? pack_item_label($wit)['text'] : (string)$og['product_name']) ?>
+                · <?= $nR ?> range<?= $nR === 1 ? '' : 's' ?></option>
             <?php endforeach; ?>
           </select>
+          <div class="note" style="margin-top:9px">Shared by
+            <?= e(implode(', ', array_column($ranges, 'label'))) ?>.</div>
         </div>
-        <?php mob_step('Weigh one package', 'One ' . strtolower((string)$g['unit_title'])
-                                          . ' on the scale, then open it'); ?>
+        <?php mob_step('What is left to weigh', 'Asked once for the whole line'); ?>
 
           <?php /* SAY WHAT IS LEFT, NOT WHAT THERE IS. A weight belongs
                    to the product and the size, so it is asked for once
                    and carried forward. This line is how someone knows
                    there is nothing to do. */ ?>
           <div class="mcard">
-            <?php if (!$sizes): ?>
+            <?php if (!$units): ?>
               <div class="note">Set the sizes on the first tab.</div>
             <?php elseif (!$missing): ?>
               <div class="sumrow"><span><b>Nothing new to weigh here.</b></span>
@@ -1304,27 +1388,23 @@ if ($tab === 'weight') {
             <?php endif; ?>
           </div>
 
+          <?php /* THE EMPTY PACKAGE, ONCE PER KIND. There is no gross to type
+                   per range any more: gross is what one package holds, by
+                   the breakdown, plus this. An empty carton and an empty
+                   roll core are different, so each kind this line uses is
+                   asked once. */ ?>
           <div class="mcard">
-            <div class="row2">
-              <label class="f"><span>Package gross kg</span>
-                <input class="in" type="number" inputmode="decimal" step="0.001" id="pg" name="pkg_gross"
-                       value="<?= (float)$g['pkg_gross'] > 0 ? e(number_format((float)$g['pkg_gross'], 3, '.', '')) : '' ?>"></label>
-              <label class="f"><span>The <?= e(strtolower((string)$g['unit_title'])) ?> itself kg</span>
-                <input class="in" type="number" inputmode="decimal" step="0.001" id="pt" name="pkg_tare"
-                       value="<?= (float)$g['pkg_tare'] > 0 ? e(number_format((float)$g['pkg_tare'], 3, '.', '')) : '' ?>"></label>
+            <h2 style="margin:0 0 4px">The empty package</h2>
+            <div class="note" style="margin-bottom:10px">Weigh one empty, once. Every range of
+              this line that uses it is worked out from it.</div>
+            <div class="row2" style="flex-wrap:wrap">
+              <?php foreach ($kinds as $kk => $kd): ?>
+                <label class="f"><span>One empty <?= e(mb_strtolower($kd['label'])) ?>, kg</span>
+                  <input class="in" type="number" inputmode="decimal" step="0.001" min="0"
+                         name="tare[<?= e($kd['label']) ?>]" data-tare="<?= e($kk) ?>"
+                         value="<?= $kd['kg'] > 0 ? e(number_format($kd['kg'], 3, '.', '')) : '' ?>"></label>
+              <?php endforeach; ?>
             </div>
-            <div class="derv"><span>So the contents must come to</span><b id="must"><?= number_format($mustKg, 3) ?> kg</b></div>
-            <div class="derv"><span>Inside one package</span><b><?php
-              /* The units, not the raw rows: with the per-colour switch
-                 off, "4 White Single + 2 Navy Single" is 6 Singles and
-                 reading it as two things to weigh is the old mistake. */
-              $bits = [];
-              foreach ($units as $u) {
-                  $bits[] = rtrim(rtrim(number_format($u['qty'], 2, '.', ''), '0'), '.')
-                          . ' ' . $u['label'];
-              }
-              echo e($bits ? implode(' + ', $bits) : 'no size yet');
-            ?></b></div>
           </div>
 
           <?php if (count($units) > 1):
@@ -1371,38 +1451,31 @@ if ($tab === 'weight') {
             <button class="btn go" type="submit">Save the weight</button>
           <?php endif; ?>
 
-        <?php mob_step('The whole package', 'What the lines add up to against the scale'); ?>
+        <?php mob_step('Every range of this line', 'Worked out from the weight and the quantities'); ?>
 
-        <?php /* Rendered by PHP so the page is right before any script
-                 runs, then kept in step by the script as lines are typed.
-                 Two ids are all it needs. */ ?>
+        <?php /* Drawn by PHP so the page is right before any script runs,
+                 then redrawn by the script as lines are typed. */ ?>
         <div class="mcard">
-          <div id="pkgtotals">
-            <div class="sumrow"><span>The lines add up to</span><b><?= number_format($contents, 3) ?> kg</b></div>
-            <div class="sumrow"><span>They must come to</span><b><?= number_format($mustKg, 3) ?> kg</b></div>
-            <div class="sumrow"><span><b>Balance</b></span><b><?php
-              $d = $contents - $mustKg;
-              echo abs($d) < 0.0005
-                ? '<span class="pill p">balanced</span>'
-                : '<span class="pill w">' . ($d > 0 ? '+' : '') . number_format($d, 3) . ' kg</span>';
-            ?></b></div>
-          </div>
-          <div class="formula" id="pkgformula"><?php
-            $f = '';
-            foreach ($units as $k => $u) {
-                $pu = (float)($perUnit[$k] ?? 0);
-                $qp = (float)$u['qty'];
-                $f .= str_pad($u['label'], 18) . number_format($pu) . ' g  x '
-                    . rtrim(rtrim(number_format($qp, 2, '.', ''), '0'), '.')
-                    . '  = ' . number_format($pu * $qp / 1000, 3) . " kg\n";
+          <div id="pkgtotals"><?php
+            $lineNet = 0.0; $lineGross = 0.0;
+            foreach ($ranges as $r) {
+                $cG = 0.0;
+                foreach ($r['q'] as $k => $qq) {
+                    $cG += array_sum(array_column($allLines[$k] ?? [], 'g')) * $qq;
+                }
+                $c = $cG / 1000;
+                $tr = (float)($kinds[$r['kind']]['kg'] ?? 0);
+                $lineNet += $c * $r['P']; $lineGross += ($c + $tr) * $r['P'];
+                echo '<div class="rtot"><div class="sumrow"><span><b>' . e($r['label']) . '</b> · '
+                   . number_format($r['P']) . '</span><b>' . number_format($c + $tr, 3) . ' kg each</b></div>'
+                   . '<div class="note">' . e($r['holds']) . '</div>'
+                   . '<div class="note">' . number_format($c, 3) . ' contents + ' . number_format($tr, 3)
+                   . ' package · net ' . number_format($c * $r['P'], 3) . ' · gross '
+                   . number_format(($c + $tr) * $r['P'], 3) . ' kg</div></div>';
             }
-            $f .= str_pad('', 18) . 'contents  ' . number_format($contents, 3) . " kg\n"
-                . str_pad('', 18) . '+ package ' . number_format((float)$g['pkg_tare'], 3) . " kg\n\n"
-                . 'NET   = ' . number_format($contents, 3) . ' x ' . number_format($P)
-                . ' = ' . number_format($contents * $P, 3) . " kg\n"
-                . 'GROSS = NET + (' . number_format((float)$g['pkg_tare'], 3) . ' x ' . number_format($P) . ') = '
-                . number_format($contents * $P + (float)$g['pkg_tare'] * $P, 3) . ' kg';
-            echo e($f);
+            echo '<div class="sumrow" style="border-top:2px solid var(--line);margin-top:6px;padding-top:9px">'
+               . '<span><b>This line</b></span><b>net ' . number_format($lineNet, 3) . ' · gross '
+               . number_format($lineGross, 3) . ' kg</b></div>';
           ?></div>
         </div>
 
@@ -1429,6 +1502,7 @@ if ($tab === 'weight') {
         .wrow .nm .in{padding:8px 10px;font-size:14px}
         .wbal{text-align:right;font-size:11.5px;font-weight:700;margin-top:5px;font-variant-numeric:tabular-nums}
         .wbal.ok{color:var(--good)}.wbal.left{color:var(--muted)}.wbal.over{color:var(--bad)}
+        .rtot{padding:8px 0;border-bottom:1px solid var(--line)}.rtot .note{margin-top:2px}
         .wrow .x{border:0;background:transparent;color:var(--bad);font-size:21px;min-height:40px;
           cursor:pointer;padding:0}
         </style>
@@ -1446,9 +1520,10 @@ if ($tab === 'weight') {
           var NAMES  = <?= json_encode((object)$unitName) ?>;
           var LINES  = <?= json_encode((object)$allLines) ?>;
           var STD    = <?= json_encode((object)$allStd) ?>;
-          var PERPKG = <?= json_encode((object)array_map(static fn($v) => round($v, 4), $perPkg)) ?>;
-          var TARE   = <?= json_encode(round((float)$g['pkg_tare'], 3)) ?>;
-          var PKGS   = <?= (int)$P ?>;
+          var PERPKG = <?= json_encode((object)array_map(static fn($v) => round((float)$v, 4), $perPkg)) ?>;
+          /* every range of this line: its packages and how many of each
+             unit one package holds — the weight is shared, these are not */
+          var RANGES = <?= json_encode($ranges) ?>;
           var at     = <?= json_encode($sz !== '' ? $sz : (string)($labels[0] ?? '')) ?>;
 
           var box   = document.getElementById('wlines');
@@ -1470,15 +1545,17 @@ if ($tab === 'weight') {
           function sum(list) {
             return (list || []).reduce(function (a, r) { return a + (+r.g || 0); }, 0);
           }
-          function must() {
-            var gr = parseFloat(document.getElementById('pg').value) || 0;
-            var tr = parseFloat(document.getElementById('pt').value) || 0;
-            return gr - tr;
+          /* No scale figure per range any more, so there is no line-by-line
+             balance to run down to. Gross is worked out, not checked. */
+          function must() { return 0; }
+          function tareOf(kind) {
+            var el = document.querySelector('[data-tare="' + kind + '"]');
+            return el ? (parseFloat(el.value) || 0) : 0;
           }
           /* What the lines say one package holds, across every size. */
-          function contents() {
+          function contentsOf(r) {
             var t = 0;
-            SIZES.forEach(function (l) { t += sum(LINES[l]) * (+PERPKG[l] || 0); });
+            Object.keys(r.q).forEach(function (k) { t += sum(LINES[k]) * (+r.q[k] || 0); });
             return t / 1000;
           }
 
@@ -1509,7 +1586,9 @@ if ($tab === 'weight') {
             var head = document.getElementById('wsizehead');
             var sub  = document.getElementById('wsizesub');
             head.textContent = 'One unit of ' + (at ? nm(at) : '—');
-            sub.textContent  = (+PERPKG[at] || 0) + ' of these in each package';
+            var nIn = RANGES.filter(function (r) { return r.q[at]; }).length;
+            sub.textContent = (+PERPKG[at] ? (+PERPKG[at]) + ' of these in each package · ' : '')
+              + 'used in ' + nIn + ' range' + (nIn === 1 ? '' : 's') + ' of this line';
 
             var std = document.getElementById('stdbtn');
             std.hidden = !STD[at];
@@ -1614,27 +1693,21 @@ if ($tab === 'weight') {
           }
 
           function drawTotals() {
-            document.getElementById('must').textContent = kg(must()) + ' kg';
-            var c = contents(), d = c - must();
             var el = document.getElementById('pkgtotals');
             if (!el) return;
-            el.innerHTML =
-                '<div class="sumrow"><span>The lines add up to</span><b>' + kg(c) + ' kg</b></div>'
-              + '<div class="sumrow"><span>They must come to</span><b>' + kg(must()) + ' kg</b></div>'
-              + '<div class="sumrow"><span><b>Balance</b></span><b><span class="pill '
-              + (Math.abs(d) < 0.0005 ? 'p">balanced' : 'w">' + (d > 0 ? '+' : '') + kg(d) + ' kg')
-              + '</span></b></div>';
-            document.getElementById('pkgformula').textContent =
-                SIZES.map(function (l) {
-                  var pu = Math.round(sum(LINES[l])), q = +PERPKG[l] || 0;
-                  return (nm(l) + '                  ').slice(0, 18) + num(pu) + ' g  x ' + q
-                       + '  = ' + kg(pu * q / 1000) + ' kg';
-                }).join('\n')
-              + '\n' + '                  contents  ' + kg(c) + ' kg'
-              + '\n' + '                + package ' + kg(TARE) + ' kg'
-              + '\n\nNET   = ' + kg(c) + ' x ' + num(PKGS) + ' = ' + kg(c * PKGS) + ' kg'
-              + '\nGROSS = NET + (' + kg(TARE) + ' x ' + num(PKGS) + ') = '
-              + kg(c * PKGS + TARE * PKGS) + ' kg';
+            var net = 0, gross = 0, html = '';
+            RANGES.forEach(function (r) {
+              var c = contentsOf(r), tr = tareOf(r.kind);
+              net += c * r.P; gross += (c + tr) * r.P;
+              html += '<div class="rtot"><div class="sumrow"><span><b>' + esc(r.label) + '</b> · ' + num(r.P)
+                + '</span><b>' + kg(c + tr) + ' kg each</b></div><div class="note">' + esc(r.holds)
+                + '</div><div class="note">' + kg(c)
+                + ' contents + ' + kg(tr) + ' package · net ' + kg(c * r.P) + ' · gross '
+                + kg((c + tr) * r.P) + ' kg</div></div>';
+            });
+            el.innerHTML = html + '<div class="sumrow" style="border-top:2px solid var(--line);margin-top:6px;'
+              + 'padding-top:9px"><span><b>This line</b></span><b>net ' + kg(net) + ' · gross ' + kg(gross)
+              + ' kg</b></div>';
           }
 
           /* Read the boxes back before any redraw, or typing in one would
@@ -1660,8 +1733,8 @@ if ($tab === 'weight') {
             rows().push({ t: TYPES[0], n: '', g: 0 });   /* Fabric — change it on the line */
             drawAll();
           };
-          ['pg', 'pt'].forEach(function (f) {
-            document.getElementById(f).addEventListener('input', function () { harvest(); drawAll(); });
+          document.querySelectorAll('[data-tare]').forEach(function (el) {
+            el.addEventListener('input', drawTotals);
           });
 
           var ab = document.getElementById('applybtn');
@@ -1703,6 +1776,15 @@ if ($tab === 'approve') {
     $lvlT = ob_get_level(); ob_start();
     try {
     $t = pack_totals($id);
+    /* EDIT, DELETE, UPDATE — FROM THE APPROVAL ITSELF. The same list as
+       the New range step, above the approve form rather than inside it:
+       each Delete is a form of its own, and a form inside a form is not
+       allowed. Folded away with one tap once it has been checked. */
+    if ($groups) {
+        echo '<details class="allr" open><summary>All ranges (' . count($groups)
+           . ') — edit, delete or change a weight</summary>'
+           . pack_summary_html($groups, $items, $canEdit, $id, $self, false) . '</details>';
+    }
     ?>
     <form method="post">
       <?= csrf_field() ?>

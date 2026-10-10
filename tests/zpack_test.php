@@ -198,7 +198,7 @@ head('5. Two ranges may not own the same carton');
 
 t('pack_serial_problem exists and is used before every save',
   str_contains($pkN, 'function pack_serial_problem')
-  && preg_match('~pack_serial_problem\(\$shipmentId, \$from, \$to, \$groupId\)~', $pkN) === 1);
+  && preg_match('~pack_serial_problem\(\$shipmentId, \$from, \$to, \$groupId, \(string\)\(\$in\[\x27unit_title\x27\] \?\? \x27Carton\x27\)\)~', $pkN) === 1);
 t('it looks for an overlap in the same shipment',
   preg_match('~serial_from<=\?\s+AND\s+serial_to>=\?~', $pkN) === 1,
   'the overlap query is not an overlap test');
@@ -392,9 +392,11 @@ $mpSrc = nocomments((string)file_get_contents($B . 'm_pack.php'));
 $wsave = preg_match('~if \(\$action === \x27weight\x27\).*?\n    \}~s', $mpSrc, $wm) ? $wm[0] : '';
 t('the weight save was found at all, so the checks below looked at something',
   $wsave !== '');
-t('what this range owns is read from the database first',
-  preg_match('~foreach \(pack_sizes\(\$gId\) as \$srow\)~', $wsave) === 1
-  && str_contains($wsave, 'pack_unit_key($grp, $srow)'));
+/* Every range of the invoice line, now — the weight is the line's. */
+t('what this line\'s ranges own is read from the database first',
+  str_contains($wsave, '$sibs = pack_siblings($grp);')
+  && preg_match('~foreach \(pack_sizes\(\(int\)\$sg\[\x27id\x27\]\) as \$srow\)~', $wsave) === 1
+  && str_contains($wsave, 'pack_unit_key($sg, $srow)'));
 t('and a key that is not one of them is skipped, not created',
   str_contains($wsave, 'if (!isset($own[$unitKey]) || !is_array($rows)) continue;'));
 t('the colour it is filed under comes from that row, never from the post',

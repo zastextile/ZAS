@@ -35,7 +35,7 @@
 
 /* Bumped whenever the tables below change. One indexed read on a page load
    that finds the same number does nothing at all. */
-const PACK_SCHEMA_VERSION = '3';
+const PACK_SCHEMA_VERSION = '4';
 
 /* The material types a weight line can be. The team adds as many lines of
    any type as it needs — two fabrics, three fabrics, two accessories. */
@@ -193,6 +193,18 @@ function pack_ensure_schema(): void
        they do not — the same cloth with a different dye — so one
        breakdown per size serves every colour of it, and this stays off. */
     $x("ALTER TABLE packing_groups ADD COLUMN weight_by_colour TINYINT(1) NOT NULL DEFAULT 0");
+
+    /* v4 — THE DESKTOP'S COLUMNS, MADE HERE TOO.
+       The package-number check now reads packing_items.pack_unit_title,
+       and approving writes invoice_item_id, pack_unit_title and qty_mode.
+       Those columns were only ever added by the desktop packing list when
+       its page loaded. On a database where nobody had opened it yet, the
+       check would fail — and it fails closed, so the phone would refuse
+       every save. The same ALTERs, idempotent, so whichever screen is
+       opened first makes them. */
+    $x("ALTER TABLE packing_items ADD COLUMN invoice_item_id INT NULL AFTER shipment_id");
+    $x("ALTER TABLE packing_items ADD COLUMN pack_unit_title VARCHAR(60) NOT NULL DEFAULT 'Carton' AFTER optional_value");
+    $x("ALTER TABLE packing_items ADD COLUMN qty_mode VARCHAR(20) NOT NULL DEFAULT 'auto' AFTER qty_per_carton");
 
     try {
         db()->prepare("INSERT INTO exp_meta (k, v, updated_at) VALUES ('pack_schema_version', ?, NOW())
@@ -553,8 +565,15 @@ function pack_weight_seed(int $groupId): int
         if (pack_weight_lines($groupId, $size, $colour)) continue;
 
         $lines = [];
+        /* 0. ANOTHER RANGE OF THE SAME INVOICE LINE. This is the rule now,
+              not a convenience: one line, one weight. */
+        foreach (pack_siblings($g) as $sg) {
+            if ((int)$sg['id'] === $groupId) continue;
+            $lines = pack_weight_lines((int)$sg['id'], $size, $colour);
+            if ($lines) break;
+        }
         /* 1. the same product, size and colour elsewhere in this shipment */
-        try {
+        if (!$lines) try {
             $q = db()->prepare("SELECT wl.w_type, wl.w_name, wl.grams
                                 FROM packing_weight_lines wl
                                 JOIN packing_groups g2 ON g2.id = wl.group_id
@@ -570,9 +589,85 @@ function pack_weight_seed(int $groupId): int
         /* 2. the standard, which falls back from a colour to its size */
         if (!$lines) $lines = pack_std_get((string)$g['product_name'], $size, $colour);
 
-        if ($lines) { pack_weight_save($groupId, $size, $lines, false, $colour); $filled++; }
+        if ($lines) { pack_weight_save($groupId, $size, $lines, false, $colour, false); $filled++; }
     }
+
+    /* and the empty package, from a range of the same line and kind */
+    if ((float)$g['pkg_tare'] <= 0) {
+        foreach (pack_siblings($g) as $sg) {
+            if ((int)$sg['id'] === $groupId || (float)$sg['pkg_tare'] <= 0) continue;
+            if (mb_strtolower(trim((string)$sg['unit_title'])) !== mb_strtolower(trim((string)$g['unit_title']))) continue;
+            try {
+                db()->prepare("UPDATE packing_groups SET pkg_tare=? WHERE id=?")
+                    ->execute([(float)$sg['pkg_tare'], $groupId]);
+            } catch (Throwable $e) {}
+            break;
+        }
+    }
+    pack_gross_refresh($groupId);
     return $filled;
+}
+
+/* EVERY RANGE OF ONE INVOICE LINE.
+
+   "I need to upload weight only one time for each item in the invoice,
+    even if they have many serial ranges, because the weight formula
+    does not change."
+
+   So weight belongs to the invoice LINE, not to a range. A line packed
+   as Carton 1–99, Carton 100 and Roll 1–5 is three ranges and one
+   weight. These are that line's ranges; the breakdown and the empty-
+   package weight are written to all of them at once, and a range added
+   later is filled from them the moment it is saved.
+
+   A range with no invoice line (an old one) is its own family. */
+function pack_siblings(array $g): array
+{
+    $item = (int)($g['invoice_item_id'] ?? 0);
+    if ($item <= 0) return [$g];
+    try {
+        $s = db()->prepare("SELECT * FROM packing_groups WHERE shipment_id=? AND invoice_item_id=?
+                            ORDER BY serial_from, id");
+        $s->execute([(int)$g['shipment_id'], $item]);
+        $rows = $s->fetchAll();
+        return $rows ?: [$g];
+    } catch (Throwable $e) { return [$g]; }
+}
+
+/* The empty-package weight, once per line AND package type: an empty
+   carton and an empty roll core weigh different things, and both can
+   belong to one invoice line. Written to every range of the line that
+   uses that kind of package. */
+function pack_tare_save(int $groupId, string $unit, float $tare): void
+{
+    $g = pack_group($groupId);
+    if (!$g) return;
+    $want = mb_strtolower(trim($unit));
+    foreach (pack_siblings($g) as $sg) {
+        if (mb_strtolower(trim((string)$sg['unit_title'])) !== $want) continue;
+        try {
+            db()->prepare("UPDATE packing_groups SET pkg_tare=?, updated_by=?, updated_at=NOW() WHERE id=?")
+                ->execute([max(0.0, $tare), (int)(current_user()['id'] ?? 0), (int)$sg['id']]);
+        } catch (Throwable $e) {}
+    }
+}
+
+/* GROSS IS WORKED OUT, NOT TYPED. What one package holds, by the
+   breakdown, plus the empty package. Stored so every screen and the
+   desktop read one figure, and refreshed whenever a weight, a tare or
+   the contents of a range change. */
+function pack_gross_refresh(int $groupId): void
+{
+    $g = pack_group($groupId);
+    if (!$g) return;
+    foreach (pack_siblings($g) as $sg) {
+        $c = pack_contents_kg($sg, pack_sizes((int)$sg['id']), pack_per_unit((int)$sg['id']));
+        $gross = $c > 0 ? $c + (float)$sg['pkg_tare'] : 0.0;
+        try {
+            db()->prepare("UPDATE packing_groups SET pkg_gross=? WHERE id=?")
+                ->execute([round($gross, 3), (int)$sg['id']]);
+        } catch (Throwable $e) {}
+    }
 }
 
 /* What still has to be asked for, as "Size" or "Size · Colour". */
@@ -594,27 +689,53 @@ function pack_weight_missing(int $groupId): array
     return $out;
 }
 
-function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGroupId = 0): string
+function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGroupId = 0,
+                             string $unit = ''): string
 {
     if ($from < 1)        return 'The first serial must be 1 or more.';
     if ($to < $from)      return 'The last serial cannot be before the first one.';
     if ($to - $from > PACK_MAX_SPAN) return 'That range covers more than ' . number_format(PACK_MAX_SPAN) . ' packages.';
 
+    /* A PACKAGE NUMBER ONCE PER KIND OF PACKAGE.
+       "Do not allow the same serial or the same carton number to repeat
+        in the same shipment — but the same number can be used if the
+        package type is different, like a roll."
+       So Carton 1–50 twice is refused, and Carton 1–50 beside Roll 1–50
+       is fine. The kind is compared without case or spaces, so "carton"
+       and "Carton " are the same kind.
+
+       Checked against the ranges on this screen AND against the rows
+       typed by hand on the desktop packing list (packing_group_id empty),
+       because both end up on the same printed packing list. */
+    $kind = mb_strtolower(trim($unit !== '' ? $unit : 'Carton'));
     try {
         $s = db()->prepare("SELECT unit_title, serial_from, serial_to FROM packing_groups
                             WHERE shipment_id=? AND id<>? AND serial_from<=? AND serial_to>=?
+                              AND LOWER(TRIM(unit_title))=?
                             ORDER BY serial_from LIMIT 1");
-        $s->execute([$shipmentId, $exceptGroupId, $to, $from]);
+        $s->execute([$shipmentId, $exceptGroupId, $to, $from, $kind]);
         $hit = $s->fetch();
+        if (!$hit) {
+            $s = db()->prepare("SELECT pack_unit_title AS unit_title, carton_from AS serial_from,
+                                       carton_to AS serial_to FROM packing_items
+                                WHERE shipment_id=? AND packing_group_id IS NULL
+                                  AND carton_from<=? AND carton_to>=?
+                                  AND LOWER(TRIM(COALESCE(NULLIF(pack_unit_title,''),'Carton')))=?
+                                ORDER BY carton_from LIMIT 1");
+            $s->execute([$shipmentId, $to, $from, $kind]);
+            $hit = $s->fetch();
+            if ($hit) $hit['unit_title'] = ($hit['unit_title'] ?: 'Carton') . ' (desktop)';
+        }
         if ($hit) {
-            return 'Those serials are already used by ' . $hit['unit_title'] . ' '
+            return 'Those numbers are already used by ' . $hit['unit_title'] . ' '
                  . (int)$hit['serial_from'] . '–' . (int)$hit['serial_to']
-                 . '. Every package number can be used once.';
+                 . '. A number can be used once per kind of package — the same number '
+                 . 'is fine only for a different kind, like a Roll.';
         }
     } catch (Throwable $e) {
         /* FAIL CLOSED. This used to swallow the error and return "no
-           problem", so a failed check let a duplicate carton through
-           without a word. A save that cannot be checked is refused. */
+           problem", so a failed check let a duplicate through without a
+           word. A save that cannot be checked is refused. */
         return 'The package numbers could not be checked just now, so nothing was saved. Try again.';
     }
     return '';
@@ -629,7 +750,7 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
 {
     $from = (int)($in['serial_from'] ?? 0);
     $to   = (int)($in['serial_to'] ?? 0);
-    $bad  = pack_serial_problem($shipmentId, $from, $to, $groupId);
+    $bad  = pack_serial_problem($shipmentId, $from, $to, $groupId, (string)($in['unit_title'] ?? 'Carton'));
     if ($bad !== '') return [false, $bad, 0];
 
     $mode = ($in['qty_mode'] ?? 'per') === 'direct' ? 'direct' : 'per';
@@ -663,6 +784,23 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
     $perPkg   = $packages > 0 ? $totalQty / $packages : 0.0;
 
     $uid = (int)(current_user()['id'] ?? 0);
+
+    /* WHETHER COLOURS WEIGH DIFFERENTLY IS A FACT ABOUT THE LINE, since
+       the weight is the line's. Only the assorted page asks it; any other
+       save leaves it as the line already has it, rather than quietly
+       switching it off. */
+    $item = (int)($in['invoice_item_id'] ?? 0);
+    if (!array_key_exists('weight_by_colour', $in) || $in['weight_by_colour'] === null) {
+        $in['weight_by_colour'] = false;
+        if ($item > 0) {
+            try {
+                $q = db()->prepare("SELECT MAX(weight_by_colour) FROM packing_groups
+                                    WHERE shipment_id=? AND invoice_item_id=? AND id<>?");
+                $q->execute([$shipmentId, $item, $groupId]);
+                $in['weight_by_colour'] = (bool)$q->fetchColumn();
+            } catch (Throwable $e) {}
+        }
+    }
     try {
         db()->beginTransaction();
 
@@ -713,6 +851,11 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
             $pp = $mode === 'per' ? $c['qty'] : ($packages > 0 ? $c['qty'] / $packages : 0);
             $tt = $mode === 'per' ? $c['qty'] * $packages : $c['qty'];
             $ins->execute([$groupId, $c['size_label'], $c['colour_label'], $pp, $tt]);
+        }
+
+        if ($item > 0) {
+            db()->prepare("UPDATE packing_groups SET weight_by_colour=? WHERE shipment_id=? AND invoice_item_id=?")
+                ->execute([!empty($in['weight_by_colour']) ? 1 : 0, $shipmentId, $item]);
         }
 
         db()->commit();
@@ -767,25 +910,37 @@ function pack_weigh_save(int $groupId, float $gross, float $tare): void
    same figures again in between. Seeding passes false, because copying
    a standard onto a range is not news. */
 function pack_weight_save(int $groupId, string $size, array $lines,
-                          bool $remember = true, string $colour = ''): array
+                          bool $remember = true, string $colour = '', bool $spread = true): array
 {
     if ($size === '') return [false, 'No size to save against.'];
+    /* ONE LINE, ONE WEIGHT: written to every range of the invoice line,
+       so a second range is never asked again and a change to the first
+       reaches all of them. $spread is off only for the seed, which is
+       filling one new range from its siblings. */
+    $targets = [$groupId];
+    if ($spread) {
+        $g0 = pack_group($groupId);
+        if ($g0) $targets = array_map(static fn($r) => (int)$r['id'], pack_siblings($g0));
+        if (!in_array($groupId, $targets, true)) $targets[] = $groupId;
+    }
     try {
         db()->beginTransaction();
-        db()->prepare("DELETE FROM packing_weight_lines
-                       WHERE group_id=? AND size_label=? AND colour_label=?")
-            ->execute([$groupId, $size, $colour]);
+        $del = db()->prepare("DELETE FROM packing_weight_lines
+                       WHERE group_id=? AND size_label=? AND colour_label=?");
         $ins = db()->prepare("INSERT INTO packing_weight_lines
                    (group_id, size_label, colour_label, line_no, w_type, w_name, grams)
                    VALUES (?,?,?,?,?,?,?)");
-        $n = 0;
-        foreach ($lines as $l) {
-            $g = (float)($l['grams'] ?? 0);
-            if ($g <= 0) continue;
-            $type = (string)($l['w_type'] ?? 'Fabric');
-            if (!in_array($type, PACK_WTYPES, true)) $type = 'Other';
-            $ins->execute([$groupId, $size, $colour, ++$n, $type,
-                           mb_substr(trim((string)($l['w_name'] ?? '')), 0, 120), $g]);
+        foreach ($targets as $tid) {
+            $del->execute([$tid, $size, $colour]);
+            $n = 0;
+            foreach ($lines as $l) {
+                $g = (float)($l['grams'] ?? 0);
+                if ($g <= 0) continue;
+                $type = (string)($l['w_type'] ?? 'Fabric');
+                if (!in_array($type, PACK_WTYPES, true)) $type = 'Other';
+                $ins->execute([$tid, $size, $colour, ++$n, $type,
+                               mb_substr(trim((string)($l['w_name'] ?? '')), 0, 120), $g]);
+            }
         }
         db()->commit();
     } catch (Throwable $e) {
@@ -821,14 +976,13 @@ function pack_totals(int $shipmentId): array
         $pkgs  += $p;
         $qty   += pack_group_qty($g, $sizes);
 
-        if (!$sizes)                      $un[] = $where . ' · no size yet';
-        if ((float)$g['pkg_gross'] <= 0)  $un[] = $where . ' · not weighed yet';
-        else {
-            $must = (float)$g['pkg_gross'] - (float)$g['pkg_tare'];
-            if (abs($c - $must) >= 0.0005) {
-                $un[] = $where . ' · the lines come to ' . number_format($c, 3)
-                      . ' kg against ' . number_format($must, 3) . ' kg';
-            }
+        /* Weighed means the line has its breakdown. There is no scale
+           figure per range any more to compare against — gross is the
+           contents plus the empty package, worked out. */
+        if (!$sizes)       $un[] = $where . ' · no size yet';
+        elseif ($c <= 0)   $un[] = $where . ' · no weight for this line yet';
+        elseif (pack_weight_missing((int)$g['id'])) {
+            $un[] = $where . ' · weight missing for ' . implode(', ', pack_weight_missing((int)$g['id']));
         }
     }
     return ['net' => $net, 'gross' => $gross, 'packages' => $pkgs,
@@ -906,8 +1060,9 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
             /* Remember this breakdown for the next shipment of the same
                product and size. */
             foreach ($sizes as $s) {
-                $lines = pack_weight_lines((int)$g['id'], (string)$s['size_label']);
-                if ($lines) pack_std_save((string)$g['product_name'], (string)$s['size_label'], $lines);
+                [$wsz, $wcol] = pack_wkey($g, $s);
+                $lines = pack_weight_lines((int)$g['id'], $wsz, $wcol);
+                if ($lines) pack_std_save((string)$g['product_name'], $wsz, $lines, $wcol);
             }
         }
 

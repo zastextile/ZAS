@@ -328,10 +328,10 @@ t('the depth counter came back to nothing, so nothing was left open',
    its colours differ. The list is therefore keyed by that unit, so the
    screen can land on it. */
 t('the weight screen opens on what is missing, not on the first one',
-  preg_match('~if \(!pack_weight_lines\(\$gid, \$u\[\x27size\x27\], \$u\[\x27colour\x27\]\)\) \$missing\[\$k\]~', $mpN) === 1
+  preg_match('~if \(!pack_weight_lines\(\$unitHome\[\$k\], \$u\[\x27size\x27\], \$u\[\x27colour\x27\]\)\) \$missing\[\$k\]~', $mpN) === 1
   && str_contains($mpN, "\$sz = (string)(array_key_first(\$missing) ?? (\$labels[0] ?? ''));"));
 t('and what counts as one thing to weigh is decided in one place',
-  str_contains($mpN, 'pack_unit_key($g, $srow)') && str_contains($mpN, 'pack_wkey($g, $srow)'));
+  str_contains($mpN, 'pack_unit_key($sg, $srow)') && str_contains($mpN, 'pack_wkey($sg, $srow)'));
 t('and says so plainly when there is nothing to do',
   str_contains($mpN, 'Nothing new to weigh here.'));
 t('the old per-size recall button is gone, because it is automatic now',
