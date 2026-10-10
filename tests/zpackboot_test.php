@@ -387,8 +387,6 @@ $pages = [
     'weight'  => ['id' => 1, 't' => 'weight'],
     'weight2' => ['id' => 1, 't' => 'weight', 'g' => 102],
     'weight3' => ['id' => 1, 't' => 'weight', 'g' => 103],
-    'mix'     => ['id' => 1, 't' => 'mix', 'g' => 101],
-    'mix2'    => ['id' => 1, 't' => 'mix', 'g' => 102],
     'approve' => ['id' => 1, 't' => 'approve'],
 ];
 $html = [];
@@ -481,40 +479,27 @@ ok(preg_match_all('~<label class="f" data-one data-colbox hidden>~', $ser) === 3
    'and it is hidden on every line that has no colours set',
    preg_match_all('~<label class="f" data-one data-colbox hidden>~', $ser));
 
-head('4. Assorted is a page of its own, and it adds up');
+head('4. Assorted is set up inside the range card, not on a page of its own');
 
-$mix = $html['mix'];
-ok(str_contains($mix, 'Assorted — Carton 1–100'),
-   'the assorted page is titled for the serial it belongs to');
-ok(str_contains($mix, 'Carton 1') && str_contains($mix, '100'), 'and names the range it belongs to');
-/* The rows are not in the markup any more — the pads build them as they
-   are tapped, and section 7 taps them. What the markup can prove is that
-   the pads arrived and that the saved mix came down with the page. */
-ok(str_contains($mix, 'id="szPad"'), 'a size pad to tap');
-ok(str_contains($mix, 'id="colPad"'), 'and a colour pad, because this order has colours');
-/* The empty div, not the absence of the string — the script below it
-   contains name="size_label[]" as the text it builds rows from, and a
-   plain search finds that instead. */
-ok(str_contains($mix, '<div id="rows"></div>'),
-   'the posted rows start empty and are built from the tally, never typed');
-$boot = preg_match('~var MIX\s*=\s*(\[.*?\]);~s', $mix, $bm) ? json_decode($bm[1], true) : null;
-ok(is_array($boot) && count($boot) === 3, 'the saved set of three comes down with the page',
-   is_array($boot) ? count($boot) : substr((string)($bm[1] ?? ''), 0, 120));
-ok(is_array($boot) && array_map('floatval', array_column($boot, 'q')) === [2.0, 4.0, 4.0],
-   'holding 2, 4 and 4 from the saved set',
-   is_array($boot) ? array_column($boot, 'q') : null);
-ok(is_array($boot) && preg_match('~var TARGET\s*=\s*10;~', $mix) === 1,
-   'and a target of 10, which is what one carton holds');
-
-/* The line the office never set up still has to work: no colour pad,
-   and the size list falls back to the product master. */
-$mix2 = $html['mix2'];
-ok(!str_contains($mix2, 'id="colPad"') && str_contains($mix2, 'id="szPad"'),
-   'a line with no colours set gets the size pad only, not an empty colour pad');
-ok(preg_match('~var SIZES\s*=\s*(\[.*?\]);~s', $mix2, $m2)
-   && in_array('King', (array)json_decode($m2[1], true), true),
-   'and its sizes fall back to the product master rather than nothing',
-   $m2[1] ?? null);
+/* "Never allow a page refresh — dynamic fields with the toggle, in the
+   same form." The old tap page is gone; its address now sends you to the
+   range in the card. */
+[$oldMix] = render($work, ['id' => 1, 't' => 'mix', 'g' => 101]);
+ok(str_contains($oldMix, '__REDIRECT__ m_pack.php?id=1&t=serial#r101'),
+   'the old assorted page sends you to that range in the card', substr($oldMix, 0, 160));
+ok(!str_contains($ser, 't=mix'), 'and nothing on the serial page links to it any more');
+preg_match_all('~<form method="post" class="mcard" autocomplete="off".*?</form>~s', $ser, $cards4);
+$c1 = $cards4[0][0] ?? '';
+ok(preg_match('~<div data-mix\s+data-asz=~', $c1) === 1,
+   'an assorted range opens with its assortment showing', null);
+$asz4 = preg_match('~data-asz="([^"]*)"~', $c1, $am4) ? json_decode(html_entity_decode($am4[1]), true) : null;
+ok($asz4 === ['Small' => 2, 'Medium' => 4, 'Large' => 4],
+   'holding the saved 2 Small, 4 Medium, 4 Large', $asz4);
+ok(preg_match('~name="single_qty"\s+value="10"~', $c1) === 1,
+   'and the total pieces per carton, 10, in the common box');
+$cn4 = end($cards4[0]) ?: '';
+ok(preg_match('~name="size_mode" value="mix"(?![^>]*disabled)~', $cn4) === 1,
+   'Assorted can be chosen on a new range at once — no saving first');
 ok(str_contains($ser, '2 Small, 4 Medium, 4 Large'),
    'and the serial tab shows the mix without opening it');
 
@@ -597,41 +582,6 @@ const fs = require('fs'), path = require('path');
     r.wlines   = await p.locator('#wlines .wrow').count();
     r.balances = await p.locator('#wlines .wbal').allInnerTexts();
     r.perunit  = await p.locator('#perunit').count() ? await p.locator('#perunit').innerText() : '';
-    /* THE PADS, TAPPED. A count of the hidden inputs would pass against
-       a pad that draws but never adds up, so this reads the meter, taps
-       a colour and a size, and reads what would actually be posted. */
-    /* count() on the pad, not on the div: a pad that drew no button at
-       all is a real state (an order with no sizes set), and clicking into
-       it should report an empty pad, not hang the whole run. */
-    if (await p.locator('#szPad button').count()) {
-      r.mCount = await p.locator('#mCount').innerText();
-      r.mMsg   = await p.locator('#mMsg').innerText();
-      r.mState = await p.locator('#meter').getAttribute('class');
-      const posted = async () => p.evaluate(() => Array.from(
-        document.querySelectorAll('#rows input')).map(i => i.name + '=' + i.value).join(','));
-      r.posted0 = await posted();
-      if (await p.locator('#colPad button').count()) {
-        await p.locator('#colPad button', { hasText: 'Navy' }).click();
-        r.colOn = await p.locator('#colPad button.on').innerText();
-      }
-      await p.locator('#szPad button').first().click();
-      await p.locator('#szPad button').first().click();
-      r.mCount2 = await p.locator('#mCount').innerText();
-      r.mMsg2   = await p.locator('#mMsg').innerText();
-      r.mState2 = await p.locator('#meter').getAttribute('class');
-      r.posted2 = await posted();
-      r.tally   = await p.locator('#tally .tl .who').allInnerTexts();
-      /* and taken back out again, because a pad that only counts up is
-         no use to a packer who taps one too many */
-      await p.locator('#tally .tl').last().locator('.minus').click();
-      r.mCount3 = await p.locator('#mCount').innerText();
-      r.posted3 = await posted();
-      if (await p.locator('#wbcSeg').count()) {
-        await p.locator('#wbcSeg button').last().click();
-        r.wbc = await p.locator('#wbc').inputValue();
-        r.wbcOn = await p.locator('#wbcSeg button.on').innerText();
-      }
-    }
     r.dev      = await p.locator('#dev').count() ? (await p.locator('#dev').innerText()).replace(/\n/g, ' | ') : '';
     /* The chips a packer actually taps. Drawn by script, so the key and
        the name are indistinguishable in the markup. */
@@ -712,52 +662,6 @@ JS;
            'a range with one thing to weigh draws no chips at all',
            $got['weight5']['chips'] ?? null);
 
-        /* ---- the tap pads, as a packer meets them */
-        $M = $got['mix'] ?? [];
-        ok(($M['mCount'] ?? '') === '10 / 10', 'the saved mix opens complete at 10 of 10',
-           $M['mCount'] ?? null);
-        ok(($M['mMsg'] ?? '') === 'Complete.' && str_contains((string)($M['mState'] ?? ''), 'done'),
-           'and says so, in the colour of a finished carton',
-           [$M['mMsg'] ?? null, $M['mState'] ?? null]);
-        ok(substr_count((string)($M['posted0'] ?? ''), 'size_label[]') === 3,
-           'what would post is the saved three, rebuilt from the tally',
-           $M['posted0'] ?? null);
-        ok(($M['colOn'] ?? '') === 'Navy', 'tapping a colour selects it and nothing else',
-           $M['colOn'] ?? null);
-        ok(($M['mCount2'] ?? '') === '12 / 10', 'two taps on a size add two pieces',
-           $M['mCount2'] ?? null);
-        ok(($M['mMsg2'] ?? '') === '2 too many — take some out.'
-           && str_contains((string)($M['mState2'] ?? ''), 'over'),
-           'and an over-filled carton says how many to take out, before it can be saved',
-           [$M['mMsg2'] ?? null, $M['mState2'] ?? null]);
-        ok(str_contains((string)($M['posted2'] ?? ''), 'colour_label[]=Navy')
-           && str_contains((string)($M['posted2'] ?? ''), 'size_qty[]=2'),
-           'the new piece posts under the colour that was tapped',
-           $M['posted2'] ?? null);
-        ok(in_array('Navy Small', array_map(static fn($t) => trim(preg_replace('~\s+~', ' ', $t)),
-                                            (array)($M['tally'] ?? [])), true),
-           'and shows up in the tally named by colour and size',
-           $M['tally'] ?? null);
-        ok(($M['mCount3'] ?? '') === '11 / 10', 'minus takes one back out',
-           $M['mCount3'] ?? null);
-        ok(substr_count((string)($M['posted3'] ?? ''), 'size_label[]') === 4,
-           'and what posts follows it down', $M['posted3'] ?? null);
-        ok(($M['wbc'] ?? '') === '1' && str_contains((string)($M['wbcOn'] ?? ''), 'differs'),
-           'the per-colour weight switch moves and is what posts',
-           [$M['wbc'] ?? null, $M['wbcOn'] ?? null]);
-        /* Range 2 is a plain single-size range being turned assorted.
-           What it already holds is the starting point — the packer splits
-           it up, he does not re-enter it. */
-        $M2 = $got['mix2'] ?? [];
-        ok(($M2['mCount'] ?? '') === '40 / 40',
-           'a single-size range opens assorted at the quantity it already had',
-           $M2['mCount'] ?? null);
-        ok(substr_count((string)($M2['posted0'] ?? ''), 'size_label[]') === 1
-           && str_contains((string)($M2['posted0'] ?? ''), 'size_qty[]=40'),
-           'carried in as one row, not lost', $M2['posted0'] ?? null);
-        ok(($M2['mCount2'] ?? '') === '42 / 40',
-           'and counts on against its own target, which is 40 here not 10',
-           $M2['mCount2'] ?? null);
         ok(str_contains($got['approve']['dev'] ?? '', 'same as calculated'),
            'approve opens with no deviation', $got['approve']['dev'] ?? null);
     }
@@ -1734,6 +1638,135 @@ ok(str_contains($newCard, 'name="unit_title" value="Carton" aria-label="Unit"'),
 ok(preg_match('~name="serial_from"[^>]*value="311"~', $newCard) === 1,
    'and starts at 311 — the next Carton — not 411, the next number of any kind',
    preg_match('~name="serial_from"[^>]*value="(\d+)"~', $newCard, $fm) ? $fm[1] : null);
+
+head('16. Assorted in the same card: the toggle, two lists, live sums, no reload');
+
+/* "Toggle OFF: Colour and Size. Toggle ON: hide them; show Colour
+    Assortment (White 8, Grey 8, Blue 8) and Size Assortment / Ratio
+    (Single 6, Double 12, King 6). Total pieces per carton stays in both.
+    Everything updates instantly in the same form, without a refresh." */
+[$s16] = render($work, ['id' => 1, 't' => 'serial']);
+file_put_contents($work . '/serial16.html', $s16);
+$js16 = <<<'JS'
+const { chromium } = require('playwright');
+const path = require('path');
+(async () => {
+  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
+  const errs = []; p.on('pageerror', e => errs.push(String(e)));
+  await p.goto('file://' + path.join(process.argv[2], 'serial16.html'));
+  await p.waitForTimeout(300);
+  await p.evaluate(() => { window.__sameDoc = 1; });   // gone if the page reloads
+  const out = { errs };
+  const c1 = p.locator('form.mcard').nth(0);
+  const vals = async (c, sel) => c.locator(sel + ' .arow .in').evaluateAll(n => n.map(x => x.value));
+  const labs = async (c, sel) => c.locator(sel + ' .arow b').allInnerTexts();
+
+  out.sizeLabs = await labs(c1, '[data-asizes]');
+  out.sizeVals = await vals(c1, '[data-asizes]');
+  out.colLabs  = await labs(c1, '[data-acols]');
+  out.sizeSum0 = await c1.locator('[data-asizesum]').innerText();
+  out.colSum0  = await c1.locator('[data-acolsum]').innerText();
+  out.save0    = await c1.locator('button[type="submit"]').isDisabled();
+  out.qtyLabel = await c1.locator('[data-qtylabel]').textContent();   // the words, not the capitals CSS draws
+  out.oneHidden = await c1.locator('select[name="single_size"]').isHidden();
+
+  // type the colours, key by key — the box must keep the cursor
+  const white = c1.locator('[data-acols] .arow .in').nth(0);
+  await white.click(); await p.keyboard.type('6', { delay: 30 });
+  const navy = c1.locator('[data-acols] .arow .in').nth(1);
+  await navy.click(); await p.keyboard.type('4', { delay: 30 });
+  out.navyFocused = await p.evaluate(() => document.activeElement && document.activeElement.getAttribute('aria-label'));
+  out.colSum1 = await c1.locator('[data-acolsum]').innerText();
+  out.save1   = await c1.locator('button[type="submit"]').isEnabled();
+
+  // the total changes: both lists say they are short, Save waits
+  await c1.locator('[name="single_qty"]').fill('12');
+  await p.waitForTimeout(60);
+  out.sizeSum2 = await c1.locator('[data-asizesum]').innerText();
+  out.save2    = await c1.locator('button[type="submit"]').isDisabled();
+  await c1.locator('[name="single_qty"]').fill('10');
+
+  // toggle off: Size and Colour back, the lists hidden; on again: figures kept
+  await c1.locator('[name="size_mode"][value="one"]').check({ force: true });
+  await p.waitForTimeout(60);
+  out.offMixHidden  = await c1.locator('[data-mix]').isHidden();
+  out.offSizeShown  = await c1.locator('select[name="single_size"]').isVisible();
+  out.offLabel      = await c1.locator('[data-qtylabel]').textContent();
+  await c1.locator('[name="size_mode"][value="mix"]').check({ force: true });
+  await p.waitForTimeout(60);
+  out.onAgainSizes = await vals(c1, '[data-asizes]');
+  out.onAgainCols  = await vals(c1, '[data-acols]');
+
+  // the New range card: assorted straight away, rows from the line picked
+  const cn = p.locator('form.mcard').nth(3);
+  await cn.locator('[name="size_mode"][value="mix"]').check({ force: true });
+  await cn.locator('select[name="invoice_item_id"]').selectOption('11');
+  await p.waitForTimeout(80);
+  out.newSizeLabs = await labs(cn, '[data-asizes]');
+  out.newColLabs  = await labs(cn, '[data-acols]');
+  await cn.locator('select[name="invoice_item_id"]').selectOption('12');
+  await p.waitForTimeout(80);
+  out.newColHidden = await cn.locator('[data-acolbox]').isHidden();
+
+  out.sameDoc = await p.evaluate(() => window.__sameDoc === 1);
+  console.log(JSON.stringify(out));
+  await b.close();
+})();
+JS;
+file_put_contents($work . '/s16.js', $js16);
+$r16 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
+        . escapeshellarg($work . '/s16.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
+ok(is_array($r16) && $r16['errs'] === [], 'no javascript error', $r16);
+ok(($r16['sizeLabs'] ?? null) === ['Small', 'Medium', 'Large'] && ($r16['sizeVals'] ?? null) === ['2', '4', '4'],
+   'Size assortment: the line\'s three sizes, holding the saved 2, 4 and 4',
+   [$r16['sizeLabs'] ?? null, $r16['sizeVals'] ?? null]);
+ok(($r16['colLabs'] ?? null) === ['White', 'Navy'], 'Colour assortment: the line\'s two colours',
+   $r16['colLabs'] ?? null);
+ok(($r16['qtyLabel'] ?? '') === 'Total pieces per carton' && ($r16['oneHidden'] ?? false),
+   'the common box reads Total pieces per carton, and the single Size field is hidden',
+   [$r16['qtyLabel'] ?? null, $r16['oneHidden'] ?? null]);
+ok(str_contains((string)($r16['sizeSum0'] ?? ''), '10 of 10 — complete'),
+   'the sizes say they add up', $r16['sizeSum0'] ?? null);
+ok(str_contains((string)($r16['colSum0'] ?? ''), '0 of 10 — 10 pieces still to place') && ($r16['save0'] ?? false),
+   'the colours say what is left, and Save waits for them', [$r16['colSum0'] ?? null, $r16['save0'] ?? null]);
+ok(($r16['navyFocused'] ?? '') === 'Navy', 'typing in a box keeps the cursor in it', $r16['navyFocused'] ?? null);
+ok(str_contains((string)($r16['colSum1'] ?? ''), '10 of 10 — complete') && ($r16['save1'] ?? false),
+   'White 6 + Navy 4 completes it, and Save comes on', [$r16['colSum1'] ?? null, $r16['save1'] ?? null]);
+ok(str_contains((string)($r16['sizeSum2'] ?? ''), '10 of 12 — 2 pieces still to place') && ($r16['save2'] ?? false),
+   'change the total to 12 and both lists say they are short; Save waits', $r16['sizeSum2'] ?? null);
+ok(($r16['offMixHidden'] ?? false) && ($r16['offSizeShown'] ?? false)
+   && ($r16['offLabel'] ?? '') === 'Quantity per carton',
+   'toggle off: Size and Colour come back, the assortment hides — instantly',
+   [$r16['offMixHidden'] ?? null, $r16['offSizeShown'] ?? null, $r16['offLabel'] ?? null]);
+ok(($r16['onAgainSizes'] ?? null) === ['2', '4', '4'] && ($r16['onAgainCols'] ?? null) === ['6', '4'],
+   'toggle on again: every figure typed is still there',
+   [$r16['onAgainSizes'] ?? null, $r16['onAgainCols'] ?? null]);
+ok(($r16['newSizeLabs'] ?? null) === ['Small', 'Medium', 'Large'] && ($r16['newColLabs'] ?? null) === ['White', 'Navy'],
+   'a new range can be assorted at once, with the rows of the line picked',
+   [$r16['newSizeLabs'] ?? null, $r16['newColLabs'] ?? null]);
+ok(($r16['newColHidden'] ?? false) === true,
+   'and a line with no colours shows no colour list');
+ok(($r16['sameDoc'] ?? false) === true, 'and none of it reloaded the page');
+
+/* The server checks the same sums, so a phone with no script is held to them too. */
+$base16 = ['action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 11,
+           'unit_title' => 'Carton', 'serial_from' => 700, 'serial_to' => 709, 'qty_mode' => 'per'];
+$asz = ['asz_label' => ['Small', 'Medium', 'Large'], 'asz_qty' => [2, 4, 3]];
+$pa = post_to($work, ['id' => 1, 't' => 'serial'], $base16 + ['size_mode' => 'mix', 'single_qty' => 10] + $asz);
+ok(str_contains($pa, 'The sizes add up to 9, but the total is 10.'),
+   'sizes that do not add up are refused, saying by how much');
+$dra = preg_match('~__DRAFT__ (\{.*\})~', $pa, $dma) ? json_decode($dma[1], true) : null;
+ok(is_array($dra) && $dra['mix'] === true && ($dra['asz']['Large'] ?? null) == 3,
+   'and the assortment typed is kept for the card', $dra);
+$pb = post_to($work, ['id' => 1, 't' => 'serial'], $base16 + ['size_mode' => 'mix', 'single_qty' => 10]
+        + ['asz_label' => ['Small', 'Medium', 'Large'], 'asz_qty' => [2, 4, 4],
+           'acol_label' => ['White', 'Navy'], 'acol_qty' => [6, 2]]);
+ok(str_contains($pb, 'The colours add up to 8, but the total is 10.'), 'so are colours that do not');
+$pc = post_to($work, ['id' => 1, 't' => 'serial'], $base16 + ['size_mode' => 'one', 'single_qty' => 10,
+        'single_size' => '', 'single_colour' => 'White']);
+ok(str_contains($pc, 'Pick the size.'),
+   'and a one-size range with a colour but no size is refused — the live "10 of 10" bug');
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

@@ -571,12 +571,17 @@ t('the desktop screen refuses production staff and checks the assignment',
 t('and will not write once the list is closed',
   str_contains($pp, 'pack_may_edit(') && str_contains($pp, 'verify_csrf()'), null);
 
-/* The pads are the only way the mix is built, so nothing may type into
-   it — that was the whole reason for them. */
-t('the assorted page has no typed size field left on it',
-  !preg_match('~<(input|select)[^>]*name="size_label\[\]"~', $mpkHtml), null);
-t('and its rows are built from the tally that is on screen',
-  str_contains($mpk, "\$('rows').innerHTML"), null);
+/* ASSORTED NOW LIVES IN THE RANGE CARD: a size list and a colour list,
+   built from the line picked, posted as asz_* and acol_*. The old tap
+   page and its size_label[] rows are gone. */
+t('the old assorted page and its rows are gone',
+  !preg_match('~<(input|select)[^>]*name="size_label\[\]"~', $mpkHtml)
+  && !str_contains($mpk, "\$('rows').innerHTML"), null);
+t('the card posts a size assortment and a colour assortment',
+  str_contains($mpk, "rowsFor(lp.size, keepS, 'asz')") && str_contains($mpk, "rowsFor(lp.colour, keepC, 'acol')"), null);
+t('and the server reads both, checking each against the total pieces',
+  str_contains($mpk, "\$_POST['asz_label']") && str_contains($mpk, "\$_POST['acol_label']")
+  && str_contains($mpk, "'The colours add up to '"), null);
 
 /* ============================================ 6. lines and numbers */
 head('6. An invoice line is named so it cannot be mixed up, and no package number twice');
@@ -693,6 +698,45 @@ t('and the message says a different kind may reuse the number',
   str_contains(pack_serial_problem(3, 1, 2, 0, 'Carton'), 'different kind'));
 t('the app named the kind in its query', !in_array('serial: kind', $GLOBALS['T']['badsql'], true),
   $GLOBALS['T']['badsql']);
+
+/* ===================================== 9. the colour assortment */
+head('9. Colour assortment beside size assortment');
+
+$ga = ['assorted' => 1, 'qty_mode' => 'per', 'serial_from' => 1, 'serial_to' => 10,
+       'colour_mix' => json_encode([['c' => 'White', 'q' => 8], ['c' => 'Grey', 'q' => 8], ['c' => 'Blue', 'q' => 8]])];
+$sa = [['size_label' => 'Single', 'colour_label' => '', 'qty_per_pkg' => 6, 'total_qty' => 60],
+       ['size_label' => 'Double', 'colour_label' => '', 'qty_per_pkg' => 12, 'total_qty' => 120],
+       ['size_label' => 'King', 'colour_label' => '', 'qty_per_pkg' => 6, 'total_qty' => 60]];
+t('the packing list reads sizes, then colours — his own example',
+  pack_size_text($ga, $sa) === '6 Single, 12 Double, 6 King · 8 White, 8 Grey, 8 Blue',
+  pack_size_text($ga, $sa));
+t('the colour list reads back as it was stored',
+  pack_colour_mix($ga, $sa) === [['c' => 'White', 'q' => 8.0], ['c' => 'Grey', 'q' => 8.0], ['c' => 'Blue', 'q' => 8.0]],
+  pack_colour_mix($ga, $sa));
+
+/* direct mode: stored over the whole range, printed per package */
+$gd = ['assorted' => 1, 'qty_mode' => 'direct', 'serial_from' => 1, 'serial_to' => 10,
+       'colour_mix' => json_encode([['c' => 'White', 'q' => 80], ['c' => 'Grey', 'q' => 160]])];
+$sd = [['size_label' => 'Single', 'colour_label' => '', 'qty_per_pkg' => 24, 'total_qty' => 240]];
+t('in direct mode the colours are printed per package, like the sizes',
+  pack_size_text($gd, $sd) === '24 Single · 8 White, 16 Grey', pack_size_text($gd, $sd));
+
+/* a range saved the old way, colour and size together, still reads */
+$gl = ['assorted' => 1, 'qty_mode' => 'per', 'serial_from' => 1, 'serial_to' => 10];
+$sl = [['size_label' => 'Single', 'colour_label' => 'White', 'qty_per_pkg' => 4, 'total_qty' => 40],
+       ['size_label' => 'Double', 'colour_label' => 'White', 'qty_per_pkg' => 2, 'total_qty' => 20],
+       ['size_label' => 'Single', 'colour_label' => 'Navy', 'qty_per_pkg' => 4, 'total_qty' => 40]];
+t('a range saved colour-and-size together gives its colours added up',
+  pack_colour_mix($gl, $sl) === [['c' => 'White', 'q' => 6.0], ['c' => 'Navy', 'q' => 4.0]],
+  pack_colour_mix($gl, $sl));
+
+/* the save refuses two totals for one carton */
+[$okm, $msgm] = pack_group_save(1, ['invoice_item_id' => 11, 'product_name' => 'Duvet Cover Set King',
+    'unit_title' => 'Carton', 'serial_from' => 900, 'serial_to' => 909, 'qty_mode' => 'per', 'assorted' => true,
+    'colour_mix' => [['c' => 'White', 'q' => 8], ['c' => 'Grey', 'q' => 8]]],
+    [['size_label' => 'Single', 'qty' => 6], ['size_label' => 'Double', 'qty' => 12]]);
+t('colours adding up to 16 against sizes adding up to 18 are refused, with both figures',
+  $okm === false && str_contains($msgm, 'The colours add up to 16 but the sizes add up to 18'), [$okm, $msgm]);
 
 echo "\n" . ($F === 0 ? "ALL PASS   ($P checks)\n" : "FAILED  $F   (" . ($P + $F) . " checks)\n");
 exit($F === 0 ? 0 : 1);

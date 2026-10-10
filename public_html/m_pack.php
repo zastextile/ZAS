@@ -242,6 +242,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'size'   => (string)($_POST['single_size'] ?? ''),
                 'colour' => (string)($_POST['single_colour'] ?? ''),
                 'qty'    => (float)($_POST['single_qty'] ?? 0),
+                'mix'    => ($_POST['size_mode'] ?? '') === 'mix',
+                'asz'    => array_combine(array_map('strval', (array)($_POST['asz_label'] ?? [])),
+                                          array_map('floatval', array_pad((array)($_POST['asz_qty'] ?? []),
+                                              count((array)($_POST['asz_label'] ?? [])), 0))) ?: [],
+                'acol'   => array_combine(array_map('strval', (array)($_POST['acol_label'] ?? [])),
+                                          array_map('floatval', array_pad((array)($_POST['acol_qty'] ?? []),
+                                              count((array)($_POST['acol_label'] ?? [])), 0))) ?: [],
             ];
         };
         $item = null;
@@ -252,31 +259,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect($self . '&t=serial#newrange');
         }
 
-        /* Two screens say this, in their own words: the range card sends
-           size_mode because it is a live toggle, the assorted setup page
-           sends assorted because that is all it is for. Either counts.
-           Turning assorted off sends neither, which is the point. */
-        $assorted = ($_POST['size_mode'] ?? '') === 'mix' || !empty($_POST['assorted']);
-        $sizes = [];
+        /* THE TOGGLE DECIDES, AND BOTH HALVES ARRIVE IN ONE POST.
+           One size: a size and a colour. Assorted: a size assortment and
+           a colour assortment, each adding up to the pieces in one carton
+           (or in the whole range, in direct mode). Nothing is set up on a
+           second page and nothing needs saving first. */
+        $assorted  = ($_POST['size_mode'] ?? '') === 'mix';
+        $target    = (float)($_POST['single_qty'] ?? 0);
+        $colourMix = [];
+        $sizes     = [];
+        $fmtQ = static fn(float $q): string => rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.');
+
+        /* what this line offers — the office's list, or the product's own */
+        $lp = pack_palette($id, $itemId);
+        $lineSizes = ($lp['size'] || $lp['colour']) ? $lp['size'] : pack_size_options((string)$item['product_name']);
+
+        $err = '';
         if ($assorted) {
-            $lbl = (array)($_POST['size_label'] ?? []);
-            $new = (array)($_POST['size_new'] ?? []);
-            $col = (array)($_POST['colour_label'] ?? []);
-            $qty = (array)($_POST['size_qty'] ?? []);
-            foreach ($lbl as $i => $l) {
-                $l = (string)$l;
-                if ($l === '__new') $l = trim((string)($new[$i] ?? ''));
-                $sizes[] = ['size_label'   => $l,
-                            'colour_label' => trim((string)($col[$i] ?? '')),
-                            'qty'          => (float)($qty[$i] ?? 0)];
+            foreach ((array)($_POST['asz_label'] ?? []) as $i => $l) {
+                $q = (float)(((array)($_POST['asz_qty'] ?? []))[$i] ?? 0);
+                if (trim((string)$l) !== '' && $q > 0)
+                    $sizes[] = ['size_label' => trim((string)$l), 'colour_label' => '', 'qty' => $q];
             }
+            foreach ((array)($_POST['acol_label'] ?? []) as $i => $l) {
+                $q = (float)(((array)($_POST['acol_qty'] ?? []))[$i] ?? 0);
+                if (trim((string)$l) !== '' && $q > 0) $colourMix[] = ['c' => trim((string)$l), 'q' => $q];
+            }
+            /* a line with colours but no sizes is assorted by colour alone */
+            if (!$sizes && $colourMix && !$lineSizes) {
+                foreach ($colourMix as $cm) $sizes[] = ['size_label' => '', 'colour_label' => $cm['c'], 'qty' => $cm['q']];
+                $colourMix = [];
+            }
+            $ss = array_sum(array_column($sizes, 'qty'));
+            $cs = array_sum(array_column($colourMix, 'q'));
+            if ($target <= 0)                          $err = 'Put in the total pieces first.';
+            elseif (!$sizes)                           $err = 'Put in how many of each size.';
+            elseif (abs($ss - $target) > 0.0001)       $err = 'The sizes add up to ' . $fmtQ($ss) . ', but the total is ' . $fmtQ($target) . '.';
+            elseif ($colourMix && abs($cs - $target) > 0.0001)
+                                                       $err = 'The colours add up to ' . $fmtQ($cs) . ', but the total is ' . $fmtQ($target) . '.';
         } else {
             /* __new means "the one I typed", not a size called __new. */
             $one = (string)($_POST['single_size'] ?? '');
             if ($one === '__new') $one = trim((string)($_POST['single_size_new'] ?? ''));
+            /* A LINE WITH SIZES NEEDS ONE PICKED. A range was saved on the
+               live server with a colour and no size, and the assorted
+               screen then counted those pieces as a complete carton. */
+            if ($one === '' && $lineSizes) $err = 'Pick the size.';
             $sizes[] = ['size_label'   => $one,
                         'colour_label' => trim((string)($_POST['single_colour'] ?? '')),
-                        'qty'          => (float)($_POST['single_qty'] ?? 0)];
+                        'qty'          => $target];
+        }
+        if ($err !== '') {
+            $_SESSION['error'] = $err;
+            $keepDraft();
+            redirect($self . '&t=serial#' . ($g > 0 ? 'r' . $g : 'newrange'));
         }
 
         [$ok, $msg] = pack_group_save($id, [
@@ -292,19 +328,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'serial_to'       => (int)($_POST['serial_to'] ?? 0),
             'qty_mode'        => (string)($_POST['qty_mode'] ?? 'per'),
             'assorted'        => $assorted,
+            'colour_mix'      => $colourMix,
         ], $sizes, $g);
 
         /* STRAIGHT ON TO THE NEXT RANGE. It used to come back to the top,
            so reaching the New range card meant paging past every range
-           already done. Now it lands on it, already starting at the next
-           free number for that kind of package. */
+           already done. Now a new range lands on the New range card,
+           already at the next free number for that kind of package, and an
+           edited range lands back on itself. */
         if ($ok) {
             $_SESSION['flash'] = $msg . ($g > 0 ? '' : ' The next range is ready below.');
         } else {
             $_SESSION['error'] = $msg;
             $keepDraft();
         }
-        redirect($self . '&t=serial#newrange');
+        redirect($self . '&t=serial#' . ($g > 0 ? 'r' . $g : 'newrange'));
     }
 
     if ($action === 'group_delete') {
@@ -383,265 +421,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ================================================================ screens */
 $groups = pack_groups($id);
 
-/* ---------------------------------------- the separate assorted setup page */
-if ($tab === 'mix' && $gid > 0) {
-    $g = pack_group($gid);
-    if (!$g || (int)$g['shipment_id'] !== $id) { http_response_code(404); exit('Range not found.'); }
-    $sizes = pack_sizes($gid);
-    $P     = pack_packages($g);
-    $per   = $g['qty_mode'] === 'per';
+/* ---------------------------------------- the old assorted setup page
 
-    /* The order's own sizes and colours. If the office has not set the
-       order up, fall back to the product's list rather than offering an
-       empty screen — the packer is never stuck. */
-    $pal  = pack_palette($id, (int)$g['invoice_item_id']);
-    $pSz  = $pal['size']   ?: pack_size_options((string)$g['product_name']);
-    $pCol = $pal['colour'];
-
-    /* What one package should come to, so the tapping has a target.
-       Per package: the figure already on the range. Direct: the whole
-       total, because in that mode the mix IS the total. */
-    $target = $per ? (float)$g['qty_per_pkg'] : (float)$g['total_qty'];
-
-    /* One word for it, and it is the user's own: "assorted". A screen
-       that says "Mixed" here and "Assorted" elsewhere is two things to
-       learn for one idea. */
-    mob_header('Assorted — ' . $g['unit_title'] . ' '
-               . (int)$g['serial_from'] . '–' . (int)$g['serial_to'],
-               $self, (string)$g['product_name'], 'manifest_pack.json');
-    mob_flash();
-    ?>
-    <form method="post" id="mixform">
-      <?= csrf_field() ?>
-      <input type="hidden" name="action" value="group">
-      <input type="hidden" name="shipment_id" value="<?= $id ?>">
-      <input type="hidden" name="group_id" value="<?= $gid ?>">
-      <input type="hidden" name="invoice_item_id" value="<?= (int)$g['invoice_item_id'] ?>">
-      <input type="hidden" name="unit_title" value="<?= e((string)$g['unit_title']) ?>">
-      <input type="hidden" name="serial_from" value="<?= (int)$g['serial_from'] ?>">
-      <input type="hidden" name="serial_to" value="<?= (int)$g['serial_to'] ?>">
-      <input type="hidden" name="qty_mode" value="<?= e((string)$g['qty_mode']) ?>">
-      <input type="hidden" name="size_mode" value="mix">
-      <input type="hidden" name="weight_by_colour" id="wbc" value="<?= (int)!empty($g['weight_by_colour']) ?>">
-      <?php /* The tapping builds these, one hidden row per combination. */ ?>
-      <div id="rows"></div>
-
-      <div class="mcard">
-        <h2><?= $per ? 'What one ' . e(strtolower((string)$g['unit_title'])) . ' holds'
-                     : 'What this range holds in total' ?></h2>
-        <div class="note" style="margin-bottom:13px">
-          <?= $pCol ? 'Tap a colour, then tap a size once for every piece.'
-                    : 'Tap a size once for every piece.' ?>
-        </div>
-
-        <?php if ($pCol): ?>
-          <span class="flab">Colour</span>
-          <div class="pad" id="colPad"></div>
-        <?php endif; ?>
-
-        <span class="flab" style="margin-top:13px">Size</span>
-        <div class="pad" id="szPad"></div>
-
-        <div class="meter" id="meter">
-          <div class="big"><span id="mLeft">—</span><b id="mCount">—</b></div>
-          <div class="bar"><i id="mBar" style="width:0%"></i></div>
-          <div class="msg" id="mMsg"></div>
-        </div>
-
-        <div id="tally"></div>
-      </div>
-
-      <?php if ($pCol): ?>
-        <div class="mcard">
-          <h2>Do these colours weigh differently?</h2>
-          <div class="note" style="margin-bottom:12px">Usually not — the same cloth, a different
-            dye. Leave it off and one breakdown per size serves every colour of it.</div>
-          <div class="seg" id="wbcSeg">
-            <button type="button" data-v="0">Same for every colour</button>
-            <button type="button" data-v="1">Each colour differs</button>
-          </div>
-        </div>
-      <?php endif; ?>
-
-      <?php if ($canEdit): ?>
-        <button class="btn go" type="submit">Save this range</button>
-      <?php endif; ?>
-    </form>
-
-    <?php if ($canEdit): ?>
-    <form method="post" style="margin-top:10px"
-          onsubmit="return confirm('Back to one size and colour? The mix is dropped.')">
-      <?= csrf_field() ?>
-      <input type="hidden" name="action" value="group">
-      <input type="hidden" name="shipment_id" value="<?= $id ?>">
-      <input type="hidden" name="group_id" value="<?= $gid ?>">
-      <input type="hidden" name="invoice_item_id" value="<?= (int)$g['invoice_item_id'] ?>">
-      <input type="hidden" name="unit_title" value="<?= e((string)$g['unit_title']) ?>">
-      <input type="hidden" name="serial_from" value="<?= (int)$g['serial_from'] ?>">
-      <input type="hidden" name="serial_to" value="<?= (int)$g['serial_to'] ?>">
-      <input type="hidden" name="qty_mode" value="<?= e((string)$g['qty_mode']) ?>">
-      <input type="hidden" name="size_mode" value="one">
-      <input type="hidden" name="single_size" value="<?= e((string)($sizes[0]['size_label'] ?? '')) ?>">
-      <input type="hidden" name="single_colour" value="<?= e((string)($sizes[0]['colour_label'] ?? '')) ?>">
-      <input type="hidden" name="single_qty"
-             value="<?= e((string)($per ? ($sizes[0]['qty_per_pkg'] ?? 0) : ($sizes[0]['total_qty'] ?? 0))) ?>">
-      <button class="btn red" type="submit">One size and colour instead</button>
-    </form>
-    <?php endif; ?>
-
-    <style>
-      .pad{display:flex;gap:8px;flex-wrap:wrap}
-      .pad button{border:2px solid var(--line);background:#fff;color:var(--ink);border-radius:14px;
-        padding:0 16px;height:58px;font-size:16px;font-weight:800;cursor:pointer;
-        display:inline-flex;align-items:center;gap:8px;position:relative;min-width:88px;
-        justify-content:center}
-      .pad button.on{background:var(--navy);color:#fff;border-color:var(--navy)}
-      .pad button:active{transform:scale(.96)}
-      .pad .cnt{position:absolute;top:-8px;right:-8px;min-width:24px;height:24px;border-radius:12px;
-        background:var(--cyan);color:#fff;font-size:12.5px;font-weight:800;
-        display:grid;place-items:center;padding:0 6px;border:2px solid var(--bg)}
-      .sw{width:17px;height:17px;border-radius:50%;border:1px solid rgba(0,0,0,.22);flex:0 0 17px}
-      .meter{border-radius:14px;padding:14px;margin-top:15px;border:2px solid var(--line);background:#f6f8fb}
-      .meter .big{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
-      .meter .big span{font-size:13px;font-weight:800;color:var(--muted)}
-      .meter .big b{font-size:30px;font-variant-numeric:tabular-nums;letter-spacing:-.8px}
-      .bar{height:9px;border-radius:5px;background:#d7dfea;margin-top:10px;overflow:hidden}
-      .bar i{display:block;height:100%;background:var(--cyan);transition:width .18s}
-      .meter.done{border-color:var(--good);background:rgba(22,163,74,.09)}
-      .meter.done .bar i{background:var(--good)}
-      .meter.over{border-color:var(--bad);background:rgba(184,40,63,.08)}
-      .meter.over .bar i{background:var(--bad)}
-      .meter .msg{font-size:14px;font-weight:800;margin-top:9px}
-      .c-good{color:var(--good)}.c-warn{color:var(--muted)}.c-bad{color:var(--bad)}
-      .tl{display:grid;grid-template-columns:1fr auto auto auto;gap:10px;align-items:center;
-        padding:10px 0;border-top:1px solid var(--line)}
-      .tl .who{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:700;min-width:0}
-      .tl .n{font-size:18px;font-weight:800;min-width:28px;text-align:center;font-variant-numeric:tabular-nums}
-      .tl button{width:44px;height:44px;border-radius:11px;border:2px solid var(--line);background:#fff;
-        color:var(--ink);font-size:22px;font-weight:800;cursor:pointer;line-height:1}
-      .seg{display:flex;border:2px solid #cbd5e3;border-radius:12px;overflow:hidden}
-      .seg button{flex:1;border:0;background:transparent;color:var(--muted);font-size:14px;
-        font-weight:800;padding:14px 8px;cursor:pointer;min-height:54px}
-      .seg button.on{background:var(--cyan);color:#fff}
-    </style>
-    <script>
-    (function () {
-      /* ONE TAP IS ONE PIECE. No keyboard, no cursor, no decimal point —
-         the thing being counted is whole pieces going into a carton, and
-         a thumb is the right instrument for it. */
-      var SIZES   = <?= json_encode(array_values($pSz)) ?>;
-      var COLOURS = <?= json_encode(array_values($pCol)) ?>;
-      var SWATCH  = <?= json_encode(array_combine(
-                          array_values($pCol),
-                          array_map('pack_colour_swatch', array_values($pCol))) ?: new stdClass()) ?>;
-      var TARGET  = <?= json_encode(round($target, 3)) ?>;
-      var UNIT    = <?= json_encode(strtolower((string)$g['unit_title'])) ?>;
-      var PER     = <?= $per ? 'true' : 'false' ?>;
-      var MIX     = <?= json_encode(array_map(static function (array $r) use ($per) {
-                        return ['s' => (string)$r['size_label'],
-                                'c' => (string)($r['colour_label'] ?? ''),
-                                'q' => (float)($per ? $r['qty_per_pkg'] : $r['total_qty'])];
-                      }, $sizes)) ?>;
-      var picked = COLOURS.length ? COLOURS[0] : '';
-
-      var $ = function (i) { return document.getElementById(i); };
-      function esc(t) { return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) {
-        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
-      function num(n) { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
-      function hex(c) { return SWATCH[c] || '#cbd5e3'; }
-      function total() { return MIX.reduce(function (a, m) { return a + (+m.q || 0); }, 0); }
-      function at(s, c) { for (var i = 0; i < MIX.length; i++)
-                            if (MIX[i].s === s && MIX[i].c === c) return i; return -1; }
-      function bump(s, c, by) {
-        var i = at(s, c);
-        if (i < 0) { if (by < 0) return; MIX.push({ s: s, c: c, q: 0 }); i = MIX.length - 1; }
-        MIX[i].q += by;
-        if (MIX[i].q <= 0) MIX.splice(i, 1);
-        draw();
-      }
-
-      function draw() {
-        if (COLOURS.length) {
-          $('colPad').innerHTML = COLOURS.map(function (c) {
-            var n = MIX.filter(function (m) { return m.c === c; })
-                       .reduce(function (a, m) { return a + m.q; }, 0);
-            return '<button type="button" data-c="' + esc(c) + '" class="' + (c === picked ? 'on' : '') + '">'
-              + '<i class="sw" style="background:' + hex(c) + '"></i>' + esc(c)
-              + (n ? '<i class="cnt">' + num(n) + '</i>' : '') + '</button>';
-          }).join('');
-          $('colPad').querySelectorAll('button').forEach(function (b) {
-            b.onclick = function () { picked = b.dataset.c; draw(); };
-          });
-        }
-
-        $('szPad').innerHTML = SIZES.map(function (s) {
-          var i = at(s, picked), n = i < 0 ? 0 : MIX[i].q;
-          return '<button type="button" data-s="' + esc(s) + '">' + esc(s)
-            + (n ? '<i class="cnt">' + num(n) + '</i>' : '') + '</button>';
-        }).join('') || '<span class="note">No size set for this order yet.</span>';
-        $('szPad').querySelectorAll('button').forEach(function (b) {
-          b.onclick = function () { bump(b.dataset.s, picked, 1); };
-        });
-
-        /* The carton must come out exact. It says how far off it is at
-           every tap rather than letting a short carton be saved. */
-        var have = total(), m = $('meter');
-        m.className = 'meter' + (TARGET > 0 && have === TARGET ? ' done'
-                               : (TARGET > 0 && have > TARGET ? ' over' : ''));
-        $('mLeft').textContent  = PER ? 'In this ' + UNIT : 'Across this range';
-        $('mCount').textContent = TARGET > 0 ? num(have) + ' / ' + num(TARGET) : num(have);
-        $('mBar').style.width = (TARGET > 0 ? Math.min(100, have / TARGET * 100) : 0) + '%';
-        $('mMsg').className = 'msg ' + (TARGET <= 0 ? 'c-warn'
-                            : (have === TARGET ? 'c-good' : (have > TARGET ? 'c-bad' : 'c-warn')));
-        $('mMsg').textContent = TARGET <= 0
-          ? 'Set the quantity on the range first, so this has something to come to.'
-          : (have === TARGET ? 'Complete.'
-            : (have > TARGET ? num(have - TARGET) + ' too many — take some out.'
-                             : num(TARGET - have) + ' still to place.'));
-
-        $('tally').innerHTML = MIX.length ? MIX.map(function (mm, i) {
-          return '<div class="tl" data-i="' + i + '">'
-            + '<span class="who">'
-            + (mm.c ? '<i class="sw" style="background:' + hex(mm.c) + '"></i>' + esc(mm.c) + ' ' : '')
-            + esc(mm.s) + '</span>'
-            + '<button type="button" class="minus">−</button>'
-            + '<span class="n">' + num(mm.q) + '</span>'
-            + '<button type="button" class="plus">+</button></div>';
-        }).join('') : '<p class="note" style="margin-top:12px">Nothing in it yet.</p>';
-        $('tally').querySelectorAll('.tl').forEach(function (d) {
-          var mm = MIX[+d.dataset.i];
-          d.querySelector('.minus').onclick = function () { bump(mm.s, mm.c, -1); };
-          d.querySelector('.plus').onclick  = function () { bump(mm.s, mm.c, 1); };
-        });
-
-        /* The hidden rows the server reads. Rebuilt from the tally every
-           time, so what is posted is always what is on screen. */
-        $('rows').innerHTML = MIX.map(function (mm) {
-          return '<input type="hidden" name="size_label[]" value="' + esc(mm.s) + '">'
-            + '<input type="hidden" name="colour_label[]" value="' + esc(mm.c) + '">'
-            + '<input type="hidden" name="size_qty[]" value="' + mm.q + '">';
-        }).join('');
-      }
-
-      var seg = document.getElementById('wbcSeg');
-      if (seg) {
-        var paintSeg = function () {
-          seg.querySelectorAll('button').forEach(function (b) {
-            b.classList.toggle('on', b.dataset.v === $('wbc').value);
-          });
-        };
-        seg.querySelectorAll('button').forEach(function (b) {
-          b.onclick = function () { $('wbc').value = b.dataset.v; paintSeg(); };
-        });
-        paintSeg();
-      }
-
-      draw();
-    })();
-    </script>
-    <?php
-    mob_footer();
-    exit;
+   GONE — assorted is set up inside the range card now, with no second
+   page and no save first: "never allow a page refresh; dynamic fields
+   with the toggle, in the same form." An old link or a bookmark to it
+   lands on that range in the card instead of on nothing. */
+if ($tab === 'mix') {
+    redirect($self . '&t=serial' . ($gid > 0 ? '#r' . $gid : ''));
 }
 
 /* ------------------------------------------------------------ the tab bar */
@@ -677,6 +464,15 @@ a.btn.sm{display:block;text-align:center;text-decoration:none;flex:1}
 .sumtot{display:flex;justify-content:space-between;border-top:2px solid var(--line);
   padding-top:10px;margin-top:2px;font-size:14px}
 .anchor{display:block;position:relative;top:-72px;visibility:hidden}
+.asec{margin:2px 0 14px}
+.arow{display:grid;grid-template-columns:1fr 110px;gap:10px;align-items:center;
+  padding:7px 0;border-bottom:1px solid var(--line)}
+.arow b{font-size:16px}
+.arow .in{text-align:right;font-size:18px;font-weight:800;padding:11px 12px}
+.asum{margin-top:8px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:800;
+  background:#f6f8fb;border:1px solid var(--line);color:var(--muted)}
+.asum.ok{color:var(--good);background:rgba(22,163,74,.08);border-color:rgba(22,163,74,.35)}
+.asum.bad{color:var(--bad);background:rgba(184,40,63,.07);border-color:rgba(184,40,63,.3)}
 .clash{margin:-4px 0 11px;padding:10px 12px;border-radius:10px;font-size:13.5px;font-weight:700;
   color:var(--bad);background:rgba(184,40,63,.08);border:1px solid rgba(184,40,63,.3)}
 .ihint{font-style:italic;font-weight:600;font-size:.82em;color:var(--muted)}
@@ -756,6 +552,9 @@ if ($tab === 'serial') {
         'mode' => ((string)($draft['mode'] ?? ($lastG['qty_mode'] ?? 'per'))) === 'direct' ? 'direct' : 'per',
         'from' => (int)($draft['from'] ?? 0),
         'to'   => (int)($draft['to'] ?? 0),
+        'mix'  => !empty($draft['mix']),
+        'asz'  => (array)($draft['asz'] ?? []),
+        'acol' => (array)($draft['acol'] ?? []),
         'single' => $draft && ($draft['size'] !== '' || $draft['qty'] > 0)
             ? ['size_label' => $draft['size'], 'colour_label' => $draft['colour'],
                'qty_per_pkg' => $draft['qty'], 'total_qty' => $draft['qty']] : null,
@@ -777,7 +576,7 @@ if ($tab === 'serial') {
         $from  = $new ? $nd['from'] : (int)$g['serial_from'];
         $to    = $new ? $nd['to'] : (int)$g['serial_to'];
         $mode  = $new ? $nd['mode'] : (string)$g['qty_mode'];
-        $asrt  = $new ? false : !empty($g['assorted']);
+        $asrt  = $new ? $nd['mix'] : !empty($g['assorted']);
         $P     = $new ? 0 : pack_packages($g);
         $sizes = $new ? [] : pack_sizes($gidL);
         $selItem = $new ? $nd['item'] : (int)$g['invoice_item_id'];
@@ -803,13 +602,36 @@ if ($tab === 'serial') {
         $cols    = $lp['colour'];
         $single = $new ? $nd['single'] : ($sizes[0] ?? null);
         $singleQty = $single ? ($mode === 'per' ? (float)$single['qty_per_pkg'] : (float)$single['total_qty']) : 0;
+
+        /* THE ASSORTMENT AS SAVED: how many of each size, how many of each
+           colour — per carton in per-package mode, over the range in
+           direct. And the total pieces, which is common to both modes. */
+        $aSz = []; $aCol = [];
+        if ($new) {
+            $aSz = $nd['asz']; $aCol = $nd['acol'];
+        } elseif ($asrt) {
+            foreach ($sizes as $srow) {
+                $q = $mode === 'per' ? (float)$srow['qty_per_pkg'] : (float)$srow['total_qty'];
+                $sl = (string)$srow['size_label'];
+                if ($sl !== '') $aSz[$sl] = ($aSz[$sl] ?? 0) + $q;
+            }
+            /* Stored colour figures are as they were typed (per carton, or
+               over the range in direct mode). An older range has none
+               stored, and its colours come from its rows per carton — so
+               in direct mode those are taken over the whole range. */
+            $stored = !empty($g['colour_mix']);
+            foreach (pack_colour_mix($g, $sizes) as $cm) {
+                $q = (float)$cm['q'];
+                if (!$stored && $mode !== 'per') $q *= max(1, $P);
+                $aCol[(string)$cm['c']] = ($aCol[(string)$cm['c']] ?? 0) + $q;
+            }
+            $singleQty = $mode === 'per'
+                ? array_sum(array_map(static fn($r) => (float)$r['qty_per_pkg'], $sizes))
+                : array_sum(array_map(static fn($r) => (float)$r['total_qty'], $sizes));
+        }
         $num = function (float $v): string {
             return $v > 0 ? rtrim(rtrim(number_format($v, 3, '.', ''), '0'), '.') : '';
         };
-        /* The saved mix, added up, so the assorted total can be shown
-           without opening it: per package, and over the whole range. */
-        $mixPer = 0.0; $mixTot = 0.0;
-        foreach ($sizes as $srow) { $mixPer += (float)$srow['qty_per_pkg']; $mixTot += (float)$srow['total_qty']; }
         /* Every OTHER range's serials, so a clash is said while typing,
            not after Save. The server still checks — this only says it
            sooner. */
@@ -829,9 +651,6 @@ if ($tab === 'serial') {
                  range to the wrong line. Off, the boxes show what is
                  saved and nothing else. */ ?>
         <form method="post" class="mcard" autocomplete="off"
-              data-mixper="<?= e((string)round($mixPer, 4)) ?>"
-              data-mixtot="<?= e((string)round($mixTot, 4)) ?>"
-              data-hasmix="<?= $asrt && $sizes ? 1 : 0 ?>"
               data-taken="<?= e(json_encode($taken)) ?>">
           <?= csrf_field() ?>
           <input type="hidden" name="action" value="group">
@@ -839,6 +658,7 @@ if ($tab === 'serial') {
           <input type="hidden" name="group_id" value="<?= $gidL ?>">
           <input type="hidden" name="assorted" value="<?= $asrt ? 1 : 0 ?>">
 
+          <?php if (!$new): ?><span id="r<?= $gidL ?>" class="anchor"></span><?php endif; ?>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <h2 style="margin:0"><?= $new ? 'Add the next range' : 'Range ' . (int)$g['line_no'] ?></h2>
             <?php if (!$new): ?><span class="pill v"><?= number_format($P) ?> <?= e(strtolower($unit)) ?></span><?php endif; ?>
@@ -904,15 +724,17 @@ if ($tab === 'serial') {
           <div class="seg">
             <label><input type="radio" name="size_mode" value="one"<?= $asrt ? '' : ' checked' ?>
                    <?= $new ? '' : '' ?>><span>One size</span></label>
-            <label><input type="radio" name="size_mode" value="mix"<?= $asrt ? ' checked' : '' ?>
-                   <?= $new ? ' disabled' : '' ?>><span>Assorted</span></label>
+            <label><input type="radio" name="size_mode" value="mix"<?= $asrt ? ' checked' : '' ?>><span>Assorted</span></label>
           </div>
 
           <?php /* One input, two meanings — which is exactly why the label
                    has to change with the toggle rather than after it. The
                    figure is converted when the mode flips, so 10 a carton
                    over 100 cartons becomes 1,000 and back again. */ ?>
-          <label class="f" data-one>
+          <?php /* COMMON TO BOTH MODES — "Total pieces per carton remains
+                   visible in both." In assorted mode it is what both
+                   assortments must add up to. */ ?>
+          <label class="f">
             <span data-qtylabel>Quantity per package</span>
             <input class="in" type="number" inputmode="decimal" step="any" name="single_qty"
                    value="<?= e($num($singleQty)) ?>" data-qty></label>
@@ -942,20 +764,25 @@ if ($tab === 'serial') {
               <?php endforeach; ?>
             </select></label>
 
-          <div data-mix hidden>
-            <div class="derv"><span data-mixhead>Assorted</span>
-              <b><?= e($new ? '' : (pack_size_text($g, $sizes) ?: 'not set up yet')) ?></b></div>
-            <?php if (!$new): ?>
-              <a class="lnk" href="<?= e($self) ?>&t=mix&g=<?= $gidL ?>">
-                <span><b>Tap in what one <?= e(strtolower($unit)) ?> holds</b>
-                  <small>a colour, then a size, once per piece</small></span>
-                <span class="chev">&rsaquo;</span></a>
-            <?php endif; ?>
+          <?php /* ASSORTED, IN THE SAME CARD — no second page, no save first.
+                   Two lists: how many of each size, and how many of each
+                   colour, each adding up to the total pieces above. The rows
+                   are drawn by the script from the line picked above, so they
+                   follow it; the figures saved come down in data-asz /
+                   data-acol. Typing in a box never redraws the list. */ ?>
+          <div data-mix<?= $asrt ? '' : ' hidden' ?>
+               data-asz="<?= e(json_encode((object)$aSz)) ?>" data-acol="<?= e(json_encode((object)$aCol)) ?>">
+            <div class="asec">
+              <span class="flab">Size assortment <i class="ihint" data-aper></i></span>
+              <div data-asizes></div>
+              <div class="asum" data-asizesum></div>
+            </div>
+            <div class="asec" data-acolbox>
+              <span class="flab">Colour assortment <i class="ihint" data-aper></i></span>
+              <div data-acols></div>
+              <div class="asum" data-acolsum></div>
+            </div>
           </div>
-          <?php if ($new): ?>
-            <div class="note" style="margin-bottom:11px" data-newnote>
-              Add the range with one size first. Assorted can be set up the moment it exists.</div>
-          <?php endif; ?>
 
           <div class="derv" data-total><span>—</span><b>—</b></div>
 
@@ -1100,8 +927,6 @@ if ($tab === 'serial') {
             var serial = card.querySelector('[data-serial]');
             var total  = card.querySelector('[data-total]');
             var mixBox = card.querySelector('[data-mix]');
-            var mixHd  = card.querySelector('[data-mixhead]');
-            var note   = card.querySelector('[data-newnote]');
             var ones   = card.querySelectorAll('[data-one]');
             var pill   = card.querySelector('.pill');
             var clash  = card.querySelector('[data-clash]');
@@ -1109,13 +934,81 @@ if ($tab === 'serial') {
             var ref    = card.querySelector('[data-ref]');
             var save   = card.querySelector('button[type="submit"]');
             var taken  = []; try { taken = JSON.parse(card.dataset.taken || '[]'); } catch (e) {}
-            var mixPer = +card.dataset.mixper || 0, mixTot = +card.dataset.mixtot || 0;
-            var hasMix = card.dataset.hasmix === '1';
             var sizeSel = card.querySelector('select[name="single_size"]');
             var colSel  = card.querySelector('select[name="single_colour"]');
             var colBox  = card.querySelector('[data-colbox]');
             var palNote = card.querySelector('[data-palnote]');
             var lastItem = pick ? pick.value : '';
+            var aBox   = card.querySelector('[data-mix]');
+            var aSizes = card.querySelector('[data-asizes]');
+            var aCols  = card.querySelector('[data-acols]');
+            var aColBox = card.querySelector('[data-acolbox]');
+            var aSzSum = card.querySelector('[data-asizesum]');
+            var aColSum = card.querySelector('[data-acolsum]');
+            var savedSz = {}, savedCol = {};
+            try { savedSz = JSON.parse(aBox ? aBox.dataset.asz || '{}' : '{}'); } catch (e) {}
+            try { savedCol = JSON.parse(aBox ? aBox.dataset.acol || '{}' : '{}'); } catch (e) {}
+            var mixBad = false;
+
+            /* THE ASSORTMENT ROWS, FROM THE LINE PICKED ABOVE. One row per
+               size and per colour the office set for that line; a figure
+               already saved, or already typed, is kept. Drawn only when the
+               line changes — never while someone is typing in a box, which
+               is the mistake that turned 300 into 3 on the weight screen. */
+            function rowsFor(list, saved, name) {
+              var all = list.slice();
+              Object.keys(saved).forEach(function (k) { if (k && all.indexOf(k) < 0) all.push(k); });
+              return all.map(function (lbl) {
+                var v = saved[lbl];
+                return '<div class="arow"><b>' + esc(lbl) + '</b>'
+                  + '<input type="hidden" name="' + name + '_label[]" value="' + esc(lbl) + '">'
+                  + '<input class="in" type="text" inputmode="decimal" autocomplete="off" name="' + name
+                  + '_qty[]" value="' + (v ? v : '') + '" placeholder="0" aria-label="' + esc(lbl) + '"></div>';
+              }).join('');
+            }
+            function readRows(box) {
+              var o = {};
+              if (!box) return o;
+              box.querySelectorAll('.arow').forEach(function (r) {
+                var l = r.querySelector('input[type=hidden]').value;
+                var v = parseFloat(String(r.querySelector('.in').value).replace(',', '.')) || 0;
+                if (v) o[l] = v;
+              });
+              return o;
+            }
+            function buildAssort() {
+              if (!aBox) return;
+              var lp = (pick && PAL[pick.value]) || { size: [], colour: [] };
+              var keepS = aSizes.children.length ? readRows(aSizes) : savedSz;
+              var keepC = aCols.children.length ? readRows(aCols) : savedCol;
+              aSizes.innerHTML = rowsFor(lp.size, keepS, 'asz')
+                || '<div class="note">This line has no sizes set — the office sets them on Order sizes &amp; colours.</div>';
+              aCols.innerHTML = rowsFor(lp.colour, keepC, 'acol');
+              aColBox.hidden = !aCols.children.length;
+              [aSizes, aCols].forEach(function (b) {
+                b.querySelectorAll('.arow .in').forEach(function (inp) {
+                  inp.addEventListener('input', paint);
+                  inp.addEventListener('focus', function () { this.select(); });
+                });
+              });
+            }
+            function sumRows(box) {
+              var t = 0;
+              box.querySelectorAll('.arow .in').forEach(function (i) {
+                t += parseFloat(String(i.value).replace(',', '.')) || 0;
+              });
+              return t;
+            }
+            function sayFit(el, got, want, what) {
+              if (!el) return true;
+              var ok = want > 0 && Math.abs(got - want) < 0.0001;
+              el.className = 'asum' + (ok ? ' ok' : (got > want && want > 0 ? ' bad' : ''));
+              el.textContent = want <= 0 ? 'Put in the total pieces above first.'
+                : ok ? (num(got) + ' of ' + num(want) + ' — complete ✓')
+                : got > want ? (num(got) + ' of ' + num(want) + ' — ' + num(got - want) + ' too many')
+                : (num(got) + ' of ' + num(want) + ' — ' + num(want - got) + ' ' + what + ' still to place');
+              return ok;
+            }
             var was    = mode();
 
             function mode() {
@@ -1140,29 +1033,29 @@ if ($tab === 'serial') {
               serial.lastElementChild.textContent = P ? num(P) + ' ' + lu : 'to must be ≥ from';
 
               /* the label IS the difference between the two modes */
-              label.textContent = per ? ('Quantity per ' + lu) : 'Total quantity';
+              label.textContent = mix
+                ? (per ? ('Total pieces per ' + lu) : 'Total pieces')
+                : (per ? ('Quantity per ' + lu) : 'Total quantity');
 
               ones.forEach(function (el) { el.hidden = mix; });
               /* the colour field stays hidden on a line with no colours */
               if (colBox && colSel && colSel.options.length < 2) colBox.hidden = true;
               if (mixBox) mixBox.hidden = !mix;
-              if (note)   note.hidden = !mix;
-              if (mixHd)  mixHd.textContent = per ? ('Assorted, per ' + lu) : 'Assorted, total';
 
               var q = +qtyI.value || 0;
-              if (mix && !hasMix) {
-                total.firstElementChild.textContent = 'Set the sizes to see the total';
-                total.lastElementChild.textContent  = '—';
-              } else if (mix) {
-                /* THE SAVED MIX, ADDED UP. It used to say "set the sizes"
-                   here even when they were set, because it never looked.
-                   Per package: what one holds, times the packages.
-                   Direct: the mix IS the total. */
-                total.firstElementChild.textContent = per
-                  ? num(mixPer) + ' per ' + lu + ' × ' + num(P)
-                  : 'Assorted, over ' + num(P) + ' ' + lu;
-                total.lastElementChild.textContent = num(per ? mixPer * P : mixTot);
-              } else {
+              /* the assortment: both lists against the total, said live */
+              mixBad = false;
+              if (aBox) {
+                card.querySelectorAll('[data-aper]').forEach(function (x) {
+                  x.textContent = per ? '— in one ' + lu : '— over the whole range';
+                });
+                if (mix) {
+                  var okS = sayFit(aSzSum, sumRows(aSizes), q, 'pieces');
+                  var okC = aColBox.hidden ? true : sayFit(aColSum, sumRows(aCols), q, 'pieces');
+                  mixBad = !(okS && okC);
+                }
+              }
+              {
                 var t = per ? q * P : q;
                 total.firstElementChild.textContent = per
                   ? num(q) + ' per ' + lu + ' × ' + num(P)
@@ -1185,7 +1078,9 @@ if ($tab === 'serial') {
                 clash.textContent = hit ? ('Already used: ' + hit[2] + ' ' + hit[0] + '–' + hit[1]
                   + '. A number can be used once per kind of package — a different kind, like a Roll, may reuse it.') : '';
               }
-              if (save) save.disabled = !!hit;
+              /* Save waits for free numbers, and — when assorted — for both
+                 lists to add up to the total */
+              if (save) save.disabled = !!hit || (mix && mixBad);
 
               if (pick && ref) {
                 var o = pick.options[pick.selectedIndex];
@@ -1255,7 +1150,8 @@ if ($tab === 'serial') {
                   : 'This line is not set up on Order sizes & colours yet, so these are the product’s own sizes.';
               }
             }
-            if (pick) pick.addEventListener('change', function () { refill(); paint(); });
+            if (pick) pick.addEventListener('change', function () { refill(); buildAssort(); paint(); });
+            buildAssort();
 
             /* THE NEXT FREE NUMBER, PER KIND. On the New range card, change
                Carton to Roll and the serial moves to the next free Roll

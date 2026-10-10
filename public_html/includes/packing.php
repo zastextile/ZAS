@@ -35,7 +35,7 @@
 
 /* Bumped whenever the tables below change. One indexed read on a page load
    that finds the same number does nothing at all. */
-const PACK_SCHEMA_VERSION = '4';
+const PACK_SCHEMA_VERSION = '5';
 
 /* The material types a weight line can be. The team adds as many lines of
    any type as it needs — two fabrics, three fabrics, two accessories. */
@@ -205,6 +205,14 @@ function pack_ensure_schema(): void
     $x("ALTER TABLE packing_items ADD COLUMN invoice_item_id INT NULL AFTER shipment_id");
     $x("ALTER TABLE packing_items ADD COLUMN pack_unit_title VARCHAR(60) NOT NULL DEFAULT 'Carton' AFTER optional_value");
     $x("ALTER TABLE packing_items ADD COLUMN qty_mode VARCHAR(20) NOT NULL DEFAULT 'auto' AFTER qty_per_carton");
+
+    /* v5 — THE COLOUR ASSORTMENT, BESIDE THE SIZE ASSORTMENT.
+       "Colour assortment: White 8, Grey 8, Blue 8. Size assortment /
+        ratio: Single 6, Double 12, King 6." Two lists, each adding up to
+       the pieces in one carton. The size list is the range's rows (it is
+       what weight and quantity are worked from); the colour list is kept
+       here, as [{"c":"White","q":8}, …]. */
+    $x("ALTER TABLE packing_groups ADD COLUMN colour_mix TEXT NULL");
 
     try {
         db()->prepare("INSERT INTO exp_meta (k, v, updated_at) VALUES ('pack_schema_version', ?, NOW())
@@ -780,6 +788,27 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
 
     $sum = 0.0;
     foreach ($clean as $c) $sum += $c['qty'];
+
+    /* The colour assortment must add up to the same pieces as the sizes —
+       two different totals for one carton would put two answers on the
+       packing list. Only an assorted range has one. */
+    $colourMix = [];
+    if ($assorted) {
+        foreach ((array)($in['colour_mix'] ?? []) as $cm) {
+            $cl = trim((string)($cm['c'] ?? ''));
+            $cq = (float)($cm['q'] ?? 0);
+            if ($cl === '' || $cq <= 0) continue;
+            $colourMix[] = ['c' => mb_substr($cl, 0, 80), 'q' => $cq];
+        }
+        if ($colourMix) {
+            $cs = array_sum(array_column($colourMix, 'q'));
+            if (abs($cs - $sum) > 0.0001) {
+                return [false, 'The colours add up to ' . rtrim(rtrim(number_format($cs, 2, '.', ''), '0'), '.')
+                    . ' but the sizes add up to ' . rtrim(rtrim(number_format($sum, 2, '.', ''), '0'), '.')
+                    . '. Both must come to the same pieces.', 0];
+            }
+        }
+    }
     $totalQty = $mode === 'per' ? $sum * $packages : $sum;
     $perPkg   = $packages > 0 ? $totalQty / $packages : 0.0;
 
@@ -852,6 +881,9 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
             $tt = $mode === 'per' ? $c['qty'] * $packages : $c['qty'];
             $ins->execute([$groupId, $c['size_label'], $c['colour_label'], $pp, $tt]);
         }
+
+        db()->prepare("UPDATE packing_groups SET colour_mix=? WHERE id=?")
+            ->execute([$colourMix ? json_encode($colourMix) : null, $groupId]);
 
         if ($item > 0) {
             db()->prepare("UPDATE packing_groups SET weight_by_colour=? WHERE shipment_id=? AND invoice_item_id=?")
@@ -1093,6 +1125,30 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
                 . number_format($t['qty'], 2) . ' pieces.'];
 }
 
+/* The colour assortment of a range, as [['c'=>'White','q'=>8], …]. An
+   older range packed colour-and-size together has none stored; its
+   colours are added up from its rows instead, so nothing saved before
+   reads as empty. */
+function pack_colour_mix(array $g, array $sizes): array
+{
+    $raw = json_decode((string)($g['colour_mix'] ?? ''), true);
+    if (is_array($raw) && $raw) {
+        $out = [];
+        foreach ($raw as $r) if (is_array($r) && trim((string)($r['c'] ?? '')) !== '')
+            $out[] = ['c' => (string)$r['c'], 'q' => (float)($r['q'] ?? 0)];
+        return $out;
+    }
+    $by = [];
+    foreach ($sizes as $s) {
+        $c = trim((string)($s['colour_label'] ?? ''));
+        if ($c === '') continue;
+        $by[$c] = ($by[$c] ?? 0) + pack_size_per_pkg($g, $s);
+    }
+    $out = [];
+    foreach ($by as $c => $q) $out[] = ['c' => $c, 'q' => $q];
+    return $out;
+}
+
 /* "King", "White King", or "2 White Small, 4 Navy Large" — what the
    print shows. A colour is part of what is in the carton, so it belongs
    on the line; a range with no colours reads exactly as it did before. */
@@ -1106,12 +1162,24 @@ function pack_size_text(array $g, array $sizes): string
         return $c === '' ? $t : $c . ' ' . $t;
     };
     if (empty($g['assorted'])) return $one($sizes[0]);
+    $fmt = static fn(float $q): string => rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.');
     $bits = [];
-    foreach ($sizes as $s) {
-        $q = pack_size_per_pkg($g, $s);
-        $bits[] = rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.') . ' ' . $one($s);
+    foreach ($sizes as $s) $bits[] = $fmt(pack_size_per_pkg($g, $s)) . ' ' . $one($s);
+    $text = implode(', ', $bits);
+    /* "6 Single, 12 Double, 6 King · 8 White, 8 Grey, 8 Blue" — the colour
+       assortment, when it is kept apart from the sizes */
+    $raw = json_decode((string)($g['colour_mix'] ?? ''), true);
+    if (is_array($raw) && $raw) {
+        $P = pack_packages($g);
+        $cb = [];
+        foreach ($raw as $r) {
+            $q = (float)($r['q'] ?? 0);
+            if (($g['qty_mode'] ?? 'per') !== 'per' && $P > 0) $q = $q / $P;
+            $cb[] = $fmt($q) . ' ' . (string)($r['c'] ?? '');
+        }
+        $text .= ' · ' . implode(', ', $cb);
     }
-    return implode(', ', $bits);
+    return $text;
 }
 
 /* ------------------------------------------------------------- permission
