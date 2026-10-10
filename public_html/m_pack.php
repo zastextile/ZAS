@@ -31,7 +31,8 @@ require_once __DIR__ . '/includes/mobile.php';
 if (function_exists('mob_needs')) {
     mob_show_fatal();
     mob_needs(['mob_header', 'mob_footer', 'mob_flash',
-               'mob_steps_begin', 'mob_step', 'mob_steps_end', 'mob_card_error'], 'includes/mobile.php');
+               'mob_steps_begin', 'mob_step', 'mob_steps_end', 'mob_card_error',
+               'mob_steps_scroll'], 'includes/mobile.php');
     mob_needs(['pack_palette', 'pack_unit_key', 'pack_wkey', 'pack_colour_swatch',
                'pack_weight_missing', 'pack_dedupe'], 'includes/packing.php');
 } else {
@@ -207,6 +208,11 @@ function pack_summary_html(array $groups, array $items, bool $canEdit, int $id, 
     return (string)ob_get_clean();
 }
 
+/* ONE SCROLLING PAGE, NOT FLIPS. "If you feel any problem because of
+   the page flip, use scroll." On this screen the flip meant pressing
+   Next past every range to reach the new one, every time. */
+mob_steps_scroll(true);
+
 $title = 'Packing — ' . (string)$shipment['invoice_no'];
 $back  = 'm_pack.php';
 $self  = 'm_pack.php?id=' . $id;
@@ -221,11 +227,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'group') {
         $g = (int)($_POST['group_id'] ?? 0);
         $itemId = (int)($_POST['invoice_item_id'] ?? 0);
+        /* A REFUSED NEW RANGE KEEPS WHAT WAS TYPED. A duplicate number or
+           a missing line sent the page back empty, and everything had to
+           be typed again. The figures ride back in the session and the
+           New range card is filled from them, once. */
+        $keepDraft = function () use ($g): void {
+            if ($g > 0) return;
+            $_SESSION['pack_draft'] = [
+                'unit'   => (string)($_POST['unit_title'] ?? ''),
+                'from'   => (int)($_POST['serial_from'] ?? 0),
+                'to'     => (int)($_POST['serial_to'] ?? 0),
+                'item'   => (int)($_POST['invoice_item_id'] ?? 0),
+                'mode'   => (string)($_POST['qty_mode'] ?? 'per'),
+                'size'   => (string)($_POST['single_size'] ?? ''),
+                'colour' => (string)($_POST['single_colour'] ?? ''),
+                'qty'    => (float)($_POST['single_qty'] ?? 0),
+            ];
+        };
         $item = null;
         foreach ($items as $it) if ((int)$it['id'] === $itemId) $item = $it;
         if (!$item) {
             $_SESSION['error'] = 'Pick the item this range holds.';
-            redirect($self);
+            $keepDraft();
+            redirect($self . '&t=serial#newrange');
         }
 
         /* Two screens say this, in their own words: the range card sends
@@ -270,8 +294,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'assorted'        => $assorted,
         ], $sizes, $g);
 
-        if ($ok) $_SESSION['flash'] = $msg; else $_SESSION['error'] = $msg;
-        redirect($self);
+        /* STRAIGHT ON TO THE NEXT RANGE. It used to come back to the top,
+           so reaching the New range card meant paging past every range
+           already done. Now it lands on it, already starting at the next
+           free number for that kind of package. */
+        if ($ok) {
+            $_SESSION['flash'] = $msg . ($g > 0 ? '' : ' The next range is ready below.');
+        } else {
+            $_SESSION['error'] = $msg;
+            $keepDraft();
+        }
+        redirect($self . '&t=serial#newrange');
     }
 
     if ($action === 'group_delete') {
@@ -643,6 +676,7 @@ a.btn.sm{display:block;text-align:center;text-decoration:none;flex:1}
 .suma form{margin:0;flex:1}.suma>.btn,.suma form .btn{width:100%;min-height:44px}
 .sumtot{display:flex;justify-content:space-between;border-top:2px solid var(--line);
   padding-top:10px;margin-top:2px;font-size:14px}
+.anchor{display:block;position:relative;top:-72px;visibility:hidden}
 .clash{margin:-4px 0 11px;padding:10px 12px;border-radius:10px;font-size:13.5px;font-weight:700;
   color:var(--bad);background:rgba(184,40,63,.08);border:1px solid rgba(184,40,63,.3)}
 .ihint{font-style:italic;font-weight:600;font-size:.82em;color:var(--muted)}
@@ -707,25 +741,49 @@ if ($tab === 'serial') {
 
     /* Draws one range, new or existing. Kept as a function because the
        "add another" card at the bottom is the same form with nothing in it. */
-    $card = function (?array $g) use ($items, $id, $canEdit, $self, $groups, $palByItem) {
+    /* WHAT THE NEW RANGE STARTS FROM, so nothing is asked twice: the
+       kind of package, the invoice line and the quantity mode of the
+       range saved last (the next range is usually more of the same — the
+       short carton after 1–99), and the next free number FOR THAT KIND.
+       A refused save's own figures win over all of it. */
+    $lastG = null;
+    foreach ($groups as $og) if (!$lastG || (int)$og['id'] > (int)$lastG['id']) $lastG = $og;
+    $draft = $_SESSION['pack_draft'] ?? null;
+    unset($_SESSION['pack_draft']);
+    $nd = [
+        'unit' => trim((string)($draft['unit'] ?? ($lastG['unit_title'] ?? 'Carton'))) ?: 'Carton',
+        'item' => (int)($draft['item'] ?? ($lastG['invoice_item_id'] ?? 0)),
+        'mode' => ((string)($draft['mode'] ?? ($lastG['qty_mode'] ?? 'per'))) === 'direct' ? 'direct' : 'per',
+        'from' => (int)($draft['from'] ?? 0),
+        'to'   => (int)($draft['to'] ?? 0),
+        'single' => $draft && ($draft['size'] !== '' || $draft['qty'] > 0)
+            ? ['size_label' => $draft['size'], 'colour_label' => $draft['colour'],
+               'qty_per_pkg' => $draft['qty'], 'total_qty' => $draft['qty']] : null,
+    ];
+    if ($nd['from'] <= 0) {
+        $top = 0;
+        foreach ($groups as $og) {
+            if (mb_strtolower(trim((string)$og['unit_title'])) === mb_strtolower($nd['unit'])) {
+                $top = max($top, (int)$og['serial_to']);
+            }
+        }
+        $nd['from'] = $top + 1; $nd['to'] = $top + 1;
+    }
+
+    $card = function (?array $g) use ($items, $id, $canEdit, $self, $groups, $palByItem, $nd) {
         $new   = $g === null;
         $gidL  = $new ? 0 : (int)$g['id'];
-        $unit  = $new ? 'Carton' : (string)$g['unit_title'];
-        $from  = $new ? 0 : (int)$g['serial_from'];
-        $to    = $new ? 0 : (int)$g['serial_to'];
-        $mode  = $new ? 'per' : (string)$g['qty_mode'];
+        $unit  = $new ? $nd['unit'] : (string)$g['unit_title'];
+        $from  = $new ? $nd['from'] : (int)$g['serial_from'];
+        $to    = $new ? $nd['to'] : (int)$g['serial_to'];
+        $mode  = $new ? $nd['mode'] : (string)$g['qty_mode'];
         $asrt  = $new ? false : !empty($g['assorted']);
         $P     = $new ? 0 : pack_packages($g);
         $sizes = $new ? [] : pack_sizes($gidL);
+        $selItem = $new ? $nd['item'] : (int)$g['invoice_item_id'];
         $item  = null;
-        foreach ($items as $it) if (!$new && (int)$it['id'] === (int)$g['invoice_item_id']) $item = $it;
-
-        /* the next range starts where the last one ended */
-        if ($new) {
-            $last = 0;
-            foreach ($groups as $og) $last = max($last, (int)$og['serial_to']);
-            $from = $last + 1; $to = $last + 1;
-        }
+        foreach ($items as $it) if ($selItem > 0 && (int)$it['id'] === $selItem) $item = $it;
+        if (!$item) $selItem = 0;
 
         /* THE ORDER'S PALETTE, NOT THE PRODUCT'S WHOLE HISTORY.
            The office set these from the customer's email; this screen
@@ -738,12 +796,12 @@ if ($tab === 'serial') {
            has never been set up falls back to the product's own sizes, and
            the card says so. The map covers every line, so the lists follow
            the dropdown live — see palByItem in the script below. */
-        $itemId  = $new ? 0 : (int)$g['invoice_item_id'];
+        $itemId  = $selItem;
         $lp      = $palByItem[$itemId] ?? ['size' => [], 'colour' => [], 'set' => false];
         $fromPal = $lp['set'];
         $opts    = $lp['size'];
         $cols    = $lp['colour'];
-        $single = $sizes[0] ?? null;
+        $single = $new ? $nd['single'] : ($sizes[0] ?? null);
         $singleQty = $single ? ($mode === 'per' ? (float)$single['qty_per_pkg'] : (float)$single['total_qty']) : 0;
         $num = function (float $v): string {
             return $v > 0 ? rtrim(rtrim(number_format($v, 3, '.', ''), '0'), '.') : '';
@@ -808,7 +866,7 @@ if ($tab === 'serial') {
                   data-name="<?= e($il['name']) ?>" data-no="<?= e($il['no']) ?>"
                   data-des="<?= e((string)($it['des_col'] ?? '')) ?>"
                   data-opt="<?= e((string)($it['optional_value'] ?? '')) ?>"
-                  <?= (!$new && (int)$it['id'] === (int)$g['invoice_item_id']) ? ' selected' : '' ?>>
+                  <?= ((int)$it['id'] === $selItem) ? ' selected' : '' ?>>
                   <?= e($il['text']) ?></option>
               <?php endforeach; ?>
             </select></label>
@@ -980,7 +1038,8 @@ if ($tab === 'serial') {
             $safeCard($g);
         }
         if ($canEdit) {
-            mob_step('New range', 'Carries on from where the last one ended');
+            mob_step('New range', 'Starts at the next free number for its kind of package');
+            echo '<span id="newrange" class="anchor"></span>';
             $safeCard(null);
             echo '<div class="mcard"><div class="note">Packing starts from the serial. '
                . '1 to 100 means 100 cartons — the count is never typed. When some packages '
@@ -1197,6 +1256,26 @@ if ($tab === 'serial') {
               }
             }
             if (pick) pick.addEventListener('change', function () { refill(); paint(); });
+
+            /* THE NEXT FREE NUMBER, PER KIND. On the New range card, change
+               Carton to Roll and the serial moves to the next free Roll
+               number — unless someone has typed a serial themselves, which
+               always wins. */
+            var gidI = card.querySelector('[name="group_id"]');
+            var isNew = gidI && !(+gidI.value);
+            var typedSerial = false;
+            [fromI, toI].forEach(function (el) {
+              el.addEventListener('input', function () { typedSerial = true; });
+            });
+            if (isNew) unitI.addEventListener('input', function () {
+              if (typedSerial) return;
+              var kind = unit().toLowerCase(), top = 0;
+              taken.forEach(function (t) {
+                if (String(t[2] || 'Carton').trim().toLowerCase() === kind) top = Math.max(top, +t[1] || 0);
+              });
+              fromI.value = top + 1; toI.value = top + 1;
+              paint();
+            });
             /* If a browser restores old values anyway (some ignore
                autocomplete="off" on a back-navigation), redraw from what
                the boxes actually hold, so the labels never describe a
@@ -1487,7 +1566,7 @@ if ($tab === 'weight') {
            screen has one thumb's worth of room. Nothing here is padded
            for the sake of it. */
         .wrow{border:1px solid var(--line);border-radius:11px;padding:8px 9px;margin-bottom:7px;background:#fff}
-        .wtop{display:grid;grid-template-columns:1fr 72px 34px 30px;gap:6px;align-items:center}
+        .wtop{display:grid;grid-template-columns:1fr 104px 40px 32px;gap:6px;align-items:center}
         .wtop .in{padding:9px 8px}
         .wtop .g{text-align:right;font-variant-numeric:tabular-nums}
         /* the description, as a symbol */
@@ -1659,8 +1738,11 @@ if ($tab === 'weight') {
                 + '<select class="in ty">' + TYPES.map(function (t) {
                     return '<option' + (t === r.t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('')
                 + '</select>'
-                + '<input class="in g" type="number" inputmode="decimal" step="any" '
-                + 'value="' + (r.g || '') + '" placeholder="g" aria-label="Grams">'
+                /* text with a decimal keypad, not type=number: the number
+                   box drew up/down arrows that ate half of a 72px field,
+                   so 300 showed as "3". Wider now, and no arrows. */
+                + '<input class="in g" type="text" inputmode="decimal" autocomplete="off" '
+                + 'enterkeyhint="next" value="' + (r.g || '') + '" placeholder="grams" aria-label="Grams">'
                 + '<button type="button" class="nt' + (has ? ' has' : '') + (open ? ' open' : '') + '" '
                 + 'aria-label="' + (has ? 'Change the quality' : 'Name the quality') + '" '
                 + 'title="' + (has ? 'Change the quality' : 'Name the quality') + '">'
@@ -1673,7 +1755,19 @@ if ($tab === 'weight') {
             box.querySelectorAll('.wrow').forEach(function (d) {
               var i = +d.dataset.i;
               d.querySelector('.ty').onchange  = function () { harvest(); drawAll(); };
-              d.querySelector('.g').oninput    = function () { harvest(); drawAll(); };
+              /* TYPING MUST NOT REDRAW THE LIST. This called drawAll(),
+                 which rebuilt every row — including the very box being
+                 typed in — so after the first digit the box was a new,
+                 unfocused one and the rest of the keystrokes went nowhere.
+                 300 became 3. Now a keystroke stores the figure and
+                 refreshes the sums only; the row stays exactly as it is. */
+              var gIn = d.querySelector('.g');
+              gIn.oninput = function () {
+                rows()[i].g = parseFloat(String(this.value).replace(',', '.')) || 0;
+                document.getElementById('perunit').textContent = num(Math.round(sum(rows()))) + ' g';
+                drawChips(); drawTotals();
+              };
+              gIn.onfocus = function () { this.select(); };
               d.querySelector('.x').onclick    = function () {
                 harvest(); rows().splice(i, 1);
                 if (openNote === i) openNote = null;
@@ -1718,7 +1812,7 @@ if ($tab === 'weight') {
               var i = +d.dataset.i;
               if (!list[i]) return;
               list[i].t = d.querySelector('.ty').value;
-              list[i].g = parseFloat(d.querySelector('.g').value) || 0;
+              list[i].g = parseFloat(String(d.querySelector('.g').value).replace(',', '.')) || 0;
               /* Only one description is open at a time, and the rest are
                  not in the page at all — reading .nmi unconditionally
                  threw the moment the box became a symbol. */

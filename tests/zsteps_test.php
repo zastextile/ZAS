@@ -309,10 +309,23 @@ JS;
 }
 
 /* ============================================ 4. the packing screen uses it */
-head('4. The packing screen is stepped, all three tabs');
+/* SINCE CHANGED, AT AFNAN'S WORD: "if you feel any problem because of the
+   page flip instead of scroll, use scroll." On packing the flip meant
+   pressing Next past every range to reach the new one. The sections are
+   the same; packing shows them one under the other. The gate keeps its
+   flip — nothing was wrong there. */
+head('4. The packing screen keeps its sections, on one scrolling page');
 
 $mp  = (string)file_get_contents($B . 'm_pack.php');
 $mpN = nocomments($mp);
+t('the packing screen asks for scroll, not flip',
+  str_contains($mpN, 'mob_steps_scroll(true);'));
+t('and the gate screen does not — it keeps its flip',
+  !str_contains(nocomments((string)file_get_contents($B . 'm_gate.php')), 'mob_steps_scroll(true)'));
+$mobS = nocomments((string)file_get_contents($B . 'includes/mobile.php'));
+t('in scroll mode every section is shown and there is no Back/Next bar',
+  str_contains($mobS, '.msteps.scroll .mstep{display:block')
+  && preg_match('~if \(!empty\(\$GLOBALS\[\x27_mob_scroll\x27\]\)\) \{.*?return;~s', $mobS) === 1);
 t('the serial tab steps through the ranges',
   str_contains($mpN, "mob_steps_begin('serialsteps')"));
 t('the weight tab is stepped',

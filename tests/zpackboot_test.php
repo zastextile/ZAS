@@ -74,7 +74,10 @@ function is_colleague(){ return $GLOBALS['ROLE'] === 'colleague'; }
 function is_staff(){ return $GLOBALS['ROLE'] === 'staff'; }
 function is_production_staff(){ return $GLOBALS['ROLE'] === 'production_staff'; }
 function assigned_shipment_ids(){ return ['ALL']; }
-function redirect($u){ echo "\n__REDIRECT__ $u || " . ($_SESSION['error'] ?? $_SESSION['flash'] ?? '') . "\n"; exit; }
+function redirect($u){ echo "\n__REDIRECT__ $u || " . ($_SESSION['error'] ?? $_SESSION['flash'] ?? '') . "\n";
+  /* what a refused save kept for the New range card, so a test can see it */
+  if (!empty($_SESSION['pack_draft'])) echo "__DRAFT__ " . json_encode($_SESSION['pack_draft']) . "\n";
+  exit; }
 function audit_log(){}
 /* the desktop chrome, which the office screen sits inside */
 function page_header($t=''){ echo "<!doctype html><html><head><title>" . e($t) . "</title></head><body>"; }
@@ -248,6 +251,21 @@ final class BPdo {
                fixture rather than about the app. */
             /* CLASHDATA: an old overlap already sitting in the data, the
                way one saved before the rule was tight would. */
+            /* EXTRA2: Bale 400–410 (the highest number on the shipment),
+               then Carton 300–310 saved LAST. The next Carton is 311; the
+               highest number of any kind would wrongly give 411. */
+            if (getenv('EXTRA2')) {
+                $x = $R['groups'];
+                $x[] = ['id'=>109,'shipment_id'=>1,'line_no'=>9,'invoice_item_id'=>13,'product_name'=>'Bath Towel 500GSM',
+                        'des_col'=>'','optional_value'=>'','unit_title'=>'Bale','serial_from'=>400,'serial_to'=>410,
+                        'packages'=>0,'qty_mode'=>'per','qty_per_pkg'=>1,'total_qty'=>11,'assorted'=>0,
+                        'size_label'=>'Single','pkg_gross'=>0,'pkg_tare'=>0];
+                $x[] = ['id'=>110,'shipment_id'=>1,'line_no'=>10,'invoice_item_id'=>12,'product_name'=>'Hotel Flat Sheet 300TC',
+                        'des_col'=>'','optional_value'=>'','unit_title'=>'Carton','serial_from'=>300,'serial_to'=>310,
+                        'packages'=>0,'qty_mode'=>'per','qty_per_pkg'=>1,'total_qty'=>11,'assorted'=>0,
+                        'size_label'=>'152x200','pkg_gross'=>0,'pkg_tare'=>0];
+                return $x;
+            }
             /* SHARELINE: range 102 is a second range of invoice line 11,
                so one line has two ranges and one weight */
             if (getenv('SHARELINE')) {
@@ -331,6 +349,19 @@ file_put_contents($work . '/includes/bootstrap.php', $bootstrap);
 file_put_contents($work . '/includes/export.php', "<?php\nfunction exp_ensure_schema(){}\n");
 
 /* --------------------------------------------------------------- run it */
+/* A real POST through the page's own handler — the GET renders above
+   cannot see where a save sends you, and that is half of "don't make me
+   press Next again and again". */
+function post_to(string $work, array $get, array $post, string $env = ''): string {
+    $cmd = 'cd ' . escapeshellarg($work) . ' && ' . $env . ' QS=' . escapeshellarg(http_build_query($get))
+         . ' PQ=' . escapeshellarg(http_build_query($post)) . ' '
+         . escapeshellarg(PHP_BINARY) . ' -d display_errors=1 -d error_reporting=E_ALL'
+         . ' -r ' . escapeshellarg('$_GET=[];parse_str((string)getenv("QS"),$_GET);$_POST=[];'
+                . 'parse_str((string)getenv("PQ"),$_POST);$_SERVER["REQUEST_METHOD"]="POST";require "m_pack.php";')
+         . ' 2>&1';
+    return (string)shell_exec($cmd);
+}
+
 function render(string $work, array $get, string $page = 'm_pack.php',
                 string $env = ''): array {
     $php = PHP_BINARY;
@@ -1277,7 +1308,8 @@ ok(preg_match_all('~<input[^>]*name="serial_from"~', $br) === 3,
 ok(substr_count($br, '<form') === substr_count($br, '</form>'),
    'no half-drawn form is left open to swallow the rest of the page',
    [substr_count($br, '<form'), substr_count($br, '</form>')]);
-ok(str_contains($br, 'data-mstep="next"'), 'Back and Next are still there');
+ok(str_contains($br, 'id="newrange"') && str_contains($br, 'Add this range'),
+   'and the New range card is still there below it');
 
 [$brs] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'BREAKCSRF=3 ROLE=staff');
 ok(str_contains($brs, 'This range could not be drawn.')
@@ -1308,13 +1340,13 @@ const path = require('path');
   await p.goto('file://' + path.join(process.argv[2], 'broken.html'));
   await p.waitForTimeout(300);
   const out = { errs };
-  out.firstOn  = await p.locator('.mstep.on form.mcard').first().isVisible().catch(() => false);
-  out.navShown = await p.locator('.mnav').isVisible();
+  // one scrolling page now: every section is on it, in order
+  out.firstOn  = await p.locator('.mstep form.mcard').first().isVisible().catch(() => false);
   const n = await p.locator('.mstep').count();
   out.labels = [];
   for (let i = 0; i < n; i++) {
-    out.labels.push((await p.locator('.mstep.on').innerText()).split('\n').slice(0, 3).join(' / '));
-    if (i < n - 1) { await p.locator('[data-mstep="next"]').click(); await p.waitForTimeout(150); }
+    const sec = p.locator('.mstep').nth(i);
+    out.labels.push((await sec.isVisible() ? await sec.innerText() : '(hidden)').split('\n').slice(0, 3).join(' / '));
   }
   console.log(JSON.stringify(out));
   await b.close();
@@ -1323,12 +1355,12 @@ JS;
 file_put_contents($work . '/broken.js', $jsb);
 $rb = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
         . escapeshellarg($work . '/broken.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
-ok(is_array($rb) && $rb['errs'] === [] && $rb['firstOn'] && $rb['navShown'],
-   'in a browser the first range shows and Back and Next work, broken range or not', $rb);
+ok(is_array($rb) && $rb['errs'] === [] && $rb['firstOn'],
+   'in a browser the first range shows, broken range or not', $rb);
 ok(is_array($rb) && count($rb['labels']) === 4
    && str_contains($rb['labels'][1], 'could not be drawn')
    && str_contains($rb['labels'][3], 'New range'),
-   'and walking through: a good range, the broken one explained, another good one, then New range',
+   'and down the page: a good range, the broken one explained, another good one, then New range',
    $rb['labels'] ?? null);
 
 head('12. Lines told apart, lists that follow the line, a summary, no carton twice');
@@ -1409,8 +1441,16 @@ const path = require('path');
   out.c1ref        = await c1.locator('[data-ref]').innerText();
   out.c1note       = await c1.locator('[data-palnote]').innerText();
 
-  // the New range card: nothing until a line is picked, then that line's list
-  out.cnBefore = await opts(cn, 'single_size');
+  // the New range card starts from the range saved last (Bale 226–245,
+  // line #3, direct): same line, same kind, same mode, next free number
+  out.cnItem = await cn.locator('select[name="invoice_item_id"]').inputValue();
+  out.cnUnit = await cn.locator('[name="unit_title"]').inputValue();
+  out.cnFrom = await cn.locator('[name="serial_from"]').inputValue();
+  out.cnMode = await cn.locator('[name="qty_mode"]:checked').inputValue();
+  // change the kind to Carton and the serial moves to the next free Carton
+  await cn.locator('[name="unit_title"]').fill('Carton');
+  await p.waitForTimeout(60);
+  out.cnFromCarton = await cn.locator('[name="serial_from"]').inputValue();
   await cn.locator('select[name="invoice_item_id"]').selectOption('11');
   await p.waitForTimeout(100);
   out.cnSizes = await opts(cn, 'single_size');
@@ -1432,14 +1472,16 @@ const path = require('path');
   // the assorted range's total now reads its saved sizes
   out.c1total = await c1.locator('[data-total] b').innerText();
 
-  // Edit on the summary jumps to that range
+  // Edit on the summary scrolls to that range — one page, no flipping
+  await p.goto('about:blank');
   await p.goto('file://' + path.join(process.argv[2], 'serial12.html'));
   await p.waitForTimeout(250);
-  const nb = await p.locator('.mstep').count();
-  for (let i = 0; i < nb - 1; i++) { await p.locator('[data-mstep="next"]').click(); await p.waitForTimeout(80); }
+  out.noNav = await p.locator('.mnav').count();
   await p.locator('[data-mstep-go="1"]').click();
-  await p.waitForTimeout(150);
-  out.afterEdit = (await p.locator('.mstep.on').innerText()).split('\n')[0];
+  await p.waitForTimeout(250);
+  const bx = await p.locator('#s1').boundingBox();
+  out.editTop = bx ? Math.round(bx.y) : null;
+  out.afterEdit = (await p.locator('#s1').innerText()).split('\n')[0];
   console.log(JSON.stringify(out));
   await b.close();
 })();
@@ -1465,8 +1507,14 @@ ok(str_contains((string)($r12['c1ref'] ?? ''), 'Hotel Flat Sheet 300TC') && str_
    'the box above follows the dropdown, so the two cannot disagree', $r12['c1ref'] ?? null);
 ok(str_contains((string)($r12['c1note'] ?? ''), 'not set up'),
    'and the card says this line is not set up yet', $r12['c1note'] ?? null);
-ok(($r12['cnBefore'] ?? null) === ['— none on record yet —', '+ type a size not in the list'],
-   'the New range card offers no size until a line is picked', $r12['cnBefore'] ?? null);
+/* "Don't ask again and again": the next range starts from the last. */
+ok(($r12['cnItem'] ?? '') === '13' && ($r12['cnUnit'] ?? '') === 'Bale' && ($r12['cnMode'] ?? '') === 'direct',
+   'the New range card starts with the last range\'s line, kind of package and mode',
+   [$r12['cnItem'] ?? null, $r12['cnUnit'] ?? null, $r12['cnMode'] ?? null]);
+ok(($r12['cnFrom'] ?? '') === '246',
+   'and at the next free number for that kind — Bale 245 was the last', $r12['cnFrom'] ?? null);
+ok(($r12['cnFromCarton'] ?? '') === '226',
+   'change it to Carton and it moves to the next free Carton number', $r12['cnFromCarton'] ?? null);
 ok(($r12['cnSizes'] ?? null) === ['— pick a size —', 'Small', 'Medium', 'Large', '+ type a size not in the list']
    && ($r12['cnCols'] ?? null) === ['— no colour —', 'White', 'Navy'] && ($r12['cnColShown'] ?? false),
    'and then exactly that line\'s sizes and colours', [$r12['cnSizes'] ?? null, $r12['cnCols'] ?? null]);
@@ -1477,8 +1525,11 @@ ok(($r12['clashGone'] ?? false) && ($r12['saveOn'] ?? false),
    'and both clear the moment the numbers are free');
 ok(($r12['c1total'] ?? '') === '1,000',
    'the assorted range shows its total from the saved sizes, not "set the sizes"', $r12['c1total'] ?? null);
-ok(str_contains((string)($r12['afterEdit'] ?? ''), 'Carton 101–225'),
-   'Edit on the summary opens that range', $r12['afterEdit'] ?? null);
+ok(($r12['noNav'] ?? 1) === 0, 'the packing page scrolls — there is no Back/Next bar to press');
+ok(str_contains((string)($r12['afterEdit'] ?? ''), 'Carton 101–225')
+   && is_int($r12['editTop'] ?? null) && $r12['editTop'] >= 0 && $r12['editTop'] < 200,
+   'Edit on the summary scrolls that range to the top of the screen',
+   [$r12['afterEdit'] ?? null, $r12['editTop'] ?? null]);
 
 head('13. One weight per invoice line; numbers per kind; edit from Approve');
 
@@ -1523,7 +1574,9 @@ const path = require('path');
   await p.evaluate(() => document.querySelectorAll('.mstep').forEach(s => s.classList.add('on')));
   const cn = p.locator('form.mcard').nth(3);
   const out = { errs };
-  // Carton 50–60 clashes with Carton 1–100 …
+  // Carton 50–60 clashes with Carton 1–100 … (the card starts as a Bale,
+  // the last range's kind, so it is set to Carton first)
+  await cn.locator('[name="unit_title"]').fill('Carton');
   await cn.locator('[name="serial_from"]').fill('50'); await cn.locator('[name="serial_to"]').fill('60');
   await p.waitForTimeout(60);
   out.cartonClash = await cn.locator('[data-clash]').isVisible();
@@ -1537,13 +1590,21 @@ const path = require('path');
   await p.waitForTimeout(60);
   out.caseClash = await cn.locator('[data-clash]').isVisible();
 
-  // Edit from Approve lands on that range: #s1 is the second range.
-  // A blank page first — the same page with only a # added is not a new
-  // load, so the steps would never read it.
+  // Edit from Approve lands on that range: #s1 is the second range, and
+  // on one scrolling page the browser scrolls there by itself.
+  // A blank page first — the same page with only a # added is not a new load.
   await p.goto('about:blank');
   await p.goto('file://' + path.join(process.argv[2], 'serial12.html') + '#s1');
   await p.waitForTimeout(250);
-  out.hashStep = (await p.locator('.mstep.on').innerText()).split('\n')[0];
+  out.hashStep = (await p.locator('#s1').innerText()).split('\n')[0];
+  const hb = await p.locator('#s1').boundingBox();
+  out.hashTop = hb ? Math.round(hb.y) : null;
+  // and after a save the page lands on the New range card
+  await p.goto('about:blank');
+  await p.goto('file://' + path.join(process.argv[2], 'serial12.html') + '#newrange');
+  await p.waitForTimeout(250);
+  const nr = await p.locator('form.mcard').nth(3).boundingBox();
+  out.newTop = nr ? Math.round(nr.y) : null;
   console.log(JSON.stringify(out));
   await b.close();
 })();
@@ -1556,8 +1617,13 @@ ok(($r13['cartonClash'] ?? false) === true, 'Carton 50–60 is flagged where Car
 ok(($r13['rollClash'] ?? true) === false && ($r13['rollSave'] ?? false) === true,
    'but Roll 50–60 is allowed — the same number on a different kind of package');
 ok(($r13['caseClash'] ?? false) === true, 'and " carton" is still a Carton');
-ok(str_contains((string)($r13['hashStep'] ?? ''), 'Carton 101–225'),
-   'Edit from Approve opens the serial tab at that range', $r13['hashStep'] ?? null);
+ok(str_contains((string)($r13['hashStep'] ?? ''), 'Carton 101–225')
+   && is_int($r13['hashTop'] ?? null) && $r13['hashTop'] < 200,
+   'Edit from Approve opens the serial tab scrolled to that range',
+   [$r13['hashStep'] ?? null, $r13['hashTop'] ?? null]);
+ok(is_int($r13['newTop'] ?? null) && $r13['newTop'] >= 0 && $r13['newTop'] < 300,
+   'and a save lands with the New range card on screen, not back at the top',
+   $r13['newTop'] ?? null);
 
 /* ONE LINE, TWO RANGES — the case he described. */
 [$wsh] = render($work, ['id' => 1, 't' => 'weight', 'g' => 101], 'm_pack.php', 'SHARELINE=1');
@@ -1575,6 +1641,99 @@ ok(str_contains($wsh, '10.420 contents') && str_contains($wsh, '19.800 contents'
 [$wsh2] = render($work, ['id' => 1, 't' => 'weight', 'g' => 102], 'm_pack.php', 'SHARELINE=1');
 ok(preg_match('~var SIZES  = (\[.*?\]);~s', $wsh2, $mush2) && json_decode($mush2[1], true) === $ush,
    'opening it from the other range shows the same one weight');
+
+head('14. Typing a weight, key by key');
+
+/* THE BUG FROM THE LIVE SCREEN: he typed a weight and only "3" stayed.
+   Every keystroke redrew the whole list, which destroyed the box being
+   typed in, so after the first digit the rest went nowhere. No earlier
+   test typed more than one character — this one types like a person. */
+$js14 = <<<'JS'
+const { chromium } = require('playwright');
+const path = require('path');
+(async () => {
+  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
+  const errs = []; p.on('pageerror', e => errs.push(String(e)));
+  await p.goto('file://' + path.join(process.argv[2], 'weight2.html'));
+  await p.waitForTimeout(300);
+  const g = p.locator('#wlines .wrow .g').first();
+  await g.click();
+  await p.keyboard.type('312', { delay: 40 });
+  const out = { errs };
+  out.value   = await g.inputValue();
+  out.focused = await p.evaluate(() => document.activeElement && document.activeElement.classList.contains('g'));
+  out.perunit = await p.locator('#perunit').innerText();
+  out.type    = await g.getAttribute('type');
+  out.width   = Math.round((await g.boundingBox()).width);
+  // and a second line, typed straight after, keeps the first
+  const g2 = p.locator('#wlines .wrow .g').nth(1);
+  await g2.click();
+  await p.keyboard.type('25.5', { delay: 40 });
+  out.value2 = await g2.inputValue();
+  out.value1after = await g.inputValue();
+  console.log(JSON.stringify(out));
+  await b.close();
+})();
+JS;
+file_put_contents($work . '/s14.js', $js14);
+$r14 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
+        . escapeshellarg($work . '/s14.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
+ok(is_array($r14) && $r14['errs'] === [], 'no javascript error while typing', $r14);
+ok(($r14['value'] ?? '') === '312', 'typing 3, 1, 2 leaves 312 in the box, not 3', $r14['value'] ?? null);
+ok(($r14['focused'] ?? false) === true, 'and the cursor is still in it after the last key');
+/* range 2's other three lines are 30 + 25 + 20 = 75 g, so 312 + 75 */
+ok(($r14['perunit'] ?? '') === '387 g', 'the unit total follows every key', $r14['perunit'] ?? null);
+ok(($r14['value2'] ?? '') === '25.5' && ($r14['value1after'] ?? '') === '312',
+   'a second line typed straight after keeps the first, decimals and all',
+   [$r14['value2'] ?? null, $r14['value1after'] ?? null]);
+ok(($r14['type'] ?? '') === 'text' && ($r14['width'] ?? 0) >= 95,
+   'the box is wide enough to show four digits, with no arrows eating into it',
+   [$r14['type'] ?? null, $r14['width'] ?? null]);
+
+head('15. After Save: straight on to the next range, at the next free number');
+
+/* A saved range lands on the New range card — not back at the top. */
+$pr = post_to($work, ['id' => 1, 't' => 'serial'], [
+    'action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 12,
+    'unit_title' => 'Carton', 'serial_from' => 600, 'serial_to' => 610, 'qty_mode' => 'per',
+    'size_mode' => 'one', 'single_size' => '152x200', 'single_qty' => 40]);
+ok(str_contains($pr, '__REDIRECT__ m_pack.php?id=1&t=serial#newrange'),
+   'a save goes straight to the New range card', preg_match('~__REDIRECT__.*~', $pr, $rm) ? $rm[0] : substr($pr, 0, 200));
+
+/* A refused save keeps what was typed. */
+$pr2 = post_to($work, ['id' => 1, 't' => 'serial'], [
+    'action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 0,
+    'unit_title' => 'Roll', 'serial_from' => 7, 'serial_to' => 9, 'qty_mode' => 'per',
+    'size_mode' => 'one', 'single_size' => 'King', 'single_qty' => 12]);
+ok(str_contains($pr2, '__REDIRECT__ m_pack.php?id=1&t=serial#newrange || Pick the item'),
+   'a refused save also lands on the card, saying why');
+$dr = preg_match('~__DRAFT__ (\{.*\})~', $pr2, $dm) ? json_decode($dm[1], true) : null;
+ok(is_array($dr) && $dr['unit'] === 'Roll' && $dr['from'] === 7 && $dr['to'] === 9
+   && $dr['size'] === 'King' && (float)$dr['qty'] === 12.0,
+   'and what was typed is kept for the card, not wiped', $dr);
+
+/* And when the save itself refuses — here a serial that cannot be — the
+   figures are kept the same way. (Missing the item and the save refusing
+   are two different branches; both must keep the draft.) */
+$pr3 = post_to($work, ['id' => 1, 't' => 'serial'], [
+    'action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 12,
+    'unit_title' => 'Carton', 'serial_from' => 0, 'serial_to' => 5, 'qty_mode' => 'per',
+    'size_mode' => 'one', 'single_size' => '152x200', 'single_qty' => 40]);
+$dr3 = preg_match('~__DRAFT__ (\{.*\})~', $pr3, $dm3) ? json_decode($dm3[1], true) : null;
+ok(str_contains($pr3, 'The first serial must be 1 or more.') && is_array($dr3)
+   && $dr3['item'] === 12 && $dr3['size'] === '152x200' && (float)$dr3['qty'] === 40.0,
+   'a save the server refuses keeps what was typed too', $dr3);
+
+/* The next free number is per kind, from the range saved last. */
+[$ex] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'EXTRA2=1');
+preg_match_all('~<form method="post" class="mcard" autocomplete="off".*?</form>~s', $ex, $exf);
+$newCard = end($exf[0]) ?: '';
+ok(str_contains($newCard, 'name="unit_title" value="Carton" aria-label="Unit"'),
+   'the New range card takes the kind of the range saved last (Carton 300–310)');
+ok(preg_match('~name="serial_from"[^>]*value="311"~', $newCard) === 1,
+   'and starts at 311 — the next Carton — not 411, the next number of any kind',
+   preg_match('~name="serial_from"[^>]*value="(\d+)"~', $newCard, $fm) ? $fm[1] : null);
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

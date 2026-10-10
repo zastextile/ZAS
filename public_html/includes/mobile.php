@@ -138,6 +138,10 @@ body.is-offline .btn.go{opacity:.5;pointer-events:none}
    bar both depend on it. */
 .msteps{overflow-x:hidden;max-width:100%}
 .mstep{display:none}
+/* scroll mode: every section shown, one under the other; a link to a
+   section stops below the sticky header rather than under it */
+.msteps.scroll .mstep{display:block;margin-bottom:22px;scroll-margin-top:72px}
+.msteps.scroll .mstep.on{animation:none}
 .mstep.on{display:block;animation:mstepin .22s ease-out}
 @keyframes mstepin{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.mstep.on{animation:none}}
@@ -323,20 +327,43 @@ function mob_needs(array $fns, string $file): void
     exit;
 }
 
+/* SCROLL INSTEAD OF FLIP, for a screen that asks for it.
+
+   "If you feel any problem because of the page flip instead of scroll,
+    use scroll — I do not want any problem."
+
+   On the packing screen the flip meant pressing Next past every range
+   to reach the next one, every time. So a screen can switch the steps
+   off: the same sections, one under the other, no Back/Next bar and no
+   progress pips. Edit buttons and #sN links scroll to the section
+   instead of flipping to it. Every caller of mob_step() stays exactly as
+   it is — only how the steps are shown changes. */
+function mob_steps_scroll(bool $on = true): void
+{
+    $GLOBALS['_mob_scroll'] = $on;
+}
+
 function mob_steps_begin(string $id = 'msteps'): void
 {
     $GLOBALS['_mob_step_id']   = $id;
     $GLOBALS['_mob_step_open'] = false;
-    echo '<div class="msteps" id="' . e($id) . '">' . "\n";
-    echo '  <div class="mprog" role="status" aria-live="polite">'
-       . '<span class="bars"></span><span class="cnt"></span></div>' . "\n";
+    $GLOBALS['_mob_step_n']    = 0;
+    $scroll = !empty($GLOBALS['_mob_scroll']);
+    echo '<div class="msteps' . ($scroll ? ' scroll' : '') . '" id="' . e($id) . '">' . "\n";
+    if (!$scroll) {
+        echo '  <div class="mprog" role="status" aria-live="polite">'
+           . '<span class="bars"></span><span class="cnt"></span></div>' . "\n";
+    }
     echo '  <div class="mstepwrap">' . "\n";
 }
 
 function mob_step(string $title = '', string $sub = ''): void
 {
     if (!empty($GLOBALS['_mob_step_open'])) echo "  </section>\n";
-    echo '  <section class="mstep"' . ($title !== '' ? ' data-label="' . e($title) . '"' : '') . '>' . "\n";
+    $n = (int)($GLOBALS['_mob_step_n'] ?? 0);
+    $GLOBALS['_mob_step_n'] = $n + 1;
+    echo '  <section class="mstep" id="s' . $n . '"'
+       . ($title !== '' ? ' data-label="' . e($title) . '"' : '') . '>' . "\n";
     if ($title !== '') echo '    <h2 class="sh">' . e($title) . '</h2>' . "\n";
     if ($sub   !== '') echo '    <p class="ss">' . e($sub) . '</p>' . "\n";
     $GLOBALS['_mob_step_open'] = true;
@@ -347,6 +374,26 @@ function mob_steps_end(string $nextLabel = 'Next'): void
     if (!empty($GLOBALS['_mob_step_open'])) echo "  </section>\n";
     $GLOBALS['_mob_step_open'] = false;
     $id = (string)($GLOBALS['_mob_step_id'] ?? 'msteps');
+    if (!empty($GLOBALS['_mob_scroll'])) {
+        /* scroll mode: close up, and let Edit buttons scroll to a section */
+        ?>
+  </div>
+</div>
+<script>
+(function () {
+  var box = document.getElementById(<?= json_encode($id) ?>);
+  if (!box) return;
+  box.addEventListener('click', function (ev) {
+    var b = ev.target.closest ? ev.target.closest('[data-mstep-go]') : null;
+    if (!b) return;
+    var t = document.getElementById('s' + (+b.getAttribute('data-mstep-go') || 0));
+    if (t) { ev.preventDefault(); t.scrollIntoView({ block: 'start' }); }
+  });
+})();
+</script>
+        <?php
+        return;
+    }
     ?>
   </div>
   <div class="mnav">
