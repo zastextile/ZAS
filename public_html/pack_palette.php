@@ -108,6 +108,10 @@ flash();
 .scope{background:#f6f8fc;border:1px solid #e3e9f2;border-radius:12px;padding:14px 16px;margin-top:20px}
 .scope b{font-size:15px}
 .scope p{margin:4px 0 0;font-size:13px;color:#5a6b82}
+.ihint{font-style:italic;font-weight:600;font-size:.82em;opacity:.75}
+.pline .pcount{font-size:11.5px;font-weight:800;margin-left:6px;opacity:.75}
+.invsays{font-size:13px;margin:0 0 8px;padding:8px 11px;border-radius:9px;background:#fff8e6;
+  border:1px solid #f1d58a;color:#6b5310}
 .warnbox{background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.3);border-radius:12px;
   padding:13px 16px;font-size:13px;color:#8a5a06;margin-bottom:16px}
 </style>
@@ -129,10 +133,13 @@ flash();
     <?php foreach ($items as $it):
       $pal = pack_palette($id, (int)$it['id']);
       $n = count($pal['size']) + count($pal['colour']); ?>
+      <?php /* Line number and the line's own wording, small and italic.
+               An invoice with four "Bath Towel" lines showed four identical
+               chips; now each says #1 · Royal blue, #3 · White and so on. */ ?>
       <a class="pline<?= (int)$it['id'] === $pick ? ' on' : '' ?>"
          href="pack_palette.php?id=<?= $id ?>&item=<?= (int)$it['id'] ?>">
-        <?= e((string)$it['product_name']) ?>
-        <?= $n ? '· ' . count($pal['size']) . '/' . count($pal['colour']) : '· not set' ?></a>
+        <?= pack_item_html($it) ?>
+        <span class="pcount"><?= $n ? count($pal['size']) . '/' . count($pal['colour']) : 'not set' ?></span></a>
     <?php endforeach; ?>
   </div>
 
@@ -152,7 +159,8 @@ flash();
     <input type="hidden" name="shipment_id" value="<?= $id ?>">
     <input type="hidden" name="invoice_item_id" value="<?= $pick ?>">
 
-    <h2><?= e((string)$item['product_name']) ?></h2>
+    <?php $il = pack_item_label($item); ?>
+    <h2><?= e($il['name']) ?> <i class="ihint">invoice line <?= e($il['no']) ?></i></h2>
     <p class="lead"><?= e((string)($item['des_col'] ?? '')) ?>
       <?= ($item['optional_value'] ?? '') !== '' ? ' &middot; ' . e((string)$item['optional_value']) : '' ?></p>
 
@@ -182,6 +190,14 @@ flash();
 
       <div>
         <span class="flab">Colours this order uses</span>
+        <?php /* WHAT THE INVOICE LINE ITSELF SAYS, right where the colour
+                 is chosen. Three "Thermal Blanket" lines differ only by
+                 White, Box White and Leno Green; the description is the
+                 hint, so it is shown here and any chip it names is marked. */
+              $des = trim((string)($item['des_col'] ?? '')); ?>
+        <?php if ($des !== ''): ?>
+          <p class="invsays">The invoice line says: <b><?= e($des) ?></b></p>
+        <?php endif; ?>
         <p class="hint"><?= $choices['colour']
           ? count($choices['colour']) . ' used before for this product — tick what the customer ordered'
           : 'No colour has ever been recorded for this product. Type what the order says below.' ?></p>
@@ -191,14 +207,18 @@ flash();
               <input type="checkbox" name="pick_colour[]" value="<?= e($o) ?>"
                      <?= in_array($o, $pal['colour'], true) ? 'checked' : '' ?>
                      <?= $canEdit ? '' : 'disabled' ?>>
-              <span><i class="sw" style="background:<?= e(pack_colour_swatch($o)) ?>"></i><?= e($o) ?></span>
+              <span><i class="sw" style="background:<?= e(pack_colour_swatch($o)) ?>"></i><?= e($o) ?><?php
+                if ($des !== '' && stripos($des, $o) !== false): ?><i class="src">on invoice</i><?php endif; ?></span>
             </label>
           <?php endforeach; ?>
         </div>
         <?php if ($canEdit): ?>
           <div class="newrow">
             <span class="flab">A colour the customer asked for that is not listed</span>
-            <input name="new_colour" placeholder="one, or several separated by commas">
+            <?php $anyMatch = false;
+                  foreach ($choices['colour'] as $o) if ($des !== '' && stripos($des, $o) !== false) $anyMatch = true; ?>
+            <input name="new_colour" placeholder="<?= $des !== '' && !$anyMatch
+                ? e('e.g. ' . $des . ' — as the invoice line says') : 'one, or several separated by commas' ?>">
           </div>
         <?php endif; ?>
       </div>

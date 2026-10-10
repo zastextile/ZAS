@@ -87,9 +87,9 @@ $GLOBALS['ROWS'] = [
   'shipment' => ['id'=>1,'invoice_no'=>'ZAS/5191','buyer_name'=>'Gulf Textiles LLC',
                  'status'=>'draft','packing_status'=>'open'],
   'items' => [
-    ['id'=>11,'product_name'=>'Duvet Cover Set King','des_col'=>'Fleece + micro, printed','optional_value'=>'HS 6302.31','qty'=>900],
-    ['id'=>12,'product_name'=>'Hotel Flat Sheet 300TC','des_col'=>'Percale, white','optional_value'=>'HS 6302.21','qty'=>5200],
-    ['id'=>13,'product_name'=>'Bath Towel 500GSM','des_col'=>'Combed, dobby','optional_value'=>'HS 6302.60','qty'=>3800],
+    ['id'=>11,'line_no'=>1,'product_name'=>'Duvet Cover Set King','des_col'=>'Fleece + micro, printed','optional_value'=>'HS 6302.31','qty'=>900],
+    ['id'=>12,'line_no'=>2,'product_name'=>'Hotel Flat Sheet 300TC','des_col'=>'Percale, white','optional_value'=>'HS 6302.21','qty'=>5200],
+    ['id'=>13,'line_no'=>3,'product_name'=>'Bath Towel 500GSM','des_col'=>'Combed, dobby','optional_value'=>'HS 6302.60','qty'=>3800],
   ],
   /* What the office typed for line 11: three sizes and two colours.
      Line 12 is deliberately left unset, so the fallback to the product's
@@ -244,6 +244,11 @@ final class BPdo {
                would change the serial page's card count and the approve
                totals, and then a dozen assertions would be about this
                fixture rather than about the app. */
+            /* CLASHDATA: an old overlap already sitting in the data, the
+               way one saved before the rule was tight would. */
+            if (getenv('CLASHDATA')) {
+                $g2 = $R['groups']; $g2[1]['serial_from'] = 90; return $g2;
+            }
             return getenv('COLOURRANGES') ? array_merge($R['groups'], $R['cgroups']) : $R['groups'];
         }
         if (str_contains($q, 'FROM packing_groups WHERE id=?')) {
@@ -424,12 +429,16 @@ ok(isset($cm[1]) && substr_count($cm[1], '<option') === 3
    $cm[1] ?? null);
 ok(!str_contains((string)($cm[1] ?? ''), 'Grey'),
    'and not a colour the product was merely packed in once, which is the office\'s to choose');
-/* Line 12 has no palette, so its card must not show an empty dropdown. */
-ok(substr_count($ser, 'name="single_colour"') === 4
-   && substr_count($ser, '<select class="in" name="single_colour">') === 1,
-   'the lines with no colours set carry it hidden instead of showing an empty list',
-   [substr_count($ser, 'name="single_colour"'),
-    substr_count($ser, '<select class="in" name="single_colour">')]);
+/* Every card has the colour field now, so the script can fill it when
+   the dropdown moves to a line that has colours — but a line with none
+   keeps it hidden rather than showing an empty list. Range 1 (line 11,
+   two colours) shows it; ranges 2 and 3 and the New range card do not. */
+ok(substr_count($ser, '<select class="in" name="single_colour">') === 4,
+   'every card carries a colour field the script can fill',
+   substr_count($ser, '<select class="in" name="single_colour">'));
+ok(preg_match_all('~<label class="f" data-one data-colbox hidden>~', $ser) === 3,
+   'and it is hidden on every line that has no colours set',
+   preg_match_all('~<label class="f" data-one data-colbox hidden>~', $ser));
 
 head('4. Assorted is a page of its own, and it adds up');
 
@@ -1150,8 +1159,24 @@ ok(str_contains($pp, '3 sizes and 2 colours'),
 ok(str_contains($pp, 'name="new_size"') && str_contains($pp, 'name="new_colour"'),
    'something the customer asked for that is not listed can still be typed');
 
+/* Lines that share a product name are told apart by number and wording. */
+ok(str_contains($pp, 'Duvet Cover Set King <i class="ihint">#1 · Fleece + micro, printed</i>'),
+   'each line chip carries its number and its own wording, small and italic');
+ok(str_contains($pp, '<i class="ihint">invoice line #1</i>'),
+   'and the line being set up says which invoice line it is');
+ok(str_contains($pp, 'The invoice line says: <b>Fleece + micro, printed</b>'),
+   'the invoice line\'s own words sit beside the colours, as the hint for choosing them');
+
 /* The line nobody has set up must say so, not look saved. */
 [$pp2] = render($work, ['id' => 1, 'item' => 12], 'pack_palette.php');
+ok(str_contains($pp2, 'The invoice line says: <b>Percale, white</b>'),
+   'and on an unset line too');
+/* "white" is in that line's wording, so the White chip is marked — and
+   only that one. */
+ok(preg_match('~value="White".*?White<i class="src">on invoice</i>~s', $pp2) === 1
+   && substr_count($pp2, 'on invoice</i>') === 1,
+   'the colour the invoice line names is marked "on invoice", and no other',
+   substr_count($pp2, 'on invoice</i>'));
 ok(str_contains($pp2, 'Nothing set for this line yet'), 'an unset line says so plainly');
 ok(!preg_match('~name="pick_colour\[\]"[^>]*checked~', $pp2), 'and has nothing ticked');
 
@@ -1203,13 +1228,13 @@ ok(str_contains($stale, 'One file is out of date'),
    substr($stale, 0, 200));
 ok(str_contains($stale, 'includes/mobile.php') && str_contains($stale, 'mob_steps_begin'),
    'it says which file and what it was looking for');
-ok(!str_contains($stale, 'Serial &amp; qty') && !str_contains($stale, 'This order:'),
+ok(!str_contains($stale, 'Serial &amp; qty') && !str_contains($stale, 'Sizes &amp; colours set on'),
    'and it stops before drawing half a screen, which is what made it look like lost data');
 ok(str_contains($stale, '</html>'), 'the page it does send is a whole one');
 
 /* The page must be no worse off than before when nothing is missing. */
 [$fine] = render($work, ['id' => 1, 't' => 'serial']);
-ok(!str_contains($fine, 'One file is out of date') && str_contains($fine, 'This order:'),
+ok(!str_contains($fine, 'One file is out of date') && str_contains($fine, 'Sizes &amp; colours set on'),
    'and with every file present the screen draws exactly as it did');
 
 head('11. One broken range does not blank the screen');
@@ -1289,6 +1314,155 @@ ok(is_array($rb) && count($rb['labels']) === 4
    && str_contains($rb['labels'][3], 'New range'),
    'and walking through: a good range, the broken one explained, another good one, then New range',
    $rb['labels'] ?? null);
+
+head('12. Lines told apart, lists that follow the line, a summary, no carton twice');
+
+/* From the live screenshots: a card saved as "#2 Thermal Blanket" with
+   "Bath Towel" in its dropdown; four "Bath Towel" lines that could not
+   be told apart; sixteen sizes on the phone when each line on the
+   desktop had one or two; no way to see every range at once. */
+[$s12] = render($work, ['id' => 1, 't' => 'serial']);
+file_put_contents($work . '/serial12.html', $s12);
+
+ok(preg_match_all('~<form method="post" class="mcard" autocomplete="off"~', $s12) === 4,
+   'every range form refuses the browser\'s restore, so a reload shows what is saved',
+   preg_match_all('~<form method="post" class="mcard" autocomplete="off"~', $s12));
+ok(str_contains($s12, '>#1 Duvet Cover Set King — Fleece + micro, printed</option>')
+   || preg_match('~>\s*#1 Duvet Cover Set King — Fleece \+ micro, printed</option>~', $s12) === 1,
+   'every invoice line in the dropdown carries its number and its own wording');
+ok(str_contains($s12, '<i class="ihint">#1</i>'),
+   'and the box above it names the line number, small and italic');
+
+/* The top box no longer adds every line's sizes together. */
+ok(str_contains($s12, 'Sizes &amp; colours set on 1 of 3 lines') && str_contains($s12, 'Not set yet: #2, #3'),
+   'the top says how many lines are set up and which are not — not one big pile of sizes');
+ok(!str_contains($s12, 'This order:'), 'the old order-wide pile of sizes is gone');
+
+/* Each card offers its own line's list and nothing else. */
+$pal12 = preg_match('~var PAL = (\{.*?\});~s', $s12, $pm12) ? json_decode($pm12[1], true) : null;
+ok(is_array($pal12) && ($pal12['11']['size'] ?? null) === ['Small', 'Medium', 'Large']
+   && ($pal12['11']['colour'] ?? null) === ['White', 'Navy'] && $pal12['11']['set'] === true,
+   'line #1 offers exactly the three sizes and two colours the office ticked', $pal12['11'] ?? null);
+ok(is_array($pal12) && ($pal12['11']['size'] ?? []) !== [] && !in_array('King', $pal12['11']['size'], true),
+   'and not a size the product is merely costed in, once the line is set up');
+ok(is_array($pal12) && $pal12['12']['set'] === false && $pal12['12']['colour'] === [],
+   'a line not set up is marked as such, with no colours invented for it', $pal12['12'] ?? null);
+ok(str_contains($s12, '3 sizes and 2 colours — exactly what the office set for this line.'),
+   'the card says where its list came from');
+ok(str_contains($s12, 'Pick the invoice line first — its sizes and colours follow.'),
+   'and the New range card says the list comes with the line');
+
+/* The summary. */
+ok(str_contains($s12, 'Already packed') && substr_count($s12, 'class="sumr') === 3,
+   'every range is on one list', substr_count($s12, 'class="sumr'));
+ok(str_contains($s12, 'data-mstep-go="0"') && str_contains($s12, 'data-mstep-go="2"'),
+   'each with an Edit that jumps to its own step');
+ok(substr_count($s12, '>Delete</button>') === 3, 'and a Delete');
+ok(str_contains($s12, 'Weighed: 11.420 kg gross per carton'),
+   'and whether it has been weighed — weight lives on its own tab and was invisible from here');
+ok(str_contains($s12, '3 ranges') && str_contains($s12, '245 packages'),
+   'with the whole invoice added up underneath');
+
+/* A clash already in the data is shown, not hidden. */
+[$sc] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'CLASHDATA=1');
+ok(str_contains($sc, 'Shares package numbers with'),
+   'a range that shares package numbers with another is flagged on the list');
+
+$js12 = <<<'JS'
+const { chromium } = require('playwright');
+const path = require('path');
+(async () => {
+  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
+  const errs = []; p.on('pageerror', e => errs.push(String(e)));
+  await p.goto('file://' + path.join(process.argv[2], 'serial12.html'));
+  await p.waitForTimeout(300);
+  await p.evaluate(() => document.querySelectorAll('.mstep').forEach(s => s.classList.add('on')));
+  const out = { errs };
+  const cards = p.locator('form.mcard');
+  const c1 = cards.nth(0), cn = cards.nth(3);
+  const opts = async (c, n) => c.locator('select[name="' + n + '"] option').allInnerTexts();
+
+  out.c1sizes = await opts(c1, 'single_size');
+  out.c1cols  = await opts(c1, 'single_colour');
+  // move range 1 to line #2, which is not set up and has no colours
+  await c1.locator('select[name="invoice_item_id"]').selectOption('12');
+  await p.waitForTimeout(100);
+  out.c1sizesAfter = await opts(c1, 'single_size');
+  out.c1colHidden  = await c1.locator('[data-colbox]').isHidden();
+  out.c1ref        = await c1.locator('[data-ref]').innerText();
+  out.c1note       = await c1.locator('[data-palnote]').innerText();
+
+  // the New range card: nothing until a line is picked, then that line's list
+  out.cnBefore = await opts(cn, 'single_size');
+  await cn.locator('select[name="invoice_item_id"]').selectOption('11');
+  await p.waitForTimeout(100);
+  out.cnSizes = await opts(cn, 'single_size');
+  out.cnCols  = await opts(cn, 'single_colour');
+  out.cnColShown = await cn.locator('[data-colbox]').isVisible();
+
+  // a serial already used is said while typing, and Save waits
+  await cn.locator('[name="serial_from"]').fill('90');
+  await cn.locator('[name="serial_to"]').fill('110');
+  await p.waitForTimeout(80);
+  out.clash = await cn.locator('[data-clash]').innerText();
+  out.saveOff = await cn.locator('button[type="submit"]').isDisabled();
+  await cn.locator('[name="serial_from"]').fill('300');
+  await cn.locator('[name="serial_to"]').fill('320');
+  await p.waitForTimeout(80);
+  out.clashGone = await cn.locator('[data-clash]').isHidden();
+  out.saveOn = await cn.locator('button[type="submit"]').isEnabled();
+
+  // the assorted range's total now reads its saved sizes
+  out.c1total = await c1.locator('[data-total] b').innerText();
+
+  // Edit on the summary jumps to that range
+  await p.goto('file://' + path.join(process.argv[2], 'serial12.html'));
+  await p.waitForTimeout(250);
+  const nb = await p.locator('.mstep').count();
+  for (let i = 0; i < nb - 1; i++) { await p.locator('[data-mstep="next"]').click(); await p.waitForTimeout(80); }
+  await p.locator('[data-mstep-go="1"]').click();
+  await p.waitForTimeout(150);
+  out.afterEdit = (await p.locator('.mstep.on').innerText()).split('\n')[0];
+  console.log(JSON.stringify(out));
+  await b.close();
+})();
+JS;
+file_put_contents($work . '/s12.js', $js12);
+$r12 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
+        . escapeshellarg($work . '/s12.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
+ok(is_array($r12) && $r12['errs'] === [], 'the serial page runs with no javascript error', $r12['errs'] ?? $r12);
+ok(($r12['c1sizes'] ?? null) === ['— pick a size —', 'Small', 'Medium', 'Large', '+ type a size not in the list'],
+   'range 1 offers its line\'s three sizes', $r12['c1sizes'] ?? null);
+ok(($r12['c1cols'] ?? null) === ['— no colour —', 'White', 'Navy'],
+   'and its line\'s two colours', $r12['c1cols'] ?? null);
+/* Compared with line #2's own list as the page carried it. (The fake
+   history gives every product the same packed-before sizes, so "not
+   Small" would be a question about the fixture, not the screen.) */
+ok(is_array($r12) && is_array($pal12)
+   && array_slice($r12['c1sizesAfter'], 1, -1) === $pal12['12']['size']
+   && in_array('King', $r12['c1sizesAfter'], true),
+   'moving it to a line not set up refills the sizes from that line, not the old one',
+   [$r12['c1sizesAfter'] ?? null, $pal12['12']['size'] ?? null]);
+ok(($r12['c1colHidden'] ?? false) === true, 'and hides the colour, because that line has none');
+ok(str_contains((string)($r12['c1ref'] ?? ''), 'Hotel Flat Sheet 300TC') && str_contains((string)($r12['c1ref'] ?? ''), '#2'),
+   'the box above follows the dropdown, so the two cannot disagree', $r12['c1ref'] ?? null);
+ok(str_contains((string)($r12['c1note'] ?? ''), 'not set up'),
+   'and the card says this line is not set up yet', $r12['c1note'] ?? null);
+ok(($r12['cnBefore'] ?? null) === ['— none on record yet —', '+ type a size not in the list'],
+   'the New range card offers no size until a line is picked', $r12['cnBefore'] ?? null);
+ok(($r12['cnSizes'] ?? null) === ['— pick a size —', 'Small', 'Medium', 'Large', '+ type a size not in the list']
+   && ($r12['cnCols'] ?? null) === ['— no colour —', 'White', 'Navy'] && ($r12['cnColShown'] ?? false),
+   'and then exactly that line\'s sizes and colours', [$r12['cnSizes'] ?? null, $r12['cnCols'] ?? null]);
+ok(str_contains((string)($r12['clash'] ?? ''), 'Already used: Carton 1–100')
+   && ($r12['saveOff'] ?? false) === true,
+   'a package number already used is said while typing, and Save waits', $r12['clash'] ?? null);
+ok(($r12['clashGone'] ?? false) && ($r12['saveOn'] ?? false),
+   'and both clear the moment the numbers are free');
+ok(($r12['c1total'] ?? '') === '1,000',
+   'the assorted range shows its total from the saved sizes, not "set the sizes"', $r12['c1total'] ?? null);
+ok(str_contains((string)($r12['afterEdit'] ?? ''), 'Carton 101–225'),
+   'Edit on the summary opens that range', $r12['afterEdit'] ?? null);
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

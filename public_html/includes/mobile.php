@@ -413,6 +413,15 @@ function mob_steps_end(string $nextLabel = 'Next'): void
   });
   back.addEventListener('click', function () { go(at - 1); });
 
+  /* A button anywhere inside that names a step jumps straight to it —
+     the summary's Edit, for one. data-mstep-go="2" is the third step. */
+  box.addEventListener('click', function (ev) {
+    var b = ev.target.closest ? ev.target.closest('[data-mstep-go]') : null;
+    if (!b) return;
+    ev.preventDefault();
+    go(+b.getAttribute('data-mstep-go') || 0);
+  });
+
   /* A required field on a hidden step: the browser blocks the submit and
      says nothing the user can see. Open its step so it can be pointed at. */
   var reported = false;

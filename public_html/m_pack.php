@@ -117,13 +117,16 @@ function pack_pick_field(array $opts, string $cur, string $selName, string $newN
     $known = $opts !== [];
     /* A size already saved that is not in the list — a product renamed,
        or a one-off — must still show as chosen rather than silently
-       resetting to nothing. */
-    if ($cur !== '' && !in_array($cur, $opts, true)) { array_unshift($opts, $cur); $known = true; }
+       resetting to nothing. It is MARKED, though: the office's list is
+       the rule, and a packer should see when a range is outside it. */
+    $off = '';
+    if ($cur !== '' && !in_array($cur, $opts, true)) { array_unshift($opts, $cur); $known = true; $off = $cur; }
 
     $h = '<select class="in" name="' . e($selName) . '" data-pick>';
     $h .= '<option value="">' . ($known ? '— pick a ' . e($what) . ' —' : '— none on record yet —') . '</option>';
     foreach ($opts as $o) {
-        $h .= '<option' . ($o === $cur ? ' selected' : '') . '>' . e($o) . '</option>';
+        $h .= '<option value="' . e($o) . '"' . ($o === $cur ? ' selected' : '') . '>' . e($o)
+            . ($o === $off ? ' (not on this line’s list)' : '') . '</option>';
     }
     $h .= '<option value="__new"' . (!$known ? ' selected' : '') . '>+ type a ' . e($what) . ' not in the list</option>';
     $h .= '</select>';
@@ -540,6 +543,20 @@ if (!$canEdit) {
   color:var(--muted);font-weight:700;font-size:13px;text-align:center;text-decoration:none}
 .ptab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
 /* the order's scope, stated before any field is touched */
+.btn.sm{padding:10px 12px;font-size:14px}
+.sumr{border-top:1px solid var(--line);padding:11px 0}
+.sumr.bad{background:rgba(184,40,63,.04)}
+.sumt{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:15px}
+.sumi{font-size:14px;margin-top:3px}
+.sumq,.sumw{font-size:12.5px;color:var(--muted);margin-top:2px}
+.sumw a{color:var(--bad);font-weight:700}
+.suma{display:flex;gap:8px;margin-top:9px}
+.suma form{margin:0;flex:1}.suma>.btn,.suma form .btn{width:100%;min-height:44px}
+.sumtot{display:flex;justify-content:space-between;border-top:2px solid var(--line);
+  padding-top:10px;margin-top:2px;font-size:14px}
+.clash{margin:-4px 0 11px;padding:10px 12px;border-radius:10px;font-size:13.5px;font-weight:700;
+  color:var(--bad);background:rgba(184,40,63,.08);border:1px solid rgba(184,40,63,.3)}
+.ihint{font-style:italic;font-weight:600;font-size:.82em;color:var(--muted)}
 .scope{background:rgba(14,168,201,.09);border:1px solid rgba(14,168,201,.3);border-radius:13px;
   padding:12px 14px;margin-bottom:13px}
 .scope b{font-size:15px;display:block}
@@ -584,9 +601,24 @@ table.bk td.n{text-align:right}
 /* ================================================== tab 1 — serial and qty */
 if ($tab === 'serial') {
 
+    /* Every invoice line's list, once. 'set' means the office has set it
+       up on the desktop; then those lists are the whole choice. A line
+       never set up gets the product's own sizes and no colours, flagged
+       so the card can say it is a fallback. */
+    $palByItem = [];
+    foreach ($items as $it) {
+        $pp = pack_palette($id, (int)$it['id']);
+        $set = $pp['size'] !== [] || $pp['colour'] !== [];
+        $palByItem[(int)$it['id']] = [
+            'size'   => $set ? $pp['size'] : pack_size_options((string)$it['product_name']),
+            'colour' => $set ? $pp['colour'] : [],
+            'set'    => $set,
+        ];
+    }
+
     /* Draws one range, new or existing. Kept as a function because the
        "add another" card at the bottom is the same form with nothing in it. */
-    $card = function (?array $g) use ($items, $id, $canEdit, $self, $groups) {
+    $card = function (?array $g) use ($items, $id, $canEdit, $self, $groups, $palByItem) {
         $new   = $g === null;
         $gidL  = $new ? 0 : (int)$g['id'];
         $unit  = $new ? 'Carton' : (string)$g['unit_title'];
@@ -611,20 +643,49 @@ if ($tab === 'serial') {
            shows exactly them. Only when the order has not been set up
            does it fall back to the product's own list, so a packer is
            never stuck in front of an empty screen. */
+        /* EXACTLY WHAT THE DESKTOP TICKED FOR THIS LINE — nothing else.
+           If the line has been set up on Order sizes & colours, that list
+           is the whole choice, sizes and colours alike. Only a line that
+           has never been set up falls back to the product's own sizes, and
+           the card says so. The map covers every line, so the lists follow
+           the dropdown live — see palByItem in the script below. */
         $itemId  = $new ? 0 : (int)$g['invoice_item_id'];
-        $pal     = $itemId ? pack_palette($id, $itemId) : ['size' => [], 'colour' => []];
-        $fromPal = $pal['size'] !== [] || $pal['colour'] !== [];
-        $opts    = $pal['size'] !== []
-                 ? $pal['size']
-                 : pack_size_options($new ? '' : (string)$g['product_name']);
-        $cols    = $pal['colour'];
+        $lp      = $palByItem[$itemId] ?? ['size' => [], 'colour' => [], 'set' => false];
+        $fromPal = $lp['set'];
+        $opts    = $lp['size'];
+        $cols    = $lp['colour'];
         $single = $sizes[0] ?? null;
         $singleQty = $single ? ($mode === 'per' ? (float)$single['qty_per_pkg'] : (float)$single['total_qty']) : 0;
         $num = function (float $v): string {
             return $v > 0 ? rtrim(rtrim(number_format($v, 3, '.', ''), '0'), '.') : '';
         };
+        /* The saved mix, added up, so the assorted total can be shown
+           without opening it: per package, and over the whole range. */
+        $mixPer = 0.0; $mixTot = 0.0;
+        foreach ($sizes as $srow) { $mixPer += (float)$srow['qty_per_pkg']; $mixTot += (float)$srow['total_qty']; }
+        /* Every OTHER range's serials, so a clash is said while typing,
+           not after Save. The server still checks — this only says it
+           sooner. */
+        $taken = [];
+        foreach ($groups as $og) {
+            if (!$new && (int)$og['id'] === $gidL) continue;
+            $taken[] = [(int)$og['serial_from'], (int)$og['serial_to'],
+                        (string)$og['unit_title']];
+        }
         ?>
-        <form method="post" class="mcard">
+        <?php /* autocomplete="off": on a reload the browser puts back the
+                 last thing touched in each box — after the page has drawn,
+                 and without telling it. The live server showed a range
+                 saved as "#2 Thermal Blanket" with "Bath Towel" in its
+                 dropdown and "Direct" lit beside a label that still said
+                 per carton; pressing Save would have quietly moved the
+                 range to the wrong line. Off, the boxes show what is
+                 saved and nothing else. */ ?>
+        <form method="post" class="mcard" autocomplete="off"
+              data-mixper="<?= e((string)round($mixPer, 4)) ?>"
+              data-mixtot="<?= e((string)round($mixTot, 4)) ?>"
+              data-hasmix="<?= $asrt && $sizes ? 1 : 0 ?>"
+              data-taken="<?= e(json_encode($taken)) ?>">
           <?= csrf_field() ?>
           <input type="hidden" name="action" value="group">
           <input type="hidden" name="shipment_id" value="<?= $id ?>">
@@ -636,19 +697,30 @@ if ($tab === 'serial') {
             <?php if (!$new): ?><span class="pill v"><?= number_format($P) ?> <?= e(strtolower($unit)) ?></span><?php endif; ?>
           </div>
 
-          <?php if ($item): ?>
-            <div class="ref"><b><?= e((string)$item['product_name']) ?></b><br>
-              <?= e((string)($item['des_col'] ?? '')) ?>
-              <?= ($item['optional_value'] ?? '') !== '' ? ' · ' . e((string)$item['optional_value']) : '' ?></div>
-          <?php endif; ?>
+          <?php /* The box above the dropdown says which invoice line this
+                   is, and it FOLLOWS the dropdown: change the line and the
+                   box changes with it, so the two can never disagree on
+                   screen the way they did on the live server. */ ?>
+          <div class="ref" data-ref<?= $item ? '' : ' hidden' ?>><?php if ($item): $il = pack_item_label($item); ?>
+            <b><?= e($il['name']) ?></b> <i class="ihint"><?= e($il['no']) ?></i><br>
+            <?= e((string)($item['des_col'] ?? '')) ?>
+            <?= ($item['optional_value'] ?? '') !== '' ? ' · ' . e((string)$item['optional_value']) : '' ?>
+          <?php endif; ?></div>
 
           <label class="f"><span>Item — from the invoice</span>
-            <select class="in" name="invoice_item_id" required>
+            <?php /* The line number and what the line says, in every option.
+                     Four lines called "Bath Towel" were four identical
+                     choices; now they read #1 Bath Towel — Royal blue,
+                     #3 Bath Towel — White, and so on. */ ?>
+            <select class="in" name="invoice_item_id" required data-itempick>
               <option value="">— pick the item —</option>
-              <?php foreach ($items as $it): ?>
+              <?php foreach ($items as $it): $il = pack_item_label($it); ?>
                 <option value="<?= (int)$it['id'] ?>"
+                  data-name="<?= e($il['name']) ?>" data-no="<?= e($il['no']) ?>"
+                  data-des="<?= e((string)($it['des_col'] ?? '')) ?>"
+                  data-opt="<?= e((string)($it['optional_value'] ?? '')) ?>"
                   <?= (!$new && (int)$it['id'] === (int)$g['invoice_item_id']) ? ' selected' : '' ?>>
-                  <?= e((string)$it['product_name']) ?></option>
+                  <?= e($il['text']) ?></option>
               <?php endforeach; ?>
             </select></label>
 
@@ -663,6 +735,9 @@ if ($tab === 'serial') {
                    value="<?= $to ?: '' ?>" placeholder="to" aria-label="To" required>
           </div>
           <div class="derv" data-serial><span>—</span><b>—</b></div>
+          <?php /* Said while typing. The server refuses it anyway; this is
+                   so nobody fills in the rest of the card first. */ ?>
+          <div class="clash" data-clash hidden></div>
 
           <?php /* BOTH TOGGLES ARE LIVE.
                    The fields and their labels change the moment one is
@@ -694,20 +769,31 @@ if ($tab === 'serial') {
             <span data-qtylabel>Quantity per package</span>
             <input class="in" type="number" inputmode="decimal" step="any" name="single_qty"
                    value="<?= e($num($singleQty)) ?>" data-qty></label>
-          <label class="f" data-one><span>Size<?= $fromPal ? ' — from this order' : " — this product's own sizes" ?></span>
+          <div class="note" data-palnote style="margin:-2px 0 10px"><?php
+            if ($itemId === 0) echo 'Pick the invoice line first — its sizes and colours follow.';
+            elseif ($fromPal) echo e(count($opts) . ' size' . (count($opts) === 1 ? '' : 's') . ' and '
+                                   . count($cols) . ' colour' . (count($cols) === 1 ? '' : 's')
+                                   . ' — exactly what the office set for this line.');
+            else echo 'This line is not set up on Order sizes &amp; colours yet, so these are the product&rsquo;s own sizes.';
+          ?></div>
+          <label class="f" data-one><span>Size</span>
             <?= pack_pick_field($opts, (string)($single['size_label'] ?? ''),
                                 'single_size', 'single_size_new', 'size') ?></label>
-          <?php if ($cols): ?>
-            <label class="f" data-one><span>Colour — from this order</span>
-              <select class="in" name="single_colour">
-                <option value="">— no colour —</option>
-                <?php foreach ($cols as $c): ?>
-                  <option<?= $c === (string)($single['colour_label'] ?? '') ? ' selected' : '' ?>><?= e($c) ?></option>
-                <?php endforeach; ?>
-              </select></label>
-          <?php else: ?>
-            <input type="hidden" name="single_colour" value="<?= e((string)($single['colour_label'] ?? '')) ?>">
-          <?php endif; ?>
+          <?php /* Always drawn, hidden when the line has no colours, so the
+                   script can fill it when the dropdown moves to a line that
+                   does. A colour already saved but no longer on the list is
+                   kept and marked, rather than silently dropped. */
+                $curCol = (string)($single['colour_label'] ?? '');
+                $colOpts = $cols;
+                if ($curCol !== '' && !in_array($curCol, $colOpts, true)) $colOpts[] = $curCol; ?>
+          <label class="f" data-one data-colbox<?= $colOpts ? '' : ' hidden' ?>><span>Colour</span>
+            <select class="in" name="single_colour">
+              <option value="">— no colour —</option>
+              <?php foreach ($colOpts as $c): ?>
+                <option value="<?= e($c) ?>"<?= $c === $curCol ? ' selected' : '' ?>><?= e($c)
+                  . (in_array($c, $cols, true) ? '' : ' (not on this line’s list)') ?></option>
+              <?php endforeach; ?>
+            </select></label>
 
           <div data-mix hidden>
             <div class="derv"><span data-mixhead>Assorted</span>
@@ -750,25 +836,26 @@ if ($tab === 'serial') {
         /* SAY THE SCOPE BEFORE ANYTHING IS TAPPED. The packer should
            know the whole world of this order in one line, rather than
            discovering it a dropdown at a time. */
-        $palAll = ['size' => [], 'colour' => []];
+        /* NOT THE WHOLE ORDER'S SIZES ADDED TOGETHER. That used to read
+           "16 sizes and 6 colours" when every line on the desktop had one
+           or two — the union of all of them, which no single carton is
+           ever packed from. Each card now says its own line's list; up
+           here it only says how many lines have been set up. */
+        $nSet = 0; $unset = [];
         foreach ($items as $it) {
-            $pp = pack_palette($id, (int)$it['id']);
-            $palAll['size']   = array_merge($palAll['size'],   $pp['size']);
-            $palAll['colour'] = array_merge($palAll['colour'], $pp['colour']);
+            if (!empty($palByItem[(int)$it['id']]['set'])) $nSet++;
+            else $unset[] = pack_item_label($it)['no'];
         }
-        $palAll['size']   = pack_dedupe($palAll['size']);
-        $palAll['colour'] = pack_dedupe($palAll['colour']);
-        $ns = count($palAll['size']); $nc = count($palAll['colour']);
+        $nAll = count($items);
         echo '<div class="scope">';
-        if ($ns || $nc) {
-            echo '<b>This order: ' . $ns . ' size' . ($ns === 1 ? '' : 's')
-               . ' and ' . $nc . ' colour' . ($nc === 1 ? '' : 's') . '</b>'
-               . '<span>' . e(implode(', ', $palAll['size']))
-               . ($nc ? '   ·   ' . e(implode(', ', $palAll['colour'])) : '') . '</span>';
+        if ($nSet === $nAll) {
+            echo '<b>Sizes &amp; colours set on all ' . $nAll . ' lines</b>'
+               . '<span>Each range offers only what the office ticked for its own line.</span>';
         } else {
-            echo '<b>This order has no sizes or colours set yet</b>'
-               . '<span>The office sets them on Order sizes &amp; colours. '
-               . 'Until then this screen offers the whole product list.</span>';
+            echo '<b>Sizes &amp; colours set on ' . $nSet . ' of ' . $nAll . ' lines</b>'
+               . '<span>Not set yet: ' . e(implode(', ', $unset))
+               . '. Those offer the product&rsquo;s own sizes until the office sets them '
+               . 'on Order sizes &amp; colours.</span>';
         }
         echo '</div>';
         /* One range to a screen. Each carries its own form and its own
@@ -810,6 +897,67 @@ if ($tab === 'serial') {
                . '1 to 100 means 100 cartons — the count is never typed. When some packages '
                . 'differ, add another range; that is all a different serial is.</div></div>';
         }
+
+        /* EVERY RANGE ON ONE LIST, with Edit and Delete.
+           Asked for so a wrong entry can be found and put right without
+           paging through one range at a time. It sits on the New range
+           step because that is where someone is when they wonder what is
+           already done. Edit jumps to that range's own step; Delete asks
+           first. Each row also says whether the range has been weighed,
+           because weight lives on its own tab and was otherwise invisible
+           from here. */
+        if ($groups) {
+            if (!$canEdit) mob_step('All ranges');
+            $byId = [];
+            foreach ($items as $it) $byId[(int)$it['id']] = $it;
+            $sumP = 0; $sumQ = 0.0;
+            echo '<div class="mcard"><h2 style="margin:0 0 4px">Already packed</h2>'
+               . '<div class="note" style="margin-bottom:10px">Every range on this invoice. '
+               . 'Tap Edit to change one.</div>';
+            foreach ($groups as $gi => $og) {
+                $oP = pack_packages($og); $sumP += $oP; $sumQ += (float)$og['total_qty'];
+                $oSizes = pack_sizes((int)$og['id']);
+                $it = $byId[(int)$og['invoice_item_id']] ?? null;
+                /* a clash already in the data — saved before the rule was
+                   tight, or by the desktop — is shown, not hidden */
+                $clashW = '';
+                foreach ($groups as $og2) {
+                    if ((int)$og2['id'] === (int)$og['id']) continue;
+                    if ((int)$og2['serial_from'] <= (int)$og['serial_to']
+                        && (int)$og2['serial_to'] >= (int)$og['serial_from']) {
+                        $clashW = $og2['unit_title'] . ' ' . (int)$og2['serial_from'] . '–' . (int)$og2['serial_to'];
+                        break;
+                    }
+                }
+                $gross = (float)$og['pkg_gross'];
+                echo '<div class="sumr' . ($clashW !== '' ? ' bad' : '') . '">'
+                   . '<div class="sumt"><b>' . e((string)$og['unit_title']) . ' '
+                   . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . '</b>'
+                   . '<span class="pill v">' . number_format($oP) . '</span></div>'
+                   . '<div class="sumi">' . ($it ? pack_item_html($it) : e((string)$og['product_name'])) . '</div>'
+                   . '<div class="sumq">' . number_format((float)$og['total_qty']) . ' in total'
+                   . ($oSizes ? ' · ' . e(pack_size_text($og, $oSizes)) : '') . '</div>'
+                   . '<div class="sumw">' . ($gross > 0
+                        ? 'Weighed: ' . number_format($gross, 3) . ' kg gross per ' . e(strtolower((string)$og['unit_title']))
+                        : '<a href="' . e($self) . '&amp;t=weight&amp;g=' . (int)$og['id'] . '">Not weighed yet — Weight tab</a>')
+                   . '</div>'
+                   . ($clashW !== '' ? '<div class="clash" style="margin:8px 0 0">Shares package numbers with '
+                                      . e($clashW) . '. Each number can be used once — change one of them.</div>' : '');
+                if ($canEdit) {
+                    echo '<div class="suma"><button type="button" class="btn sec sm" data-mstep-go="' . (int)$gi . '">Edit</button>'
+                       . '<form method="post" onsubmit="return confirm(\'Remove ' . e((string)$og['unit_title']) . ' '
+                       . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . ' and its weights?\')">'
+                       . csrf_field()
+                       . '<input type="hidden" name="action" value="group_delete">'
+                       . '<input type="hidden" name="shipment_id" value="' . (int)$id . '">'
+                       . '<input type="hidden" name="group_id" value="' . (int)$og['id'] . '">'
+                       . '<button class="btn red sm" type="submit">Delete</button></form></div>';
+                }
+                echo '</div>';
+            }
+            echo '<div class="sumtot"><span>' . count($groups) . ' range' . (count($groups) === 1 ? '' : 's')
+               . '</span><b>' . number_format($sumP) . ' packages · ' . number_format($sumQ) . ' pcs</b></div></div>';
+        }
         mob_steps_end();
         ?>
         <script>
@@ -834,6 +982,11 @@ if ($tab === 'serial') {
            read, so a phone with the script blocked still posts a
            complete, correct form. */
         (function () {
+          /* Every line's list, keyed by invoice line — what the office
+             ticked, or the product's own sizes for a line not set up. */
+          var PAL = <?= json_encode((object)array_map(static fn($v) => [
+                        'size' => array_values($v['size']), 'colour' => array_values($v['colour']),
+                        'set' => (bool)$v['set']], $palByItem), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
           document.querySelectorAll('form.mcard').forEach(function (card) {
             var unitI = card.querySelector('[name="unit_title"]');
             var fromI = card.querySelector('[name="serial_from"]');
@@ -851,6 +1004,18 @@ if ($tab === 'serial') {
             var note   = card.querySelector('[data-newnote]');
             var ones   = card.querySelectorAll('[data-one]');
             var pill   = card.querySelector('.pill');
+            var clash  = card.querySelector('[data-clash]');
+            var pick   = card.querySelector('[data-itempick]');
+            var ref    = card.querySelector('[data-ref]');
+            var save   = card.querySelector('button[type="submit"]');
+            var taken  = []; try { taken = JSON.parse(card.dataset.taken || '[]'); } catch (e) {}
+            var mixPer = +card.dataset.mixper || 0, mixTot = +card.dataset.mixtot || 0;
+            var hasMix = card.dataset.hasmix === '1';
+            var sizeSel = card.querySelector('select[name="single_size"]');
+            var colSel  = card.querySelector('select[name="single_colour"]');
+            var colBox  = card.querySelector('[data-colbox]');
+            var palNote = card.querySelector('[data-palnote]');
+            var lastItem = pick ? pick.value : '';
             var was    = mode();
 
             function mode() {
@@ -878,14 +1043,25 @@ if ($tab === 'serial') {
               label.textContent = per ? ('Quantity per ' + lu) : 'Total quantity';
 
               ones.forEach(function (el) { el.hidden = mix; });
+              /* the colour field stays hidden on a line with no colours */
+              if (colBox && colSel && colSel.options.length < 2) colBox.hidden = true;
               if (mixBox) mixBox.hidden = !mix;
               if (note)   note.hidden = !mix;
               if (mixHd)  mixHd.textContent = per ? ('Assorted, per ' + lu) : 'Assorted, total';
 
               var q = +qtyI.value || 0;
-              if (mix) {
+              if (mix && !hasMix) {
                 total.firstElementChild.textContent = 'Set the sizes to see the total';
                 total.lastElementChild.textContent  = '—';
+              } else if (mix) {
+                /* THE SAVED MIX, ADDED UP. It used to say "set the sizes"
+                   here even when they were set, because it never looked.
+                   Per package: what one holds, times the packages.
+                   Direct: the mix IS the total. */
+                total.firstElementChild.textContent = per
+                  ? num(mixPer) + ' per ' + lu + ' × ' + num(P)
+                  : 'Assorted, over ' + num(P) + ' ' + lu;
+                total.lastElementChild.textContent = num(per ? mixPer * P : mixTot);
               } else {
                 var t = per ? q * P : q;
                 total.firstElementChild.textContent = per
@@ -893,6 +1069,35 @@ if ($tab === 'serial') {
                   : num(q) + ' over ' + num(P) + ' ' + lu;
                 total.lastElementChild.textContent = num(t);
               }
+
+              /* NO PACKAGE NUMBER TWICE — of any kind. Carton 5 and Bale 5
+                 are the same number on the same shipment's paperwork. */
+              var f = +fromI.value || 0, t2 = +toI.value || 0, hit = null;
+              if (f > 0 && t2 >= f) {
+                for (var k = 0; k < taken.length; k++) {
+                  if (taken[k][0] <= t2 && taken[k][1] >= f) { hit = taken[k]; break; }
+                }
+              }
+              if (clash) {
+                clash.hidden = !hit;
+                clash.textContent = hit ? ('Already used: ' + hit[2] + ' ' + hit[0] + '–' + hit[1]
+                  + '. Every package number can be used once.') : '';
+              }
+              if (save) save.disabled = !!hit;
+
+              if (pick && ref) {
+                var o = pick.options[pick.selectedIndex];
+                if (o && o.value) {
+                  ref.hidden = false;
+                  ref.innerHTML = '<b>' + esc(o.dataset.name) + '</b> <i class="ihint">'
+                    + esc(o.dataset.no) + '</i><br>' + esc(o.dataset.des)
+                    + (o.dataset.opt ? ' · ' + esc(o.dataset.opt) : '');
+                } else { ref.hidden = true; }
+              }
+            }
+            function esc(t) {
+              return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) {
+                return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; });
             }
 
             /* Flipping the mode converts the figure rather than leaving a
@@ -913,6 +1118,47 @@ if ($tab === 'serial') {
             [unitI, fromI, toI, qtyI].forEach(function (el) {
               el.addEventListener('input', paint);
             });
+            /* MOVE THE LINE, MOVE THE LISTS. The sizes and colours on offer
+               are that line's own, so picking a different line refills
+               both from it — they used to stay on whatever line the range
+               was saved with, and a New range card offered nothing at all. */
+            function refill() {
+              if (!pick || pick.value === lastItem) return;
+              lastItem = pick.value;
+              var lp = PAL[pick.value] || { size: [], colour: [], set: false };
+              if (sizeSel) {
+                var keepS = sizeSel.value;
+                var first = sizeSel.options[0], last = sizeSel.options[sizeSel.options.length - 1];
+                while (sizeSel.options.length) sizeSel.remove(0);
+                first.textContent = lp.size.length ? '— pick a size —' : '— none on record yet —';
+                sizeSel.add(first);
+                lp.size.forEach(function (v) { sizeSel.add(new Option(v, v)); });
+                if (last && last.value === '__new') sizeSel.add(last);
+                sizeSel.value = lp.size.indexOf(keepS) >= 0 ? keepS : '';
+                var box = sizeSel.parentElement.querySelector('[data-picknew]');
+                if (box) box.hidden = sizeSel.value !== '__new';
+              }
+              if (colSel) {
+                var keepC = colSel.value;
+                while (colSel.options.length > 1) colSel.remove(1);
+                lp.colour.forEach(function (v) { colSel.add(new Option(v, v)); });
+                colSel.value = lp.colour.indexOf(keepC) >= 0 ? keepC : '';
+                if (colBox) colBox.hidden = !lp.colour.length || assorted();
+              }
+              if (palNote) {
+                palNote.textContent = !pick.value ? 'Pick the invoice line first — its sizes and colours follow.'
+                  : lp.set ? (lp.size.length + ' size' + (lp.size.length === 1 ? '' : 's') + ' and '
+                              + lp.colour.length + ' colour' + (lp.colour.length === 1 ? '' : 's')
+                              + ' — exactly what the office set for this line.')
+                  : 'This line is not set up on Order sizes & colours yet, so these are the product’s own sizes.';
+              }
+            }
+            if (pick) pick.addEventListener('change', function () { refill(); paint(); });
+            /* If a browser restores old values anyway (some ignore
+               autocomplete="off" on a back-navigation), redraw from what
+               the boxes actually hold, so the labels never describe a
+               choice that is not on screen. */
+            window.addEventListener('pageshow', paint);
             paint();
           });
         })();
@@ -1018,11 +1264,16 @@ if ($tab === 'weight') {
         ?>
         <div class="mcard">
           <select class="in" onchange="location.href=this.value">
-            <?php foreach ($groups as $og): ?>
+            <?php /* named by invoice line too — two ranges of "Bath Towel"
+                     in different colours must not look the same here */
+                  $byIdW = [];
+                  foreach ($items as $it) $byIdW[(int)$it['id']] = $it;
+                  foreach ($groups as $og):
+                    $wit = $byIdW[(int)$og['invoice_item_id']] ?? null; ?>
               <option value="<?= e($self) ?>&amp;t=weight&amp;g=<?= (int)$og['id'] ?>"
                 <?= (int)$og['id'] === $gid ? ' selected' : '' ?>>
-                <?= e((string)$og['product_name']) ?> · <?= e((string)$og['unit_title']) ?>
-                <?= (int)$og['serial_from'] ?>–<?= (int)$og['serial_to'] ?></option>
+                <?= e((string)$og['unit_title']) ?> <?= (int)$og['serial_from'] ?>–<?= (int)$og['serial_to'] ?>
+                · <?= e($wit ? pack_item_label($wit)['text'] : (string)$og['product_name']) ?></option>
             <?php endforeach; ?>
           </select>
         </div>

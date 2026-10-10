@@ -161,6 +161,17 @@ final class CPdo {
             return $out;
         }
 
+        /* the package-number check: the fake answers with the range that
+           owns the numbers, or throws on demand to prove a failed check
+           refuses the save instead of waving it through */
+        if (str_contains($q, 'SELECT unit_title, serial_from, serial_to FROM packing_groups')) {
+            if (!empty($GLOBALS['BREAKCHECK'])) throw new RuntimeException('lost connection');
+            foreach ($T['groups'] as $g) {
+                if ((int)$g['shipment_id'] !== (int)$a[0] || (int)$g['id'] === (int)$a[1]) continue;
+                if ((int)$g['serial_from'] <= (int)$a[2] && (int)$g['serial_to'] >= (int)$a[3]) return [$g];
+            }
+            return [];
+        }
         if (str_contains($q, 'FROM packing_groups WHERE id=?')) {
             $g = $T['groups'][(int)($a[0] ?? 0)] ?? null;
             return $g ? [$g] : [];
@@ -503,6 +514,36 @@ t('the assorted page has no typed size field left on it',
   !preg_match('~<(input|select)[^>]*name="size_label\[\]"~', $mpkHtml), null);
 t('and its rows are built from the tally that is on screen',
   str_contains($mpk, "\$('rows').innerHTML"), null);
+
+/* ============================================ 6. lines and numbers */
+head('6. An invoice line is named so it cannot be mixed up, and no package number twice');
+
+$l = pack_item_label(['line_no' => 2, 'product_name' => 'Thermal Blanket', 'des_col' => "White\n"]);
+t('a line is named by its number, its product and what the line says',
+  $l['text'] === '#2 Thermal Blanket — White', $l['text']);
+t('in parts, so a screen can set the hint small',
+  $l['no'] === '#2' && $l['name'] === 'Thermal Blanket' && $l['hint'] === 'White', $l);
+$l2 = pack_item_label(['line_no' => 9, 'product_name' => 'Bath Towel', 'des_col' => '']);
+t('a line with no description has no dangling dash', $l2['text'] === '#9 Bath Towel', $l2['text']);
+$long = pack_item_label(['line_no' => 1, 'product_name' => 'X', 'des_col' => str_repeat('very long wording ', 6)]);
+t('a long description is cut short so it fits a phone dropdown',
+  mb_strlen($long['hint']) <= 40 && str_ends_with($long['hint'], '…'), $long['hint']);
+$h = pack_item_html(['line_no' => 3, 'product_name' => 'Bath <Towel>', 'des_col' => 'Maroon']);
+t('the HTML form escapes the name and sets the hint italic',
+  $h === 'Bath &lt;Towel&gt; <i class="ihint">#3 · Maroon</i>', $h);
+
+t('a range clear of every other is allowed', pack_serial_problem(1, 200, 205) === '',
+  pack_serial_problem(1, 200, 205));
+t('one that touches another\'s numbers is refused, whatever kind of package',
+  str_contains(pack_serial_problem(1, 100, 101), 'already used by Carton 1–100'),
+  pack_serial_problem(1, 100, 101));
+t('editing a range does not clash with itself', pack_serial_problem(1, 1, 100, 101) === '',
+  pack_serial_problem(1, 1, 100, 101));
+$GLOBALS['BREAKCHECK'] = true;
+$fc = pack_serial_problem(1, 900, 905);
+$GLOBALS['BREAKCHECK'] = false;
+t('a check that cannot run refuses the save instead of letting a duplicate through',
+  str_contains($fc, 'could not be checked'), $fc);
 
 echo "\n" . ($F === 0 ? "ALL PASS   ($P checks)\n" : "FAILED  $F   (" . ($P + $F) . " checks)\n");
 exit($F === 0 ? 0 : 1);

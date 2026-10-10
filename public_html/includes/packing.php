@@ -384,6 +384,41 @@ function pack_std_save(string $productName, string $size, array $lines, string $
     } catch (Throwable $e) { /* a standard that will not save must not lose the packing */ }
 }
 
+/* WHICH INVOICE LINE, SAID SO NOBODY CAN MIX THEM UP.
+
+   An invoice routinely carries the same product on several lines — four
+   "Bath Towel" lines that differ only by colour or rate. A list that
+   shows the product name alone shows four identical choices, and the
+   wrong one gets picked with nothing on screen to say so.
+
+   So every place that names an invoice line names it the same way: the
+   line number, the product, and what the line itself says it is (its
+   description or colour). Returned in parts so a screen can set the
+   product in its normal type and the rest small and italic.
+
+     ['no' => '#2', 'name' => 'Thermal Blanket', 'hint' => 'White',
+      'text' => '#2 Thermal Blanket — White']                         */
+function pack_item_label(array $it): array
+{
+    $no   = (int)($it['line_no'] ?? 0);
+    $name = trim((string)($it['product_name'] ?? ''));
+    $hint = trim((string)preg_replace('/\s+/', ' ', (string)($it['des_col'] ?? '')));
+    if (mb_strlen($hint) > 40) $hint = rtrim(mb_substr($hint, 0, 38)) . '…';
+    $tag  = $no > 0 ? '#' . $no : '';
+    return ['no' => $tag, 'name' => $name, 'hint' => $hint,
+            'text' => trim($tag . ' ' . $name) . ($hint !== '' ? ' — ' . $hint : '')];
+}
+
+/* The same, as HTML: the product plain, the line number and hint small
+   and italic after it. */
+function pack_item_html(array $it): string
+{
+    $l = pack_item_label($it);
+    $small = trim($l['no'] . ($l['hint'] !== '' ? ' · ' . $l['hint'] : ''));
+    return htmlspecialchars($l['name'], ENT_QUOTES)
+         . ($small !== '' ? ' <i class="ihint">' . htmlspecialchars($small, ENT_QUOTES) . '</i>' : '');
+}
+
 /* A DOT THE COLOUR OF THE COLOUR.
 
    Names are read; a dot is recognised. Known names get their own, and
@@ -573,9 +608,15 @@ function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGro
         $hit = $s->fetch();
         if ($hit) {
             return 'Those serials are already used by ' . $hit['unit_title'] . ' '
-                 . (int)$hit['serial_from'] . '–' . (int)$hit['serial_to'] . '.';
+                 . (int)$hit['serial_from'] . '–' . (int)$hit['serial_to']
+                 . '. Every package number can be used once.';
         }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) {
+        /* FAIL CLOSED. This used to swallow the error and return "no
+           problem", so a failed check let a duplicate carton through
+           without a word. A save that cannot be checked is refused. */
+        return 'The package numbers could not be checked just now, so nothing was saved. Try again.';
+    }
     return '';
 }
 
