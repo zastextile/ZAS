@@ -430,5 +430,29 @@ t('a fatal is shown to an admin rather than leaving a blank page',
 t('and only to an admin, because an error names paths',
   preg_match('~error_get_last.*?is_admin\(\)\) return;~s', $mobN) === 1);
 
+/* AND IT MUST BE VISIBLE. The first version printed the box in place,
+   and the live page had stopped inside a hidden step — so the box was
+   hidden with it, and the screen was exactly as blank as before. This
+   kills a real PHP process mid-step and looks at the result in a
+   browser, because only a browser can say whether a thing can be seen. */
+$crash = $run('<?php function is_admin(){return true;} function e($s){return htmlspecialchars((string)$s,ENT_QUOTES);}'
+    . ' require ' . $B2 . '; mob_show_fatal();'
+    . ' echo "<!doctype html><html><head><style>.mstep{display:none}.mstep.on{display:block}</style></head><body>";'
+    . ' echo "<div class=msteps><div class=mstepwrap><section class=mstep><form>";'
+    . ' ini_set("memory_limit","16M"); $x = str_repeat("x", 40000000);');
+$cf = sys_get_temp_dir() . '/zsteps_crash.html';
+file_put_contents($cf, $crash);
+$jsc = "const { chromium } = require('playwright');(async()=>{const b=await chromium.launch({executablePath:'/opt/pw-browsers/chromium'});"
+     . "const p=await b.newPage({viewport:{width:390,height:844}});await p.goto('file://" . $cf . "');await p.waitForTimeout(200);"
+     . "const x=p.locator('#mob-fatal');console.log(JSON.stringify({n:await x.count(),v:await x.isVisible().catch(()=>false),"
+     . "t:(await x.innerText().catch(()=>''))}));await b.close();})();";
+file_put_contents(__DIR__ . '/zsteps_crash_tmp.js', $jsc);
+$cv = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node zsteps_crash_tmp.js 2>&1'), true);
+@unlink(__DIR__ . '/zsteps_crash_tmp.js'); @unlink($cf);
+t('a crash inside a hidden step still shows its error box on screen',
+  is_array($cv) && $cv['n'] === 1 && $cv['v'] === true, $cv);
+t('and the box says what the error was',
+  is_array($cv) && str_contains((string)$cv['t'], 'memory size'), $cv['t'] ?? null);
+
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

@@ -254,12 +254,46 @@ function mob_show_fatal(): void
         if (!$e || !in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) return;
         if (!function_exists('is_admin') || !is_admin()) return;
         $esc = static fn($t) => htmlspecialchars((string)$t, ENT_QUOTES);
-        echo '<div style="margin:16px;padding:16px;border-radius:12px;background:#fff;'
-           . 'border:1px solid #e3e9f2;border-left:4px solid #b8283f;font:13px/1.6 ui-monospace,monospace">'
+        /* IT MUST BE SEEN WHEREVER THE PAGE STOPPED. The first version of
+           this printed the box in place — and the page had stopped inside
+           a hidden step, so the box was hidden with it and the screen was
+           exactly as blank as before. Now it is fixed to the viewport and
+           a script lifts it out to <body>; scripts run even inside a
+           container that is display:none. */
+        echo '<div id="mob-fatal" style="position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;'
+           . 'padding:16px;border-radius:12px;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.25);'
+           . 'border:1px solid #e3e9f2;border-left:4px solid #b8283f;font:13px/1.6 ui-monospace,monospace;'
+           . 'color:#152033;max-height:60vh;overflow:auto">'
            . '<b style="font:700 15px/1.4 system-ui,sans-serif">This screen stopped here</b><br>'
            . $esc($e['message']) . '<br><span style="color:#5a6b82">'
-           . $esc(basename((string)$e['file'])) . ' line ' . (int)$e['line'] . '</span></div>';
+           . $esc(basename((string)$e['file'])) . ' line ' . (int)$e['line'] . '</span></div>'
+           . '<script>(function(){var b=document.getElementById("mob-fatal");'
+           . 'if(b&&document.body)document.body.appendChild(b);})();</script>';
     });
+}
+
+/* A card that could not be drawn, said plainly. Everyone sees that it
+   failed and that the rest of the page still works; only an admin sees
+   why, because the reason can name a file or a query. */
+function mob_card_error(string $what, Throwable $e): void
+{
+    $esc = static fn($t) => htmlspecialchars((string)$t, ENT_QUOTES);
+    $admin = function_exists('is_admin') && is_admin();
+    echo '<div class="mcard" style="border-left:4px solid #b8283f">'
+       . '<b>' . $esc($what) . ' could not be drawn.</b>'
+       . '<div class="note" style="margin-top:6px">Everything else on this page still works. '
+       . ($admin ? 'The reason is below — send it to whoever looks after the system.'
+                 : 'Ask an admin to open this page; they will see why.')
+       . '</div>';
+    if ($admin) {
+        echo '<div style="margin-top:10px;font:12.5px/1.6 ui-monospace,monospace;color:#152033;'
+           . 'background:#f6f8fb;border:1px solid #e3e9f2;border-radius:9px;padding:10px;'
+           . 'overflow-wrap:anywhere">'
+           . $esc(get_class($e)) . ': ' . $esc($e->getMessage()) . '<br>'
+           . '<span style="color:#5a6b82">' . $esc(basename($e->getFile())) . ' line '
+           . (int)$e->getLine() . '</span></div>';
+    }
+    echo '</div>';
 }
 
 function mob_needs(array $fns, string $file): void

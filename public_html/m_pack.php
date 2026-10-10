@@ -31,7 +31,7 @@ require_once __DIR__ . '/includes/mobile.php';
 if (function_exists('mob_needs')) {
     mob_show_fatal();
     mob_needs(['mob_header', 'mob_footer', 'mob_flash',
-               'mob_steps_begin', 'mob_step', 'mob_steps_end'], 'includes/mobile.php');
+               'mob_steps_begin', 'mob_step', 'mob_steps_end', 'mob_card_error'], 'includes/mobile.php');
     mob_needs(['pack_palette', 'pack_unit_key', 'pack_wkey', 'pack_colour_swatch',
                'pack_weight_missing', 'pack_dedupe'], 'includes/packing.php');
 } else {
@@ -774,14 +774,38 @@ if ($tab === 'serial') {
         /* One range to a screen. Each carries its own form and its own
            Save, so a range is finished before the next one is looked at
            — which is also how the cartons are actually packed. */
+        /* ONE BROKEN RANGE MUST NOT BLANK THE SCREEN.
+           A card that throws halfway leaves an open <form> and an open
+           step behind it. The steps are hidden until the script at the
+           very end reveals one, so the whole rest of the page — every
+           other range, the New range card, Back and Next — vanished
+           with it, and the error box printed at shutdown landed inside
+           a hidden step where nobody could see it. That is exactly the
+           blank screen that came back from the live server.
+
+           So each card is drawn into a buffer. If it throws, the half-
+           drawn card is thrown away, a plain card says this range could
+           not be drawn (with the reason, for an admin), and everything
+           else on the page carries on. */
+        $safeCard = function (?array $g) use ($card): void {
+            $lvl = ob_get_level();
+            ob_start();
+            try {
+                $card($g);
+                ob_end_flush();
+            } catch (Throwable $e) {
+                while (ob_get_level() > $lvl) ob_end_clean();
+                mob_card_error($g === null ? 'The new range form' : 'This range', $e);
+            }
+        };
         mob_steps_begin('serialsteps');
         foreach ($groups as $g) {
             mob_step((string)$g['unit_title'] . ' ' . (int)$g['serial_from'] . '–' . (int)$g['serial_to']);
-            $card($g);
+            $safeCard($g);
         }
         if ($canEdit) {
             mob_step('New range', 'Carries on from where the last one ended');
-            $card(null);
+            $safeCard(null);
             echo '<div class="mcard"><div class="note">Packing starts from the serial. '
                . '1 to 100 means 100 cartons — the count is never typed. When some packages '
                . 'differ, add another range; that is all a different serial is.</div></div>';
@@ -899,6 +923,12 @@ if ($tab === 'serial') {
 
 /* ========================================================= tab 2 — weight */
 if ($tab === 'weight') {
+    /* The same guard as the range cards: a throw halfway through would
+       leave an open form and a hidden step, and the tab would go blank.
+       Drawn into a buffer instead, and replaced by a plain card if it
+       fails. */
+    $lvlT = ob_get_level(); ob_start();
+    try {
     if (!$groups) {
         echo '<div class="empty">Add a serial range first.</div>';
     } else {
@@ -1410,10 +1440,17 @@ if ($tab === 'weight') {
         </script>
         <?php
     }
+    ob_end_flush();
+    } catch (Throwable $e) {
+        while (ob_get_level() > $lvlT) ob_end_clean();
+        mob_card_error('The weight for this range', $e);
+    }
 }
 
 /* ======================================================== tab 3 — approve */
 if ($tab === 'approve') {
+    $lvlT = ob_get_level(); ob_start();
+    try {
     $t = pack_totals($id);
     ?>
     <form method="post">
@@ -1516,6 +1553,11 @@ if ($tab === 'approve') {
     })();
     </script>
     <?php
+    ob_end_flush();
+    } catch (Throwable $e) {
+        while (ob_get_level() > $lvlT) ob_end_clean();
+        mob_card_error('The approval summary', $e);
+    }
 }
 
 mob_footer();

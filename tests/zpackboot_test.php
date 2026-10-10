@@ -53,7 +53,16 @@ function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
 function require_login(){}
 function verify_csrf(){}
 function csrf_token(){ return 'testtoken'; }
-function csrf_field(){ return '<input type="hidden" name="_csrf" value="testtoken">'; }
+/* BREAKCSRF=N throws on the Nth form drawn. Nearly every database read in
+   packing.php swallows its own errors, so a throw from the fake database
+   never reaches a card; this one does, from the middle of a form, which
+   is the worst place for it. Each existing range draws two forms (save,
+   remove), so N=3 is the first form of the second range. */
+function csrf_field(){
+  static $n = 0; $n++;
+  if ((int)getenv('BREAKCSRF') === $n) throw new Error('Column not found: test breakage');
+  return '<input type="hidden" name="_csrf" value="testtoken">';
+}
 function current_user(): ?array { return ['id'=>1,'name'=>'Afnan','email'=>'a@z','role'=>'admin','can_see_rates'=>1]; }
 /* The role is switchable, because "read-only" is a question about the
    role as much as the status: an admin MAY still correct a completed
@@ -241,8 +250,9 @@ final class BPdo {
             foreach ($R['groups'] as $g) if ((int)$g['id'] === (int)($a[0] ?? 0)) return [$g];
             return [];
         }
-        if (str_contains($q, 'FROM packing_group_sizes WHERE group_id=?'))
+        if (str_contains($q, 'FROM packing_group_sizes WHERE group_id=?')) {
             return $R['sizes'][(int)($a[0] ?? 0)] ?? [];
+        }
         if (str_contains($q, 'SELECT DISTINCT size_label FROM packing_group_sizes'))
             return [['size_label' => 'Small'], ['size_label' => 'Medium'],
                     ['size_label' => 'Large'], ['size_label' => '152x200'], ['size_label' => 'Single']];
@@ -1201,6 +1211,84 @@ ok(str_contains($stale, '</html>'), 'the page it does send is a whole one');
 [$fine] = render($work, ['id' => 1, 't' => 'serial']);
 ok(!str_contains($fine, 'One file is out of date') && str_contains($fine, 'This order:'),
    'and with every file present the screen draws exactly as it did');
+
+head('11. One broken range does not blank the screen');
+
+/* WHAT CAME BACK FROM THE LIVE SERVER: the order's sizes and colours,
+   and then nothing — no ranges, no New range card, no Back and Next.
+   One card threw halfway. It left an open form and an open step behind
+   it, the steps stay hidden until a script at the very end reveals one,
+   and that script was never reached. Even the error box was printed
+   inside the hidden step.
+
+   The second range is made to throw here, from the middle of its
+   form. Everything else must still draw. */
+[$br] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'BREAKCSRF=3');
+file_put_contents($work . '/broken.html', $br);
+ok(str_contains($br, '</html>'), 'the page still reaches its end');
+ok(str_contains($br, 'This range could not be drawn.'),
+   'the broken range says plainly that it could not be drawn');
+ok(str_contains($br, 'Column not found: test breakage'),
+   'and, for an admin, why — the very text the server threw');
+ok(preg_match_all('~<input[^>]*name="serial_from"~', $br) === 3,
+   'the two ranges that are fine still draw, and so does the New range card',
+   preg_match_all('~<input[^>]*name="serial_from"~', $br));
+ok(substr_count($br, '<form') === substr_count($br, '</form>'),
+   'no half-drawn form is left open to swallow the rest of the page',
+   [substr_count($br, '<form'), substr_count($br, '</form>')]);
+ok(str_contains($br, 'data-mstep="next"'), 'Back and Next are still there');
+
+[$brs] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'BREAKCSRF=3 ROLE=staff');
+ok(str_contains($brs, 'This range could not be drawn.')
+   && !str_contains($brs, 'Column not found'),
+   'staff are told it failed, but not the reason — that can name a query');
+
+[$bw] = render($work, ['id' => 1, 't' => 'weight', 'g' => 102], 'm_pack.php', 'BREAKCSRF=1');
+ok(str_contains($bw, 'The weight for this range could not be drawn.')
+   && str_contains($bw, '</html>')
+   && substr_count($bw, '<form') === substr_count($bw, '</form>'),
+   'the weight tab fails the same way: one plain card, a whole page');
+
+[$ba] = render($work, ['id' => 1, 't' => 'approve'], 'm_pack.php', 'BREAKCSRF=1');
+ok(str_contains($ba, 'The approval summary could not be drawn.') && str_contains($ba, '</html>'),
+   'and so does approve');
+
+/* With nothing broken, nothing changes. */
+[$okp] = render($work, ['id' => 1, 't' => 'serial']);
+ok(!str_contains($okp, 'could not be drawn'), 'and with nothing broken there is no error card at all');
+
+$jsb = <<<'JS'
+const { chromium } = require('playwright');
+const path = require('path');
+(async () => {
+  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
+  const errs = []; p.on('pageerror', e => errs.push(String(e)));
+  await p.goto('file://' + path.join(process.argv[2], 'broken.html'));
+  await p.waitForTimeout(300);
+  const out = { errs };
+  out.firstOn  = await p.locator('.mstep.on form.mcard').first().isVisible().catch(() => false);
+  out.navShown = await p.locator('.mnav').isVisible();
+  const n = await p.locator('.mstep').count();
+  out.labels = [];
+  for (let i = 0; i < n; i++) {
+    out.labels.push((await p.locator('.mstep.on').innerText()).split('\n').slice(0, 3).join(' / '));
+    if (i < n - 1) { await p.locator('[data-mstep="next"]').click(); await p.waitForTimeout(150); }
+  }
+  console.log(JSON.stringify(out));
+  await b.close();
+})();
+JS;
+file_put_contents($work . '/broken.js', $jsb);
+$rb = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
+        . escapeshellarg($work . '/broken.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
+ok(is_array($rb) && $rb['errs'] === [] && $rb['firstOn'] && $rb['navShown'],
+   'in a browser the first range shows and Back and Next work, broken range or not', $rb);
+ok(is_array($rb) && count($rb['labels']) === 4
+   && str_contains($rb['labels'][1], 'could not be drawn')
+   && str_contains($rb['labels'][3], 'New range'),
+   'and walking through: a good range, the broken one explained, another good one, then New range',
+   $rb['labels'] ?? null);
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);
