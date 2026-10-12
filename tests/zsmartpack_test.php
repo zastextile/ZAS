@@ -1,0 +1,522 @@
+<?php
+/* SMART PACKING — afnan's demo, on the phone, on real tables.
+ *
+ * "That is not as per my instructions … have a look at the demo, see the
+ *  feature and function, and copy and apply it on your existing mobile
+ *  packing file."
+ *
+ * The demo kept everything in the browser. Here every save goes to the
+ * server, so the rules the demo kept in javascript have to hold on the
+ * server too, where a second phone or a lost signal cannot get round them.
+ *
+ * This runs the REAL includes/packing.php and the REAL m_pack.php against
+ * a real SQL database — SQLite, built here with the live tables' columns —
+ * so every query actually runs. A fake that answers by matching words in
+ * the SQL has passed a broken query before.
+ *
+ * What it holds shut:
+ *   1  WHAT IS IN A PACKAGE IS CHECKED ON THE SERVER — every combination is
+ *      one the line is packed in, a positive whole number, no duplicates,
+ *      adding up to the pieces per package.
+ *   2  A NUMBER ONCE PER PREFIX AND KIND. C1 twice is refused; R1, Roll 1
+ *      and plain 1 are other packages.
+ *   3  EVERY PACKAGE IS ITS OWN RECORD. Editing package 5 of 1–10 changes
+ *      5 alone; deleting it leaves the other nine; a refused edit changes
+ *      nothing at all.
+ *   4  FINISH writes the packing list rows and marks the shipment, REOPEN
+ *      opens it again.
+ *   5  THE PAGE: no PHP warning, the state is embedded safely, the API
+ *      wants the CSRF token and the permission, and a finished list
+ *      refuses changes until reopened.
+ *   6  IN CHROMIUM, through a real server: tap to count, Save & Next to
+ *      the next free number, a duplicate refused with the reason, edit,
+ *      copy and delete one package, summary, finish and reopen, typing
+ *      kept key by key, no sideways scroll, no javascript error, and no
+ *      page load at any point.
+ */
+
+$B    = __DIR__ . '/app_src/public_html/';
+$work = __DIR__ . '/.zsmartpack';
+$P = 0; $F = 0;
+function ok(bool $c, string $m, $got = null): void {
+    global $P, $F;
+    if ($c) { $P++; }
+    else { $F++; echo "  FAIL  $m" . ($got !== null ? "\n        got: " . var_export($got, true) : '') . "\n"; }
+}
+function head(string $n): void { echo "\n$n\n"; }
+
+@mkdir($work . '/includes', 0777, true);
+@unlink($work . '/db.sqlite');
+copy($B . 'm_pack.php',           $work . '/m_pack.php');
+copy($B . 'includes/packing.php', $work . '/includes/packing.php');
+copy($B . 'includes/mobile.php',  $work . '/includes/mobile.php');
+
+/* ------------------------------------------------- the database, for real
+   The live tables' columns (from the running MariaDB), in SQLite. */
+$schema = <<<'SQL'
+CREATE TABLE exp_meta (k TEXT PRIMARY KEY, v TEXT, updated_at TEXT);
+INSERT INTO exp_meta VALUES ('pack_schema_version', '7', NULL);
+CREATE TABLE shipments (id INTEGER PRIMARY KEY, invoice_no TEXT, buyer_name TEXT, status TEXT DEFAULT 'draft',
+  packing_status TEXT NOT NULL DEFAULT 'open', packing_completed_by INT, packing_completed_at TEXT,
+  total_qty REAL DEFAULT 0, total_packages REAL DEFAULT 0, total_net_weight REAL DEFAULT 0,
+  total_gross_weight REAL DEFAULT 0, updated_by INT, updated_at TEXT);
+CREATE TABLE shipment_items (id INTEGER PRIMARY KEY, shipment_id INT, line_no INT, product_name TEXT, des_col TEXT,
+  optional_value TEXT, department TEXT, qty REAL DEFAULT 0, unit TEXT DEFAULT 'Pcs', rate REAL DEFAULT 0,
+  amount REAL DEFAULT 0, product_id INT);
+CREATE TABLE packing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT NOT NULL, line_no INT NOT NULL DEFAULT 0,
+  invoice_item_id INT, product_name TEXT NOT NULL DEFAULT '', des_col TEXT NOT NULL DEFAULT '',
+  optional_value TEXT NOT NULL DEFAULT '', unit_title TEXT NOT NULL DEFAULT 'Carton', serial_from INT NOT NULL DEFAULT 0,
+  serial_to INT NOT NULL DEFAULT 0, packages INT NOT NULL DEFAULT 0, qty_mode TEXT NOT NULL DEFAULT 'per',
+  qty_per_pkg REAL NOT NULL DEFAULT 0, total_qty REAL NOT NULL DEFAULT 0, assorted INT NOT NULL DEFAULT 0,
+  size_label TEXT NOT NULL DEFAULT '', pkg_gross REAL NOT NULL DEFAULT 0, pkg_tare REAL NOT NULL DEFAULT 0,
+  created_by INT, created_at TEXT, updated_by INT, updated_at TEXT, product_key TEXT NOT NULL DEFAULT '',
+  weight_by_colour INT NOT NULL DEFAULT 0, colour_mix TEXT, serial_prefix TEXT NOT NULL DEFAULT '',
+  serial_pad INT NOT NULL DEFAULT 0, pkg_spec TEXT NOT NULL DEFAULT '', edited INT NOT NULL DEFAULT 0);
+CREATE TABLE packing_group_sizes (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INT NOT NULL,
+  size_label TEXT NOT NULL DEFAULT '', qty_per_pkg REAL NOT NULL DEFAULT 0, total_qty REAL NOT NULL DEFAULT 0,
+  colour_label TEXT NOT NULL DEFAULT '', style_label TEXT NOT NULL DEFAULT '');
+CREATE TABLE packing_weight_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INT NOT NULL,
+  size_label TEXT NOT NULL DEFAULT '', line_no INT NOT NULL DEFAULT 0, w_type TEXT NOT NULL DEFAULT 'Fabric',
+  w_name TEXT NOT NULL DEFAULT '', grams REAL NOT NULL DEFAULT 0, colour_label TEXT NOT NULL DEFAULT '');
+CREATE TABLE packing_weight_std (id INTEGER PRIMARY KEY AUTOINCREMENT, product_key TEXT, size_label TEXT NOT NULL DEFAULT '',
+  line_no INT NOT NULL DEFAULT 0, w_type TEXT NOT NULL DEFAULT 'Fabric', w_name TEXT NOT NULL DEFAULT '',
+  grams REAL NOT NULL DEFAULT 0, updated_by INT, updated_at TEXT, colour_label TEXT NOT NULL DEFAULT '');
+CREATE TABLE packing_palette (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT, invoice_item_id INT, kind TEXT,
+  label TEXT, sort_no INT DEFAULT 0, created_by INT, created_at TEXT,
+  UNIQUE (shipment_id, invoice_item_id, kind, label));
+CREATE TABLE packing_items (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT, invoice_item_id INT, line_no INT,
+  product_name TEXT, des_col TEXT, optional_value TEXT, pack_unit_title TEXT DEFAULT 'Carton', carton_from INT DEFAULT 0,
+  carton_to INT DEFAULT 0, packages REAL DEFAULT 0, qty_per_carton REAL DEFAULT 0, qty_mode TEXT DEFAULT 'auto',
+  total_qty REAL DEFAULT 0, net_weight REAL DEFAULT 0, gross_weight REAL DEFAULT 0, size_text TEXT, packing_group_id INT);
+CREATE TABLE product_sizes (id INTEGER PRIMARY KEY, product_id INT, size_label TEXT);
+CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT);
+
+INSERT INTO shipments (id, invoice_no, buyer_name) VALUES (7, 'ZAS/5300', 'Gulf Textiles LLC');
+INSERT INTO shipment_items (id, shipment_id, line_no, product_name, des_col, optional_value, qty, unit) VALUES
+  (71, 7, 1, 'T-Shirt', 'Cotton jersey', '', 600, 'Pcs'),
+  (72, 7, 2, 'Bath Towel 500GSM', 'Combed', '', 400, 'Pcs'),
+  (73, 7, 3, 'Pillow </script><b>case', 'Name that tries to close the script', '', 50, 'Pcs');
+INSERT INTO packing_palette (shipment_id, invoice_item_id, kind, label, sort_no) VALUES
+  (7, 71, 'size', 'S', 1), (7, 71, 'size', 'M', 2), (7, 71, 'size', 'L', 3),
+  (7, 71, 'colour', 'Black', 1), (7, 71, 'colour', 'Green', 2), (7, 71, 'colour', 'White', 3),
+  (7, 71, 'style', 'Crew', 1), (7, 71, 'style', 'V-neck', 2);
+SQL;
+
+/* The app's chrome, as on the live server: the same login, role, CSRF. */
+$bootstrap = <<<'PHP'
+<?php
+if (session_status() === PHP_SESSION_NONE) @session_start();
+$_SESSION['user_id'] = 1;
+function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
+function require_login(){}
+function csrf_token(){ return 'testtoken'; }
+function csrf_field(){ return '<input type="hidden" name="_csrf" value="testtoken">'; }
+/* THE REAL CHECK, not a stub — the API is tested for refusing without it */
+function verify_csrf(){ if (($_POST['_csrf'] ?? '') !== 'testtoken') { http_response_code(419); exit('CSRF token mismatch.'); } }
+function current_user(): ?array { return ['id'=>1,'name'=>'Afnan','email'=>'a@z','role'=>$GLOBALS['ROLE'],'can_see_rates'=>1]; }
+$GLOBALS['ROLE'] = getenv('ROLE') ?: ($_GET['as'] ?? 'admin');
+function is_admin(){ return $GLOBALS['ROLE'] === 'admin'; }
+function is_colleague(){ return $GLOBALS['ROLE'] === 'colleague'; }
+function is_staff(){ return $GLOBALS['ROLE'] === 'staff'; }
+function is_production_staff(){ return $GLOBALS['ROLE'] === 'production_staff'; }
+function assigned_shipment_ids(){ return ['ALL']; }
+function redirect($u){ header('Location: ' . $u); echo "__REDIRECT__ $u"; exit; }
+function audit_log(){}
+function db() {
+    static $p = null;
+    if ($p === null) {
+        $p = new PDO('sqlite:' . __DIR__ . '/../db.sqlite');
+        $p->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $p->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $p->sqliteCreateFunction('NOW', fn() => date('Y-m-d H:i:s'), 0);
+    }
+    return $p;
+}
+PHP;
+file_put_contents($work . '/includes/bootstrap.php', $bootstrap);
+file_put_contents($work . '/includes/export.php', "<?php\nfunction exp_ensure_schema(){}\n");
+$pdo = new PDO('sqlite:' . $work . '/db.sqlite');
+$pdo->exec($schema);
+$pdo = null;
+
+/* ================================================================ backend */
+$GLOBALS['ROLE'] = 'admin';
+require $work . '/includes/bootstrap.php';
+require $work . '/includes/packing.php';
+
+$items = db()->query("SELECT * FROM shipment_items WHERE shipment_id=7 ORDER BY line_no")->fetchAll();
+$tee = $items[0];
+$cnt = fn(string $sql, array $a = []) => (function () use ($sql, $a) { $s = db()->prepare($sql); $s->execute($a); return $s->fetchAll(); })();
+$ranges = fn() => array_map(fn($g) => $g['serial_prefix'] . $g['serial_from'] . '-' . $g['serial_to'] . ($g['edited'] ? '*' : ''),
+                            $cnt("SELECT * FROM packing_groups WHERE shipment_id=7 AND unit_title='Carton' AND serial_prefix='C' ORDER BY serial_from"));
+$contents = function (int $gid): array {
+    $s = db()->prepare("SELECT size_label, colour_label, style_label, qty_per_pkg FROM packing_group_sizes WHERE group_id=? ORDER BY id");
+    $s->execute([$gid]);
+    return array_map(fn($r) => $r['size_label'] . '/' . $r['colour_label'] . '/' . $r['style_label'] . ' ' . (0 + $r['qty_per_pkg']), $s->fetchAll());
+};
+$gidAt = function (int $num, string $prefix = 'C', string $kind = 'Carton'): int {
+    $s = db()->prepare("SELECT id FROM packing_groups WHERE shipment_id=7 AND serial_prefix=? AND unit_title=? AND serial_from<=? AND serial_to>=?");
+    $s->execute([$prefix, $kind, $num, $num]);
+    return (int)$s->fetchColumn();
+};
+$mix = [['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 4],
+        ['size' => 'S', 'colour' => 'Green', 'style' => 'Crew', 'qty' => 3],
+        ['size' => 'M', 'colour' => 'White', 'style' => 'V-neck', 'qty' => 3]];
+$save = fn(array $over) => pack_package_save(7, $items, array_merge(
+    ['item' => 71, 'type' => 'Carton', 'spec' => 'Standard carton', 'prefix' => 'C', 'pad' => 3,
+     'from' => 1, 'to' => 10, 'target' => 10, 'combos' => $mix], $over));
+
+head('1. What is in a package is checked on the server');
+$ax = pack_line_axes(7, $tee);
+ok($ax['size'] === ['S', 'M', 'L'] && $ax['colour'] === ['Black', 'Green', 'White'] && $ax['style'] === ['Crew', 'V-neck'],
+   'the line offers exactly the sizes, colours and styles the office set', $ax);
+ok(pack_combos_problem($ax, $mix, 10) === '', 'a full, valid package passes', pack_combos_problem($ax, $mix, 10));
+ok(pack_combos_problem($ax, $mix, 12) !== '', 'contents that do not add up to the pieces per package are refused');
+ok(pack_combos_problem($ax, [['size' => 'XL', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 10]], 10) !== '',
+   'a size the line is not packed in is refused');
+ok(pack_combos_problem($ax, [['size' => 'S', 'colour' => 'Pink', 'style' => 'Crew', 'qty' => 10]], 10) !== '',
+   'and a colour it is not packed in');
+ok(pack_combos_problem($ax, [['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 5],
+                             ['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 5]], 10) !== '',
+   'the same combination twice is refused');
+ok(pack_combos_problem($ax, [['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 2.5],
+                             ['size' => 'M', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 7.5]], 10) !== '',
+   'half a piece is refused');
+ok(pack_combos_problem($ax, [['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 0]], 0) !== '',
+   'and an empty package');
+ok(pack_combos_problem($ax, [['size' => 'S', 'colour' => '', 'style' => 'Crew', 'qty' => 10]], 10) !== '',
+   'a blank colour is refused on a line that has colours');
+$towelAx = pack_line_axes(7, $items[1]);
+ok(pack_combos_problem($towelAx, [['size' => '', 'colour' => '', 'style' => '', 'qty' => 10]], 10) === '',
+   'but a line with no lists counts finished units', pack_combos_problem($towelAx, [['size' => '', 'colour' => '', 'style' => '', 'qty' => 10]], 10));
+[$okBad, $msgBad] = $save(['target' => 11]);
+ok(!$okBad && !$cnt("SELECT id FROM packing_groups"), 'and a bad package is not saved at all', $msgBad);
+
+head('2. A number once per prefix and kind of package');
+[$ok1, $m1] = $save([]);
+ok($ok1, 'Carton C001–C010 saves', $m1);
+$g1 = $gidAt(1);
+$row = $cnt("SELECT * FROM packing_groups WHERE id=?", [$g1])[0];
+ok($row['serial_prefix'] === 'C' && (int)$row['serial_pad'] === 3 && $row['pkg_spec'] === 'Standard carton'
+   && (int)$row['packages'] === 10 && (float)$row['total_qty'] === 100.0,
+   'with its prefix, padding, spec, 10 packages and 100 pieces', $row);
+ok($contents($g1) === ['S/Black/Crew 4', 'S/Green/Crew 3', 'M/White/V-neck 3'],
+   'and the contents by size, colour AND style', $contents($g1));
+[$okD, $mD] = $save(['from' => 10, 'to' => 12]);
+ok(!$okD && str_contains($mD, 'already used by Carton C001–C010'), 'C010–C012 is refused, naming who has C010', $mD);
+[$okR, $mR] = $save(['prefix' => 'R', 'from' => 1, 'to' => 2]);
+ok($okR, 'R001 is another package — a different prefix may reuse the number', $mR);
+[$okK, $mK] = $save(['type' => 'Roll', 'from' => 1, 'to' => 2]);
+ok($okK, 'Roll C001 is another package — a different kind may reuse it', $mK);
+[$okN, $mN] = $save(['prefix' => '', 'from' => 1, 'to' => 1, 'pad' => 0]);
+ok($okN, 'and plain 1 is not C001', $mN);
+[$okL, $mL] = $save(['prefix' => 'c', 'from' => 5, 'to' => 5]);
+ok(!$okL, 'a lower-case c is still the C prefix', $mL);
+[$okT, $mT] = $save(['type' => ' carton ', 'from' => 3, 'to' => 3]);
+ok(!$okT, 'and " carton " is still a Carton', $mT);
+[$ok5k, $m5k] = $save(['from' => 100, 'to' => 5200]);
+ok(!$ok5k && str_contains($m5k, '5,000'), 'more than 5,000 packages in one save is refused', $m5k);
+
+head('3. Every package is its own record');
+db()->prepare("INSERT INTO packing_weight_lines (group_id, size_label, colour_label, line_no, w_type, w_name, grams) VALUES (?,?,?,?,?,?,?)")
+    ->execute([$g1, 'S', '', 1, 'Fabric', 'Jersey', 180]);
+$one = [['size' => 'L', 'colour' => 'White', 'style' => 'Crew', 'qty' => 10]];
+[$okE, $mE] = $save(['from' => 5, 'to' => 5, 'combos' => $one, 'edit_group' => $g1, 'edit_num' => 5]);
+ok($okE, 'package C005 of C001–C010 is edited', $mE);
+ok($ranges() === ['C1-4', 'C5-5*', 'C6-10'], 'the range is split around it, and only C005 is marked edited', $ranges());
+ok($contents($gidAt(5)) === ['L/White/Crew 10'], 'C005 holds what it was changed to', $contents($gidAt(5)));
+ok($contents($gidAt(1)) === ['S/Black/Crew 4', 'S/Green/Crew 3', 'M/White/V-neck 3']
+   && $contents($gidAt(6)) === $contents($gidAt(1)), 'and both sides keep the original contents',
+   [$contents($gidAt(1)), $contents($gidAt(6))]);
+$tot = $cnt("SELECT SUM(packages) p, SUM(total_qty) q FROM packing_groups WHERE serial_prefix='C' AND unit_title='Carton'")[0];
+ok((int)$tot['p'] === 10 && (float)$tot['q'] === 100.0, 'still 10 packages and 100 pieces between them', $tot);
+ok((int)$cnt("SELECT COUNT(*) c FROM packing_weight_lines WHERE group_id=?", [$gidAt(6)])[0]['c'] === 1,
+   'a weight already entered goes with each piece of the range', $cnt("SELECT * FROM packing_weight_lines"));
+$before = $ranges();
+[$okEB, $mEB] = $save(['from' => 7, 'to' => 7, 'target' => 10, 'combos' => [['size' => 'L', 'colour' => 'White', 'style' => 'Crew', 'qty' => 9]],
+                       'edit_group' => $gidAt(7), 'edit_num' => 7]);
+ok(!$okEB && $ranges() === $before, 'an edit that is refused changes nothing — the range is not split', [$mEB, $ranges()]);
+[$okE2, $mE2] = $save(['from' => 7, 'to' => 8, 'edit_group' => $gidAt(7), 'edit_num' => 7]);
+ok(!$okE2, 'an edit is one package, never a range', $mE2);
+[$okDel, $mDel] = pack_package_delete(7, $gidAt(8), 8);
+ok($okDel && $ranges() === ['C1-4', 'C5-5*', 'C6-7', 'C9-10'], 'deleting C008 leaves the other nine', [$mDel, $ranges()]);
+[$okDel2] = pack_package_delete(7, $gidAt(5), 5);
+ok($okDel2 && $ranges() === ['C1-4', 'C6-7', 'C9-10'], 'and a package on its own is simply removed', $ranges());
+[$okDel3, $mDel3] = pack_package_delete(7, $gidAt(1), 99);
+ok(!$okDel3 && $ranges() === ['C1-4', 'C6-7', 'C9-10'], 'a number outside the range is refused, not guessed at', $mDel3);
+[$okRe] = $save(['from' => 8, 'to' => 8]);
+ok($okRe, 'a deleted number is free again');
+
+head('4. The state the phone draws from');
+$sh = $cnt("SELECT * FROM shipments WHERE id=7")[0];
+$st = pack_state(7, $items, $sh);
+ok($st['shipment'] === ['id' => 7, 'invoice' => 'ZAS/5300', 'buyer' => 'Gulf Textiles LLC'], 'the shipment', $st['shipment']);
+ok($st['products'][0]['id'] === '71' && $st['products'][0]['line'] === '#1' && $st['products'][0]['setUp'] === true
+   && $st['products'][0]['styles'] === ['Crew', 'V-neck'] && $st['products'][0]['unit'] === 'pcs',
+   'each invoice line with its number, unit and lists', $st['products'][0]);
+ok($st['products'][1]['setUp'] === false && $st['products'][1]['colors'] === [], 'a line not set up says so, with no colours invented', $st['products'][1]);
+$c1 = array_values(array_filter($st['records'], fn($r) => $r['prefix'] === 'C' && $r['type'] === 'Carton' && $r['from'] === 1))[0] ?? null;
+ok($c1 && $c1['to'] === 4 && $c1['pad'] === 3 && $c1['target'] == 10 && count($c1['combos']) === 3
+   && $c1['combos'][0] == ['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 4],
+   'every range with its serials, pieces per package and contents', $c1);
+
+head('5. Finish packing, reopen');
+[$okF, $mF] = pack_finish(7);
+$sh = $cnt("SELECT * FROM shipments WHERE id=7")[0];
+ok($okF && $sh['packing_status'] === 'completed', 'finish marks the shipment complete', [$mF, $sh['packing_status']]);
+$pi = $cnt("SELECT SUM(packages) p, SUM(total_qty) q FROM packing_items WHERE shipment_id=7")[0];
+$pg = $cnt("SELECT SUM(packages) p, SUM(total_qty) q FROM packing_groups WHERE shipment_id=7")[0];
+ok((int)$pi['p'] === (int)$pg['p'] && (float)$pi['q'] === (float)$pg['q'] && (int)$pi['p'] > 0,
+   'and the packing list rows add up to what was packed', [$pi, $pg]);
+ok((int)$sh['total_packages'] === (int)$pg['p'], 'with the shipment\'s package total written', $sh['total_packages']);
+[$okO] = pack_reopen(7);
+ok($okO && $cnt("SELECT packing_status FROM shipments WHERE id=7")[0]['packing_status'] === 'open', 'reopen opens it again');
+
+/* ============================================================== the page */
+function page(string $work, array $get, string $env = '', ?string $body = null): string {
+    $cmd = 'cd ' . escapeshellarg($work) . ' && ' . $env . ' QS=' . escapeshellarg(http_build_query($get))
+         . ' BODY=' . escapeshellarg((string)$body) . ' ' . escapeshellarg(PHP_BINARY)
+         . ' -d display_errors=1 -d error_reporting=E_ALL -r ' . escapeshellarg(
+             '$_GET=[];parse_str((string)getenv("QS"),$_GET);'
+           . '$_SERVER["REQUEST_METHOD"]=getenv("BODY")!==""?"POST":"GET";'
+           . 'if(getenv("BODY")!==""){stream_wrapper_unregister("php");stream_wrapper_register("php",FakeIn::class);}'
+           . 'class FakeIn{public $context;private $d;private $p=0;function stream_open(){$this->d=(string)getenv("BODY");return true;}'
+           . 'function stream_read($n){$r=substr($this->d,$this->p,$n);$this->p+=strlen($r);return $r;}'
+           . 'function stream_eof(){return $this->p>=strlen($this->d);}function stream_stat(){return [];}}'
+           . 'require "m_pack.php";') . ' 2>&1';
+    return (string)shell_exec($cmd);
+}
+head('6. The page, and the API behind it');
+$html = page($work, ['id' => 7]);
+ok(!preg_match('~(Warning|Notice|Deprecated|Fatal error|Parse error)~', $html), 'it renders with no PHP warning',
+   preg_match('~.{0,200}(Warning|Notice|Fatal error).{0,200}~s', $html, $mm) ? $mm[0] : null);
+ok(str_contains($html, 'id="sp"') && str_contains($html, 'data-tab="packing"') && str_contains($html, 'data-tab="records"')
+   && str_contains($html, 'data-tab="summary"'), 'with the three tabs: Packing, Records, Summary');
+preg_match('~var STATE = (\{.*?\});\nvar CAN_EDIT~s', $html, $sm);
+$state = json_decode($sm[1] ?? '', true);
+ok(is_array($state) && count($state['products']) === 3 && count($state['records']) >= 5, 'the state is embedded, and reads back', $sm[1] ?? null);
+ok(!str_contains($sm[1] ?? '', '</'), 'embedded so a product name cannot close the script tag');
+ok(!preg_match('~<script[^>]+src=~i', substr($html, strpos($html, 'id="sp"'))), 'no framework or library is loaded — plain javascript');
+$app = substr($html, strpos($html, 'id="sp"'));
+ok(!str_contains($app, '<form') && !preg_match('~location\.(reload|href\s*=)|\.submit\(\)~', $app),
+   'nothing on the packing screen submits a form or reloads the page');
+ok(str_contains($html, 'm_pack.php?id=7&amp;t=weight') || str_contains($html, '"m_pack.php?id=7&t=weight"'),
+   'Summary links to the weight screen until the weight module exists');
+$api = fn(array $b, string $env = '') => page($work, ['id' => 7, 'api' => 1], $env, json_encode($b));
+$noTok = $api(['op' => 'finish']);
+ok(str_contains($noTok, 'CSRF'), 'a change without the CSRF token is refused', $noTok);
+$okSave = json_decode($api(['_csrf' => 'testtoken', 'op' => 'save', 'item' => 71, 'type' => 'Carton', 'prefix' => 'C', 'pad' => 3,
+                            'from' => 20, 'to' => 21, 'target' => 10, 'combos' => $mix]), true);
+ok(($okSave['ok'] ?? false) === true && count($okSave['state']['records'] ?? []) === count($state['records']) + 1,
+   'a save answers with the whole new state', $okSave['msg'] ?? $okSave);
+$dupe = json_decode($api(['_csrf' => 'testtoken', 'op' => 'save', 'item' => 71, 'type' => 'Carton', 'prefix' => 'C',
+                          'from' => 21, 'to' => 21, 'target' => 10, 'combos' => $mix]), true);
+ok(($dupe['ok'] ?? true) === false && str_contains($dupe['msg'] ?? '', 'already used'), 'a duplicate answers why, and the state still comes back',
+   $dupe);
+ok(isset($dupe['state']['records']), 'so the screen redraws from what is really saved');
+$api(['_csrf' => 'testtoken', 'op' => 'finish']);
+$closed = json_decode($api(['_csrf' => 'testtoken', 'op' => 'save', 'item' => 71, 'type' => 'Carton', 'prefix' => 'C',
+                            'from' => 30, 'to' => 30, 'target' => 10, 'combos' => $mix]), true);
+ok(($closed['ok'] ?? true) === false && str_contains($closed['msg'] ?? '', 'Reopen'), 'a finished list refuses a save until reopened', $closed);
+$staff = json_decode($api(['_csrf' => 'testtoken', 'op' => 'reopen'], 'ROLE=staff'), true);
+ok(($staff['ok'] ?? true) === false, 'staff cannot reopen a finished list — the same rule as the desktop', $staff);
+$re = json_decode($api(['_csrf' => 'testtoken', 'op' => 'reopen']), true);
+ok(($re['ok'] ?? false) === true && $re['state']['completed'] === false, 'an admin can', $re);
+$weightPage = page($work, ['id' => 7, 't' => 'weight']);
+ok(str_contains($weightPage, 'id="wform"') && str_contains($weightPage, 'Back to packing')
+   && !preg_match('~(Warning|Notice|Fatal error)~', $weightPage), 'the weight screen still opens, with a way back', substr($weightPage, 0, 300));
+
+/* =========================================================== in Chromium */
+head('7. In Chromium, through a real server');
+$node = trim((string)shell_exec('command -v node 2>/dev/null'));
+$root = trim((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && npm root -g 2>/dev/null'));
+if ($node === '' || !is_dir($root . '/playwright')) {
+    echo "  (skipped — playwright not available)\n";
+} else {
+    /* the browser packs plain numbers from 1; section 2 left a plain 1 */
+    db()->exec("DELETE FROM packing_group_sizes WHERE group_id IN (SELECT id FROM packing_groups WHERE serial_prefix='')");
+    db()->exec("DELETE FROM packing_groups WHERE serial_prefix=''");
+    $port = 18000 + random_int(0, 999);
+    $srv = proc_open([PHP_BINARY, '-S', '127.0.0.1:' . $port, '-t', $work], [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes, $work);
+    usleep(400000);
+    $js = <<<'JS'
+const { chromium } = require('playwright');
+let R = {};
+(async () => {
+  const url = process.argv[2]; R = {};
+  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
+  const errs = []; let loads = 0;
+  p.on('pageerror', e => errs.push(String(e)));
+  /* the phone shell's service worker and icons are not in this test copy;
+     their 404s are about the copy, not the screen */
+  p.on('console', m => { if (m.type() === 'error' && !/\b404\b/.test(m.text())) errs.push('console: ' + m.text()); });
+  p.on('dialog', d => d.accept());
+  p.on('framenavigated', f => { if (f === p.mainFrame()) loads++; });
+  const W = (ms = 250) => p.waitForTimeout(ms);
+  const D = () => p.evaluate(() => JSON.parse(JSON.stringify(ZASPacking.draft)));
+  await p.goto(url); await p.evaluate(() => localStorage.clear()); await p.reload(); await W(400);
+  loads = 0;
+  R.width = await p.evaluate(() => document.documentElement.scrollWidth);
+  /* product search forgives a typo */
+  await p.fill('#spSearch', 'tshrt'); await W();
+  R.search = await p.locator('#spResults button b').allTextContents();
+  await p.locator('#spResults button').first().click(); await W();
+  let d = await D(); R.picked = d.productId; R.firstSerial = d.start;
+  await p.locator('[data-a=clear]').click().catch(() => {}); await W(100);
+  R.sizes = await p.locator('#spSizes .t').allTextContents();
+  R.colours = await p.locator('#spColors .t').allTextContents();
+  R.styles = await p.locator('#spStyles .t').allTextContents();
+  /* size S, style Crew: 4 Black, 3 Green; size M, V-neck: 3 White */
+  await p.locator('#spSizes button', { hasText: /^S/ }).click(); await W(80);
+  await p.locator('#spStyles button', { hasText: 'Crew' }).click(); await W(80);
+  for (let i = 0; i < 4; i++) { await p.locator('#spColors button', { hasText: 'Black' }).click(); await W(40); }
+  for (let i = 0; i < 3; i++) { await p.locator('#spColors button', { hasText: 'Green' }).click(); await W(40); }
+  await p.locator('[data-a=undo]').click(); await W(80);
+  R.afterUndo = (await D()).combos.map(c => c.size + '/' + c.color + '/' + c.style + ' ' + c.qty).join(', ');
+  await p.locator('#spColors button', { hasText: 'Green' }).click(); await W(40);
+  await p.locator('#spSizes button', { hasText: /^M/ }).click(); await W(80);
+  await p.locator('#spStyles button', { hasText: 'V-neck' }).click(); await W(80);
+  await p.locator('#spColors button', { hasText: 'White' }).click(); await W(80);
+  await p.locator('[data-a=fill]').click(); await W(120);
+  d = await D(); R.combos = d.combos.map(c => c.size + '/' + c.color + '/' + c.style + ' ' + c.qty).join(', ');
+  R.dock = (await p.locator('.sp-dock .cval').textContent()).replace(/\s+/g, ' ');
+  /* an eleventh tap is refused, not squeezed in */
+  await p.locator('#spColors button', { hasText: 'Black' }).click(); await W(120);
+  R.overfull = (await D()).combos.reduce((s, c) => s + c.qty, 0);
+  R.fullToast = await p.locator('#spToast').textContent();
+  /* the line was last packed with prefix C; these are plain numbers */
+  await p.locator('#spPkgDetails summary').click(); await W(80);
+  await p.fill('#spPrefix', ''); await p.locator('#spPrefix').dispatchEvent('change'); await W(120);
+  await p.selectOption('#spPad', '0'); await W(120);
+  R.plainStart = (await D()).start;
+  /* Save & Next */
+  await p.fill('#spStart', '1'); await W(80);
+  await p.locator('#spSave').click(); await W(900);
+  d = await D(); R.nextSerial = d.start; R.keptCombos = d.combos.length;
+  R.toast1 = await p.locator('#spToast').textContent();
+  R.saved = await p.evaluate(() => ZASPacking.packages().filter(x => x.item === '71' && x.prefix === '' && x.num === 1).length);
+  /* another phone saves 50 meanwhile; this one does not know yet */
+  R.other = await p.evaluate(async () => {
+    const r = await fetch(location.pathname + location.search + '&api=1', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ _csrf: 'testtoken', op: 'save', item: 72,
+      type: 'Bag', prefix: '', pad: 0, from: 50, to: 50, target: 5, combos: [{ size: '', colour: '', style: '', qty: 5 }] }) });
+    return (await r.json()).ok; });
+  R.seesOtherBefore = await p.evaluate(() => ZASPacking.packages().some(x => x.num === 50 && x.type === 'Bag'));
+  /* a number already used is refused with the reason — and the answer
+     brings the other phone's package too */
+  await p.fill('#spStart', '1'); await p.locator('#spSave').click(); await W(800);
+  R.dupToast = await p.locator('#spToast').textContent();
+  R.seesOtherAfter = await p.evaluate(() => ZASPacking.packages().some(x => x.num === 50 && x.type === 'Bag'));
+  /* the next number is per kind: no plain Roll yet, so a Roll starts at 1 */
+  await p.locator('#spPkgDetails summary').click().catch(() => {}); await W(80);
+  if (!(await p.locator('#spType').isVisible())) { await p.locator('#spPkgDetails summary').click(); await W(80); }
+  await p.selectOption('#spType', 'Roll'); await W(120);
+  R.rollStart = (await D()).start;
+  await p.selectOption('#spType', 'Carton'); await W(120);
+  R.cartonAgain = (await D()).start;
+  /* a range of 3, next number after it */
+  await p.locator('[data-a=entry-mode][data-mode=range]').click(); await W(100);
+  await p.fill('#spStart', '2'); await p.fill('#spEnd', '4'); await W(100);
+  R.preview = await p.locator('#spPreview').textContent();
+  await p.locator('#spSave').click(); await W(900);
+  R.afterRange = (await D()).start;
+  /* typing in the pieces box keeps every key */
+  await p.click('#spTarget'); await p.keyboard.type('12'); await W(60);
+  R.typed = await p.inputValue('#spTarget'); R.focusKept = await p.evaluate(() => document.activeElement.id);
+  await p.fill('#spTarget', '10'); await p.keyboard.press('Tab'); await W(100);
+  /* the draft survives a reload */
+  await p.locator('#spSizes button', { hasText: /^L/ }).click(); await W(80);
+  await p.reload(); await W(400);
+  R.draftKept = (await D()).selectedSize; loads = 0;
+  /* records: one by one, and as ranges */
+  await p.locator('[data-a=tab][data-tab=records]').click(); await W();
+  await p.locator('[data-a=record-mode][data-mode=ranges]').click(); await W();
+  R.rangeRows = await p.locator('#spRecList .serial').allTextContents();
+  await p.locator('[data-a=record-mode][data-mode=individual]').click(); await W();
+  await p.fill('#spRecSearch', 't-shirt'); await W();
+  const row = n => p.locator('article').filter({ has: p.locator('.serial', { hasText: new RegExp('^' + n + '$') }) });
+  /* edit package 3 only */
+  await row('3').locator('[data-a=edit]').click(); await W();
+  d = await D(); R.editing = d.edit ? d.edit.num : null; R.editSerial = d.start; R.rangeLocked = await p.locator('[data-a=entry-mode][data-mode=range]').isDisabled();
+  await p.locator('[data-a=clear]').click(); await W(80);
+  await p.locator('#spSizes button', { hasText: /^L/ }).click(); await W(60);
+  await p.locator('#spColors button', { hasText: 'White' }).click(); await W(60);
+  await p.locator('[data-a=fill]').click(); await W(80);
+  await p.locator('#spSave').click(); await W(900);
+  R.afterEdit = await p.evaluate(() => ZASPacking.state.records.filter(r => r.item === '71' && r.prefix === '' && r.type === 'Carton')
+    .sort((a, b) => a.from - b.from).map(r => r.from + '-' + r.to + (r.edited ? '*' : '') + ' ' + r.combos.map(c => c.size + c.colour + c.qty).join('+')));
+  /* delete package 4 */
+  await p.locator('[data-a=tab][data-tab=records]').click(); await W();
+  await p.fill('#spRecSearch', 't-shirt'); await W();
+  await row('4').locator('[data-a=delete]').click(); await W(900);
+  R.afterDelete = await p.evaluate(() => ZASPacking.packages().filter(x => x.item === '71' && x.prefix === '' && x.type === 'Carton').map(x => x.num));
+  /* copy package 2 onto the next free number */
+  await row('2').locator('[data-a=copy]').click(); await W();
+  d = await D(); R.copyTo = d.start; R.copyEdit = d.edit;
+  /* summary */
+  await p.locator('[data-a=tab][data-tab=summary]').click(); await W();
+  R.summary = await p.locator('.sline b').allTextContents();
+  R.weightLink = await p.locator('#spMain a[href*="t=weight"]').count();
+  await p.locator('[data-a=finish]').click(); await W(1200);
+  R.finished = await p.evaluate(() => ZASPacking.state.completed);
+  R.lockedDock = await p.evaluate(() => { const b = document.querySelector('[data-a=tab][data-tab=packing]'); b.click(); return !!document.querySelector('#spSave'); });
+  await p.locator('[data-a=tab][data-tab=summary]').click(); await W();
+  await p.locator('[data-a=reopen]').click(); await W(900);
+  R.reopened = await p.evaluate(() => ZASPacking.state.completed === false && !!document.querySelector('#spSave'));
+  R.loads = loads; R.errors = errs;
+  R.widthEnd = await p.evaluate(() => document.documentElement.scrollWidth);
+  console.log(JSON.stringify(R));
+  await b.close();
+})().catch(e => { R.crashed = String(e).slice(0, 400); console.log(JSON.stringify(R)); process.exit(0); });
+JS;
+    file_put_contents($work . '/drive.js', $js);
+    $out = (string)shell_exec('NODE_PATH=' . escapeshellarg($root) . ' ' . escapeshellarg($node) . ' '
+        . escapeshellarg($work . '/drive.js') . ' ' . escapeshellarg("http://127.0.0.1:$port/m_pack.php?id=7") . ' 2>&1');
+    proc_terminate($srv); proc_close($srv);
+    $R = json_decode(trim((string)substr($out, (int)strrpos($out, "\n{") ?: 0)), true) ?: json_decode(trim($out), true);
+    ok(is_array($R) && !isset($R['crashed']), 'chromium drove the page', $out);
+    $R = is_array($R) ? $R : [];
+    ok(($R['width'] ?? 999) <= 390 && ($R['widthEnd'] ?? 999) <= 390, 'nothing scrolls sideways on a phone', [$R['width'] ?? null, $R['widthEnd'] ?? null]);
+    ok(($R['search'] ?? [])[0] ?? '' === 'T-Shirt', 'a misspelt search still finds the product', $R['search'] ?? null);
+    ok(($R['sizes'] ?? []) === ['S', 'M', 'L'], 'its line\'s sizes are the buttons', $R['sizes'] ?? null);
+    ok(($R['colours'] ?? []) === ['Black', 'Green', 'White'], 'its colours', $R['colours'] ?? null);
+    ok(($R['styles'] ?? []) === ['Crew', 'V-neck'], 'and its styles', $R['styles'] ?? null);
+    ok(($R['afterUndo'] ?? '') === 'S/Black/Crew 4, S/Green/Crew 2', 'Undo takes back the last tap', $R['afterUndo'] ?? null);
+    ok(($R['combos'] ?? '') === 'S/Black/Crew 4, S/Green/Crew 3, M/White/V-neck 3', 'size, then a tap per piece, then Fill remaining', $R['combos'] ?? null);
+    ok(str_starts_with($R['dock'] ?? '', '10 / 10'), 'the counter says 10 of 10', $R['dock'] ?? null);
+    ok(($R['overfull'] ?? 0) === 10, 'a tap past full is refused, not squeezed in', $R['overfull'] ?? null);
+    ok(str_contains($R['fullToast'] ?? '', 'Package complete'), 'and it says the package is complete', $R['fullToast'] ?? null);
+    ok(($R['plainStart'] ?? '') === '1', 'clearing the prefix moves to the first free plain number', $R['plainStart'] ?? null);
+    ok(($R['saved'] ?? 0) === 1 && ($R['nextSerial'] ?? '') === '2', 'Save & Next saves package 1 and moves to 2 by itself', [$R['saved'] ?? null, $R['nextSerial'] ?? null]);
+    ok(($R['keptCombos'] ?? 0) === 3, 'with the contents kept ready for the next one', $R['keptCombos'] ?? null);
+    ok(str_contains($R['dupToast'] ?? '', 'already used'), 'a number already used is refused with the reason', $R['dupToast'] ?? null);
+    ok(($R['other'] ?? false) === true && ($R['seesOtherBefore'] ?? true) === false && ($R['seesOtherAfter'] ?? false) === true,
+       'and even a refused save brings back what another phone saved meanwhile',
+       [$R['other'] ?? null, $R['seesOtherBefore'] ?? null, $R['seesOtherAfter'] ?? null]);
+    ok(($R['rollStart'] ?? '') === '1' && ($R['cartonAgain'] ?? '') === '2', 'numbers are per kind: a Roll starts at 1, back to Carton is 2 again',
+       [$R['rollStart'] ?? null, $R['cartonAgain'] ?? null]);
+    ok(str_contains($R['preview'] ?? '', '3 packages') && str_contains($R['preview'] ?? '', '30 pcs'), 'a range previews its packages and pieces', $R['preview'] ?? null);
+    ok(($R['afterRange'] ?? '') === '5', 'and after it the next number is 5', $R['afterRange'] ?? null);
+    ok(($R['typed'] ?? '') === '1012' || ($R['typed'] ?? '') === '12', 'typing keeps every key', $R['typed'] ?? null);
+    ok(($R['focusKept'] ?? '') === 'spTarget', 'and the cursor stays in the box', $R['focusKept'] ?? null);
+    ok(($R['draftKept'] ?? '') === 'L', 'an unsaved draft survives a reload', $R['draftKept'] ?? null);
+    ok(in_array('1 – 4', $R['rangeRows'] ?? [], true), 'Records shows packages 1–4 as one range', $R['rangeRows'] ?? null);
+    ok(($R['editing'] ?? null) === 3 && ($R['editSerial'] ?? '') === '3' && ($R['rangeLocked'] ?? false),
+       'Edit opens package 3 alone, with Serial range switched off', [$R['editing'] ?? null, $R['editSerial'] ?? null]);
+    ok(($R['afterEdit'] ?? []) === ['1-1 SBlack4+SGreen3+MWhite3', '2-2 SBlack4+SGreen3+MWhite3', '3-3* LWhite10', '4-4 SBlack4+SGreen3+MWhite3'],
+       'saving it changes 3 alone, marked edited', $R['afterEdit'] ?? null);
+    ok(($R['afterDelete'] ?? []) === [1, 2, 3], 'Delete removes package 4 and nothing else', $R['afterDelete'] ?? null);
+    ok(($R['copyTo'] ?? '') === '4' && array_key_exists('copyEdit', $R) && $R['copyEdit'] === null, 'Copy puts the contents on the next free number, as a new package', [$R['copyTo'] ?? null]);
+    ok(in_array('S / Black / Crew', $R['summary'] ?? [], true) && in_array('L / White / Crew', $R['summary'] ?? [], true),
+       'Summary adds up by size, colour and style', $R['summary'] ?? null);
+    ok(($R['weightLink'] ?? 0) >= 1, 'with the way to Weight', $R['weightLink'] ?? null);
+    ok(($R['finished'] ?? false) === true && ($R['lockedDock'] ?? true) === false, 'Finish packing closes it, and the Save button goes',
+       [$R['finished'] ?? null, $R['lockedDock'] ?? null]);
+    ok(($R['reopened'] ?? false) === true, 'Reopen brings it back', $R['reopened'] ?? null);
+    ok(($R['loads'] ?? 1) === 0, 'and not one page load in all of that', $R['loads'] ?? null);
+    ok(($R['errors'] ?? ['?']) === [], 'no javascript error', $R['errors'] ?? null);
+}
+
+echo "\n" . ($F === 0 ? "ALL PASS   ($P checks)\n" : "FAILED  $F   (" . ($P + $F) . " checks)\n");
+exit($F === 0 ? 0 : 1);

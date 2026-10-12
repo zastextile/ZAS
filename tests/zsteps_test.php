@@ -326,12 +326,14 @@ $mobS = nocomments((string)file_get_contents($B . 'includes/mobile.php'));
 t('in scroll mode every section is shown and there is no Back/Next bar',
   str_contains($mobS, '.msteps.scroll .mstep{display:block')
   && preg_match('~if \(!empty\(\$GLOBALS\[\x27_mob_scroll\x27\]\)\) \{.*?return;~s', $mobS) === 1);
-t('the serial tab steps through the ranges',
-  str_contains($mpN, "mob_steps_begin('serialsteps')"));
+/* SMART PACKING: packing, records and summary are tabs drawn in the
+   browser, not steps; only the weight screen still uses steps. */
+t('the packing screen is three tabs drawn in the browser, with no steps',
+  !str_contains($mpN, "mob_steps_begin('serialsteps')") && str_contains($mpN, 'data-tab="packing"'));
 t('the weight tab is stepped',
   str_contains($mpN, "mob_steps_begin('weightsteps')"));
-t('the approve tab is stepped',
-  str_contains($mpN, "mob_steps_begin('approvesteps')"));
+t('the old approve tab is gone — Finish packing is on Summary',
+  !str_contains($mpN, "mob_steps_begin('approvesteps')") && str_contains($mpN, "data-a=\"finish\""));
 t('every steps_begin is closed',
   substr_count($mpN, 'mob_steps_begin(') === substr_count($mpN, 'mob_steps_end('),
   [substr_count($mpN, 'mob_steps_begin('), substr_count($mpN, 'mob_steps_end(')]);

@@ -270,40 +270,23 @@ t('and the guard still reads it before doing any work',
   preg_match("~SELECT v FROM exp_meta WHERE k='pack_schema_version'.*?=== PACK_SCHEMA_VERSION\) return;~s", $pkN) === 1,
   'the schema would be rebuilt on every page load');
 
-head('5. The first one can always be typed');
+head('5. The phone never types a size — it offers the line\'s own');
 
-t('the field offers to take a new one',
-  str_contains($mpN, 'type a ') && str_contains($mpN, '__new'));
-t('a product with nothing on record opens on the text box',
-  str_contains($mpN, "— none on record yet —")
-  && str_contains($mpN, '$known ? \' hidden\' : \'\''),
-  'a product with no sizes would show an empty dropdown and no way forward');
-t('a size already saved but no longer in the list still shows as chosen',
-  str_contains($mpN, 'array_unshift($opts, $cur)'),
-  'editing a range would silently blank its size');
-t('the server reads the typed one when the sentinel is sent',
-  str_contains($mpN, "if (\$one === '__new') \$one = trim((string)(\$_POST['single_size_new'] ?? ''));"));
-/* The assortment has no sentinel to read: its rows are the line's own
-   sizes and colours, each a fixed label beside a number box. */
-t('the assortment rows are the line\'s own labels, with nothing to type a size into',
-  str_contains($mpN, "rowsFor(lp.size, keepS, 'asz')")
-  && str_contains($mpN, "'_label[]\" value=\"' + esc(lbl)"));
-t('__new is never stored as if it were a size',
-  !preg_match("~'size_label' => '__new'~", $mpN));
-/* THE ASSORTED SET LIVES IN THE CARD: a size list and a colour list,
-   each a row per label the office set for the line, with a number box.
-   No row is added by hand and no text box arrives open. */
-t('the assorted set is a size list and a colour list inside the card',
-  str_contains($mpN, 'data-asizes') && str_contains($mpN, 'data-acols'));
-t('and has no select or input to type a size into',
-  !preg_match('~<(input|select)[^>]*name="size_label\[\]"~',
-              (string)preg_replace('~<script\b[^>]*>.*?</script>~is', ' ', $mpN)));
-/* The single-size picker still has one, and it must still open only
-   when the sentinel is chosen — that rule did not go anywhere. */
-t('the one remaining typed picker opens only when "type a new one" is chosen',
-  str_contains($mpN, "box.hidden = sel.value !== '__new';"));
-t('and it is wired on the document, so a card drawn later is covered too',
-  str_contains($mpN, "if (!sel.matches || !sel.matches('[data-pick]')) return;"));
+/* SMART PACKING. The packer taps a size and a colour; nothing is typed.
+   What can be tapped is the line's list from Order sizes & colours, or —
+   for a line nobody has set up — the product's own sizes. The old "type a
+   new one" picker is gone with the old range cards. */
+t('there is no typed size picker on the phone any more',
+  !str_contains($mpN, '__new') && !str_contains($mpN, 'single_size_new'));
+t('a line that is set up offers exactly its list',
+  str_contains($pkN, "'size'   => \$set ? \$pp['size'] : pack_size_options((string)\$item['product_name']),"));
+t('a line that is not set up offers the product\'s own sizes, and no colours are invented',
+  str_contains($pkN, "'colour' => \$set ? \$pp['colour'] : [],"));
+t('the server refuses a size, colour or style the line does not have',
+  str_contains($pkN, "if (\$allowed ? !in_array(\$v, \$allowed, true) : \$v !== '')"));
+t('and the buttons are drawn from those lists, not typed',
+  str_contains($mpN, "touchGrid(p.sizes, 'size', d, p)") && str_contains($mpN, "touchGrid(p.colors, 'color', d, p)")
+  && str_contains($mpN, "touchGrid(p.styles, 'style', d, p)"));
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

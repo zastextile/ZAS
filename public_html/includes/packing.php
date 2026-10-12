@@ -35,7 +35,7 @@
 
 /* Bumped whenever the tables below change. One indexed read on a page load
    that finds the same number does nothing at all. */
-const PACK_SCHEMA_VERSION = '5';
+const PACK_SCHEMA_VERSION = '7';
 
 /* The material types a weight line can be. The team adds as many lines of
    any type as it needs — two fabrics, three fabrics, two accessories. */
@@ -213,6 +213,26 @@ function pack_ensure_schema(): void
        what weight and quantity are worked from); the colour list is kept
        here, as [{"c":"White","q":8}, …]. */
     $x("ALTER TABLE packing_groups ADD COLUMN colour_mix TEXT NULL");
+
+    /* v6 — THE SMART PACKING MODEL (afnan's demo, "Smart Packing final v7").
+       A package's contents are combinations of size, colour AND style, each
+       with a quantity, adding up to the pieces in one package. Serials can
+       carry a prefix (C, CTN-) and zero padding (C001). Each package has a
+       packaging spec ("Standard carton"). A package edited on its own is
+       marked, so the records show it was changed apart from its range. */
+    $x("ALTER TABLE packing_group_sizes ADD COLUMN style_label VARCHAR(80) NOT NULL DEFAULT ''");
+    $x("ALTER TABLE packing_groups ADD COLUMN serial_prefix VARCHAR(16) NOT NULL DEFAULT ''");
+    $x("ALTER TABLE packing_groups ADD COLUMN serial_pad TINYINT NOT NULL DEFAULT 0");
+    $x("ALTER TABLE packing_groups ADD COLUMN pkg_spec VARCHAR(80) NOT NULL DEFAULT ''");
+    $x("ALTER TABLE packing_groups ADD COLUMN edited TINYINT(1) NOT NULL DEFAULT 0");
+
+    /* v7 — FINISH PACKING ON THE PHONE. Whether packing is complete lives on
+       the shipment, in columns only the desktop packing list used to add. A
+       shipment never opened there had no such column, and Finish would have
+       said "finished" while nothing was marked. Added here as well. */
+    $x("ALTER TABLE shipments ADD COLUMN packing_status VARCHAR(20) NOT NULL DEFAULT 'open' AFTER status");
+    $x("ALTER TABLE shipments ADD COLUMN packing_completed_by INT NULL AFTER packing_status");
+    $x("ALTER TABLE shipments ADD COLUMN packing_completed_at DATETIME NULL AFTER packing_completed_by");
 
     try {
         db()->prepare("INSERT INTO exp_meta (k, v, updated_at) VALUES ('pack_schema_version', ?, NOW())
@@ -486,17 +506,18 @@ function pack_palette(int $shipmentId, int $itemId, string $kind = ''): array
         $s = db()->prepare("SELECT kind, label FROM packing_palette
                             WHERE shipment_id=? AND invoice_item_id=? ORDER BY kind, sort_no, id");
         $s->execute([$shipmentId, $itemId]);
-        $out = ['size' => [], 'colour' => []];
+        /* style is the third kind, beside size and colour (Style A, B, C) */
+        $out = ['size' => [], 'colour' => [], 'style' => []];
         foreach ($s->fetchAll() as $r) $out[(string)$r['kind']][] = (string)$r['label'];
         return $out;
-    } catch (Throwable $e) { return $kind !== '' ? [] : ['size' => [], 'colour' => []]; }
+    } catch (Throwable $e) { return $kind !== '' ? [] : ['size' => [], 'colour' => [], 'style' => []]; }
 }
 
 /* Replaced wholesale for one kind at a time: a colour the customer
    dropped has to disappear, which a merge would never do. */
 function pack_palette_save(int $shipmentId, int $itemId, string $kind, array $labels): array
 {
-    if (!in_array($kind, ['size', 'colour'], true)) return [false, 'Not a size or a colour.'];
+    if (!in_array($kind, ['size', 'colour', 'style'], true)) return [false, 'Not a size, a colour or a style.'];
     $clean = pack_dedupe($labels);
     try {
         db()->beginTransaction();
@@ -529,6 +550,8 @@ function pack_palette_choices(string $productName, int $shipmentId, int $itemId)
     return [
         'size'   => pack_dedupe(array_merge(pack_size_options($productName),   $pal['size'])),
         'colour' => pack_dedupe(array_merge(pack_colour_options($productName), $pal['colour'])),
+        /* styles packed before for this product, plus this line's own */
+        'style'  => pack_dedupe(array_merge(pack_history($productName, 'style_label'), $pal['style'])),
     ];
 }
 
@@ -698,7 +721,7 @@ function pack_weight_missing(int $groupId): array
 }
 
 function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGroupId = 0,
-                             string $unit = ''): string
+                             string $unit = '', string $prefix = ''): string
 {
     if ($from < 1)        return 'The first serial must be 1 or more.';
     if ($to < $from)      return 'The last serial cannot be before the first one.';
@@ -716,14 +739,27 @@ function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGro
        typed by hand on the desktop packing list (packing_group_id empty),
        because both end up on the same printed packing list. */
     $kind = mb_strtolower(trim($unit !== '' ? $unit : 'Carton'));
+    /* AND THE PREFIX. C001 and R001 are different packages even of one kind;
+       the demo keys a package on its prefix and number. A number is refused
+       only when the same prefix AND the same kind already have it. */
+    $pfx = strtoupper(trim($prefix));
     try {
-        $s = db()->prepare("SELECT unit_title, serial_from, serial_to FROM packing_groups
+        $s = db()->prepare("SELECT unit_title, serial_from, serial_to, serial_prefix, serial_pad FROM packing_groups
                             WHERE shipment_id=? AND id<>? AND serial_from<=? AND serial_to>=?
-                              AND LOWER(TRIM(unit_title))=?
+                              AND LOWER(TRIM(unit_title))=? AND UPPER(serial_prefix)=?
                             ORDER BY serial_from LIMIT 1");
-        $s->execute([$shipmentId, $exceptGroupId, $to, $from, $kind]);
+        $s->execute([$shipmentId, $exceptGroupId, $to, $from, $kind, $pfx]);
         $hit = $s->fetch();
-        if (!$hit) {
+        /* said the way the package is written: Carton C001–C100 */
+        if ($hit) {
+            $fmtN = static fn(int $n): string => $pfx . str_pad((string)$n, (int)($hit['serial_pad'] ?? 0), '0', STR_PAD_LEFT);
+            return 'Those numbers are already used by ' . $hit['unit_title'] . ' ' . $fmtN((int)$hit['serial_from'])
+                 . '–' . $fmtN((int)$hit['serial_to']) . '. A number can be used once per prefix and kind of package '
+                 . '— a different prefix (R001) or kind (Roll) may reuse it.';
+        }
+        /* desktop rows carry no prefix, so they can only clash with an
+           unprefixed number */
+        if (!$hit && $pfx === '') {
             $s = db()->prepare("SELECT pack_unit_title AS unit_title, carton_from AS serial_from,
                                        carton_to AS serial_to FROM packing_items
                                 WHERE shipment_id=? AND packing_group_id IS NULL
@@ -758,7 +794,10 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
 {
     $from = (int)($in['serial_from'] ?? 0);
     $to   = (int)($in['serial_to'] ?? 0);
-    $bad  = pack_serial_problem($shipmentId, $from, $to, $groupId, (string)($in['unit_title'] ?? 'Carton'));
+    $prefix = strtoupper(mb_substr(trim((string)($in['serial_prefix'] ?? '')), 0, 16));
+    $pad    = max(0, min(9, (int)($in['serial_pad'] ?? 0)));
+    $spec   = mb_substr(trim((string)($in['pkg_spec'] ?? '')), 0, 80);
+    $bad  = pack_serial_problem($shipmentId, $from, $to, $groupId, (string)($in['unit_title'] ?? 'Carton'), $prefix);
     if ($bad !== '') return [false, $bad, 0];
 
     $mode = ($in['qty_mode'] ?? 'per') === 'direct' ? 'direct' : 'per';
@@ -766,19 +805,25 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
     $assorted = !empty($in['assorted']);
     $packages = max(0, $to - $from + 1);
 
-    /* Tidy the rows: drop the blanks, add up what is left. A row is a
-       size AND a colour now — either may be empty, and both empty with
-       a quantity is still nothing, so it goes. */
-    $clean = [];
+    /* Tidy the rows. A row is one COMBINATION — size, colour and style,
+       any of which may be empty (a product with none of them packs as
+       "finished units") — with a quantity. A row with no quantity goes; two
+       rows of the same combination are added together. */
+    $clean = []; $at = [];
     foreach ($sizes as $s) {
-        $lbl = trim((string)($s['size_label'] ?? ''));
-        $col = trim((string)($s['colour_label'] ?? ''));
+        $lbl = mb_substr(trim((string)($s['size_label'] ?? '')), 0, 120);
+        $col = mb_substr(trim((string)($s['colour_label'] ?? '')), 0, 80);
+        $sty = mb_substr(trim((string)($s['style_label'] ?? '')), 0, 80);
         $q   = (float)($s['qty'] ?? 0);
-        if (($lbl === '' && $col === '') || $q <= 0) continue;
-        $clean[] = ['size_label'   => mb_substr($lbl, 0, 120),
-                    'colour_label' => mb_substr($col, 0, 80),
-                    'qty'          => $q];
+        if ($q <= 0) continue;
+        $k = $lbl . "\x1f" . $col . "\x1f" . $sty;
+        if (isset($at[$k])) { $clean[$at[$k]]['qty'] += $q; continue; }
+        $at[$k] = count($clean);
+        $clean[] = ['size_label' => $lbl, 'colour_label' => $col, 'style_label' => $sty, 'qty' => $q];
     }
+    /* Standard or assorted is worked out, not chosen: one combination is
+       standard packing, more than one is assorted. */
+    if (!empty($in['auto_assorted'])) $assorted = count($clean) > 1;
     if (!$clean) {
         return [false, $assorted
             ? 'Set up the assorted sizes before saving this range.'
@@ -872,14 +917,20 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
             $groupId = (int)db()->lastInsertId();
         }
 
-        /* The size rows are replaced wholesale — a removed size must go. */
+        /* serial prefix, padding, packaging spec, and whether this package
+           was edited apart from its range — v6 columns, written beside the
+           main row so the statements above stay as they were */
+        db()->prepare("UPDATE packing_groups SET serial_prefix=?, serial_pad=?, pkg_spec=?, edited=? WHERE id=?")
+            ->execute([$prefix, $pad, $spec, !empty($in['edited']) ? 1 : 0, $groupId]);
+
+        /* The rows are replaced wholesale — a removed combination must go. */
         db()->prepare("DELETE FROM packing_group_sizes WHERE group_id=?")->execute([$groupId]);
         $ins = db()->prepare("INSERT INTO packing_group_sizes
-                   (group_id, size_label, colour_label, qty_per_pkg, total_qty) VALUES (?,?,?,?,?)");
+                   (group_id, size_label, colour_label, style_label, qty_per_pkg, total_qty) VALUES (?,?,?,?,?,?)");
         foreach ($clean as $c) {
             $pp = $mode === 'per' ? $c['qty'] : ($packages > 0 ? $c['qty'] / $packages : 0);
             $tt = $mode === 'per' ? $c['qty'] * $packages : $c['qty'];
-            $ins->execute([$groupId, $c['size_label'], $c['colour_label'], $pp, $tt]);
+            $ins->execute([$groupId, $c['size_label'], $c['colour_label'], $c['style_label'] ?? '', $pp, $tt]);
         }
 
         db()->prepare("UPDATE packing_groups SET colour_mix=? WHERE id=?")
@@ -906,6 +957,273 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
         ? 'Saved. ' . $seeded . ' ' . ($seeded === 1 ? 'size was' : 'sizes were')
           . ' weighed already — those are filled in.'
         : 'Saved.', $groupId];
+}
+
+/* ======================================================= SMART PACKING
+   The phone screen follows afnan's demo ("Smart Packing final v7"): every
+   package is its own record — edit one carton, copy it, delete it — while
+   identical cartons in a row are still one range underneath. That keeps
+   the desktop packing list, the documents and the weight working exactly
+   as they do: a range is stored once, and editing carton 37 of 1–100
+   splits it into 1–36, 37 and 38–100. */
+
+/* What one invoice line may be packed in: the sizes, colours and styles
+   the office set on Order sizes & colours, or — for a line not set up —
+   the product's own sizes. A package's contents are checked against it. */
+function pack_line_axes(int $shipmentId, array $item): array
+{
+    $pp  = pack_palette($shipmentId, (int)$item['id']);
+    $set = $pp['size'] || $pp['colour'] || $pp['style'];
+    return [
+        'size'   => $set ? $pp['size'] : pack_size_options((string)$item['product_name']),
+        'colour' => $set ? $pp['colour'] : [],
+        'style'  => $set ? $pp['style'] : [],
+        'set'    => $set,
+    ];
+}
+
+/* The contents of one package, checked. Each combination needs a whole
+   quantity; its size, colour and style must be ones this line has (blank
+   only where the line has none); no combination twice; and together they
+   must make exactly the pieces in one package. '' when it is right. */
+function pack_combos_problem(array $axes, array $combos, $target): string
+{
+    if (!is_numeric($target) || (float)$target != (int)$target || (int)$target < 1 || (int)$target > 1000000)
+        return 'Quantity per package must be a whole number from 1 to 1,000,000.';
+    $seen = []; $sum = 0;
+    foreach ($combos as $c) {
+        $q = $c['qty'] ?? 0;
+        if (!is_numeric($q) || (float)$q != (int)$q || (int)$q <= 0) return 'Every combination needs a positive whole quantity.';
+        foreach (['size' => 'size', 'colour' => 'colour', 'style' => 'style'] as $k => $ax) {
+            $v = trim((string)($c[$k] ?? ''));
+            $allowed = $axes[$ax] ?? [];
+            if ($allowed ? !in_array($v, $allowed, true) : $v !== '')
+                return ($v === '' ? 'Pick a ' . $ax : '"' . $v . '" is not a ' . $ax . ' of this line') . '.';
+        }
+        $key = trim((string)($c['size'] ?? '')) . "\x1f" . trim((string)($c['colour'] ?? '')) . "\x1f" . trim((string)($c['style'] ?? ''));
+        if (isset($seen[$key])) return 'The same combination is listed twice.';
+        $seen[$key] = true;
+        $sum += (int)$q;
+    }
+    if (!$combos) return 'Count what goes in the package first.';
+    if ($sum !== (int)$target) return 'Complete the package first: ' . $sum . ' of ' . (int)$target . ' entered.';
+    return '';
+}
+
+/* ONE CARTON TAKEN OUT OF ITS RANGE, as a range of its own — the step
+   under "edit this package only" and "delete this package". The range
+   either side keeps everything it had: its contents, its weight lines,
+   its package details. One transaction, so a failure leaves the range as
+   it was. Returns [ok, message, id of the one-carton range]. */
+function pack_split_out(int $shipmentId, int $groupId, int $num): array
+{
+    $g = pack_group($groupId);
+    if (!$g || (int)$g['shipment_id'] !== $shipmentId) return [false, 'That package was not found.', 0];
+    $from = (int)$g['serial_from']; $to = (int)$g['serial_to'];
+    if ($num < $from || $num > $to) return [false, 'That package is not in this range.', 0];
+    if ($from === $to) return [true, '', $groupId];
+
+    /* a range copied with new serials: same contents per package, its
+       totals worked out for its own package count */
+    $clone = static function (int $nf, int $nt) use ($g, $groupId, $shipmentId): int {
+        $row = $g; unset($row['id']);
+        $P = $nt - $nf + 1;
+        $row['serial_from'] = $nf; $row['serial_to'] = $nt; $row['packages'] = $P;
+        $ln = db()->prepare("SELECT COALESCE(MAX(line_no),0)+1 FROM packing_groups WHERE shipment_id=?");
+        $ln->execute([$shipmentId]);
+        $row['line_no'] = (int)$ln->fetchColumn();
+        $pp = (float)$g['qty_per_pkg'];
+        $row['qty_mode'] = 'per'; $row['total_qty'] = $pp * $P;
+        $cols = array_keys($row);
+        db()->prepare("INSERT INTO packing_groups (`" . implode('`,`', $cols) . "`) VALUES ("
+                      . implode(',', array_fill(0, count($cols), '?')) . ")")->execute(array_values($row));
+        $nid = (int)db()->lastInsertId();
+        foreach (pack_sizes($groupId) as $sr) {
+            $sr2 = $sr; unset($sr2['id']); $sr2['group_id'] = $nid; $sr2['total_qty'] = (float)$sr['qty_per_pkg'] * $P;
+            $c2 = array_keys($sr2);
+            db()->prepare("INSERT INTO packing_group_sizes (`" . implode('`,`', $c2) . "`) VALUES ("
+                          . implode(',', array_fill(0, count($c2), '?')) . ")")->execute(array_values($sr2));
+        }
+        $wl = db()->prepare("SELECT * FROM packing_weight_lines WHERE group_id=?");
+        $wl->execute([$groupId]);
+        foreach ($wl->fetchAll() as $w) {
+            unset($w['id']); $w['group_id'] = $nid;
+            $c3 = array_keys($w);
+            db()->prepare("INSERT INTO packing_weight_lines (`" . implode('`,`', $c3) . "`) VALUES ("
+                          . implode(',', array_fill(0, count($c3), '?')) . ")")->execute(array_values($w));
+        }
+        return $nid;
+    };
+    /* and the original range, shrunk to what is left of it */
+    $shrink = static function (int $nf, int $nt) use ($g, $groupId): void {
+        $P = $nt - $nf + 1; $pp = (float)$g['qty_per_pkg'];
+        db()->prepare("UPDATE packing_groups SET serial_from=?, serial_to=?, packages=?, qty_mode='per',
+                       total_qty=?, updated_at=NOW() WHERE id=?")->execute([$nf, $nt, $P, $pp * $P, $groupId]);
+        db()->prepare("UPDATE packing_group_sizes SET total_qty = qty_per_pkg * ? WHERE group_id=?")->execute([$P, $groupId]);
+    };
+
+    try {
+        db()->beginTransaction();
+        if ($num === $from) {                  // first carton
+            $one = $clone($num, $num);
+            $shrink($num + 1, $to);
+        } elseif ($num === $to) {              // last carton
+            $one = $clone($num, $num);
+            $shrink($from, $num - 1);
+        } else {                               // from the middle
+            $one = $clone($num, $num);
+            $clone($num + 1, $to);
+            $shrink($from, $num - 1);
+        }
+        db()->commit();
+        return [true, '', $one];
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return [false, 'The package could not be taken out of its range. ' . $e->getMessage(), 0];
+    }
+}
+
+/* SAVE A PACKAGE, OR A RANGE OF THEM — the phone's Save & Next.
+   $in: item, type, spec, prefix, pad, from, to, target,
+        combos [{size, colour, style, qty}],
+        edit_group + edit_num when one saved package is being changed.
+   A new range is one range. A change is to ONE package only: it is taken
+   out of its range first, then saved with what was typed and marked as
+   edited. Returns [ok, message, group id]. */
+function pack_package_save(int $shipmentId, array $items, array $in): array
+{
+    $item = null;
+    foreach ($items as $it) if ((int)$it['id'] === (int)($in['item'] ?? 0)) $item = $it;
+    if (!$item) return [false, 'Pick the product from the invoice.', 0];
+
+    $axes = pack_line_axes($shipmentId, $item);
+    $target = $in['target'] ?? 0;
+    $combos = array_values(array_filter((array)($in['combos'] ?? []), static fn($c) => is_array($c)));
+    $bad = pack_combos_problem($axes, $combos, $target);
+    if ($bad !== '') return [false, $bad, 0];
+
+    $from = (int)($in['from'] ?? 0);
+    $to   = (int)($in['to'] ?? $from);
+    $editG = (int)($in['edit_group'] ?? 0);
+    $editN = (int)($in['edit_num'] ?? 0);
+    if ($editG > 0 && $to !== $from) return [false, 'Edit one package at a time.', 0];
+    if ($to - $from + 1 > 5000) return [false, 'Save up to 5,000 packages at a time.', 0];
+
+    $type = trim((string)($in['type'] ?? 'Carton')) ?: 'Carton';
+    $fields = [
+        'invoice_item_id' => (int)$item['id'],
+        'product_name'    => (string)$item['product_name'],
+        'des_col'         => (string)($item['des_col'] ?? ''),
+        'optional_value'  => (string)($item['optional_value'] ?? ''),
+        'unit_title'      => $type,
+        'serial_from'     => $from,
+        'serial_to'       => $to,
+        'qty_mode'        => 'per',
+        'auto_assorted'   => true,
+        'serial_prefix'   => (string)($in['prefix'] ?? ''),
+        'serial_pad'      => (int)($in['pad'] ?? 0),
+        'pkg_spec'        => (string)($in['spec'] ?? ''),
+        'edited'          => $editG > 0,
+        'weight_by_colour'=> null,
+    ];
+    $rows = array_map(static fn($c) => ['size_label' => (string)($c['size'] ?? ''),
+                                        'colour_label' => (string)($c['colour'] ?? ''),
+                                        'style_label' => (string)($c['style'] ?? ''),
+                                        'qty' => (int)$c['qty']], $combos);
+
+    $gid = 0;
+    if ($editG > 0) {
+        [$ok, $msg, $gid] = pack_split_out($shipmentId, $editG, $editN);
+        if (!$ok) return [false, $msg, 0];
+    }
+    [$ok, $msg, $gid] = pack_group_save($shipmentId, $fields, $rows, $gid);
+    if (!$ok && $editG > 0) $msg .= ' The package was kept as it was.';
+    return [$ok, $msg, $gid];
+}
+
+/* DELETE ONE PACKAGE — taken out of its range, then removed. The rest of
+   the range stays. */
+function pack_package_delete(int $shipmentId, int $groupId, int $num): array
+{
+    [$ok, $msg, $one] = pack_split_out($shipmentId, $groupId, $num);
+    if (!$ok) return [false, $msg];
+    return pack_group_delete($shipmentId, $one) ? [true, 'Package deleted.'] : [false, 'The package could not be deleted.'];
+}
+
+/* EVERYTHING THE PHONE NEEDS, in one go — products with what each may be
+   packed in, every saved range with its contents, and whether packing is
+   finished. The screen draws from this and nothing else, and gets a fresh
+   copy back after every change, so it never reloads the page. */
+function pack_state(int $shipmentId, array $items, array $shipment): array
+{
+    $products = [];
+    foreach ($items as $it) {
+        $ax = pack_line_axes($shipmentId, $it);
+        $l  = pack_item_label($it);
+        $products[] = [
+            'id' => (string)(int)$it['id'], 'name' => (string)$it['product_name'],
+            'line' => $l['no'], 'hint' => $l['hint'],
+            'unit' => strtolower(trim((string)($it['unit'] ?? ''))) ?: 'pcs',
+            'sizes' => array_values($ax['size']), 'colors' => array_values($ax['colour']),
+            'styles' => array_values($ax['style']), 'setUp' => (bool)$ax['set'],
+        ];
+    }
+    $records = [];
+    foreach (pack_groups($shipmentId) as $g) {
+        $sz = pack_sizes((int)$g['id']);
+        $P  = pack_packages($g);
+        $records[] = [
+            'id' => (int)$g['id'], 'item' => (string)(int)$g['invoice_item_id'],
+            'prefix' => (string)($g['serial_prefix'] ?? ''), 'pad' => (int)($g['serial_pad'] ?? 0),
+            'from' => (int)$g['serial_from'], 'to' => (int)$g['serial_to'],
+            'type' => (string)$g['unit_title'], 'spec' => (string)($g['pkg_spec'] ?? ''),
+            'target' => round(array_sum(array_map(static fn($r) => pack_size_per_pkg($g, $r), $sz)), 3),
+            'combos' => array_map(static fn($r) => [
+                'size' => (string)$r['size_label'], 'colour' => (string)($r['colour_label'] ?? ''),
+                'style' => (string)($r['style_label'] ?? ''), 'qty' => round(pack_size_per_pkg($g, $r), 3)], $sz),
+            'edited' => !empty($g['edited']),
+            'weighed' => pack_contents_kg($g, $sz, pack_per_unit((int)$g['id'])) > 0,
+        ];
+    }
+    return [
+        'shipment' => ['id' => (int)$shipment['id'], 'invoice' => (string)$shipment['invoice_no'],
+                       'buyer' => (string)($shipment['buyer_name'] ?? '')],
+        'completed' => ($shipment['packing_status'] ?? 'open') === 'completed',
+        'products' => $products,
+        'records' => $records,
+    ];
+}
+
+/* FINISH PACKING — the packing list rows and the shipment's totals are
+   written from the ranges, as approving did, and packing is marked
+   complete. Weight comes from the weight already entered (none yet means
+   0); overruling it waits for the separate weight module. */
+function pack_finish(int $shipmentId): array
+{
+    $t = pack_totals($shipmentId);
+    [$ok, $msg] = pack_approve($shipmentId, $t['net'], $t['gross']);
+    if (!$ok) return [false, $msg];
+    try {
+        db()->prepare("UPDATE shipments SET packing_status='completed', packing_completed_by=?, packing_completed_at=NOW()
+                       WHERE id=?")->execute([(int)(current_user()['id'] ?? 0), $shipmentId]);
+    } catch (Throwable $e) {
+        try { db()->prepare("UPDATE shipments SET packing_status='completed' WHERE id=?")->execute([$shipmentId]); }
+        catch (Throwable $e2) {
+            /* never "finished" when nothing was marked */
+            return [false, 'The packing list rows were written, but the shipment could not be marked finished. '
+                         . 'Open the desktop packing list once, then press Finish again.'];
+        }
+    }
+    return [true, 'Packing finished — ' . number_format($t['packages']) . ' packages, '
+                  . number_format($t['qty']) . ' pieces.'];
+}
+
+function pack_reopen(int $shipmentId): array
+{
+    try {
+        db()->prepare("UPDATE shipments SET packing_status='open' WHERE id=?")->execute([$shipmentId]);
+        return [true, 'Packing reopened.'];
+    } catch (Throwable $e) { return [false, 'Packing could not be reopened.']; }
 }
 
 function pack_group_delete(int $shipmentId, int $groupId): bool
@@ -1158,8 +1476,9 @@ function pack_size_text(array $g, array $sizes): string
     $one = static function (array $s): string {
         $t = trim((string)$s['size_label']);
         $c = trim((string)($s['colour_label'] ?? ''));
-        if ($t === '') return $c;
-        return $c === '' ? $t : $c . ' ' . $t;
+        $y = trim((string)($s['style_label'] ?? ''));
+        $txt = $t === '' ? $c : ($c === '' ? $t : $c . ' ' . $t);
+        return trim($txt . ($y !== '' ? ' ' . $y : ''));
     };
     if (empty($g['assorted'])) return $one($sizes[0]);
     $fmt = static fn(float $q): string => rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.');
@@ -1288,7 +1607,7 @@ function pack_master_sizes(string $productName): array
 function pack_history(string $productName, string $column): array
 {
     $key = pack_product_key($productName);
-    if ($key === '' || !in_array($column, ['size_label', 'colour_label'], true)) return [];
+    if ($key === '' || !in_array($column, ['size_label', 'colour_label', 'style_label'], true)) return [];
     try {
         $s = db()->prepare("SELECT DISTINCT gs.$column v
                             FROM packing_group_sizes gs

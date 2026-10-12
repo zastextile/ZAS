@@ -1,25 +1,32 @@
 <?php
 /*
-  PACKING — the phone version.
+  PACKING — the phone version. SMART PACKING.
 
-  The same shipment, the same login, the same permission as the desktop
-  packing list. What is different is the order of the questions, because
-  the person holding the phone is standing next to the cartons.
+  Built from afnan's own demo ("Smart Packing final"): "this feature and
+  function is matching with my need — copy and apply on your existing
+  mobile packing file."
 
-  IT STARTS AT THE SERIAL. "Carton 1 to 100" is the first thing typed and
-  the package count follows from it. The desktop asks for the count and
-  the serials separately, which lets the two disagree; here they cannot.
+  ONE PAGE, NEVER RELOADED. Packing / Records / Summary are tabs drawn in
+  the browser; every save is one small request and the answer carries the
+  whole packing state back (see the API below and pack_state()).
 
-  IT DOES NOT CHECK THE INVOICE. What is in the carton is counted, not
-  derived. The desktop screen keeps its own over-pack guard for its own
-  entry; this screen reports what the team found.
+  EVERY PACKAGE IS ITS OWN RECORD. A range is stored once, but one package
+  of it can be edited, copied or deleted on its own — the server splits
+  the range (pack_split_out) so the rest is untouched.
 
-  IT DOES NOT ASK FOR NET AND GROSS. One package goes on the scale and the
-  team lists what is inside one unit. The weights are produced from that,
-  and the approver may overrule them within ten per cent.
+  WHAT IS IN THE PACKAGE IS COUNTED. Pick a size, tap a colour (or style)
+  once per piece. One combination is standard packing, more than one is
+  assorted — decided by what was counted, not by a switch.
 
-  IT NEEDS SIGNAL, like every page here. The service worker never caches a
-  .php page, so nothing on screen can be stale and no save is swallowed.
+  A NUMBER ONCE PER PREFIX AND KIND OF PACKAGE. Carton 1 and Roll 1 may
+  both exist; two Carton 1s may not. Save & Next moves to the next free
+  number by itself.
+
+  WEIGHT IS NOT HERE. It is moving to its own module. Until that exists
+  the old weight screen is kept and linked from Summary (t=weight).
+
+  IT NEEDS SIGNAL, like every page here. Only the unsaved draft is kept in
+  the browser, so a half-counted carton survives a dropped connection.
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
@@ -34,7 +41,9 @@ if (function_exists('mob_needs')) {
                'mob_steps_begin', 'mob_step', 'mob_steps_end', 'mob_card_error',
                'mob_steps_scroll'], 'includes/mobile.php');
     mob_needs(['pack_palette', 'pack_unit_key', 'pack_wkey', 'pack_colour_swatch',
-               'pack_weight_missing', 'pack_dedupe'], 'includes/packing.php');
+               'pack_weight_missing', 'pack_dedupe', 'pack_state', 'pack_package_save',
+               'pack_package_delete', 'pack_split_out', 'pack_finish', 'pack_reopen',
+               'pack_line_axes'], 'includes/packing.php');
 } else {
     http_response_code(500);
     exit('Upload includes/mobile.php — the copy on the server is older than this screen.');
@@ -46,7 +55,7 @@ exp_ensure_schema();
 pack_ensure_schema();
 
 $id  = (int)($_GET['id']  ?? $_POST['shipment_id'] ?? 0);
-$tab = (string)($_GET['t'] ?? 'serial');
+$tab = (string)($_GET['t'] ?? 'pack');
 $gid = (int)($_GET['g']   ?? 0);
 $sz  = (string)($_GET['s'] ?? '');
 
@@ -101,255 +110,69 @@ $itStmt = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORDER 
 $itStmt->execute([$id]);
 $items = $itStmt->fetchAll();
 
-/* THE SIZE FIELD, AND THE RULE BEHIND IT.
-
-   The list is this product's sizes and nothing else — what it has been
-   costed in, and what it has actually been packed in before. A product
-   nobody has packed yet offers nothing, so the field has to let the
-   first one be typed, and what is typed becomes the list from then on.
-
-   Two controls, two names. The select carries the sentinel __new when
-   someone wants to type instead, and the server reads the text box in
-   that case. Juggling disabled attributes on two fields with one name
-   would do the same job and be a great deal easier to get wrong. */
-function pack_pick_field(array $opts, string $cur, string $selName, string $newName,
-                         string $what = 'size'): string
-{
-    $known = $opts !== [];
-    /* A size already saved that is not in the list — a product renamed,
-       or a one-off — must still show as chosen rather than silently
-       resetting to nothing. It is MARKED, though: the office's list is
-       the rule, and a packer should see when a range is outside it. */
-    $off = '';
-    if ($cur !== '' && !in_array($cur, $opts, true)) { array_unshift($opts, $cur); $known = true; $off = $cur; }
-
-    $h = '<select class="in" name="' . e($selName) . '" data-pick>';
-    $h .= '<option value="">' . ($known ? '— pick a ' . e($what) . ' —' : '— none on record yet —') . '</option>';
-    foreach ($opts as $o) {
-        $h .= '<option value="' . e($o) . '"' . ($o === $cur ? ' selected' : '') . '>' . e($o)
-            . ($o === $off ? ' (not on this line’s list)' : '') . '</option>';
-    }
-    $h .= '<option value="__new"' . (!$known ? ' selected' : '') . '>+ type a ' . e($what) . ' not in the list</option>';
-    $h .= '</select>';
-    $h .= '<input class="in" name="' . e($newName) . '" data-picknew placeholder="type the ' . e($what) . '"'
-        . ($known ? ' hidden' : '') . ' style="margin-top:8px">';
-    return $h;
-}
-
-/* EVERY RANGE ON ONE LIST, with Edit and Delete.
-
-   Shown on the New range step (where someone is when they wonder what is
-   already done) and on Approve ("final approval: allow edit, delete,
-   update, overall, easily"). Each row says its invoice line, quantity and
-   whether the line has its weight — weight lives on its own tab and was
-   otherwise invisible. On the serial tab Edit jumps to the range's step;
-   on Approve it opens the serial tab at that range. Approve also gets an
-   Edit weight per line. */
-function pack_summary_html(array $groups, array $items, bool $canEdit, int $id, string $self,
-                           bool $onSerial): string
-{
-    if (!$groups) return '';
-    ob_start();
-    $byId = [];
-    foreach ($items as $it) $byId[(int)$it['id']] = $it;
-    $sumP = 0; $sumQ = 0.0;
-    echo '<div class="mcard"><h2 style="margin:0 0 4px">Already packed</h2>'
-       . '<div class="note" style="margin-bottom:10px">Every range on this invoice. '
-       . 'Tap Edit to change one.</div>';
-    foreach ($groups as $gi => $og) {
-        $oP = pack_packages($og); $sumP += $oP; $sumQ += (float)$og['total_qty'];
-        $oSizes = pack_sizes((int)$og['id']);
-        $it = $byId[(int)$og['invoice_item_id']] ?? null;
-        /* a clash already in the data — saved before the rule was
-           tight, or by the desktop — is shown, not hidden */
-        $clashW = '';
-        foreach ($groups as $og2) {
-            if ((int)$og2['id'] === (int)$og['id']) continue;
-            /* the same number is fine on a different kind of package */
-            if (mb_strtolower(trim((string)$og2['unit_title'])) !== mb_strtolower(trim((string)$og['unit_title']))) continue;
-            if ((int)$og2['serial_from'] <= (int)$og['serial_to']
-                && (int)$og2['serial_to'] >= (int)$og['serial_from']) {
-                $clashW = $og2['unit_title'] . ' ' . (int)$og2['serial_from'] . '–' . (int)$og2['serial_to'];
-                break;
-            }
-        }
-        $gross = (float)$og['pkg_gross'];
-        echo '<div class="sumr' . ($clashW !== '' ? ' bad' : '') . '">'
-           . '<div class="sumt"><b>' . e((string)$og['unit_title']) . ' '
-           . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . '</b>'
-           . '<span class="pill v">' . number_format($oP) . '</span></div>'
-           . '<div class="sumi">' . ($it ? pack_item_html($it) : e((string)$og['product_name'])) . '</div>'
-           . '<div class="sumq">' . number_format((float)$og['total_qty']) . ' in total'
-           . ($oSizes ? ' · ' . e(pack_size_text($og, $oSizes)) : '') . '</div>'
-           . '<div class="sumw">' . ($gross > 0
-                ? 'Weighed: ' . number_format($gross, 3) . ' kg gross per ' . e(strtolower((string)$og['unit_title']))
-                : '<a href="' . e($self) . '&amp;t=weight&amp;g=' . (int)$og['id'] . '">Not weighed yet — Weight tab</a>')
-           . '</div>'
-           . ($clashW !== '' ? '<div class="clash" style="margin:8px 0 0">Shares package numbers with '
-                              . e($clashW) . '. A number can be used once per kind of package — change one of them.</div>' : '');
-        if ($canEdit) {
-            echo '<div class="suma">'
-           . ($onSerial
-               ? '<button type="button" class="btn sec sm" data-mstep-go="' . (int)$gi . '">Edit</button>'
-               : '<a class="btn sec sm" href="' . e($self) . '&amp;t=serial#s' . (int)$gi . '">Edit</a>'
-                 . '<a class="btn sec sm" href="' . e($self) . '&amp;t=weight&amp;g=' . (int)$og['id'] . '">Edit weight</a>')
-               . '<form method="post" onsubmit="return confirm(\'Remove ' . e((string)$og['unit_title']) . ' '
-               . (int)$og['serial_from'] . '–' . (int)$og['serial_to'] . ' and its weights?\')">'
-               . csrf_field()
-               . '<input type="hidden" name="action" value="group_delete">'
-               . '<input type="hidden" name="shipment_id" value="' . (int)$id . '">'
-               . '<input type="hidden" name="group_id" value="' . (int)$og['id'] . '">'
-               . '<button class="btn red sm" type="submit">Delete</button></form></div>';
-        }
-        echo '</div>';
-    }
-    echo '<div class="sumtot"><span>' . count($groups) . ' range' . (count($groups) === 1 ? '' : 's')
-       . '</span><b>' . number_format($sumP) . ' packages · ' . number_format($sumQ) . ' pcs</b></div></div>';
-    return (string)ob_get_clean();
-}
-
-/* ONE SCROLLING PAGE, NOT FLIPS. "If you feel any problem because of
-   the page flip, use scroll." On this screen the flip meant pressing
-   Next past every range to reach the new one, every time. */
+/* The weight screen still draws its cards as steps on one scrolling page. */
 mob_steps_scroll(true);
 
 $title = 'Packing — ' . (string)$shipment['invoice_no'];
 $back  = 'm_pack.php';
 $self  = 'm_pack.php?id=' . $id;
 
-/* =============================================================== actions */
+/* ============================================================ the app's API
+
+   The Smart Packing screen never reloads. Every change is one JSON POST
+   here, and the answer carries the whole packing state back, so what is
+   on screen is always what is saved.
+
+     op=save    one package or a range (or an edit of one package)
+     op=delete  one package; the rest of its range stays
+     op=finish  write the packing list rows and totals, mark it complete
+     op=reopen  open it again
+
+   The same CSRF token and the same permission as every other write. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['api'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    $in = json_decode((string)file_get_contents('php://input'), true);
+    if (!is_array($in)) $in = [];
+    $_POST['_csrf'] = (string)($in['_csrf'] ?? '');
+    verify_csrf();
+    $answer = function (bool $ok, string $msg) use ($id, $items): void {
+        $s = db()->prepare("SELECT * FROM shipments WHERE id=?");
+        $s->execute([$id]);
+        echo json_encode(['ok' => $ok, 'msg' => $msg, 'state' => pack_state($id, $items, $s->fetch() ?: [])]);
+        exit;
+    };
+    if (!$canEdit) { http_response_code(403); $answer(false, 'This packing list can no longer be changed.'); }
+    $op   = (string)($in['op'] ?? '');
+    $done = ($shipment['packing_status'] ?? 'open') === 'completed';
+    if ($done && in_array($op, ['save', 'delete', 'finish'], true)) {
+        $answer(false, 'Packing is finished. Reopen it on Summary to change anything.');
+    }
+    try {
+        if ($op === 'save') {
+            [$ok, $msg] = pack_package_save($id, $items, $in);
+            $answer($ok, $msg);
+        }
+        if ($op === 'delete') {
+            [$ok, $msg] = pack_package_delete($id, (int)($in['group'] ?? 0), (int)($in['num'] ?? 0));
+            $answer($ok, $msg);
+        }
+        if ($op === 'finish') { [$ok, $msg] = pack_finish($id); $answer($ok, $msg); }
+        if ($op === 'reopen') { [$ok, $msg] = pack_reopen($id); $answer($ok, $msg); }
+    } catch (Throwable $e) {
+        error_log('m_pack api ' . $op . ': ' . $e->getMessage());
+        $answer(false, 'That did not save — the server hit a problem. Nothing was changed.');
+    }
+    $answer(false, 'Unknown request.');
+}
+
+/* ======================================= the weight screen's one action
+
+   Kept from before, unchanged, until the weight module exists. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     if (!$canEdit) { http_response_code(403); exit('This packing list can no longer be changed.'); }
     $action = (string)($_POST['action'] ?? '');
-
-    /* ---- one serial range, with its sizes ---- */
-    if ($action === 'group') {
-        $g = (int)($_POST['group_id'] ?? 0);
-        $itemId = (int)($_POST['invoice_item_id'] ?? 0);
-        /* A REFUSED NEW RANGE KEEPS WHAT WAS TYPED. A duplicate number or
-           a missing line sent the page back empty, and everything had to
-           be typed again. The figures ride back in the session and the
-           New range card is filled from them, once. */
-        $keepDraft = function () use ($g): void {
-            if ($g > 0) return;
-            $_SESSION['pack_draft'] = [
-                'unit'   => (string)($_POST['unit_title'] ?? ''),
-                'from'   => (int)($_POST['serial_from'] ?? 0),
-                'to'     => (int)($_POST['serial_to'] ?? 0),
-                'item'   => (int)($_POST['invoice_item_id'] ?? 0),
-                'mode'   => (string)($_POST['qty_mode'] ?? 'per'),
-                'size'   => (string)($_POST['single_size'] ?? ''),
-                'colour' => (string)($_POST['single_colour'] ?? ''),
-                'qty'    => (float)($_POST['single_qty'] ?? 0),
-                'mix'    => ($_POST['size_mode'] ?? '') === 'mix',
-                'asz'    => array_combine(array_map('strval', (array)($_POST['asz_label'] ?? [])),
-                                          array_map('floatval', array_pad((array)($_POST['asz_qty'] ?? []),
-                                              count((array)($_POST['asz_label'] ?? [])), 0))) ?: [],
-                'acol'   => array_combine(array_map('strval', (array)($_POST['acol_label'] ?? [])),
-                                          array_map('floatval', array_pad((array)($_POST['acol_qty'] ?? []),
-                                              count((array)($_POST['acol_label'] ?? [])), 0))) ?: [],
-            ];
-        };
-        $item = null;
-        foreach ($items as $it) if ((int)$it['id'] === $itemId) $item = $it;
-        if (!$item) {
-            $_SESSION['error'] = 'Pick the item this range holds.';
-            $keepDraft();
-            redirect($self . '&t=serial#newrange');
-        }
-
-        /* THE TOGGLE DECIDES, AND BOTH HALVES ARRIVE IN ONE POST.
-           One size: a size and a colour. Assorted: a size assortment and
-           a colour assortment, each adding up to the pieces in one carton
-           (or in the whole range, in direct mode). Nothing is set up on a
-           second page and nothing needs saving first. */
-        $assorted  = ($_POST['size_mode'] ?? '') === 'mix';
-        $target    = (float)($_POST['single_qty'] ?? 0);
-        $colourMix = [];
-        $sizes     = [];
-        $fmtQ = static fn(float $q): string => rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.');
-
-        /* what this line offers — the office's list, or the product's own */
-        $lp = pack_palette($id, $itemId);
-        $lineSizes = ($lp['size'] || $lp['colour']) ? $lp['size'] : pack_size_options((string)$item['product_name']);
-
-        $err = '';
-        if ($assorted) {
-            foreach ((array)($_POST['asz_label'] ?? []) as $i => $l) {
-                $q = (float)(((array)($_POST['asz_qty'] ?? []))[$i] ?? 0);
-                if (trim((string)$l) !== '' && $q > 0)
-                    $sizes[] = ['size_label' => trim((string)$l), 'colour_label' => '', 'qty' => $q];
-            }
-            foreach ((array)($_POST['acol_label'] ?? []) as $i => $l) {
-                $q = (float)(((array)($_POST['acol_qty'] ?? []))[$i] ?? 0);
-                if (trim((string)$l) !== '' && $q > 0) $colourMix[] = ['c' => trim((string)$l), 'q' => $q];
-            }
-            /* a line with colours but no sizes is assorted by colour alone */
-            if (!$sizes && $colourMix && !$lineSizes) {
-                foreach ($colourMix as $cm) $sizes[] = ['size_label' => '', 'colour_label' => $cm['c'], 'qty' => $cm['q']];
-                $colourMix = [];
-            }
-            $ss = array_sum(array_column($sizes, 'qty'));
-            $cs = array_sum(array_column($colourMix, 'q'));
-            if ($target <= 0)                          $err = 'Put in the total pieces first.';
-            elseif (!$sizes)                           $err = 'Put in how many of each size.';
-            elseif (abs($ss - $target) > 0.0001)       $err = 'The sizes add up to ' . $fmtQ($ss) . ', but the total is ' . $fmtQ($target) . '.';
-            elseif ($colourMix && abs($cs - $target) > 0.0001)
-                                                       $err = 'The colours add up to ' . $fmtQ($cs) . ', but the total is ' . $fmtQ($target) . '.';
-        } else {
-            /* __new means "the one I typed", not a size called __new. */
-            $one = (string)($_POST['single_size'] ?? '');
-            if ($one === '__new') $one = trim((string)($_POST['single_size_new'] ?? ''));
-            /* A LINE WITH SIZES NEEDS ONE PICKED. A range was saved on the
-               live server with a colour and no size, and the assorted
-               screen then counted those pieces as a complete carton. */
-            if ($one === '' && $lineSizes) $err = 'Pick the size.';
-            $sizes[] = ['size_label'   => $one,
-                        'colour_label' => trim((string)($_POST['single_colour'] ?? '')),
-                        'qty'          => $target];
-        }
-        if ($err !== '') {
-            $_SESSION['error'] = $err;
-            $keepDraft();
-            redirect($self . '&t=serial#' . ($g > 0 ? 'r' . $g : 'newrange'));
-        }
-
-        [$ok, $msg] = pack_group_save($id, [
-            /* only the assorted page asks it; null means "leave the line's
-               answer as it is" rather than "off" */
-            'weight_by_colour' => isset($_POST['weight_by_colour']) ? !empty($_POST['weight_by_colour']) : null,
-            'invoice_item_id' => $itemId,
-            'product_name'    => (string)$item['product_name'],
-            'des_col'         => (string)($item['des_col'] ?? ''),
-            'optional_value'  => (string)($item['optional_value'] ?? ''),
-            'unit_title'      => (string)($_POST['unit_title'] ?? 'Carton'),
-            'serial_from'     => (int)($_POST['serial_from'] ?? 0),
-            'serial_to'       => (int)($_POST['serial_to'] ?? 0),
-            'qty_mode'        => (string)($_POST['qty_mode'] ?? 'per'),
-            'assorted'        => $assorted,
-            'colour_mix'      => $colourMix,
-        ], $sizes, $g);
-
-        /* STRAIGHT ON TO THE NEXT RANGE. It used to come back to the top,
-           so reaching the New range card meant paging past every range
-           already done. Now a new range lands on the New range card,
-           already at the next free number for that kind of package, and an
-           edited range lands back on itself. */
-        if ($ok) {
-            $_SESSION['flash'] = $msg . ($g > 0 ? '' : ' The next range is ready below.');
-        } else {
-            $_SESSION['error'] = $msg;
-            $keepDraft();
-        }
-        redirect($self . '&t=serial#' . ($g > 0 ? 'r' . $g : 'newrange'));
-    }
-
-    if ($action === 'group_delete') {
-        pack_group_delete($id, (int)($_POST['group_id'] ?? 0));
-        $_SESSION['flash'] = 'Range removed.';
-        redirect($self);
-    }
 
     /* ---- the weighed package, and every size's breakdown at once ----
        One save for the whole package. It has to be all of them together,
@@ -409,45 +232,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             : 'Weight saved.';
         redirect($self . '&t=weight&g=' . $gId);
     }
-
-    if ($action === 'approve') {
-        [$ok, $msg] = pack_approve($id, (float)($_POST['final_net'] ?? 0),
-                                        (float)($_POST['final_gross'] ?? 0));
-        if ($ok) $_SESSION['flash'] = $msg; else $_SESSION['error'] = $msg;
-        redirect($self . '&t=approve');
-    }
+    redirect($self);
 }
 
-/* ================================================================ screens */
+/* ================================================ the weight screen
+
+   Reached from Summary only ("Weight" on a product). It is the screen it
+   was, minus the old tab bar; Back returns to the packing app. */
 $groups = pack_groups($id);
-
-/* ---------------------------------------- the old assorted setup page
-
-   GONE — assorted is set up inside the range card now, with no second
-   page and no save first: "never allow a page refresh; dynamic fields
-   with the toggle, in the same form." An old link or a bookmark to it
-   lands on that range in the card instead of on nothing. */
-if ($tab === 'mix') {
-    redirect($self . '&t=serial' . ($gid > 0 ? '#r' . $gid : ''));
-}
-
-/* ------------------------------------------------------------ the tab bar */
-mob_header($title, $back, (string)$shipment['buyer_name'], 'manifest_pack.json');
+if ($tab === 'weight') {
+mob_header('Weight — ' . (string)$shipment['invoice_no'], $self, (string)$shipment['buyer_name'], 'manifest_pack.json');
 mob_flash();
 if (!$canEdit) {
     echo '<div class="flash no">This packing list is closed to you — it is completed or the shipment is locked.</div>';
 }
 ?>
-<div class="ptabs">
-  <a class="ptab<?= $tab === 'serial'  ? ' on' : '' ?>" href="<?= e($self) ?>&t=serial">Serial &amp; qty</a>
-  <a class="ptab<?= $tab === 'weight'  ? ' on' : '' ?>" href="<?= e($self) ?>&t=weight">Weight</a>
-  <a class="ptab<?= $tab === 'approve' ? ' on' : '' ?>" href="<?= e($self) ?>&t=approve">Approve</a>
-</div>
+<a class="lnk" href="<?= e($self) ?>"><span><small>Weight is moving to its own module</small><b>← Back to packing</b></span><span class="chev">›</span></a>
 <style>
-.ptabs{display:flex;gap:7px;margin-bottom:14px}
-.ptab{flex:1;padding:11px 4px;border-radius:11px;border:1px solid #cbd5e3;background:#fff;
   color:var(--muted);font-weight:700;font-size:13px;text-align:center;text-decoration:none}
-.ptab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
 /* the order's scope, stated before any field is touched */
 .btn.sm{padding:10px 12px;font-size:14px}
 a.btn.sm{display:block;text-align:center;text-decoration:none;flex:1}
@@ -520,685 +322,6 @@ table.bk td{padding:6px 4px;border-bottom:1px solid var(--line);font-variant-num
 table.bk td.n{text-align:right}
 </style>
 <?php
-
-/* ================================================== tab 1 — serial and qty */
-if ($tab === 'serial') {
-
-    /* Every invoice line's list, once. 'set' means the office has set it
-       up on the desktop; then those lists are the whole choice. A line
-       never set up gets the product's own sizes and no colours, flagged
-       so the card can say it is a fallback. */
-    $palByItem = [];
-    foreach ($items as $it) {
-        $pp = pack_palette($id, (int)$it['id']);
-        $set = $pp['size'] !== [] || $pp['colour'] !== [];
-        $palByItem[(int)$it['id']] = [
-            'size'   => $set ? $pp['size'] : pack_size_options((string)$it['product_name']),
-            'colour' => $set ? $pp['colour'] : [],
-            'set'    => $set,
-        ];
-    }
-
-    /* Draws one range, new or existing. Kept as a function because the
-       "add another" card at the bottom is the same form with nothing in it. */
-    /* WHAT THE NEW RANGE STARTS FROM, so nothing is asked twice: the
-       kind of package, the invoice line and the quantity mode of the
-       range saved last (the next range is usually more of the same — the
-       short carton after 1–99), and the next free number FOR THAT KIND.
-       A refused save's own figures win over all of it. */
-    $lastG = null;
-    foreach ($groups as $og) if (!$lastG || (int)$og['id'] > (int)$lastG['id']) $lastG = $og;
-    $draft = $_SESSION['pack_draft'] ?? null;
-    unset($_SESSION['pack_draft']);
-    $nd = [
-        'unit' => trim((string)($draft['unit'] ?? ($lastG['unit_title'] ?? 'Carton'))) ?: 'Carton',
-        'item' => (int)($draft['item'] ?? ($lastG['invoice_item_id'] ?? 0)),
-        'mode' => ((string)($draft['mode'] ?? ($lastG['qty_mode'] ?? 'per'))) === 'direct' ? 'direct' : 'per',
-        'from' => (int)($draft['from'] ?? 0),
-        'to'   => (int)($draft['to'] ?? 0),
-        'mix'  => !empty($draft['mix']),
-        'asz'  => (array)($draft['asz'] ?? []),
-        'acol' => (array)($draft['acol'] ?? []),
-        'single' => $draft && ($draft['size'] !== '' || $draft['qty'] > 0)
-            ? ['size_label' => $draft['size'], 'colour_label' => $draft['colour'],
-               'qty_per_pkg' => $draft['qty'], 'total_qty' => $draft['qty']] : null,
-    ];
-    if ($nd['from'] <= 0) {
-        $top = 0;
-        foreach ($groups as $og) {
-            if (mb_strtolower(trim((string)$og['unit_title'])) === mb_strtolower($nd['unit'])) {
-                $top = max($top, (int)$og['serial_to']);
-            }
-        }
-        $nd['from'] = $top + 1; $nd['to'] = $top + 1;
-    }
-
-    $card = function (?array $g) use ($items, $id, $canEdit, $self, $groups, $palByItem, $nd) {
-        $new   = $g === null;
-        $gidL  = $new ? 0 : (int)$g['id'];
-        $unit  = $new ? $nd['unit'] : (string)$g['unit_title'];
-        $from  = $new ? $nd['from'] : (int)$g['serial_from'];
-        $to    = $new ? $nd['to'] : (int)$g['serial_to'];
-        $mode  = $new ? $nd['mode'] : (string)$g['qty_mode'];
-        $asrt  = $new ? $nd['mix'] : !empty($g['assorted']);
-        $P     = $new ? 0 : pack_packages($g);
-        $sizes = $new ? [] : pack_sizes($gidL);
-        $selItem = $new ? $nd['item'] : (int)$g['invoice_item_id'];
-        $item  = null;
-        foreach ($items as $it) if ($selItem > 0 && (int)$it['id'] === $selItem) $item = $it;
-        if (!$item) $selItem = 0;
-
-        /* THE ORDER'S PALETTE, NOT THE PRODUCT'S WHOLE HISTORY.
-           The office set these from the customer's email; this screen
-           shows exactly them. Only when the order has not been set up
-           does it fall back to the product's own list, so a packer is
-           never stuck in front of an empty screen. */
-        /* EXACTLY WHAT THE DESKTOP TICKED FOR THIS LINE — nothing else.
-           If the line has been set up on Order sizes & colours, that list
-           is the whole choice, sizes and colours alike. Only a line that
-           has never been set up falls back to the product's own sizes, and
-           the card says so. The map covers every line, so the lists follow
-           the dropdown live — see palByItem in the script below. */
-        $itemId  = $selItem;
-        $lp      = $palByItem[$itemId] ?? ['size' => [], 'colour' => [], 'set' => false];
-        $fromPal = $lp['set'];
-        $opts    = $lp['size'];
-        $cols    = $lp['colour'];
-        $single = $new ? $nd['single'] : ($sizes[0] ?? null);
-        $singleQty = $single ? ($mode === 'per' ? (float)$single['qty_per_pkg'] : (float)$single['total_qty']) : 0;
-
-        /* THE ASSORTMENT AS SAVED: how many of each size, how many of each
-           colour — per carton in per-package mode, over the range in
-           direct. And the total pieces, which is common to both modes. */
-        $aSz = []; $aCol = [];
-        if ($new) {
-            $aSz = $nd['asz']; $aCol = $nd['acol'];
-        } elseif ($asrt) {
-            foreach ($sizes as $srow) {
-                $q = $mode === 'per' ? (float)$srow['qty_per_pkg'] : (float)$srow['total_qty'];
-                $sl = (string)$srow['size_label'];
-                if ($sl !== '') $aSz[$sl] = ($aSz[$sl] ?? 0) + $q;
-            }
-            /* Stored colour figures are as they were typed (per carton, or
-               over the range in direct mode). An older range has none
-               stored, and its colours come from its rows per carton — so
-               in direct mode those are taken over the whole range. */
-            $stored = !empty($g['colour_mix']);
-            foreach (pack_colour_mix($g, $sizes) as $cm) {
-                $q = (float)$cm['q'];
-                if (!$stored && $mode !== 'per') $q *= max(1, $P);
-                $aCol[(string)$cm['c']] = ($aCol[(string)$cm['c']] ?? 0) + $q;
-            }
-            $singleQty = $mode === 'per'
-                ? array_sum(array_map(static fn($r) => (float)$r['qty_per_pkg'], $sizes))
-                : array_sum(array_map(static fn($r) => (float)$r['total_qty'], $sizes));
-        }
-        $num = function (float $v): string {
-            return $v > 0 ? rtrim(rtrim(number_format($v, 3, '.', ''), '0'), '.') : '';
-        };
-        /* Every OTHER range's serials, so a clash is said while typing,
-           not after Save. The server still checks — this only says it
-           sooner. */
-        $taken = [];
-        foreach ($groups as $og) {
-            if (!$new && (int)$og['id'] === $gidL) continue;
-            $taken[] = [(int)$og['serial_from'], (int)$og['serial_to'],
-                        (string)$og['unit_title']];
-        }
-        ?>
-        <?php /* autocomplete="off": on a reload the browser puts back the
-                 last thing touched in each box — after the page has drawn,
-                 and without telling it. The live server showed a range
-                 saved as "#2 Thermal Blanket" with "Bath Towel" in its
-                 dropdown and "Direct" lit beside a label that still said
-                 per carton; pressing Save would have quietly moved the
-                 range to the wrong line. Off, the boxes show what is
-                 saved and nothing else. */ ?>
-        <form method="post" class="mcard" autocomplete="off"
-              data-taken="<?= e(json_encode($taken)) ?>">
-          <?= csrf_field() ?>
-          <input type="hidden" name="action" value="group">
-          <input type="hidden" name="shipment_id" value="<?= $id ?>">
-          <input type="hidden" name="group_id" value="<?= $gidL ?>">
-          <input type="hidden" name="assorted" value="<?= $asrt ? 1 : 0 ?>">
-
-          <?php if (!$new): ?><span id="r<?= $gidL ?>" class="anchor"></span><?php endif; ?>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <h2 style="margin:0"><?= $new ? 'Add the next range' : 'Range ' . (int)$g['line_no'] ?></h2>
-            <?php if (!$new): ?><span class="pill v"><?= number_format($P) ?> <?= e(strtolower($unit)) ?></span><?php endif; ?>
-          </div>
-
-          <?php /* The box above the dropdown says which invoice line this
-                   is, and it FOLLOWS the dropdown: change the line and the
-                   box changes with it, so the two can never disagree on
-                   screen the way they did on the live server. */ ?>
-          <div class="ref" data-ref<?= $item ? '' : ' hidden' ?>><?php if ($item): $il = pack_item_label($item); ?>
-            <b><?= e($il['name']) ?></b> <i class="ihint"><?= e($il['no']) ?></i><br>
-            <?= e((string)($item['des_col'] ?? '')) ?>
-            <?= ($item['optional_value'] ?? '') !== '' ? ' · ' . e((string)$item['optional_value']) : '' ?>
-          <?php endif; ?></div>
-
-          <label class="f"><span>Item — from the invoice</span>
-            <?php /* The line number and what the line says, in every option.
-                     Four lines called "Bath Towel" were four identical
-                     choices; now they read #1 Bath Towel — Royal blue,
-                     #3 Bath Towel — White, and so on. */ ?>
-            <select class="in" name="invoice_item_id" required data-itempick>
-              <option value="">— pick the item —</option>
-              <?php foreach ($items as $it): $il = pack_item_label($it); ?>
-                <option value="<?= (int)$it['id'] ?>"
-                  data-name="<?= e($il['name']) ?>" data-no="<?= e($il['no']) ?>"
-                  data-des="<?= e((string)($it['des_col'] ?? '')) ?>"
-                  data-opt="<?= e((string)($it['optional_value'] ?? '')) ?>"
-                  <?= ((int)$it['id'] === $selItem) ? ' selected' : '' ?>>
-                  <?= e($il['text']) ?></option>
-              <?php endforeach; ?>
-            </select></label>
-
-          <span class="flab" style="display:block;font-size:11.5px;text-transform:uppercase;
-                letter-spacing:.06em;color:var(--faint);font-weight:700;margin-bottom:5px">
-            Serial — this is where packing starts</span>
-          <div class="row3">
-            <input class="in" name="unit_title" value="<?= e($unit) ?>" aria-label="Unit" required>
-            <input class="in" type="number" inputmode="numeric" name="serial_from"
-                   value="<?= $from ?: '' ?>" placeholder="from" aria-label="From" required>
-            <input class="in" type="number" inputmode="numeric" name="serial_to"
-                   value="<?= $to ?: '' ?>" placeholder="to" aria-label="To" required>
-          </div>
-          <div class="derv" data-serial><span>—</span><b>—</b></div>
-          <?php /* Said while typing. The server refuses it anyway; this is
-                   so nobody fills in the rest of the card first. */ ?>
-          <div class="clash" data-clash hidden></div>
-
-          <?php /* BOTH TOGGLES ARE LIVE.
-                   The fields and their labels change the moment one is
-                   tapped — nothing is decided on the server and nothing
-                   waits for a save. The radios carry the choice to the
-                   server as they always did; the script below only
-                   decides what is on screen. With no script at all every
-                   field is still present and still posts, so the form
-                   degrades to the plain version rather than to nothing. */ ?>
-          <span class="flab">Quantity</span>
-          <div class="seg">
-            <label><input type="radio" name="qty_mode" value="per"<?= $mode === 'per' ? ' checked' : '' ?>><span>Per package</span></label>
-            <label><input type="radio" name="qty_mode" value="direct"<?= $mode === 'direct' ? ' checked' : '' ?>><span>Direct qty</span></label>
-          </div>
-
-          <span class="flab">Sizes in one package</span>
-          <div class="seg">
-            <label><input type="radio" name="size_mode" value="one"<?= $asrt ? '' : ' checked' ?>
-                   <?= $new ? '' : '' ?>><span>One size</span></label>
-            <label><input type="radio" name="size_mode" value="mix"<?= $asrt ? ' checked' : '' ?>><span>Assorted</span></label>
-          </div>
-
-          <?php /* One input, two meanings — which is exactly why the label
-                   has to change with the toggle rather than after it. The
-                   figure is converted when the mode flips, so 10 a carton
-                   over 100 cartons becomes 1,000 and back again. */ ?>
-          <?php /* COMMON TO BOTH MODES — "Total pieces per carton remains
-                   visible in both." In assorted mode it is what both
-                   assortments must add up to. */ ?>
-          <label class="f">
-            <span data-qtylabel>Quantity per package</span>
-            <?php /* text with a decimal keypad, not type=number — the
-                     number box's arrows are what made weights hard to
-                     type, and this box is typed in just as often */ ?>
-            <input class="in" type="text" inputmode="decimal" autocomplete="off" name="single_qty"
-                   value="<?= e($num($singleQty)) ?>" data-qty onfocus="this.select()"></label>
-          <div class="note" data-palnote style="margin:-2px 0 10px"><?php
-            if ($itemId === 0) echo 'Pick the invoice line first — its sizes and colours follow.';
-            elseif ($fromPal) echo e(count($opts) . ' size' . (count($opts) === 1 ? '' : 's') . ' and '
-                                   . count($cols) . ' colour' . (count($cols) === 1 ? '' : 's')
-                                   . ' — exactly what the office set for this line.');
-            else echo 'This line is not set up on Order sizes &amp; colours yet, so these are the product&rsquo;s own sizes.';
-          ?></div>
-          <label class="f" data-one><span>Size</span>
-            <?= pack_pick_field($opts, (string)($single['size_label'] ?? ''),
-                                'single_size', 'single_size_new', 'size') ?></label>
-          <?php /* Always drawn, hidden when the line has no colours, so the
-                   script can fill it when the dropdown moves to a line that
-                   does. A colour already saved but no longer on the list is
-                   kept and marked, rather than silently dropped. */
-                $curCol = (string)($single['colour_label'] ?? '');
-                $colOpts = $cols;
-                if ($curCol !== '' && !in_array($curCol, $colOpts, true)) $colOpts[] = $curCol; ?>
-          <label class="f" data-one data-colbox<?= $colOpts ? '' : ' hidden' ?>><span>Colour</span>
-            <select class="in" name="single_colour">
-              <option value="">— no colour —</option>
-              <?php foreach ($colOpts as $c): ?>
-                <option value="<?= e($c) ?>"<?= $c === $curCol ? ' selected' : '' ?>><?= e($c)
-                  . (in_array($c, $cols, true) ? '' : ' (not on this line’s list)') ?></option>
-              <?php endforeach; ?>
-            </select></label>
-
-          <?php /* ASSORTED, IN THE SAME CARD — no second page, no save first.
-                   Two lists: how many of each size, and how many of each
-                   colour, each adding up to the total pieces above. The rows
-                   are drawn by the script from the line picked above, so they
-                   follow it; the figures saved come down in data-asz /
-                   data-acol. Typing in a box never redraws the list. */ ?>
-          <div data-mix<?= $asrt ? '' : ' hidden' ?>
-               data-asz="<?= e(json_encode((object)$aSz)) ?>" data-acol="<?= e(json_encode((object)$aCol)) ?>">
-            <div class="asec">
-              <span class="flab">Size assortment <i class="ihint" data-aper></i></span>
-              <div data-asizes></div>
-              <div class="asum" data-asizesum></div>
-            </div>
-            <div class="asec" data-acolbox>
-              <span class="flab">Colour assortment <i class="ihint" data-aper></i></span>
-              <div data-acols></div>
-              <div class="asum" data-acolsum></div>
-            </div>
-          </div>
-
-          <div class="derv" data-total><span>—</span><b>—</b></div>
-
-          <?php if ($canEdit): ?>
-            <button class="btn go" type="submit"><?= $new ? 'Add this range' : 'Save this range' ?></button>
-          <?php endif; ?>
-        </form>
-
-        <?php if (!$new && $canEdit): ?>
-          <form method="post" style="margin:-4px 0 14px"
-                onsubmit="return confirm('Remove <?= e($unit) ?> <?= $from ?>–<?= $to ?> and its weights?')">
-            <?= csrf_field() ?>
-            <input type="hidden" name="action" value="group_delete">
-            <input type="hidden" name="shipment_id" value="<?= $id ?>">
-            <input type="hidden" name="group_id" value="<?= $gidL ?>">
-            <button class="btn red" type="submit">Remove this range</button>
-          </form>
-        <?php endif; ?>
-        <?php
-    };
-
-    if (!$items) {
-        echo '<div class="empty">This invoice has no items yet. Add them on the desktop first.</div>';
-    } else {
-        /* SAY THE SCOPE BEFORE ANYTHING IS TAPPED. The packer should
-           know the whole world of this order in one line, rather than
-           discovering it a dropdown at a time. */
-        /* NOT THE WHOLE ORDER'S SIZES ADDED TOGETHER. That used to read
-           "16 sizes and 6 colours" when every line on the desktop had one
-           or two — the union of all of them, which no single carton is
-           ever packed from. Each card now says its own line's list; up
-           here it only says how many lines have been set up. */
-        $nSet = 0; $unset = [];
-        foreach ($items as $it) {
-            if (!empty($palByItem[(int)$it['id']]['set'])) $nSet++;
-            else $unset[] = pack_item_label($it)['no'];
-        }
-        $nAll = count($items);
-        echo '<div class="scope">';
-        if ($nSet === $nAll) {
-            echo '<b>Sizes &amp; colours set on all ' . $nAll . ' lines</b>'
-               . '<span>Each range offers only what the office ticked for its own line.</span>';
-        } else {
-            echo '<b>Sizes &amp; colours set on ' . $nSet . ' of ' . $nAll . ' lines</b>'
-               . '<span>Not set yet: ' . e(implode(', ', $unset))
-               . '. Those offer the product&rsquo;s own sizes until the office sets them '
-               . 'on Order sizes &amp; colours.</span>';
-        }
-        echo '</div>';
-        /* One range to a screen. Each carries its own form and its own
-           Save, so a range is finished before the next one is looked at
-           — which is also how the cartons are actually packed. */
-        /* ONE BROKEN RANGE MUST NOT BLANK THE SCREEN.
-           A card that throws halfway leaves an open <form> and an open
-           step behind it. The steps are hidden until the script at the
-           very end reveals one, so the whole rest of the page — every
-           other range, the New range card, Back and Next — vanished
-           with it, and the error box printed at shutdown landed inside
-           a hidden step where nobody could see it. That is exactly the
-           blank screen that came back from the live server.
-
-           So each card is drawn into a buffer. If it throws, the half-
-           drawn card is thrown away, a plain card says this range could
-           not be drawn (with the reason, for an admin), and everything
-           else on the page carries on. */
-        $safeCard = function (?array $g) use ($card): void {
-            $lvl = ob_get_level();
-            ob_start();
-            try {
-                $card($g);
-                ob_end_flush();
-            } catch (Throwable $e) {
-                while (ob_get_level() > $lvl) ob_end_clean();
-                mob_card_error($g === null ? 'The new range form' : 'This range', $e);
-            }
-        };
-        mob_steps_begin('serialsteps');
-        foreach ($groups as $g) {
-            mob_step((string)$g['unit_title'] . ' ' . (int)$g['serial_from'] . '–' . (int)$g['serial_to']);
-            $safeCard($g);
-        }
-        if ($canEdit) {
-            mob_step('New range', 'Starts at the next free number for its kind of package');
-            echo '<span id="newrange" class="anchor"></span>';
-            $safeCard(null);
-            echo '<div class="mcard"><div class="note">Packing starts from the serial. '
-               . '1 to 100 means 100 cartons — the count is never typed. When some packages '
-               . 'differ, add another range; that is all a different serial is.</div></div>';
-        }
-
-        /* EVERY RANGE ON ONE LIST, with Edit and Delete.
-           Asked for so a wrong entry can be found and put right without
-           paging through one range at a time. It sits on the New range
-           step because that is where someone is when they wonder what is
-           already done. Edit jumps to that range's own step; Delete asks
-           first. Each row also says whether the range has been weighed,
-           because weight lives on its own tab and was otherwise invisible
-           from here. */
-        if ($groups) {
-            if (!$canEdit) mob_step('All ranges');
-            echo pack_summary_html($groups, $items, $canEdit, $id, $self, true);
-        }
-        mob_steps_end();
-        ?>
-        <script>
-        /* "+ type a size not in the list" shows the box. One handler on
-           the document, so it covers the range cards, the assorted
-           setup and any row added later without wiring each one. */
-        document.addEventListener('change', function (ev) {
-          var sel = ev.target;
-          if (!sel.matches || !sel.matches('[data-pick]')) return;
-          var box = sel.parentElement.querySelector('[data-picknew]');
-          if (!box) return;
-          box.hidden = sel.value !== '__new';
-          if (!box.hidden) box.focus();
-        });
-        </script>
-        <script>
-        /* EVERY RANGE CARD, LIVE.
-           Tapping a toggle changes the label and what is on screen at
-           once. Typing a serial re-counts the packages at once. Nothing
-           here waits for a save, and nothing here decides what is sent:
-           the radios and inputs are the same ones the server already
-           read, so a phone with the script blocked still posts a
-           complete, correct form. */
-        (function () {
-          /* Every line's list, keyed by invoice line — what the office
-             ticked, or the product's own sizes for a line not set up. */
-          var PAL = <?= json_encode((object)array_map(static fn($v) => [
-                        'size' => array_values($v['size']), 'colour' => array_values($v['colour']),
-                        'set' => (bool)$v['set']], $palByItem), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
-          document.querySelectorAll('form.mcard').forEach(function (card) {
-            var unitI = card.querySelector('[name="unit_title"]');
-            var fromI = card.querySelector('[name="serial_from"]');
-            var toI   = card.querySelector('[name="serial_to"]');
-            var qtyI  = card.querySelector('[data-qty]');
-            if (!unitI || !fromI || !toI || !qtyI) return;   /* not a range card */
-
-            var modeR  = card.querySelectorAll('[name="qty_mode"]');
-            var sizeR  = card.querySelectorAll('[name="size_mode"]');
-            var label  = card.querySelector('[data-qtylabel]');
-            var serial = card.querySelector('[data-serial]');
-            var total  = card.querySelector('[data-total]');
-            var mixBox = card.querySelector('[data-mix]');
-            var ones   = card.querySelectorAll('[data-one]');
-            var pill   = card.querySelector('.pill');
-            var clash  = card.querySelector('[data-clash]');
-            var pick   = card.querySelector('[data-itempick]');
-            var ref    = card.querySelector('[data-ref]');
-            var save   = card.querySelector('button[type="submit"]');
-            var taken  = []; try { taken = JSON.parse(card.dataset.taken || '[]'); } catch (e) {}
-            var sizeSel = card.querySelector('select[name="single_size"]');
-            var colSel  = card.querySelector('select[name="single_colour"]');
-            var colBox  = card.querySelector('[data-colbox]');
-            var palNote = card.querySelector('[data-palnote]');
-            var lastItem = pick ? pick.value : '';
-            var aBox   = card.querySelector('[data-mix]');
-            var aSizes = card.querySelector('[data-asizes]');
-            var aCols  = card.querySelector('[data-acols]');
-            var aColBox = card.querySelector('[data-acolbox]');
-            var aSzSum = card.querySelector('[data-asizesum]');
-            var aColSum = card.querySelector('[data-acolsum]');
-            var savedSz = {}, savedCol = {};
-            try { savedSz = JSON.parse(aBox ? aBox.dataset.asz || '{}' : '{}'); } catch (e) {}
-            try { savedCol = JSON.parse(aBox ? aBox.dataset.acol || '{}' : '{}'); } catch (e) {}
-            var mixBad = false;
-
-            /* THE ASSORTMENT ROWS, FROM THE LINE PICKED ABOVE. One row per
-               size and per colour the office set for that line; a figure
-               already saved, or already typed, is kept. Drawn only when the
-               line changes — never while someone is typing in a box, which
-               is the mistake that turned 300 into 3 on the weight screen. */
-            function rowsFor(list, saved, name) {
-              var all = list.slice();
-              Object.keys(saved).forEach(function (k) { if (k && all.indexOf(k) < 0) all.push(k); });
-              return all.map(function (lbl) {
-                var v = saved[lbl];
-                return '<div class="arow"><b>' + esc(lbl) + '</b>'
-                  + '<input type="hidden" name="' + name + '_label[]" value="' + esc(lbl) + '">'
-                  + '<input class="in" type="text" inputmode="decimal" autocomplete="off" name="' + name
-                  + '_qty[]" value="' + (v ? v : '') + '" placeholder="0" aria-label="' + esc(lbl) + '"></div>';
-              }).join('');
-            }
-            function readRows(box) {
-              var o = {};
-              if (!box) return o;
-              box.querySelectorAll('.arow').forEach(function (r) {
-                var l = r.querySelector('input[type=hidden]').value;
-                var v = parseFloat(String(r.querySelector('.in').value).replace(',', '.')) || 0;
-                if (v) o[l] = v;
-              });
-              return o;
-            }
-            function buildAssort() {
-              if (!aBox) return;
-              var lp = (pick && PAL[pick.value]) || { size: [], colour: [] };
-              var keepS = aSizes.children.length ? readRows(aSizes) : savedSz;
-              var keepC = aCols.children.length ? readRows(aCols) : savedCol;
-              aSizes.innerHTML = rowsFor(lp.size, keepS, 'asz')
-                || '<div class="note">This line has no sizes set — the office sets them on Order sizes &amp; colours.</div>';
-              aCols.innerHTML = rowsFor(lp.colour, keepC, 'acol');
-              aColBox.hidden = !aCols.children.length;
-              /* A LONG LIST IN TWO COLUMNS. A line with sixteen sizes was a
-                 page and a half of rows on a phone; side by side it is
-                 half that, and every box is still a full thumb wide. */
-              aSizes.classList.toggle('many', aSizes.children.length > 6);
-              aCols.classList.toggle('many', aCols.children.length > 6);
-              [aSizes, aCols].forEach(function (b) {
-                b.querySelectorAll('.arow .in').forEach(function (inp) {
-                  inp.addEventListener('input', paint);
-                  inp.addEventListener('focus', function () { this.select(); });
-                });
-              });
-            }
-            function sumRows(box) {
-              var t = 0;
-              box.querySelectorAll('.arow .in').forEach(function (i) {
-                t += parseFloat(String(i.value).replace(',', '.')) || 0;
-              });
-              return t;
-            }
-            function sayFit(el, got, want, what) {
-              if (!el) return true;
-              var ok = want > 0 && Math.abs(got - want) < 0.0001;
-              el.className = 'asum' + (ok ? ' ok' : (got > want && want > 0 ? ' bad' : ''));
-              el.textContent = want <= 0 ? 'Put in the total pieces above first.'
-                : ok ? (num(got) + ' of ' + num(want) + ' — complete ✓')
-                : got > want ? (num(got) + ' of ' + num(want) + ' — ' + num(got - want) + ' too many')
-                : (num(got) + ' of ' + num(want) + ' — ' + num(want - got) + ' ' + what + ' still to place');
-              return ok;
-            }
-            var was    = mode();
-
-            function mode() {
-              for (var i = 0; i < modeR.length; i++) if (modeR[i].checked) return modeR[i].value;
-              return 'per';
-            }
-            function assorted() {
-              for (var i = 0; i < sizeR.length; i++) if (sizeR[i].checked) return sizeR[i].value === 'mix';
-              return false;
-            }
-            function unit()  { return (unitI.value.trim() || 'Carton'); }
-            function pkgs()  { var n = (+toI.value || 0) - (+fromI.value || 0) + 1; return n > 0 ? n : 0; }
-            function num(n)  { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); }
-
-            function paint() {
-              var u = unit(), lu = u.toLowerCase(), P = pkgs(), per = mode() === 'per', mix = assorted();
-
-              if (pill) pill.textContent = num(P) + ' ' + lu;
-              serial.firstElementChild.textContent = P
-                ? u + ' ' + fromI.value + ' to ' + toI.value
-                : 'Serial is not right yet';
-              serial.lastElementChild.textContent = P ? num(P) + ' ' + lu : 'to must be ≥ from';
-
-              /* the label IS the difference between the two modes */
-              label.textContent = mix
-                ? (per ? ('Total pieces per ' + lu) : 'Total pieces')
-                : (per ? ('Quantity per ' + lu) : 'Total quantity');
-
-              ones.forEach(function (el) { el.hidden = mix; });
-              /* the colour field stays hidden on a line with no colours */
-              if (colBox && colSel && colSel.options.length < 2) colBox.hidden = true;
-              if (mixBox) mixBox.hidden = !mix;
-
-              var q = parseFloat(String(qtyI.value).replace(',', '.')) || 0;
-              /* the assortment: both lists against the total, said live */
-              mixBad = false;
-              if (aBox) {
-                card.querySelectorAll('[data-aper]').forEach(function (x) {
-                  x.textContent = per ? '— in one ' + lu : '— over the whole range';
-                });
-                if (mix) {
-                  var okS = sayFit(aSzSum, sumRows(aSizes), q, 'pieces');
-                  var okC = aColBox.hidden ? true : sayFit(aColSum, sumRows(aCols), q, 'pieces');
-                  mixBad = !(okS && okC);
-                }
-              }
-              {
-                var t = per ? q * P : q;
-                total.firstElementChild.textContent = per
-                  ? num(q) + ' per ' + lu + ' × ' + num(P)
-                  : num(q) + ' over ' + num(P) + ' ' + lu;
-                total.lastElementChild.textContent = num(t);
-              }
-
-              /* A PACKAGE NUMBER ONCE PER KIND OF PACKAGE. Carton 1–50
-                 twice is refused; Carton 1–50 beside Roll 1–50 is fine. */
-              var f = +fromI.value || 0, t2 = +toI.value || 0, hit = null;
-              var myKind = unit().toLowerCase();
-              if (f > 0 && t2 >= f) {
-                for (var k = 0; k < taken.length; k++) {
-                  if (String(taken[k][2] || 'Carton').trim().toLowerCase() !== myKind) continue;
-                  if (taken[k][0] <= t2 && taken[k][1] >= f) { hit = taken[k]; break; }
-                }
-              }
-              if (clash) {
-                clash.hidden = !hit;
-                clash.textContent = hit ? ('Already used: ' + hit[2] + ' ' + hit[0] + '–' + hit[1]
-                  + '. A number can be used once per kind of package — a different kind, like a Roll, may reuse it.') : '';
-              }
-              /* Save waits for free numbers, and — when assorted — for both
-                 lists to add up to the total */
-              if (save) save.disabled = !!hit || (mix && mixBad);
-
-              if (pick && ref) {
-                var o = pick.options[pick.selectedIndex];
-                if (o && o.value) {
-                  ref.hidden = false;
-                  ref.innerHTML = '<b>' + esc(o.dataset.name) + '</b> <i class="ihint">'
-                    + esc(o.dataset.no) + '</i><br>' + esc(o.dataset.des)
-                    + (o.dataset.opt ? ' · ' + esc(o.dataset.opt) : '');
-                } else { ref.hidden = true; }
-              }
-            }
-            function esc(t) {
-              return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) {
-                return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; });
-            }
-
-            /* Flipping the mode converts the figure rather than leaving a
-               per-carton number sitting in a box that now means a total. */
-            function flipped() {
-              var now = mode(), P = pkgs(), q = parseFloat(String(qtyI.value).replace(",", ".")) || 0;
-              if (now !== was && q > 0 && P > 0) {
-                qtyI.value = now === 'direct'
-                  ? String(Math.round(q * P * 1000) / 1000)
-                  : String(Math.round(q / P * 1000) / 1000);
-              }
-              was = now;
-              paint();
-            }
-
-            modeR.forEach(function (r) { r.addEventListener('change', flipped); });
-            sizeR.forEach(function (r) { r.addEventListener('change', paint); });
-            [unitI, fromI, toI, qtyI].forEach(function (el) {
-              el.addEventListener('input', paint);
-            });
-            /* MOVE THE LINE, MOVE THE LISTS. The sizes and colours on offer
-               are that line's own, so picking a different line refills
-               both from it — they used to stay on whatever line the range
-               was saved with, and a New range card offered nothing at all. */
-            function refill() {
-              if (!pick || pick.value === lastItem) return;
-              lastItem = pick.value;
-              var lp = PAL[pick.value] || { size: [], colour: [], set: false };
-              if (sizeSel) {
-                var keepS = sizeSel.value;
-                var first = sizeSel.options[0], last = sizeSel.options[sizeSel.options.length - 1];
-                while (sizeSel.options.length) sizeSel.remove(0);
-                first.textContent = lp.size.length ? '— pick a size —' : '— none on record yet —';
-                sizeSel.add(first);
-                lp.size.forEach(function (v) { sizeSel.add(new Option(v, v)); });
-                if (last && last.value === '__new') sizeSel.add(last);
-                sizeSel.value = lp.size.indexOf(keepS) >= 0 ? keepS : '';
-                var box = sizeSel.parentElement.querySelector('[data-picknew]');
-                if (box) box.hidden = sizeSel.value !== '__new';
-              }
-              if (colSel) {
-                var keepC = colSel.value;
-                while (colSel.options.length > 1) colSel.remove(1);
-                lp.colour.forEach(function (v) { colSel.add(new Option(v, v)); });
-                colSel.value = lp.colour.indexOf(keepC) >= 0 ? keepC : '';
-                if (colBox) colBox.hidden = !lp.colour.length || assorted();
-              }
-              if (palNote) {
-                palNote.textContent = !pick.value ? 'Pick the invoice line first — its sizes and colours follow.'
-                  : lp.set ? (lp.size.length + ' size' + (lp.size.length === 1 ? '' : 's') + ' and '
-                              + lp.colour.length + ' colour' + (lp.colour.length === 1 ? '' : 's')
-                              + ' — exactly what the office set for this line.')
-                  : 'This line is not set up on Order sizes & colours yet, so these are the product’s own sizes.';
-              }
-            }
-            if (pick) pick.addEventListener('change', function () { refill(); buildAssort(); paint(); });
-            buildAssort();
-
-            /* THE NEXT FREE NUMBER, PER KIND. On the New range card, change
-               Carton to Roll and the serial moves to the next free Roll
-               number — unless someone has typed a serial themselves, which
-               always wins. */
-            var gidI = card.querySelector('[name="group_id"]');
-            var isNew = gidI && !(+gidI.value);
-            var typedSerial = false;
-            [fromI, toI].forEach(function (el) {
-              el.addEventListener('input', function () { typedSerial = true; });
-            });
-            if (isNew) unitI.addEventListener('input', function () {
-              if (typedSerial) return;
-              var kind = unit().toLowerCase(), top = 0;
-              taken.forEach(function (t) {
-                if (String(t[2] || 'Carton').trim().toLowerCase() === kind) top = Math.max(top, +t[1] || 0);
-              });
-              fromI.value = top + 1; toI.value = top + 1;
-              paint();
-            });
-            /* If a browser restores old values anyway (some ignore
-               autocomplete="off" on a back-navigation), redraw from what
-               the boxes actually hold, so the labels never describe a
-               choice that is not on screen. */
-            window.addEventListener('pageshow', paint);
-            paint();
-          });
-        })();
-        </script>
-        <?php
-    }
-}
-
-/* ========================================================= tab 2 — weight */
-if ($tab === 'weight') {
     /* The same guard as the range cards: a throw halfway through would
        leave an open form and a hidden step, and the tab would go blank.
        Drawn into a buffer instead, and replaced by a plain card if it
@@ -1771,128 +894,777 @@ if ($tab === 'weight') {
         while (ob_get_level() > $lvlT) ob_end_clean();
         mob_card_error('The weight for this range', $e);
     }
+mob_footer();
+exit;
 }
 
-/* ======================================================== tab 3 — approve */
-if ($tab === 'approve') {
-    $lvlT = ob_get_level(); ob_start();
-    try {
-    $t = pack_totals($id);
-    /* EDIT, DELETE, UPDATE — FROM THE APPROVAL ITSELF. The same list as
-       the New range step, above the approve form rather than inside it:
-       each Delete is a form of its own, and a form inside a form is not
-       allowed. Folded away with one tap once it has been checked. */
-    if ($groups) {
-        echo '<details class="allr" open><summary>All ranges (' . count($groups)
-           . ') — edit, delete or change a weight</summary>'
-           . pack_summary_html($groups, $items, $canEdit, $id, $self, false) . '</details>';
-    }
-    ?>
-    <form method="post">
-      <?= csrf_field() ?>
-      <input type="hidden" name="action" value="approve">
-      <input type="hidden" name="shipment_id" value="<?= $id ?>">
-    <?php
-    /* The form wraps the steps so the final figures post from whichever
-       step they were typed on. */
-    mob_steps_begin('approvesteps');
-    mob_step('What saves', 'Size by size, against its serial range');
-    ?>
-    <div class="mcard">
-      <div style="overflow-x:auto"><table class="bk">
-        <tr><th>Serial</th><th>What is in it</th><th class="n">Per pkg</th><th class="n">Qty</th><th class="n">g / unit</th></tr>
-        <?php if (!$groups): ?>
-          <tr><td colspan="5" style="color:var(--faint)">Nothing yet</td></tr>
-        <?php else: foreach ($groups as $g):
-          $sizes = pack_sizes((int)$g['id']);
-          $pu    = pack_per_unit((int)$g['id']);
-          $first = true;
-          foreach (($sizes ?: [['size_label' => '—', 'qty_per_pkg' => 0, 'total_qty' => 0]]) as $srow): ?>
-            <tr>
-              <td><?= $first ? e(mb_substr((string)$g['unit_title'], 0, 3)) . ' ' . (int)$g['serial_from']
-                               . '–' . (int)$g['serial_to'] : '' ?></td>
-              <td><?= e(trim(((string)($srow['colour_label'] ?? '')) . ' '
-                              . (string)$srow['size_label'])) ?></td>
-              <td class="n"><?= rtrim(rtrim(number_format(pack_size_per_pkg($g, $srow), 2, '.', ''), '0'), '.') ?></td>
-              <td class="n"><?= number_format(pack_size_per_pkg($g, $srow) * pack_packages($g)) ?></td>
-              <?php /* The same key the weight was filed under, which is
-                       the size alone or the size and the colour — reading
-                       it by size alone showed 0 g for every colour of a
-                       range whose colours weigh differently. */ ?>
-              <td class="n"><?= number_format((float)($pu[pack_unit_key($g, $srow)] ?? 0)) ?></td>
-            </tr>
-          <?php $first = false; endforeach; endforeach; endif; ?>
-      </table></div>
-    </div>
+/* ================================================================ the app
 
-    <?php mob_step('Calculated', 'What the packing team\'s figures produce'); ?>
-    <div class="mcard">
-      <div class="sumrow"><span>Total packages</span><b><?= number_format($t['packages']) ?></b></div>
-      <div class="sumrow"><span>Total quantity</span><b><?= number_format($t['qty'], 2) ?></b></div>
-      <div class="sumrow"><span>Net weight</span><b><?= number_format($t['net'], 3) ?> kg</b></div>
-      <div class="sumrow"><span>Gross weight</span><b><?= number_format($t['gross'], 3) ?> kg</b></div>
-    </div>
+   SMART PACKING — afnan's demo ("Smart Packing final v7"), on real data.
 
-      <?php mob_step('Final figures', 'You may change these — up to '
-                     . (int)PACK_TOLERANCE_PCT . '% difference is accepted'); ?>
-      <div class="mcard">
-        <div class="row2">
-          <label class="f"><span>Net kg</span>
-            <input class="in" type="number" inputmode="decimal" step="0.001" name="final_net" id="fn"
-                   value="<?= number_format($t['net'], 3, '.', '') ?>"></label>
-          <label class="f"><span>Gross kg</span>
-            <input class="in" type="number" inputmode="decimal" step="0.001" name="final_gross" id="fg"
-                   value="<?= number_format($t['gross'], 3, '.', '') ?>"></label>
-        </div>
-        <div id="dev"></div>
-      </div>
+   Three tabs, one page, never reloaded:
+     1 Packing  — pick the product, the serial (one package or a range),
+                  the pieces per package; pick a size and tap a colour (or
+                  style) once per piece; Save & Next keeps everything ready
+                  for the next package at the next free serial.
+     2 Records  — every package, one by one or as ranges; edit one package,
+                  copy it, delete it; the packing list to print or export.
+     3 Summary  — totals per product by size, colour and style; Finish
+                  packing / Reopen; Weight is linked from here.
 
-      <?php mob_step('Before you approve'); ?>
-      <div class="mcard">
-        <?php if ($t['unfinished']): foreach ($t['unfinished'] as $u): ?>
-          <div class="sumrow"><span><?= e($u) ?></span><b><span class="pill w">accepted</span></b></div>
-        <?php endforeach; else: ?>
-          <div class="sumrow"><span>Every package balances.</span><b><span class="pill p">ok</span></b></div>
-        <?php endif; ?>
-        <div class="note" style="margin-top:8px">Quantity is what the packing team counted.
-          It is not compared with the invoice.</div>
-      </div>
+   What changed from the demo, and why:
+     - The products are this invoice's lines, and each offers exactly the
+       sizes, colours and styles the office set on Order sizes & colours.
+     - Saving goes to the server (op=save/delete/finish/reopen below) and
+       the answer carries the whole state back, so the screen redraws
+       without a page load. Only the unsaved draft lives in the browser.
+     - A range is stored once; editing or deleting one package of it
+       splits it on the server (pack_split_out), exactly as the demo
+       treats every package as its own record.
+     - No JSON backup, import or reset: the data is on the server.
+     - Weight is not on this page — it is moving to its own module, and
+       until then the Weight screen is linked from Summary. */
+/* Everything the screen needs is read BEFORE anything is printed, so a
+   failure here gives one plain card on a whole page instead of a header
+   and then nothing — the blank screen that came back from the live server
+   once before. */
+try {
+    $state   = pack_state($id, $items, $shipment);
+    $csrfTok = csrf_token();
+} catch (Throwable $e) {
+    mob_header($title, $back, (string)$shipment['buyer_name'], 'manifest_pack.json');
+    mob_card_error('The packing screen', $e);
+    mob_footer();
+    exit;
+}
+mob_header($title, $back, (string)$shipment['buyer_name'], 'manifest_pack.json');
+?>
+<div id="sp" class="sp">
+  <nav class="sp-tabs" aria-label="Packing workflow">
+    <button type="button" data-a="tab" data-tab="packing"><span class="sp-n">1</span>Packing</button>
+    <button type="button" data-a="tab" data-tab="records"><span class="sp-n">2</span>Records <span id="spCount"></span></button>
+    <button type="button" data-a="tab" data-tab="summary"><span class="sp-n">3</span>Summary</button>
+  </nav>
+  <?php if (!$canEdit): ?>
+    <div class="sp-notice sp-warn" style="margin:0 0 12px">This packing list is closed to you — it is finished or the shipment is locked. You can look, not change.</div>
+  <?php endif; ?>
+  <main id="spMain"></main>
+  <div id="spDock"></div>
+</div>
+<div id="spToast" class="sp-toast" role="status" aria-live="polite" hidden></div>
+<div id="spModal"></div>
+<div id="spPrint"></div>
 
-      <?php if ($canEdit): ?>
-        <button class="btn go" type="submit">Approve and save the packing list</button>
-      <?php endif; ?>
+<style>
+/* Scoped under #sp so nothing here leaks into the rest of the phone app. */
+.sp{max-width:100%;overflow-x:clip;--ink:#183537;--muted:#64797b;--teal:#087f72;--dark:#123b3a;--mint:#e4f4ef;--line2:#dce7e4;
+  --red:#b73b3b;--amber:#9a650e;--shadow:0 8px 28px #143c3610;padding-bottom:150px}
+.sp button,.sp input,.sp select{font:inherit;min-height:44px;border-radius:11px}
+.sp button{cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;
+  border:1px solid var(--line2);background:#fff;color:var(--ink);padding:9px 13px;font-weight:650}
+.sp button:disabled{cursor:default;opacity:.45}
+.sp input,.sp select{width:100%;padding:10px 12px;background:#fff;border:1px solid #cbdad6;color:var(--ink);font-size:16px}
+.sp label{display:block;font-size:12px;font-weight:650;color:var(--muted);margin-bottom:5px}
+.sp h2{font-size:19px;letter-spacing:-.4px;margin:0}.sp h3{font-size:15px;margin:0}
+.sp .muted{color:var(--muted)}.sp .small{font-size:12px}
+.sp .eyebrow{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;font-weight:800;color:var(--muted)}
+.sp .row{display:flex;gap:9px;align-items:center;padding:0;margin:0;border:0}.sp .between{justify-content:space-between}.sp .wrap{flex-wrap:wrap}
+.sp .grow{flex:1;min-width:0}.sp .gap{margin-top:14px}
+.sp .primary{background:var(--teal);border-color:var(--teal);color:#fff}
+.sp .soft{background:var(--mint);border-color:#beded3;color:#076758}
+.sp .danger{color:var(--red)}.sp .quiet{background:transparent;border-color:transparent}
+.sp .mini{min-height:36px;font-size:12px;padding:6px 10px}.sp .full{width:100%}
+.sp .pill{display:inline-flex;border-radius:20px;padding:4px 8px;background:var(--mint);color:var(--teal);
+  font-size:11px;font-weight:750;white-space:nowrap}
+.sp .pill.warn{color:var(--amber);background:#fff1d9}.sp .pill.gray{background:#edf1f0;color:var(--muted)}
+.sp-notice{padding:11px 12px;border-radius:10px;background:#eef5f2;color:#456563;font-size:12.5px}
+.sp-warn{background:#fff4df;color:#8b5b0a}
+.sp .card{background:#fff;border:1px solid var(--line2);border-radius:16px;padding:14px;box-shadow:var(--shadow)}
+.sp-tabs{display:flex;gap:6px;margin:0 0 14px}
+.sp-tabs button{flex:1;min-width:0;border:1px solid var(--line2);background:#fff;display:flex;align-items:center;
+  justify-content:center;gap:6px;min-height:46px;color:var(--muted);font-size:13px;padding:8px 4px;white-space:nowrap}
+#spCount{font-size:11px;font-weight:600}
+.sp-tabs button.active{background:var(--dark);color:#fff;border-color:var(--dark)}
+.sp-n{font-size:11px;border:1px solid currentColor;width:20px;height:20px;border-radius:50%;
+  display:grid;place-items:center;opacity:.75}
+.sp .sel{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line2);
+  padding:11px 12px;border-radius:12px;background:#fff}
+.sp .sel .name{font-size:17px;font-weight:800;letter-spacing:-.3px}
+.sp .ref{font-size:11.5px;color:var(--muted)}
+.sp .search{position:relative;margin-top:8px}
+.sp .results{position:absolute;z-index:35;top:50px;left:0;right:0;background:#fff;border:1px solid var(--line2);
+  box-shadow:0 12px 30px #163d3420;border-radius:12px;overflow:hidden;max-height:60vh;overflow-y:auto}
+.sp .results button{display:block;width:100%;text-align:left;border:0;border-radius:0;border-bottom:1px solid var(--line2)}
+.sp .results small{display:block;color:var(--muted);margin-top:3px;font-weight:500}
+.sp .segment{display:flex;gap:5px;padding:4px;border-radius:12px;background:#eef2f0}
+.sp .segment button{flex:1;min-height:40px;border:0;background:transparent;font-size:12px}
+.sp .segment button.active{background:#fff;box-shadow:0 2px 7px #173d3510;color:var(--teal)}
+.sp .sgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.sp .sgrid.range{grid-template-columns:1fr 1fr 1fr}
+.sp .preview{margin-top:7px;font-size:12.5px;color:var(--muted)}
+.sp details{border-top:1px solid var(--line2);margin-top:11px;padding-top:9px}
+.sp summary{cursor:pointer;min-height:33px;display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--muted);font-weight:650;list-style:none}
+.sp summary:after{content:'+';font-size:18px}.sp details[open]>summary:after{content:'−'}
+.sp summary::-webkit-details-marker{display:none}
+.sp .settings{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:9px}
+.sp .alabel{display:flex;justify-content:space-between;align-items:center;margin:12px 0 7px;font-size:11px;
+  text-transform:uppercase;letter-spacing:1px;font-weight:750;color:var(--muted)}
+.sp .tgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.sp .touch{min-height:60px;padding:8px 5px;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:3px;user-select:none;-webkit-user-select:none}
+.sp .touch .t{font-size:13px;font-weight:800;overflow-wrap:anywhere;text-align:center}
+.sp .touch .b{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.sp .touch.active{background:var(--mint);border-color:var(--teal);color:#076758}
+.sp .touch.active .b{color:var(--teal)}
+.sp .colors .touch{min-height:66px;background:#f9fbfa}.sp .colors .touch.active{background:var(--mint)}
+.sp .dot{width:10px;height:10px;border-radius:50%;border:1px solid #123b3a30;display:inline-block;margin-right:5px;vertical-align:middle}
+.sp .hint{font-size:11.5px;color:var(--muted);margin-top:7px}
+.sp-dock{position:fixed;bottom:0;left:50%;transform:translateX(-50%);z-index:25;width:calc(100% - 24px);max-width:600px;
+  background:#fff;box-shadow:0 -7px 24px #153e3418;border:1px solid #dce7e4;border-radius:16px 16px 0 0;
+  padding:10px 14px max(10px,env(safe-area-inset-bottom))}
+.sp-dock .crow{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
+.sp-dock .cval{font-size:17px;font-weight:800;letter-spacing:-.5px;color:#183537}
+.sp-dock .crem{font-size:12.5px;font-weight:650;color:#183537}
+.sp-dock .prog{height:4px;background:#e9f0ed;border-radius:8px;margin-bottom:9px;overflow:hidden}
+.sp-dock .prog>i{display:block;height:100%;background:#087f72;transition:width .15s}
+.sp .sp-save{position:relative;overflow:hidden;width:100%;min-height:60px;padding:9px 12px;border-radius:12px;color:#fff;
+  font:inherit;font-weight:800;cursor:pointer;background:linear-gradient(115deg,#08796b,#159681);border:1px solid #08796b;
+  box-shadow:0 3px 12px #08847026}
+.sp .sp-save:disabled{opacity:.5;cursor:default}
+.sp .sp-save .st{display:block;font-size:14px;letter-spacing:.35px}
+.sp .sp-save .sc{display:block;font-size:11.5px;font-weight:550;opacity:.94;margin-top:3px;font-variant-numeric:tabular-nums}
+.sp .sp-save.ok{background:linear-gradient(110deg,#087d68,#19a98d,#158a89)}
+.sp .sp-save.ok:before{content:"";position:absolute;inset:-40% -20%;background:linear-gradient(110deg,transparent 35%,#ffffff34 50%,transparent 65%);
+  transform:translateY(0) translateX(-80%);animation:spshine .6s ease-out forwards;pointer-events:none}
+@keyframes spshine{to{transform:translateX(80%)}}
+@media(prefers-reduced-motion:reduce){.sp .sp-save.ok:before{animation:none}}
+.sp .combos{margin-top:10px;border-top:1px solid var(--line2)}
+.sp .combo{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #edf2ef}
+.sp .combo .text{font-size:13px}
+.sp .combo button{padding:5px 9px;min-width:38px;min-height:38px;border-radius:8px}
+.sp .combo .amt{min-width:40px;text-align:center;font-weight:800;color:var(--teal)}
+.sp .toolbar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.sp .toolbar input{flex:1 1 100%;min-width:0}.sp .toolbar .segment{flex:1}
+.sp .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
+.sp .stat{background:#fff;border:1px solid var(--line2);padding:10px 11px;border-radius:12px}
+.sp .stat .v{font-size:21px;font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.sp .stat .c{font-size:11px;color:var(--muted);margin-top:2px}
+.sp .rec{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px;margin-bottom:10px}
+.sp .serial{font-size:17px;font-weight:800;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.sp .rprod{font-weight:700;font-size:13px;margin-top:3px}
+.sp .brk{font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.6}
+.sp .acts{display:flex;flex-direction:column;gap:4px}.sp .acts button{font-size:12px;padding:6px 10px;min-height:34px}
+.sp .rfoot{display:flex;justify-content:space-between;gap:10px;grid-column:1/-1;border-top:1px solid var(--line2);
+  padding-top:8px;font-size:11.5px;color:var(--muted)}
+.sp .sline{padding:11px 0;border-bottom:1px solid var(--line2)}.sp .sline:last-child{border-bottom:0}
+.sp .stotal{font-size:19px;font-weight:800}
+.sp .sprod{margin-top:12px}
+.sp .empty{text-align:center;padding:30px;color:var(--muted)}
+.sp .tablewrap{overflow:auto;border:1px solid var(--line2);border-radius:12px;margin-top:12px}
+.sp table,.sp-print table{width:100%;border-collapse:collapse;font-size:12px;text-align:left;background:#fff}
+.sp th,.sp-print th{background:#edf4f0;color:#3d615d;font-size:10px;text-transform:uppercase;letter-spacing:.35px;white-space:nowrap}
+.sp th,.sp td,.sp-print th,.sp-print td{padding:9px 8px;border-bottom:1px solid #dce7e4;vertical-align:top}
+.sp td.num,.sp-print td.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sp-toast{position:fixed;z-index:80;bottom:150px;left:50%;transform:translateX(-50%);background:#123b3a;color:#fff;
+  border-radius:12px;padding:12px 17px;box-shadow:0 7px 20px #0002;max-width:90%;font-size:13px;pointer-events:none}
+.sp-toast.error{background:#8d3030}
+.sp-back{position:fixed;inset:0;z-index:60;background:#123b3a77;display:flex;align-items:center;justify-content:center;padding:16px}
+.sp-modal{background:#fff;border-radius:18px;width:100%;max-width:520px;max-height:90dvh;overflow:auto;padding:18px;color:#183537}
+.sp-modal h2{font-size:18px;margin:0 0 8px}.sp-modal .foot{display:flex;gap:8px;margin-top:18px}.sp-modal .foot button{flex:1}
+.sp-modal .err{color:#b73b3b;font-size:12.5px;margin-top:10px}
+.sp-modal input{width:100%;padding:10px 12px;border:1px solid #cbdad6;border-radius:11px;font-size:16px;min-height:44px}
+.sp-modal button{min-height:44px;border-radius:11px;border:1px solid #dce7e4;background:#fff;padding:9px 13px;font:inherit;font-weight:650}
+.sp-modal button.primary{background:#087f72;border-color:#087f72;color:#fff}
+/* the packing list, on screen inside the dialog */
+.sp-print{color:#183537;font-size:13px}
+.sp-print>div:first-child{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px}
+.sp-print h1{font-size:20px;letter-spacing:-.3px;margin:4px 0 6px}
+.sp-print h3{font-size:14px}
+.sp-print .eyebrow{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;font-weight:800;color:#64797b}
+.sp-print .ref{font-size:12px;color:#64797b}
+.sp-print .sp-notice{align-self:flex-start}
+.sp-print .tablewrap{overflow-x:auto;border:1px solid #dce7e4;border-radius:12px;margin-top:12px}
+#spPrint{display:none}
+@media print{body>*:not(#spPrint){display:none!important}#spPrint{display:block}
+  .sp-print{font-size:10px;color:#000}.sp-print h1{font-size:20px;margin:0 0 6px}
+  .sp-print th,.sp-print td{border:1px solid #ccd5d0;padding:5px 4px;font-size:8.5px}
+  thead{display:table-header-group}tr{break-inside:avoid}@page{size:A4 landscape;margin:12mm}}
+@media(max-width:370px){.sp-tabs button{font-size:11px;gap:4px}.sp .sgrid.range{grid-template-columns:1fr 1fr}
+  .sp .sgrid.range .qtyf{grid-column:1/-1}.sp .touch .t{font-size:11.5px}}
+</style>
 
-    <?php mob_steps_end(); ?>
-    </form>
+<script>
+(function () {
+"use strict";
+/* Everything the screen draws comes from STATE; every change goes to the
+   server and STATE comes back with it. */
+var STATE = <?= json_encode($state, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+var CAN_EDIT = <?= $canEdit ? 'true' : 'false' ?>;
+var CSRF = <?= json_encode($csrfTok) ?>;
+var API = <?= json_encode($self . '&api=1') ?>;
+var WEIGHT_URL = <?= json_encode($self . '&t=weight') ?>;
+var DRAFT_KEY = 'zas-pack-draft-' + STATE.shipment.id;
 
-    <script>
-    (function () {
-      var NET = <?= json_encode(round($t['net'], 3)) ?>, GROSS = <?= json_encode(round($t['gross'], 3)) ?>;
-      var LIM = <?= (int)PACK_TOLERANCE_PCT ?>;
-      function one(label, calc, got) {
-        if (calc <= 0) return '';
-        var p = Math.abs(got - calc) / calc * 100;
-        return '<div class="sumrow"><span>' + label + '</span><b><span class="pill '
-          + (p <= LIM ? 'p' : 'w') + '">'
-          + (p < 0.05 ? 'same as calculated'
-                      : p.toFixed(1) + '% from calculated' + (p <= LIM ? ' — accepted' : ' — beyond ' + LIM + '%'))
-          + '</span></b></div>';
-      }
-      function paint() {
-        document.getElementById('dev').innerHTML =
-            one('Net', NET, parseFloat(document.getElementById('fn').value) || 0)
-          + one('Gross', GROSS, parseFloat(document.getElementById('fg').value) || 0);
-      }
-      ['fn', 'fg'].forEach(function (i) { document.getElementById(i).addEventListener('input', paint); });
-      paint();
-    })();
-    </script>
-    <?php
-    ob_end_flush();
-    } catch (Throwable $e) {
-        while (ob_get_level() > $lvlT) ob_end_clean();
-        mob_card_error('The approval summary', $e);
-    }
+var tab = 'packing', history = [], recordMode = 'individual', recordQuery = '', recordPage = 0, recordFilter = null;
+var toastTimer, searchQuery = '', saveBusy = false, pointerTimer, suppressTap = false, receipt = null, receiptTimer;
+var draft;
+
+var $ = function (q, r) { return (r || document).querySelector(q); };
+var clone = function (x) { return JSON.parse(JSON.stringify(x)); };
+var esc = function (x) { return String(x == null ? '' : x).replace(/[&<>"']/g, function (c) {
+  return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+var fmt = function (n) { return Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 3 }); };
+var prod = function (id) { return STATE.products.find(function (p) { return p.id === String(id); }); };
+var axes = function (p) { return [p.sizes.length ? p.sizes : [''], p.colors.length ? p.colors : [''], p.styles.length ? p.styles : ['']]; };
+var vkey = function (s, c, t) { return JSON.stringify([s || '', c || '', t || '']); };
+var vlabel = function (x) { return [x.size, x.color, x.style].filter(Boolean).join(' / ') || 'Finished unit'; };
+var sumQty = function (cs) { return cs.reduce(function (s, c) { return s + c.qty; }, 0); };
+var serialText = function (prefix, num, pad) { return prefix + String(num).padStart(pad || 0, '0'); };
+var kindOf = function (t) { return String(t || 'Carton').trim().toLowerCase(); };
+var DEFAULT_SPEC = { Carton: 'Standard carton', Bale: 'Standard bale', Roll: 'Standard roll', Bag: 'Retail bag', Other: 'Other packaging' };
+var COLOR_DOT = { black: '#202b2b', green: '#558a6b', white: '#fff', grey: '#abb4b8', gray: '#abb4b8', blue: '#709ab8',
+  navy: '#1f3356', red: '#b8283f', maroon: '#73202f', pink: '#e39ab0', royal: '#2f55c0', yellow: '#e6c34a', brown: '#7a5438' };
+function dot(c) { var k = String(c).toLowerCase().replace(/[^a-z]/g, ''); return COLOR_DOT[k] || '#b9cec5'; }
+
+/* ---------------- every saved package, one by one (a range is stored once
+   on the server; here it is opened out so each package is its own record) */
+function packages() {
+  var out = [];
+  STATE.records.forEach(function (r) {
+    for (var n = r.from; n <= r.to; n++) out.push({ gid: r.id, num: n, prefix: r.prefix, pad: r.pad, item: r.item,
+      type: r.type, spec: r.spec, target: r.target, edited: r.edited, weighed: r.weighed,
+      combos: r.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: c.qty }; }) });
+  });
+  return out.sort(function (a, b) { return a.prefix.localeCompare(b.prefix) || kindOf(a.type).localeCompare(kindOf(b.type)) || a.num - b.num; });
+}
+function parseSerial(value, fallback, pad) {
+  var v = String(value).trim(), m = v.match(/^([A-Za-z_-]*)(\d+)$/);
+  if (!m) throw Error('Use a positive serial number, optionally prefixed: 25, C025 or CTN-025.');
+  var n = Number(m[2]);
+  if (!Number.isSafeInteger(n) || n < 1 || n > 999999999) throw Error('Serial must be a whole number from 1 to 999,999,999.');
+  var prefix = (m[1] || fallback || '').toUpperCase();
+  if (prefix.length > 16) throw Error('A prefix may be up to 16 letters, hyphens or underscores.');
+  return { prefix: prefix, num: n, pad: Math.max(Number(pad) || 0, m[2].charAt(0) === '0' ? m[2].length : 0) };
+}
+/* The next free number for this prefix AND kind of package — the same
+   rule the server keeps: a number once per prefix and kind. */
+function nextSerial(prefix, pad, type, after) {
+  prefix = (prefix || '').toUpperCase();
+  var used = {};
+  packages().forEach(function (p) { if (p.prefix.toUpperCase() === prefix && kindOf(p.type) === kindOf(type)) used[p.num] = 1; });
+  var n = after ? after + 1 : Object.keys(used).reduce(function (m, v) { return Math.max(m, +v); }, 0) + 1;
+  while (used[n]) n++;
+  return serialText(prefix, n, pad);
+}
+function rangeForDraft(d) {
+  var s = parseSerial(d.start, d.prefix, d.pad), e = d.entryMode === 'range' ? parseSerial(d.end, s.prefix, s.pad) : s;
+  if (e.prefix !== s.prefix) throw Error('Start and end must use the same prefix.');
+  if (e.num < s.num) throw Error('The ending serial must be at or after the starting one.');
+  var count = e.num - s.num + 1;
+  if (count > 5000) throw Error('Save up to 5,000 packages at a time.');
+  return { start: s, end: e, count: count, pad: Math.max(s.pad, e.pad) };
+}
+function checkComposition(p, cs, target) {
+  if (!Number.isInteger(target) || target < 1 || target > 1000000) throw Error('Quantity per package must be a whole number from 1 to 1,000,000.');
+  var a = axes(p), keys = {};
+  cs.forEach(function (c) {
+    if (!Number.isInteger(c.qty) || c.qty <= 0) throw Error('Every combination needs a positive whole quantity.');
+    if (a[0].indexOf(c.size) < 0 || a[1].indexOf(c.color) < 0 || a[2].indexOf(c.style) < 0) throw Error('This combination is not one this product is packed in.');
+    var k = vkey(c.size, c.color, c.style); if (keys[k]) throw Error('The same combination is listed twice.'); keys[k] = 1;
+  });
+  if (sumQty(cs) !== target) throw Error('Complete the package first: ' + sumQty(cs) + ' of ' + target + ' ' + p.unit + ' entered.');
 }
 
+/* ---------------- the draft: what is being packed now. Kept in this
+   browser only, so a half-counted carton survives a lost signal. */
+function blankDraft(itemId, cfg) {
+  var p = prod(itemId), a = axes(p); cfg = cfg || {};
+  var type = cfg.packageType || 'Carton';
+  return { productId: p.id, packageType: type, spec: cfg.spec || DEFAULT_SPEC[type] || '', target: cfg.target || 10,
+    entryMode: 'single', prefix: cfg.prefix != null ? cfg.prefix : '', pad: cfg.pad != null ? cfg.pad : 0, start: '', end: '',
+    selectedSize: cfg.selectedSize != null && a[0].indexOf(cfg.selectedSize) >= 0 ? cfg.selectedSize : a[0][0],
+    selectedColor: cfg.selectedColor != null && a[1].indexOf(cfg.selectedColor) >= 0 ? cfg.selectedColor : a[1][0],
+    selectedStyle: cfg.selectedStyle != null && a[2].indexOf(cfg.selectedStyle) >= 0 ? cfg.selectedStyle : a[2][0],
+    combos: clone(cfg.combos || []).filter(function (c) { return a[0].indexOf(c.size) >= 0 && a[1].indexOf(c.color) >= 0 && a[2].indexOf(c.style) >= 0; }),
+    edit: null, advancedOpen: false, compositionOpen: false };
+}
+/* What this product was packed as last time — its last saved range —
+   so switching back to it restores the package details and contents. */
+function lastConfig(itemId) {
+  var last = null;
+  STATE.records.forEach(function (r) { if (r.item === String(itemId) && (!last || r.id > last.id)) last = r; });
+  if (!last) return null;
+  var cs = last.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: Math.round(c.qty) }; });
+  return { packageType: last.type, spec: last.spec, target: Math.round(last.target) || 10, prefix: last.prefix, pad: last.pad,
+    combos: cs, selectedSize: cs[0] && cs[0].size, selectedColor: cs[0] && cs[0].color, selectedStyle: cs[0] && cs[0].style };
+}
+function saveLocal() { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch (e) {} }
+function loadLocal() { try { var d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); return d && prod(d.productId) ? d : null; } catch (e) { return null; } }
+function freshDraft(itemId) {
+  draft = blankDraft(itemId, lastConfig(itemId) || {});
+  draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start;
+}
+
+function toast(msg, error) {
+  var el = $('#spToast'); el.textContent = msg; el.classList.toggle('error', !!error); el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(function () { el.hidden = true; }, 3300);
+}
+
+/* ---------------- talking to the server */
+function api(body) {
+  body._csrf = CSRF;
+  return fetch(API, { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json().catch(function () { throw Error('The server did not answer properly (' + r.status + ').'); }); })
+    .then(function (j) { if (j.state) { STATE = j.state; recordFilter = null; } if (!j.ok) throw Error(j.msg || 'That did not save.'); return j; });
+}
+
+/* ---------------- drawing */
+function nav() {
+  document.querySelectorAll('#sp [data-a=tab]').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === tab); });
+  var n = packages().length; $('#spCount').textContent = n ? '(' + fmt(n) + ')' : '';
+}
+function render() { nav(); $('#spDock').innerHTML = ''; if (tab === 'packing') renderPacking(); else if (tab === 'records') renderRecords(); else renderSummary(); }
+function serialLabel(d) {
+  try { var r = rangeForDraft(d); return serialText(r.start.prefix, r.start.num, r.pad) + (r.count > 1 ? ' – ' + serialText(r.end.prefix, r.end.num, r.pad) : ''); }
+  catch (e) { return d.entryMode === 'range' ? d.start + ' – ' + d.end : d.start; }
+}
+function touchGrid(values, type, d, p) {
+  return values.map(function (v) {
+    var qty = d.combos.filter(function (c) { return c[type] === v; }).reduce(function (s, c) { return s + c.qty; }, 0);
+    var selected = d['selected' + type.charAt(0).toUpperCase() + type.slice(1)] === v;
+    var counts = type === 'color' || (type === 'style' && !p.colors.length);
+    var detail = fmt(qty) + ' ' + p.unit;
+    if (type === 'color') {
+      var here = (d.combos.find(function (c) { return c.size === d.selectedSize && c.color === v && c.style === d.selectedStyle; }) || {}).qty || 0;
+      detail = fmt(qty) + ' total · ' + here + ' here';
+    }
+    return '<button type="button" class="touch' + (selected ? ' active' : '') + '" data-a="' + (counts ? 'count' : 'select-attr') + '" data-type="' + type
+      + '" data-value="' + esc(v) + '" aria-pressed="' + selected + '" aria-label="' + esc(v) + ', ' + qty + ' ' + esc(p.unit) + (counts ? ', tap adds one' : ', select') + '">'
+      + '<span class="t">' + (type === 'color' ? '<i class="dot" style="background:' + dot(v) + '"></i>' : '') + esc(v) + '</span><span class="b">' + detail + '</span></button>';
+  }).join('');
+}
+function renderPacking() {
+  var d = draft, p = prod(d.productId), qty = sumQty(d.combos), complete = qty === d.target, rangeLabel = 'Enter a serial to see the total';
+  try { var r = rangeForDraft(d); rangeLabel = serialLabel(d) + ' · ' + fmt(r.count) + ' ' + (r.count === 1 ? 'package' : 'packages') + ' · ' + fmt(r.count * d.target) + ' ' + p.unit; } catch (e) {}
+  var lineRef = esc(p.line) + (p.hint ? ' · ' + esc(p.hint) : '') + ' · ' + esc(p.unit);
+  $('#spMain').innerHTML =
+    '<div class="row between" style="margin-bottom:10px"><h2>' + (d.edit ? 'Edit package' : 'Pack the next ' + esc(d.packageType.toLowerCase())) + '</h2>'
+    + '<span class="pill ' + (d.edit ? 'warn' : 'gray') + '">' + (d.edit ? 'ONE PACKAGE ONLY' : esc(STATE.shipment.invoice)) + '</span></div>'
+    + '<div class="sel"><div><div class="name">' + esc(p.name) + '</div><div class="ref">' + lineRef + '</div></div>'
+    + '<span class="pill ' + (p.setUp ? '' : 'warn') + '">' + (p.setUp ? 'Set up' : 'Not set up') + '</span></div>'
+    + '<div class="search"><input id="spSearch" type="search" autocomplete="off" placeholder="Search product, line or description…" value="' + esc(searchQuery) + '" aria-label="Search the invoice\'s products">'
+    + '<div id="spResults" class="results" hidden></div></div>'
+    + (p.setUp ? '' : '<div class="sp-notice sp-warn gap">This line is not set up on Order sizes &amp; colours, so these are the product\'s own sizes and no colours.</div>')
+    + '<div class="card gap">'
+    + '<div class="segment"><button type="button" data-a="entry-mode" data-mode="single" class="' + (d.entryMode === 'single' ? 'active' : '') + '">SINGLE ' + esc(d.packageType.toUpperCase())
+    + '</button><button type="button" data-a="entry-mode" data-mode="range" class="' + (d.entryMode === 'range' ? 'active' : '') + '"' + (d.edit ? ' disabled' : '') + '>SERIAL RANGE</button></div>'
+    + '<div class="sgrid' + (d.entryMode === 'range' ? ' range' : '') + '"><div><label for="spStart">' + (d.entryMode === 'range' ? 'Starting serial' : 'Package serial') + '</label>'
+    + '<input id="spStart" data-sel enterkeyhint="next" inputmode="text" autocomplete="off" value="' + esc(d.start) + '"></div>'
+    + (d.entryMode === 'range' ? '<div><label for="spEnd">Ending serial</label><input id="spEnd" data-sel enterkeyhint="next" inputmode="text" autocomplete="off" value="' + esc(d.end) + '"></div>' : '')
+    + '<div class="qtyf"><label for="spTarget">' + esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase()) + '</label>'
+    + '<input id="spTarget" type="text" inputmode="numeric" pattern="[0-9]*" data-sel enterkeyhint="next" value="' + d.target + '"></div></div>'
+    + '<div class="preview" id="spPreview">' + esc(rangeLabel) + '</div>'
+    + '<details id="spPkgDetails"' + (d.advancedOpen ? ' open' : '') + '><summary><span>' + esc(d.packageType) + ' · ' + esc(d.spec) + ' · prefix ' + (esc(d.prefix) || 'none') + '</span></summary>'
+    + '<div class="settings"><div><label for="spType">Package type</label><select id="spType">' + ['Carton', 'Bale', 'Roll', 'Bag', 'Other'].map(function (v) { return '<option' + (v === d.packageType ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>'
+    + '<div><label for="spSpec">Packaging specification</label><input id="spSpec" value="' + esc(d.spec) + '" maxlength="80"></div>'
+    + '<div><label for="spPrefix">Serial prefix (optional)</label><input id="spPrefix" value="' + esc(d.prefix) + '" placeholder="C or CTN-" maxlength="16" autocapitalize="characters"></div>'
+    + '<div><label for="spPad">Number padding</label><select id="spPad">' + [0, 2, 3, 4, 5, 6].map(function (n) { return '<option value="' + n + '"' + (n === d.pad ? ' selected' : '') + '>' + (n ? n + ' digits' : 'None') + '</option>'; }).join('') + '</select></div></div></details>'
+    + '</div>'
+    + '<div class="card gap"><div class="row between"><h3>Count the contents</h3><button type="button" class="mini quiet" data-a="undo"' + (history.length ? '' : ' disabled') + '>↶ Undo</button></div>'
+    + (p.sizes.length ? '<div class="alabel"><span>1 · Select size</span><span>' + esc(p.unit) + ' by size</span></div><div class="tgrid" id="spSizes" style="grid-template-columns:repeat(' + Math.min(4, p.sizes.length) + ',1fr)">' + touchGrid(p.sizes, 'size', d, p) + '</div>' : '')
+    + (p.styles.length ? '<div class="alabel"><span>' + (p.colors.length ? 'Select style' : (p.sizes.length ? '2 · ' : '') + 'Tap style to count') + '</span><span>' + esc(p.unit) + ' by style</span></div><div class="tgrid" id="spStyles">' + touchGrid(p.styles, 'style', d, p) + '</div>' : '')
+    + (p.colors.length ? '<div class="alabel"><span>' + (p.sizes.length ? '2 · ' : '') + 'Tap colour to count</span><span>' + esc(d.selectedSize) + '</span></div><div class="tgrid colors" id="spColors">' + touchGrid(p.colors, 'color', d, p) + '</div>' : '')
+    + (!p.colors.length && !p.styles.length ? '<button type="button" class="soft full gap" data-a="count" data-type="unit" data-value="">+ Add one ' + (p.sizes.length ? esc(d.selectedSize || '') + ' ' : '') + esc(p.unit) + '</button>' : '')
+    + '<div class="hint">Tap = +1 · hold a ' + (p.colors.length ? 'colour' : p.styles.length ? 'style' : 'count') + ' button to type a quantity.</div>'
+    + '<div class="row gap"><button type="button" class="soft grow" data-a="fill">Fill remaining ' + fmt(Math.max(0, d.target - qty)) + ' ' + esc(p.unit) + '</button>'
+    + '<button type="button" class="mini" data-a="edit-current">Edit qty</button><button type="button" class="mini quiet danger" data-a="clear"' + (qty ? '' : ' disabled') + '>Clear</button></div>'
+    + '<details id="spCompDetails"' + (d.edit || d.compositionOpen ? ' open' : '') + '><summary><span>Composition · ' + d.combos.length + ' ' + (d.combos.length === 1 ? 'combination' : 'combinations') + '</span><span>' + fmt(qty) + ' ' + esc(p.unit) + '</span></summary>'
+    + '<div class="combos">' + (d.combos.length ? d.combos.map(function (c, i) {
+        return '<div class="combo"><span class="text grow">' + esc(vlabel(c)) + '</span><button type="button" data-a="combo-minus" data-i="' + i + '" aria-label="Remove one ' + esc(vlabel(c)) + '">−</button>'
+          + '<button type="button" class="amt" data-a="combo-edit" data-i="' + i + '" aria-label="Edit ' + esc(vlabel(c)) + '">' + c.qty + '</button>'
+          + '<button type="button" data-a="combo-plus" data-i="' + i + '" aria-label="Add one ' + esc(vlabel(c)) + '">+</button></div>'; }).join('')
+      : '<div class="hint">Select a size, then tap a colour or style.</div>') + '</div></details></div>'
+    + (d.edit ? '<button type="button" class="quiet full gap" data-a="cancel-edit">Cancel edit · back to new packing</button>'
+              : '<div class="hint" style="text-align:center;margin-top:12px">Save &amp; Next keeps this product, quantity and contents ready.</div>');
+  if (!CAN_EDIT || STATE.completed) { $('#spDock').innerHTML = ''; if (STATE.completed && CAN_EDIT) $('#spMain').insertAdjacentHTML('afterbegin', '<div class="sp-notice sp-warn" style="margin-bottom:12px">Packing is finished. Reopen it on Summary to change anything.</div>'); return; }
+  $('#spDock').innerHTML = '<div class="sp-dock"><div class="crow"><div class="cval">' + fmt(qty) + ' <span style="font-weight:500;color:#64797b">/ ' + fmt(d.target) + ' ' + esc(p.unit) + '</span></div>'
+    + '<div class="crem">' + (complete ? '<span class="pill">✓ COMPLETE</span>' : fmt(Math.max(0, d.target - qty)) + ' remaining') + '</div></div>'
+    + '<div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="' + d.target + '" aria-valuenow="' + qty + '"><i style="width:' + Math.min(100, qty / d.target * 100) + '%"></i></div>'
+    + '<button type="button" id="spSave" class="sp-save" data-a="save"></button></div>';
+  renderSaveButton();
+}
+function renderSaveButton() {
+  var b = $('#spSave'); if (!b || tab !== 'packing') return;
+  var d = draft, p = prod(d.productId), count = 1; try { count = rangeForDraft(d).count; } catch (e) {}
+  var ok = receipt && receipt.next === d.start && receipt.productId === d.productId ? receipt : null;
+  b.classList.toggle('ok', !!ok); b.disabled = saveBusy;
+  b.innerHTML = '<span class="st">' + (saveBusy ? 'SAVING…' : ok ? '✓ ' + (ok.updated ? 'Updated' : 'Saved') + ' ' + esc(ok.label) : (d.edit ? 'SAVE CHANGES' : 'SAVE &amp; NEXT')) + '</span>'
+    + '<span class="sc">' + (ok ? 'Next · ' : '') + esc(d.packageType + ' ' + serialLabel(d) + ' · ' + fmt(count * d.target) + ' ' + p.unit) + ' →</span>';
+}
+function updatePreview() {
+  var d = draft; try { var r = rangeForDraft(d); $('#spPreview').textContent = serialLabel(d) + ' · ' + fmt(r.count) + ' packages · ' + fmt(r.count * d.target) + ' ' + prod(d.productId).unit; }
+  catch (e) { $('#spPreview').textContent = e.message; } renderSaveButton();
+}
+
+/* ---------------- counting */
+function snapshot() { history.push(clone(draft)); if (history.length > 50) history.shift(); }
+function setCombo(size, color, style, qty) {
+  var d = draft; if (!Number.isInteger(qty) || qty < 0) throw Error('Enter a whole quantity of zero or more.');
+  var k = vkey(size, color, style), i = d.combos.findIndex(function (c) { return vkey(c.size, c.color, c.style) === k; }), old = i < 0 ? 0 : d.combos[i].qty;
+  var total = sumQty(d.combos) - old + qty;
+  if (total > d.target) throw Error('The package holds ' + d.target + '; only ' + Math.max(0, d.target - (sumQty(d.combos) - old)) + ' can go in this combination.');
+  snapshot();
+  if (i < 0) { if (qty) d.combos.push({ size: size, color: color, style: style, qty: qty }); } else if (qty) d.combos[i].qty = qty; else d.combos.splice(i, 1);
+  d.selectedColor = color; d.selectedStyle = style; saveLocal(); renderPacking();
+}
+function increment(color, style) {
+  var d = draft; if (sumQty(d.combos) >= d.target) { toast('Package complete · use − or Edit qty to correct'); return; }
+  var c = d.combos.find(function (c) { return vkey(c.size, c.color, c.style) === vkey(d.selectedSize, color, style); });
+  setCombo(d.selectedSize, color, style, (c ? c.qty : 0) + 1);
+}
+
+/* ---------------- Save & Next */
+function syncEntry() {
+  var d = draft;
+  if ($('#spStart')) d.start = $('#spStart').value;
+  if ($('#spEnd')) d.end = $('#spEnd').value;
+  var q = $('#spTarget');
+  if (q && Number(q.value) !== d.target) {
+    var n = Number(q.value);
+    if (!Number.isInteger(n) || n < 1 || n > 1000000 || sumQty(d.combos) > n) throw Error('Use a package quantity at least equal to what is counted.');
+    d.target = n;
+  }
+}
+function saveDraft() {
+  if (saveBusy) return;
+  var d = draft, p = prod(d.productId), range;
+  try { syncEntry(); checkComposition(p, d.combos, d.target); range = rangeForDraft(d);
+        if (d.edit && range.count !== 1) throw Error('Edit one package at a time.'); }
+  catch (e) { toast(e.message, true); return; }
+  saveBusy = true; receipt = null; renderSaveButton();
+  var wasEdit = !!d.edit;
+  api({ op: 'save', item: p.id, type: d.packageType, spec: (d.spec || '').trim() || DEFAULT_SPEC[d.packageType] || '',
+        prefix: range.start.prefix, pad: range.pad, from: range.start.num, to: range.end.num, target: d.target,
+        combos: d.combos.map(function (c) { return { size: c.size, colour: c.color, style: c.style, qty: c.qty }; }),
+        edit_group: d.edit ? d.edit.gid : 0, edit_num: d.edit ? d.edit.num : 0 })
+    .then(function () {
+      saveBusy = false;
+      d.prefix = range.start.prefix; d.pad = range.pad; d.edit = null; history = [];
+      d.start = nextSerial(d.prefix, d.pad, d.packageType, wasEdit ? 0 : range.end.num); d.end = d.start;
+      saveLocal(); render();
+      var label = serialText(range.start.prefix, range.start.num, range.pad) + (range.count > 1 ? ' – ' + serialText(range.end.prefix, range.end.num, range.pad) : '');
+      receipt = { label: label, next: d.start, productId: d.productId, updated: wasEdit }; renderSaveButton();
+      clearTimeout(receiptTimer); receiptTimer = setTimeout(function () { receipt = null; renderSaveButton(); }, 1600);
+      toast((wasEdit ? 'Updated ' : 'Saved ') + fmt(range.count) + ' ' + (range.count === 1 ? d.packageType.toLowerCase() : 'packages') + ' · next ' + d.start + ' ready');
+    })
+    .catch(function (e) { saveBusy = false; renderSaveButton(); toast(e.message, true); });
+}
+function editPackage(pkg, copy) {
+  var cfg = { packageType: pkg.type, spec: pkg.spec, target: Math.round(pkg.target), prefix: pkg.prefix, pad: pkg.pad,
+    combos: pkg.combos.map(function (c) { return { size: c.size, color: c.color, style: c.style, qty: Math.round(c.qty) }; }),
+    selectedSize: pkg.combos[0] && pkg.combos[0].size, selectedColor: pkg.combos[0] && pkg.combos[0].color, selectedStyle: pkg.combos[0] && pkg.combos[0].style };
+  draft = blankDraft(pkg.item, cfg);
+  draft.edit = copy ? null : { gid: pkg.gid, num: pkg.num };
+  draft.start = copy ? nextSerial(pkg.prefix, pkg.pad, pkg.type) : serialText(pkg.prefix, pkg.num, pkg.pad); draft.end = draft.start;
+  tab = 'packing'; history = []; saveLocal(); render(); window.scrollTo(0, 0);
+  toast(copy ? 'Contents copied onto the next free serial' : 'Editing this package only');
+}
+function cancelEdit() { draft.edit = null; draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start; history = []; saveLocal(); render(); toast('New package ready; the saved one is kept'); }
+
+/* ---------------- records */
+function signature(p) { return JSON.stringify([p.item, kindOf(p.type), p.spec, p.target, p.combos.map(function (c) { return [c.size, c.color, c.style, c.qty]; }).sort()]); }
+function grouped(list) {
+  var gs = [];
+  list.forEach(function (p) {
+    var g = gs[gs.length - 1], sig = signature(p);
+    if (g && g.prefix === p.prefix && kindOf(g.last.type) === kindOf(p.type) && g.last.num + 1 === p.num && g.sig === sig && !p.edited && !g.last.edited) { g.list.push(p); g.last = p; }
+    else gs.push({ first: p, last: p, prefix: p.prefix, sig: sig, list: [p] });
+  });
+  return gs;
+}
+var gSerial = function (g) { return serialText(g.first.prefix, g.first.num, g.first.pad) + (g.list.length > 1 ? ' – ' + serialText(g.last.prefix, g.last.num, g.last.pad) : ''); };
+function totals() {
+  var units = {}, all = packages();
+  all.forEach(function (p) { var u = prod(p.item) ? prod(p.item).unit : 'pcs'; units[u] = (units[u] || 0) + p.target; });
+  return { packages: all.length, quantity: all.reduce(function (s, p) { return s + p.target; }, 0), units: units,
+    products: Object.keys(all.reduce(function (o, p) { o[p.item] = 1; return o; }, {})).length };
+}
+var unitText = function (s) { return Object.keys(s.units).map(function (u) { return fmt(s.units[u]) + ' ' + u; }).join(' + '); };
+function filtered() {
+  return packages().filter(function (p) {
+    if (recordFilter && recordFilter.indexOf(p.gid + ':' + p.num) < 0) return false;
+    if (!recordQuery) return true;
+    var pr = prod(p.item) || { name: '', line: '' };
+    return (serialText(p.prefix, p.num, p.pad) + ' ' + pr.name + ' ' + pr.line + ' ' + p.type).toLowerCase().indexOf(recordQuery.toLowerCase()) >= 0;
+  });
+}
+function renderRecords() {
+  var s = totals();
+  $('#spMain').innerHTML = '<div class="row between" style="margin-bottom:6px"><div><div class="eyebrow">Review &amp; correct</div><h2>Packing records</h2></div>'
+    + (CAN_EDIT && !STATE.completed ? '<button type="button" class="primary mini" data-a="tab" data-tab="packing">+ Pack</button>' : '') + '</div>'
+    + '<div class="stats"><div class="stat"><div class="v">' + fmt(s.packages) + '</div><div class="c">Packages</div></div><div class="stat"><div class="v">' + fmt(s.quantity) + '</div><div class="c">Packed units</div></div><div class="stat"><div class="v">' + s.products + '</div><div class="c">Products</div></div></div>'
+    + '<div class="ref" style="margin-bottom:12px">' + esc(STATE.shipment.invoice) + ' · ' + esc(unitText(s)) + '</div>'
+    + '<div class="toolbar"><input id="spRecSearch" type="search" value="' + esc(recordQuery) + '" placeholder="Search serial, product or line…" aria-label="Search saved packages">'
+    + '<div class="segment"><button type="button" data-a="record-mode" data-mode="individual" class="' + (recordMode === 'individual' ? 'active' : '') + '">Individual</button><button type="button" data-a="record-mode" data-mode="ranges" class="' + (recordMode === 'ranges' ? 'active' : '') + '">Ranges</button></div></div>'
+    + (recordFilter ? '<div class="sp-notice row between" style="margin-bottom:12px"><span>Showing one range</span><button type="button" class="mini" data-a="clear-filter">Show all</button></div>' : '')
+    + '<div id="spRecList"></div>'
+    + '<div class="toolbar gap"><button type="button" data-a="report">Final packing list</button><button type="button" data-a="print">Print / PDF</button><button type="button" data-a="csv">CSV</button><button type="button" class="soft" data-a="tab" data-tab="summary">Quantity summary →</button></div>'
+    + '<div class="hint" style="text-align:center">Each package is its own record. Editing one does not change the rest of its range.</div>';
+  renderRecordList();
+}
+function renderRecordList() {
+  var rs = filtered(), items = recordMode === 'ranges' ? grouped(rs) : rs.map(function (p) { return { first: p, last: p, list: [p] }; });
+  var pages = Math.max(1, Math.ceil(items.length / 25)); recordPage = Math.min(recordPage, pages - 1);
+  var live = CAN_EDIT && !STATE.completed;
+  $('#spRecList').innerHTML = items.slice(recordPage * 25, recordPage * 25 + 25).map(function (g) {
+    var r = g.first, p = prod(r.item) || { name: '(product removed)', unit: 'pcs', line: '' }, n = g.list.length;
+    return '<article class="rec card"><div><div class="row wrap"><span class="serial">' + esc(gSerial(g)) + '</span><span class="pill">' + esc(r.type) + '</span>' + (r.edited ? '<span class="pill warn">Edited</span>' : '') + '</div>'
+      + '<div class="rprod">' + esc(p.name) + ' <span class="muted" style="font-weight:600">' + esc(p.line) + '</span> · ' + fmt(r.target) + ' ' + esc(p.unit) + ' / ' + esc(r.type.toLowerCase()) + '</div>'
+      + '<div class="brk">' + r.combos.map(function (c) { return esc(vlabel(c)) + ': <b>' + fmt(c.qty) + '</b>'; }).join(' · ') + '</div></div>'
+      + '<div class="acts">' + (n > 1 ? '<button type="button" data-a="view-range" data-keys="' + esc(g.list.map(function (x) { return x.gid + ':' + x.num; }).join(',')) + '">View ' + n + '</button>'
+        : (live ? '<button type="button" data-a="edit" data-g="' + r.gid + '" data-n="' + r.num + '">Edit</button>' : '')
+          + (live ? '<button type="button" data-a="copy" data-g="' + r.gid + '" data-n="' + r.num + '">Copy</button>' : '')
+          + (live ? '<button type="button" class="danger" data-a="delete" data-g="' + r.gid + '" data-n="' + r.num + '">Delete</button>' : '')) + '</div>'
+      + '<div class="rfoot"><span>' + (n > 1 ? fmt(n) + ' packages · ' + fmt(n * r.target) + ' ' + esc(p.unit) : esc(r.type) + (r.spec ? ' · ' + esc(r.spec) : '')) + '</span><span>' + (r.combos.length === 1 ? 'Standard' : 'Assorted') + ' packing</span></div></article>';
+  }).join('') || '<div class="card empty">No packages yet. Start packing, or clear the search.</div>';
+  if (pages > 1) $('#spRecList').innerHTML += '<div class="row between gap"><button type="button" data-a="page" data-dir="-1"' + (recordPage ? '' : ' disabled') + '>← Previous</button><span class="small muted">' + (recordPage + 1) + ' / ' + pages + '</span><button type="button" data-a="page" data-dir="1"' + (recordPage + 1 < pages ? '' : ' disabled') + '>Next →</button></div>';
+}
+function findPkg(g, n) { return packages().find(function (p) { return p.gid === +g && p.num === +n; }); }
+
+/* ---------------- summary */
+function summaryLines() {
+  var map = {}, order = [];
+  packages().forEach(function (pk) {
+    pk.combos.forEach(function (c) {
+      var k = JSON.stringify([pk.item, c.size, c.color, c.style]);
+      if (!map[k]) { map[k] = { item: pk.item, size: c.size, color: c.color, style: c.style, qty: 0, pk: {} }; order.push(k); }
+      map[k].qty += c.qty; map[k].pk[pk.gid + ':' + pk.num] = 1;
+    });
+  });
+  return order.map(function (k) { var l = map[k]; l.packages = Object.keys(l.pk).length; return l; });
+}
+function renderSummary() {
+  var s = totals(), lines = summaryLines(), ids = [];
+  lines.forEach(function (l) { if (ids.indexOf(l.item) < 0) ids.push(l.item); });
+  var firstRange = function (item) { var r = STATE.records.find(function (x) { return x.item === item; }); return r ? r.id : 0; };
+  $('#spMain').innerHTML = '<div class="row between" style="margin-bottom:10px"><div><div class="eyebrow">Final packing quantities</div><h2>Quantity summary</h2></div>'
+    + '<span class="pill ' + (STATE.completed ? '' : 'warn') + '">' + (STATE.completed ? '✓ Packing finished' : 'In progress') + '</span></div>'
+    + '<div class="card"><div class="row between"><div><b>' + esc(STATE.shipment.invoice) + '</b><div class="ref">' + esc(STATE.shipment.buyer) + '</div></div><span class="pill gray">' + fmt(s.packages) + ' packages</span></div>'
+    + '<div class="stotal gap">' + (esc(unitText(s)) || 'Nothing packed yet') + '</div>'
+    + '<div class="hint">Each line adds up the same size, colour and style across every saved package. It is not compared with the invoice.</div>'
+    + (CAN_EDIT ? '<div class="row wrap gap">' + (STATE.completed ? '<button type="button" class="mini" data-a="reopen">Reopen packing</button>' : '<button type="button" class="primary" data-a="finish"' + (s.packages ? '' : ' disabled') + '>Finish packing</button>') + '<button type="button" class="mini" data-a="report">Packing list</button></div>' : '')
+    + '</div>'
+    + ids.map(function (id) {
+        var p = prod(id) || { name: '(product removed)', unit: 'pcs', line: '' }, ls = lines.filter(function (l) { return l.item === id; });
+        var weighed = STATE.records.filter(function (r) { return r.item === id; }).every(function (r) { return r.weighed; });
+        return '<section class="card sprod"><div class="row between"><div><h3>' + esc(p.name) + '</h3><div class="ref">' + esc(p.line) + (p.hint ? ' · ' + esc(p.hint) : '') + '</div></div>'
+          + '<div style="text-align:right"><strong>' + fmt(ls.reduce(function (n, l) { return n + l.qty; }, 0)) + ' ' + esc(p.unit) + '</strong><br>'
+          + '<a class="small" style="color:#087f72" href="' + esc(WEIGHT_URL + '&g=' + firstRange(id)) + '">' + (weighed ? 'Weight ✓' : 'Weight: not entered') + ' →</a></div></div>'
+          + ls.map(function (l) { return '<div class="sline"><b>' + esc(vlabel(l)) + '</b><div class="small muted">' + fmt(l.qty) + ' ' + esc(p.unit) + ' · in ' + fmt(l.packages) + ' ' + (l.packages === 1 ? 'package' : 'packages') + '</div></div>'; }).join('')
+          + '</section>';
+      }).join('')
+    + (ids.length ? '' : '<div class="empty">Start packing to see the quantity summary.</div>')
+    + '<div class="sp-notice gap">Weight is moving to its own module. Until then each product\'s weight is entered on the Weight screen linked above.</div>'
+    + '<div class="row wrap gap"><button type="button" data-a="print">Print / PDF</button><button type="button" data-a="csv">Packing CSV</button><button type="button" data-a="summary-csv">Summary CSV</button></div>';
+}
+
+/* ---------------- packing list, print and CSV */
+function reportHTML() {
+  var s = totals(), gs = grouped(packages()), lines = summaryLines();
+  return '<div class="sp-print"><div style="display:flex;justify-content:space-between;gap:12px"><div><div class="eyebrow">ZAS TEXTILE · FAISALABAD, PAKISTAN</div><h1>EXPORT PACKING LIST</h1>'
+    + '<div class="ref">Invoice: <b>' + esc(STATE.shipment.invoice) + '</b> · ' + esc(STATE.shipment.buyer) + '<br>Prepared ' + new Date().toLocaleDateString('en-GB') + ' · ' + (STATE.completed ? 'Packing finished' : 'In progress') + '</div></div>'
+    + '<div class="sp-notice">' + fmt(s.packages) + ' packages<br>' + esc(unitText(s)) + '</div></div>'
+    + '<div class="tablewrap"><table><thead><tr><th>Serial / range</th><th>Product</th><th>Package</th><th>Size / colour / style per package</th><th>Qty / pkg</th><th>Packages</th><th>Total qty</th></tr></thead><tbody>'
+    + gs.map(function (g) { var r = g.first, p = prod(r.item) || { name: '', unit: '', line: '' }, n = g.list.length;
+        return '<tr><td><b>' + esc(gSerial(g)) + '</b>' + (r.edited ? '<br><small>Edited on its own</small>' : '') + '</td><td>' + esc(p.name) + '<br><small>' + esc(p.line) + '</small></td><td>' + esc(r.type) + (r.spec ? '<br><small>' + esc(r.spec) + '</small>' : '') + '</td><td>'
+          + r.combos.map(function (c) { return esc(vlabel(c)) + ' × ' + fmt(c.qty); }).join('<br>') + '</td><td class="num">' + fmt(r.target) + ' ' + esc(p.unit) + '</td><td class="num">' + n + '</td><td class="num">' + fmt(n * r.target) + ' ' + esc(p.unit) + '</td></tr>'; }).join('')
+    + '</tbody></table></div><h3 style="margin-top:14px">Quantity by product, size, colour and style</h3><div class="tablewrap"><table><thead><tr><th>Product</th><th>Size / colour / style</th><th>Total quantity</th><th>Packages</th></tr></thead><tbody>'
+    + lines.map(function (l) { var p = prod(l.item) || { name: '', unit: '' }; return '<tr><td>' + esc(p.name) + '</td><td>' + esc(vlabel(l)) + '</td><td class="num">' + fmt(l.qty) + ' ' + esc(p.unit) + '</td><td class="num">' + fmt(l.packages) + '</td></tr>'; }).join('')
+    + '</tbody></table></div></div>';
+}
+function csvRows(rows) {
+  var safe = function (v) { var s = String(v == null ? '' : v); if (/^[=+@\-\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
+  return '﻿' + rows.map(function (r) { return r.map(safe).join(','); }).join('\r\n');
+}
+function download(text, name) {
+  var blob = new Blob([text], { type: 'text/csv;charset=utf-8' }), url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 3000); toast(name + ' downloaded');
+}
+function packingCSV() {
+  return csvRows([['Invoice', 'Serial / Range', 'Product', 'Line', 'Package Type', 'Packaging Spec', 'Contents per Package', 'Qty per Package', 'Unit', 'Packages', 'Total Qty', 'Edited on its own']]
+    .concat(grouped(packages()).map(function (g) { var r = g.first, p = prod(r.item) || { name: '', unit: '', line: '' }, n = g.list.length;
+      return [STATE.shipment.invoice, gSerial(g), p.name, p.line, r.type, r.spec, r.combos.map(function (c) { return vlabel(c) + ': ' + c.qty; }).join('; '), r.target, p.unit, n, r.target * n, r.edited ? 'Yes' : 'No']; })));
+}
+function summaryCSV() {
+  return csvRows([['Invoice', 'Product', 'Line', 'Size', 'Colour', 'Style', 'Total Qty', 'Unit', 'Packages']]
+    .concat(summaryLines().map(function (l) { var p = prod(l.item) || { name: '', unit: '', line: '' }; return [STATE.shipment.invoice, p.name, p.line, l.size, l.color, l.style, l.qty, p.unit, l.packages]; })));
+}
+
+/* ---------------- dialogs */
+function openModal(title, body, foot) {
+  $('#spModal').innerHTML = '<div class="sp-back"><section class="sp-modal" role="dialog" aria-modal="true" aria-labelledby="spMT"><div class="row between" style="display:flex;justify-content:space-between;align-items:center"><h2 id="spMT">' + title + '</h2><button type="button" data-a="close" aria-label="Close">×</button></div>'
+    + body + '<div id="spMErr" class="err" role="alert"></div>' + (foot ? '<div class="foot">' + foot + '</div>' : '') + '</section></div>';
+}
+function closeModal() { $('#spModal').innerHTML = ''; }
+var qEdit = null;
+function quantityModal(c) {
+  var d = draft, cur = c || { size: d.selectedSize, color: d.selectedColor, style: d.selectedStyle };
+  var ex = d.combos.find(function (x) { return vkey(x.size, x.color, x.style) === vkey(cur.size, cur.color, cur.style); });
+  qEdit = cur;
+  openModal('Edit quantity', '<p class="small muted">' + esc(vlabel(cur)) + '</p><div style="margin-top:12px"><label for="spQty" style="display:block;font-size:12px;font-weight:650;color:#64797b;margin-bottom:5px">Quantity in this combination</label><input id="spQty" type="text" inputmode="numeric" pattern="[0-9]*" value="' + ((ex && ex.qty) || 0) + '"></div><div style="font-size:12px;color:#64797b;margin-top:7px">Zero removes it. The package holds ' + d.target + '.</div>',
+    '<button type="button" data-a="close">Cancel</button><button type="button" class="primary" data-a="qty-apply">Apply</button>');
+  setTimeout(function () { var i = $('#spQty'); if (i) { i.focus(); i.select(); } }, 5);
+}
+function showReport() { openModal('Final packing list', '<div class="row wrap" style="display:flex;gap:7px;margin:6px 0 12px"><button type="button" data-a="print">Print / Save PDF</button><button type="button" data-a="csv">CSV</button></div>' + reportHTML(), ''); $('.sp-modal').style.maxWidth = '1000px'; }
+function printReport() { $('#spPrint').innerHTML = reportHTML(); window.print(); }
+
+/* ---------------- one handler for every tap */
+function onAction(el) {
+  var a = el.dataset.a, d = draft;
+  try { switch (a) {
+    case 'tab': tab = el.dataset.tab; searchQuery = ''; render(); window.scrollTo(0, 0); break;
+    case 'product': {
+      var id = el.dataset.id, prev = draft; freshDraft(id);
+      if (prev.edit) { draft.edit = prev.edit; draft.start = prev.start; draft.end = prev.start; draft.prefix = prev.prefix; draft.pad = prev.pad; }
+      history = []; searchQuery = ''; saveLocal(); render(); toast('Sizes and colours of this line loaded · last packing details restored'); break; }
+    case 'entry-mode': d.entryMode = el.dataset.mode; if (d.entryMode === 'range') d.end = d.start; saveLocal(); renderPacking(); break;
+    case 'select-attr': snapshot(); d['selected' + el.dataset.type.charAt(0).toUpperCase() + el.dataset.type.slice(1)] = el.dataset.value; saveLocal(); renderPacking(); break;
+    case 'count':
+      if (suppressTap) { suppressTap = false; break; }
+      if (el.dataset.type === 'color') increment(el.dataset.value, d.selectedStyle);
+      else if (el.dataset.type === 'style') increment(d.selectedColor, el.dataset.value);
+      else increment(d.selectedColor, d.selectedStyle);
+      break;
+    case 'undo': if (history.length) { draft = history.pop(); saveLocal(); renderPacking(); } break;
+    case 'fill': { var cur = d.combos.find(function (c) { return c.size === d.selectedSize && c.color === d.selectedColor && c.style === d.selectedStyle; });
+      setCombo(d.selectedSize, d.selectedColor, d.selectedStyle, (cur ? cur.qty : 0) + d.target - sumQty(d.combos)); break; }
+    case 'edit-current': quantityModal(); break;
+    case 'combo-edit': quantityModal(d.combos[+el.dataset.i]); break;
+    case 'combo-plus': case 'combo-minus': { var c = d.combos[+el.dataset.i]; setCombo(c.size, c.color, c.style, c.qty + (a === 'combo-plus' ? 1 : -1)); break; }
+    case 'clear': snapshot(); d.combos = []; saveLocal(); renderPacking(); break;
+    case 'qty-apply': { var n = Number($('#spQty').value); setCombo(qEdit.size, qEdit.color, qEdit.style, n); closeModal(); break; }
+    case 'save': saveDraft(); break;
+    case 'cancel-edit': cancelEdit(); break;
+    case 'edit': editPackage(findPkg(el.dataset.g, el.dataset.n), false); break;
+    case 'copy': editPackage(findPkg(el.dataset.g, el.dataset.n), true); break;
+    case 'delete': {
+      var pk = findPkg(el.dataset.g, el.dataset.n);
+      if (!pk || !window.confirm('Delete ' + pk.type + ' ' + serialText(pk.prefix, pk.num, pk.pad) + ' from this packing list?')) break;
+      api({ op: 'delete', group: pk.gid, num: pk.num }).then(function () { render(); toast('Package deleted'); }).catch(function (e) { render(); toast(e.message, true); });
+      break; }
+    case 'record-mode': recordMode = el.dataset.mode; recordPage = 0; renderRecords(); break;
+    case 'view-range': recordFilter = el.dataset.keys.split(','); recordMode = 'individual'; recordPage = 0; renderRecords(); break;
+    case 'clear-filter': recordFilter = null; recordPage = 0; renderRecords(); break;
+    case 'page': recordPage += +el.dataset.dir; renderRecordList(); break;
+    case 'finish':
+      if (draft.edit) throw Error('Save or cancel the package being edited first.');
+      if (sumQty(draft.combos) > 0 && !window.confirm('The package on the Packing tab has not been saved. Finish with the saved packages only?')) break;
+      if (!window.confirm('Finish packing? The packing list rows and the shipment totals are written from the saved packages.')) break;
+      api({ op: 'finish' }).then(function (j) { render(); toast(j.msg); }).catch(function (e) { render(); toast(e.message, true); });
+      break;
+    case 'reopen': api({ op: 'reopen' }).then(function (j) { tab = 'packing'; render(); toast(j.msg); }).catch(function (e) { toast(e.message, true); }); break;
+    case 'summary-csv': download(summaryCSV(), 'Packing-Summary-' + STATE.shipment.invoice + '.csv'); break;
+    case 'csv': download(packingCSV(), 'Packing-List-' + STATE.shipment.invoice + '.csv'); break;
+    case 'close': closeModal(); break;
+    case 'report': showReport(); break;
+    case 'print': printReport(); break;
+  } } catch (e) { if ($('#spMErr')) $('#spMErr').textContent = e.message; else toast(e.message, true); }
+}
+
+/* ---------------- product search: typos forgiven */
+function fuzzy(q, text) {
+  q = q.toLowerCase().replace(/[^a-z0-9]/g, ''); text = String(text).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!q) return 0; if (text.indexOf(q) >= 0) return 100 + q.length;
+  var i = 0; for (var k = 0; k < text.length; k++) if (text[k] === q[i]) i++; if (i === q.length) return 60;
+  var words = text.match(/[a-z]+|\d+/g) || [text], best = 99;
+  words.forEach(function (w) { if (Math.abs(w.length - q.length) > 2) return; var row = []; for (var x = 0; x <= w.length; x++) row.push(x);
+    for (var a = 0; a < q.length; a++) { var nr = [a + 1]; for (var b = 0; b < w.length; b++) nr[b + 1] = Math.min(nr[b] + 1, row[b + 1] + 1, row[b] + (q[a] === w[b] ? 0 : 1)); row = nr; }
+    best = Math.min(best, row[w.length]); });
+  return best <= Math.max(1, Math.floor(q.length * 0.3)) ? 40 - best : 0;
+}
+function renderSearch() {
+  var box = $('#spResults'); if (!box) return;
+  var m = STATE.products.map(function (p) { return { p: p, s: Math.max.apply(null, [p.name, p.line, p.hint].concat(p.name.split(' ')).map(function (t) { return fuzzy(searchQuery, t || ''); })) }; })
+    .filter(function (x) { return !searchQuery || x.s > 0; }).sort(function (a, b) { return b.s - a.s; }).map(function (x) { return x.p; });
+  box.hidden = false;
+  box.innerHTML = m.length ? m.map(function (p) { return '<button type="button" data-a="product" data-id="' + esc(p.id) + '"><b>' + esc(p.name) + '</b><small>' + esc(p.line) + (p.hint ? ' · ' + esc(p.hint) : '') + ' · ' + esc(p.unit) + (p.setUp ? '' : ' · not set up') + '</small></button>'; }).join('') : '<div class="empty">No matching product</div>';
+}
+
+/* ---------------- events */
+var root = $('#sp');
+document.addEventListener('click', function (e) {
+  var el = e.target.closest('[data-a]');
+  if (el && !el.disabled && (root.contains(el) || $('#spModal').contains(el))) onAction(el);
+  else if (!e.target.closest('.search')) { var r = $('#spResults'); if (r) r.hidden = true; }
+});
+/* hold a counting button to type the quantity instead of tapping */
+document.addEventListener('pointerdown', function (e) {
+  var el = e.target.closest('#sp [data-a="count"]'); if (!el) return;
+  suppressTap = false; clearTimeout(pointerTimer);
+  pointerTimer = setTimeout(function () { var d = draft;
+    quantityModal({ size: d.selectedSize, color: el.dataset.type === 'color' ? el.dataset.value : d.selectedColor, style: el.dataset.type === 'style' ? el.dataset.value : d.selectedStyle });
+    suppressTap = true; }, 550);
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach(function (t) { document.addEventListener(t, function () { clearTimeout(pointerTimer); }); });
+document.addEventListener('contextmenu', function (e) { if (e.target.closest('#sp [data-a="count"]')) e.preventDefault(); });
+function selectAll(el) { if (!el) return; el.focus(); try { el.select(); } catch (e) {} }
+document.addEventListener('focusin', function (e) { if (e.target.id === 'spSearch') renderSearch(); if (e.target.matches && e.target.matches('#sp [data-sel]')) selectAll(e.target); });
+document.addEventListener('input', function (e) {
+  var el = e.target, d = draft;
+  if (el.id === 'spSearch') { searchQuery = el.value; renderSearch(); }
+  else if (el.id === 'spRecSearch') { recordQuery = el.value; recordPage = 0; renderRecordList(); }
+  else if (el.id === 'spStart' || el.id === 'spEnd') { d[el.id === 'spStart' ? 'start' : 'end'] = el.value; saveLocal(); updatePreview(); }
+});
+document.addEventListener('change', function (e) {
+  var el = e.target, d = draft;
+  try { switch (el.id) {
+    case 'spTarget': { var n = Number(el.value);
+      if (!Number.isInteger(n) || n < 1 || n > 1000000) { el.value = d.target; throw Error('Enter a whole quantity from 1 to 1,000,000.'); }
+      if (sumQty(d.combos) > n) { el.value = d.target; throw Error('Take some out of the contents before lowering the quantity.'); }
+      snapshot(); d.target = n; saveLocal(); renderPacking(); break; }
+    case 'spType': d.packageType = el.value; d.spec = DEFAULT_SPEC[d.packageType] || ''; d.advancedOpen = true;
+      if (!d.edit) { d.start = nextSerial(d.prefix, d.pad, d.packageType); d.end = d.start; }
+      saveLocal(); renderPacking(); break;
+    case 'spSpec': d.spec = el.value.trim() || DEFAULT_SPEC[d.packageType] || ''; saveLocal(); break;
+    case 'spPrefix': { var pf = el.value.toUpperCase();
+      if (!/^[A-Z_-]{0,16}$/.test(pf)) { el.value = d.prefix; throw Error('Use letters, hyphens or underscores for the prefix.'); }
+      d.prefix = pf; if (!d.edit) { d.start = nextSerial(pf, d.pad, d.packageType); d.end = d.start; } saveLocal(); renderPacking(); break; }
+    case 'spPad': { var o = parseSerial(d.start, d.prefix, d.pad), en = parseSerial(d.end || d.start, d.prefix, d.pad);
+      d.pad = +el.value; d.start = serialText(o.prefix, o.num, d.pad); d.end = serialText(en.prefix, en.num, d.pad); saveLocal(); renderPacking(); break; }
+  } } catch (err) { toast(err.message, true); }
+});
+document.addEventListener('toggle', function (e) {
+  if (e.target.id === 'spPkgDetails') { draft.advancedOpen = e.target.open; saveLocal(); }
+  if (e.target.id === 'spCompDetails') { draft.compositionOpen = e.target.open; saveLocal(); }
+}, true);
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Enter' && e.target.id === 'spQty') { onAction({ dataset: { a: 'qty-apply' } }); return; }
+  /* Enter walks serial → end → quantity → the first size, as on the demo */
+  if (e.key === 'Enter' && e.target.matches && e.target.matches('#sp [data-sel]')) {
+    e.preventDefault();
+    var next = { spStart: draft.entryMode === 'range' ? 'spEnd' : 'spTarget', spEnd: 'spTarget' }[e.target.id];
+    if (next) selectAll($('#' + next));
+    else if (e.target.id === 'spTarget') { try { syncEntry(); renderPacking(); } catch (er) { toast(er.message, true); }
+      var f = $('#spSizes button') || $('#spColors button') || $('#spStyles button'); if (f) f.focus(); }
+  }
+});
+window.addEventListener('beforeprint', function () { $('#spPrint').innerHTML = reportHTML(); });
+
+/* ---------------- start */
+if (!STATE.products.length) { $('#spMain').innerHTML = '<div class="card empty">This invoice has no lines yet. Add them on the desktop first.</div>'; return; }
+draft = loadLocal();
+if (!draft) freshDraft(STATE.products[0].id);
+else if (!draft.edit) { /* a kept draft may be behind what was saved since */
+  try { var used = packages().some(function (p) { var r = parseSerial(draft.start, draft.prefix, draft.pad); return p.prefix === r.prefix && p.num === r.num && kindOf(p.type) === kindOf(draft.packageType); });
+        if (used) { draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start; } } catch (e) {}
+}
+if (STATE.completed) tab = 'summary';
+render();
+window.ZASPacking = { get state() { return STATE; }, get draft() { return draft; }, packages: packages, nextSerial: nextSerial, render: render };
+})();
+</script>
+<?php
 mob_footer();

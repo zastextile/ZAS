@@ -106,9 +106,9 @@ t('a backwards range is 0, not a negative count',
 t('the screen has no field that types a package count',
   !preg_match('~name="packages"~', $mpN), 'a packages input on the phone screen');
 /* Not [^>]* — the value between the two is PHP, and "?>" contains a ">". */
-t('and the serial fields are required',
-  preg_match('~name="serial_from".{0,240}?\brequired\b~s', $mpN) === 1
-  && preg_match('~name="serial_to".{0,240}?\brequired\b~s', $mpN) === 1);
+t('and a serial is required — nothing saves without one',
+  str_contains($mpN, "throw Error('Use a positive serial number, optionally prefixed: 25, C025 or CTN-025.')")
+  && str_contains($mpN, "range = rangeForDraft(d);"));
 
 /* ============================================ 2. per package versus direct */
 head('2. Per package and direct give the same thousand');
@@ -135,17 +135,15 @@ t('and direct works back to 10 in each carton',
    provides the hook; zpackboot_test drives it in a browser. */
 /* The label follows BOTH toggles now: in assorted mode the one box is
    the total pieces both assortments must add up to. */
-t('the quantity label is a hook the script rewrites, for both toggles',
-  str_contains($mpN, 'data-qtylabel')
-  && str_contains($mpN, "(per ? ('Total pieces per ' + lu) : 'Total pieces')")
-  && str_contains($mpN, "(per ? ('Quantity per ' + lu) : 'Total quantity')"),
-  'the label is not switched by the toggle');
+/* SMART PACKING: one quantity, per package — "pcs / carton". Direct
+   quantity is gone from the phone; ranges saved that way still show. */
+t('the quantity box says what it is: pieces per package of this kind',
+  str_contains($mpN, "'<div class=\"qtyf\"><label for=\"spTarget\">' + esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase())"),
+  'the label does not name the unit and the package');
 /* One box, common to both modes — "Total pieces per carton remains
    visible in both". The old tap page and its hidden carry-over are gone. */
-t('there is exactly one quantity input, common to both modes',
-  substr_count($mpN, 'name="single_qty"') === 1
-  && preg_match('~<label class="f">\s*<span data-qtylabel>~', $mpN) === 1,
-  substr_count($mpN, 'name="single_qty"'));
+t('there is exactly one quantity input, for standard and assorted alike',
+  substr_count($mpN, '<input id="spTarget"') === 1, substr_count($mpN, '<input id="spTarget"'));
 t('nothing on the screen mentions a fixed quantity',
   !preg_match('~fix(ed)?\s*qty~i', $mpN), 'a fixed-qty wording survived');
 
@@ -182,9 +180,9 @@ t('a single-size range prints its one size',
 /* SINCE CHANGED, AT AFNAN'S WORD: assorted is set up inside the range
    card, with no page of its own and no reload. The old address only
    sends you back to the card. */
-t('assorted is set up inside the range card, not on a page of its own',
-  str_contains($mpN, 'data-mix') && !str_contains($mpN, 't=mix&g=')
-  && preg_match('~if \(\$tab === \x27mix\x27\) \{\s*redirect\(~', $mpN) === 1,
+t('assorted is not a page or a switch — more than one combination counted IS assorted',
+  str_contains($mpN, "(r.combos.length === 1 ? 'Standard' : 'Assorted') + ' packing")
+  && !str_contains($mpN, 't=mix') && !str_contains($mpN, "\$tab === 'mix'"),
   'a separate assorted page is still there');
 t('and the size-by-size figures are what save',
   str_contains($pkN, 'INSERT INTO packing_group_sizes'));
@@ -208,7 +206,7 @@ head('5. Two ranges may not own the same carton');
 
 t('pack_serial_problem exists and is used before every save',
   str_contains($pkN, 'function pack_serial_problem')
-  && preg_match('~pack_serial_problem\(\$shipmentId, \$from, \$to, \$groupId, \(string\)\(\$in\[\x27unit_title\x27\] \?\? \x27Carton\x27\)\)~', $pkN) === 1);
+  && preg_match('~pack_serial_problem\(\$shipmentId, \$from, \$to, \$groupId, \(string\)\(\$in\[\x27unit_title\x27\] \?\? \x27Carton\x27\), \$prefix\)~', $pkN) === 1);
 t('it looks for an overlap in the same shipment',
   preg_match('~serial_from<=\?\s+AND\s+serial_to>=\?~', $pkN) === 1,
   'the overlap query is not an overlap test');
@@ -344,8 +342,9 @@ t('every POST verifies CSRF before anything else',
   'a POST is handled before CSRF is checked');
 t('and a POST is refused outright when the list is closed',
   preg_match('~verify_csrf\(\);\s*if \(!\$canEdit\)~', $mpN) === 1);
-t('a closed list is read-only, not merely hidden',
-  substr_count($mpN, 'if ($canEdit)') >= 3);
+t('a closed list is read-only, not merely hidden — the server refuses, and the screen hides the buttons',
+  str_contains($mpN, "if (!\$canEdit) { http_response_code(403); \$answer(false, 'This packing list can no longer be changed.'); }")
+  && substr_count($mpN, 'CAN_EDIT') >= 4);
 t('the edit rule lives in one place for both screens',
   str_contains($pkN, 'function pack_may_edit'));
 t('a locked shipment is admin only',

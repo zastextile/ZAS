@@ -62,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     /* Ticked boxes, plus anything typed into the "not on the list" field.
        One field takes several at once, separated by commas, because a
        customer's email usually lists them that way. */
-    foreach (['size', 'colour'] as $kind) {
+    foreach (['size', 'colour', 'style'] as $kind) {
         $picked = array_map('strval', (array)($_POST['pick_' . $kind] ?? []));
         $typed  = trim((string)($_POST['new_' . $kind] ?? ''));
         if ($typed !== '') {
@@ -132,14 +132,15 @@ flash();
   <div class="plines">
     <?php foreach ($items as $it):
       $pal = pack_palette($id, (int)$it['id']);
-      $n = count($pal['size']) + count($pal['colour']); ?>
+      $n = count($pal['size']) + count($pal['colour']) + count($pal['style']); ?>
       <?php /* Line number and the line's own wording, small and italic.
                An invoice with four "Bath Towel" lines showed four identical
                chips; now each says #1 · Royal blue, #3 · White and so on. */ ?>
       <a class="pline<?= (int)$it['id'] === $pick ? ' on' : '' ?>"
          href="pack_palette.php?id=<?= $id ?>&item=<?= (int)$it['id'] ?>">
         <?= pack_item_html($it) ?>
-        <span class="pcount"><?= $n ? count($pal['size']) . '/' . count($pal['colour']) : 'not set' ?></span></a>
+        <span class="pcount"><?= $n ? count($pal['size']) . '/' . count($pal['colour'])
+            . ($pal['style'] ? '/' . count($pal['style']) : '') : 'not set' ?></span></a>
     <?php endforeach; ?>
   </div>
 
@@ -222,14 +223,42 @@ flash();
           </div>
         <?php endif; ?>
       </div>
+
+      <?php /* STYLES — Smart Packing counts size × colour × style. Most
+               lines have none and this stays empty; a line packed in Crew
+               and V-neck, or Flat and Fitted, lists them here and the phone
+               offers them as buttons beside the colours. */ ?>
+      <div>
+        <span class="flab">Styles this order uses <i class="ihint">optional</i></span>
+        <p class="hint"><?= $choices['style']
+          ? count($choices['style']) . ' on record for this product — tick the ones in this order'
+          : 'Only if this line comes in styles, such as Crew and V-neck. Most lines leave this empty.' ?></p>
+        <div class="chips">
+          <?php foreach ($choices['style'] as $o): ?>
+            <label class="chip">
+              <input type="checkbox" name="pick_style[]" value="<?= e($o) ?>"
+                     <?= in_array($o, $pal['style'], true) ? 'checked' : '' ?>
+                     <?= $canEdit ? '' : 'disabled' ?>>
+              <span><?= e($o) ?></span>
+            </label>
+          <?php endforeach; ?>
+        </div>
+        <?php if ($canEdit): ?>
+          <div class="newrow">
+            <span class="flab">A style that is not listed</span>
+            <input name="new_style" placeholder="one, or several separated by commas">
+          </div>
+        <?php endif; ?>
+      </div>
     </div>
 
     <div class="scope">
-      <?php $ns = count($pal['size']); $nc = count($pal['colour']); ?>
-      <b><?= $ns || $nc
+      <?php $ns = count($pal['size']); $nc = count($pal['colour']); $nt = count($pal['style']); ?>
+      <b><?= $ns || $nc || $nt
         ? $ns . ' size' . ($ns === 1 ? '' : 's') . ' and ' . $nc . ' colour' . ($nc === 1 ? '' : 's')
+          . ($nt ? ' and ' . $nt . ' style' . ($nt === 1 ? '' : 's') : '')
         : 'Nothing set for this line yet' ?></b>
-      <p><?= $ns || $nc
+      <p><?= $ns || $nc || $nt
         ? 'That is all the packing phone will show. Not every combination has to be packed —
            it is the range the packer may pick from.'
         : 'Until this is set, the phone has nothing to offer and the packer has to type. Set it here first.' ?></p>

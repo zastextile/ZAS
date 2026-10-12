@@ -15,6 +15,12 @@
  *   Carton 101–225  per       40 of 152x200                 = 5,000 pcs
  *   Bale   226–245  direct    4,000 total                   = 4,000 pcs
  *
+ * SMART PACKING (afnan's demo) replaced the serial and approve tabs with
+ * one page drawn in the browser; zsmartpack_test.php drives that against a
+ * real database. What is left here is the weight screen, which is kept and
+ * linked from Summary until the weight module exists, the desktop screen,
+ * and the state the new page is drawn from — read off this fixture.
+ *
  * What it asserts:
  *   every tab renders with no PHP warning and no javascript error
  *   the serial produces the count, on screen, in all three ranges
@@ -52,7 +58,9 @@ $_SESSION['user_id'] = 1; $_SESSION['role'] = 'admin'; $_SESSION['_csrf'] = 'tes
 function e($s){ return htmlspecialchars((string)$s, ENT_QUOTES); }
 function require_login(){}
 function verify_csrf(){}
-function csrf_token(){ return 'testtoken'; }
+/* BREAKTOKEN: the packing screen reads its token before printing
+   anything; this proves a throw there gives a card, not a blank page */
+function csrf_token(){ if (getenv('BREAKTOKEN')) throw new Error('Column not found: test breakage'); return 'testtoken'; }
 /* BREAKCSRF=N throws on the Nth form drawn. Nearly every database read in
    packing.php swallows its own errors, so a throw from the fake database
    never reaches a card; this one does, from the middle of a form, which
@@ -383,11 +391,10 @@ head('1. Every tab renders, with nothing complaining');
 
 $pages = [
     'list'    => [],
-    'serial'  => ['id' => 1, 't' => 'serial'],
+    'serial'  => ['id' => 1],
     'weight'  => ['id' => 1, 't' => 'weight'],
     'weight2' => ['id' => 1, 't' => 'weight', 'g' => 102],
     'weight3' => ['id' => 1, 't' => 'weight', 'g' => 103],
-    'approve' => ['id' => 1, 't' => 'approve'],
 ];
 $html = [];
 foreach ($pages as $name => $get) {
@@ -411,97 +418,32 @@ foreach ($pages as $name => $get) {
 file_put_contents($work . '/weight4.html', $w4);
 file_put_contents($work . '/weight5.html', $w5);
 
-head('2. The serial produces the count — in the markup, and on screen');
+head('2. The packing screen is drawn from the saved ranges');
 
-/* THESE MOVED INTO THE BROWSER, and the reason matters: the derived
-   lines are no longer written by PHP. The toggles are live now, so the
-   package count, the quantity label and the total are produced by the
-   script the moment anything changes. Asserting on the HTML string
-   would only prove the placeholders exist. Section 7 drives them. */
+/* The new screen is drawn in the browser from one embedded state. What
+   that state says about this fixture is checked here; what the screen
+   then does with it is driven in zsmartpack_test.php. */
 $ser = $html['serial'];
-/* An <input> tag, not the string — the page's own script contains
-   querySelector('[name="serial_from"]') and a plain count caught that
-   too, which is how this assertion first went wrong. */
-ok(preg_match_all('~<input[^>]*name="serial_from"~', $ser) === 4,
-   'three ranges plus the add-another card, each asking for a serial',
-   preg_match_all('~<input[^>]*name="serial_from"~', $ser));
-ok(!preg_match('~<input[^>]*name="packages"~', $ser),
-   'nothing on the page types a package count');
-ok(preg_match('~<input[^>]*name="serial_from"[^>]*value="246"~', $ser) === 1,
-   'the next range is offered starting at 246',
-   preg_match_all('~name="serial_from"[^>]*value="(\d*)"~', $ser, $mm) ? $mm[1] : null);
+$st2 = preg_match('~var STATE = (\{.*?\});\nvar CAN_EDIT~s', $ser, $sm2) ? json_decode($sm2[1], true) : null;
+ok(is_array($st2), 'the state is embedded in the page', substr($ser, 0, 200));
+$rec2 = [];
+foreach ($st2['records'] ?? [] as $r) $rec2[$r['id']] = $r;
+ok(array_keys($rec2) === [101, 102, 103], 'every saved range is in it', array_keys($rec2));
+/* the stored packages column says 999, 7 and 3 — the serial wins */
+ok(($rec2[101]['from'] ?? 0) === 1 && ($rec2[101]['to'] ?? 0) === 100
+   && ($rec2[102]['from'] ?? 0) === 101 && ($rec2[102]['to'] ?? 0) === 225
+   && ($rec2[103]['from'] ?? 0) === 226 && ($rec2[103]['to'] ?? 0) === 245,
+   'with the serials, which is what the package count comes from — not the stored column');
+ok(($rec2[101]['target'] ?? 0) == 10 && ($rec2[102]['target'] ?? 0) == 40 && ($rec2[103]['target'] ?? 0) == 200,
+   'pieces per package: 10, 40, and 200 for the range typed as a direct 4,000 over 20 bales',
+   [$rec2[101]['target'] ?? null, $rec2[102]['target'] ?? null, $rec2[103]['target'] ?? null]);
+ok(array_map(fn($c) => $c['size'] . ' ' . $c['qty'], $rec2[101]['combos'] ?? []) === ['Small 2', 'Medium 4', 'Large 4'],
+   'the assorted range carries its 2 Small, 4 Medium, 4 Large', $rec2[101]['combos'] ?? null);
+ok(($rec2[103]['type'] ?? '') === 'Bale', 'and each range its kind of package');
+ok(($rec2[101]['weighed'] ?? false) && ($rec2[102]['weighed'] ?? false) && ($rec2[103]['weighed'] ?? false),
+   'all three are weighed, so Summary shows Weight ✓');
+ok(!preg_match('~<input[^>]*name="packages"~', $ser), 'nothing on the page types a package count');
 ok(!preg_match('~fix(ed)?\s*qty~i', $ser), 'no fixed-quantity wording anywhere');
-
-head('3. Both toggles are present on every range, and carry the choice');
-
-ok(preg_match_all('~<input[^>]*name="qty_mode"~', $ser) === 8,
-   'per package / direct qty on all four cards',
-   preg_match_all('~<input[^>]*name="qty_mode"~', $ser));
-ok(preg_match_all('~<input[^>]*name="size_mode"~', $ser) === 8,
-   'one size / assorted on all four cards',
-   preg_match_all('~<input[^>]*name="size_mode"~', $ser));
-/* The tag, not the word — the script's own querySelector('[data-qtylabel]')
-   is in this page too, and counting the word found five on four cards. */
-ok(preg_match_all('~<span[^>]*data-qtylabel~', $ser) === 4,
-   'and a label for the script to rewrite on each',
-   preg_match_all('~<span[^>]*data-qtylabel~', $ser));
-/* Without a script every field is still there and still posts. */
-ok(preg_match_all('~<input[^>]*name="single_qty"~', $ser) === 4
-   && preg_match_all('~<select[^>]*name="single_size"~', $ser) === 4,
-   'the quantity and size fields exist on every card, script or no script');
-/* A required field that a toggle hides cannot be filled in, and the
-   browser then refuses to submit without saying why. */
-ok(!preg_match('~<input[^>]*name="single_qty"[^>]*required~', $ser)
-   && !preg_match('~<select[^>]*name="single_size"[^>]*required~', $ser),
-   'neither is marked required, because a toggle can hide them',
-   'a hidden required field makes the form look dead');
-
-/* A RANGE THAT IS NOT ASSORTED STILL HAS A COLOUR. 40 white, 30 navy and
-   30 grey is three ordinary ranges and no tapping at all — he was right
-   about that — so the plain card needs a colour of its own. */
-ok(preg_match('~<select class="in" name="single_colour">(.*?)</select>~s', $ser, $cm) === 1,
-   'a plain range can be given a colour without becoming assorted');
-ok(isset($cm[1]) && substr_count($cm[1], '<option') === 3
-   && str_contains($cm[1], '— no colour —')
-   && str_contains($cm[1], '>White<') && str_contains($cm[1], '>Navy<'),
-   'offering this order\'s two colours, plus none at all',
-   $cm[1] ?? null);
-ok(!str_contains((string)($cm[1] ?? ''), 'Grey'),
-   'and not a colour the product was merely packed in once, which is the office\'s to choose');
-/* Every card has the colour field now, so the script can fill it when
-   the dropdown moves to a line that has colours — but a line with none
-   keeps it hidden rather than showing an empty list. Range 1 (line 11,
-   two colours) shows it; ranges 2 and 3 and the New range card do not. */
-ok(substr_count($ser, '<select class="in" name="single_colour">') === 4,
-   'every card carries a colour field the script can fill',
-   substr_count($ser, '<select class="in" name="single_colour">'));
-ok(preg_match_all('~<label class="f" data-one data-colbox hidden>~', $ser) === 3,
-   'and it is hidden on every line that has no colours set',
-   preg_match_all('~<label class="f" data-one data-colbox hidden>~', $ser));
-
-head('4. Assorted is set up inside the range card, not on a page of its own');
-
-/* "Never allow a page refresh — dynamic fields with the toggle, in the
-   same form." The old tap page is gone; its address now sends you to the
-   range in the card. */
-[$oldMix] = render($work, ['id' => 1, 't' => 'mix', 'g' => 101]);
-ok(str_contains($oldMix, '__REDIRECT__ m_pack.php?id=1&t=serial#r101'),
-   'the old assorted page sends you to that range in the card', substr($oldMix, 0, 160));
-ok(!str_contains($ser, 't=mix'), 'and nothing on the serial page links to it any more');
-preg_match_all('~<form method="post" class="mcard" autocomplete="off".*?</form>~s', $ser, $cards4);
-$c1 = $cards4[0][0] ?? '';
-ok(preg_match('~<div data-mix\s+data-asz=~', $c1) === 1,
-   'an assorted range opens with its assortment showing', null);
-$asz4 = preg_match('~data-asz="([^"]*)"~', $c1, $am4) ? json_decode(html_entity_decode($am4[1]), true) : null;
-ok($asz4 === ['Small' => 2, 'Medium' => 4, 'Large' => 4],
-   'holding the saved 2 Small, 4 Medium, 4 Large', $asz4);
-ok(preg_match('~name="single_qty"\s+value="10"~', $c1) === 1,
-   'and the total pieces per carton, 10, in the common box');
-$cn4 = end($cards4[0]) ?: '';
-ok(preg_match('~name="size_mode" value="mix"(?![^>]*disabled)~', $cn4) === 1,
-   'Assorted can be chosen on a new range at once — no saving first');
-ok(str_contains($ser, '2 Small, 4 Medium, 4 Large'),
-   'and the serial tab shows the mix without opening it');
 
 head('5. Weight — every size comes down with the page');
 
@@ -540,21 +482,23 @@ ok(preg_match('~var STD\s*=\s*\{"Single":~', $w3) === 1,
 ok(preg_match('~var STD\s*=\s*\{\}~', $w2) === 1,
    'and not for a product that has none', null);
 
-head('6. Approve adds the three ranges up');
+head('6. Finish packing adds the three ranges up');
 
-$ap = $html['approve'];
+/* Finish packing writes the totals pack_totals() works out — the same
+   figures the old Approve tab showed. Read straight from it. */
+file_put_contents($work . '/totals.php', "<?php require 'includes/bootstrap.php'; require 'includes/packing.php';"
+    . " echo json_encode(pack_totals(1));");
+$t6 = json_decode((string)shell_exec('cd ' . escapeshellarg($work) . ' && ' . escapeshellarg(PHP_BINARY)
+    . ' totals.php 2>&1'), true);
 /* 245 packages; 1,000 + 5,000 + 4,000 = 10,000
    net  = 10.420x100 + 19.800x125 + 90.000x20 = 1042 + 2475 + 1800 = 5,317.000
    gross= net + 1.000x100 + 1.200x125 + 2.000x20 = 5317 + 100 + 150 + 40 = 5,607.000 */
-ok(str_contains($ap, '>245<'), 'total packages 245', null);
-ok(str_contains($ap, '10,000.00'), 'total quantity 10,000');
-ok(str_contains($ap, '5,317.000 kg'), 'net 5,317.000 kg');
-ok(str_contains($ap, '5,607.000 kg'), 'gross 5,607.000 kg');
-ok(str_contains($ap, 'Every package balances'), 'nothing is flagged unfinished');
-ok(str_contains($ap, 'It is not compared with the invoice'), 'and it says the invoice is not the judge');
-ok(substr_count($ap, '<tr>') >= 6, 'the size-by-size table has a row per size',
-   substr_count($ap, '<tr>'));
-ok(str_contains($ap, 'value="5317.000"'), 'the final net is pre-filled with the calculated figure');
+ok((int)($t6['packages'] ?? 0) === 245, 'total packages 245', $t6['packages'] ?? $t6);
+ok(abs((float)($t6['qty'] ?? 0) - 10000) < 0.001, 'total quantity 10,000', $t6['qty'] ?? null);
+ok(abs((float)($t6['net'] ?? 0) - 5317) < 0.001, 'net 5,317.000 kg', $t6['net'] ?? null);
+ok(abs((float)($t6['gross'] ?? 0) - 5607) < 0.001, 'gross 5,607.000 kg', $t6['gross'] ?? null);
+ok(($t6['unfinished'] ?? ['?']) === [], 'nothing is flagged unfinished', $t6['unfinished'] ?? null);
+ok(str_contains($ser, 'It is not compared with the invoice'), 'and the screen says the invoice is not the judge');
 
 /* ------------------------------------------------------------- Chromium */
 head('7. Chromium loads every page with no javascript error');
@@ -662,8 +606,6 @@ JS;
            'a range with one thing to weigh draws no chips at all',
            $got['weight5']['chips'] ?? null);
 
-        ok(str_contains($got['approve']['dev'] ?? '', 'same as calculated'),
-           'approve opens with no deviation', $got['approve']['dev'] ?? null);
     }
 }
 
@@ -671,7 +613,7 @@ JS;
    The whole point of this round is that nothing waits for a save. A
    markup check cannot tell a live toggle from a dead one — both have the
    radio — so these are clicked. */
-head('8. Live toggles, live size switching, copy and apply-to-many');
+head('8. The weight screen: live size switching, copy and apply-to-many');
 
 if ($node === '' || !is_dir($root . '/playwright')) {
     echo "  (skipped — playwright not available)\n";
@@ -697,45 +639,7 @@ const path = require('path');
     return p;
   };
 
-  // ---------- the serial cards ----------
-  let p = await open('serial.html');
-  const cards = p.locator('form.mcard');
-  const c2 = cards.nth(1);                       // Carton 101-225, per package, one size
-  const read = async (c) => ({
-    label:  await c.locator('[data-qtylabel]').innerText(),
-    qty:    await c.locator('[data-qty]').inputValue(),
-    serial: (await c.locator('[data-serial]').innerText()).replace(/\n/g, ' | '),
-    total:  (await c.locator('[data-total]').innerText()).replace(/\n/g, ' | '),
-    oneVisible: await c.locator('[data-one]').first().isVisible(),
-    mixVisible: await c.locator('[data-mix]').isVisible(),
-  });
-
-  out.c2start = await read(c2);
-  // flip to Direct qty
-  // tap the label, which is what a thumb hits — the radio itself is
-  // deliberately invisible inside the segmented control.
-  await c2.locator('.seg span', { hasText: 'Direct qty' }).click();
-  await p.waitForTimeout(150);
-  out.c2direct = await read(c2);
-  // and back
-  await c2.locator('.seg span', { hasText: 'Per package' }).click();
-  await p.waitForTimeout(150);
-  out.c2back = await read(c2);
-  // widen the serial by one carton
-  await c2.locator('[name="serial_to"]').fill('226');
-  await p.waitForTimeout(150);
-  out.c2wider = await read(c2);
-  await c2.locator('[name="serial_to"]').fill('225');
-  await p.waitForTimeout(120);
-  // flip to Assorted
-  await c2.locator('.seg span', { hasText: 'Assorted' }).click();
-  await p.waitForTimeout(150);
-  out.c2mix = await read(c2);
-
-  // card 1 arrives already assorted
-  out.c1start = await read(cards.nth(0));
-  await p.close();
-
+  let p;
   // ---------- the weight screen, three sizes ----------
   p = await open('weight.html');
   const chipTexts = async () => (await p.locator('#szchips .chip').allInnerTexts()).map(t => t.trim());
@@ -851,43 +755,6 @@ JS;
         ok(false, 'chromium drove the page', substr((string)$raw, 0, 700));
     } else {
         ok(($d['errors'] ?? null) === [], 'no javascript error while driving', $d['errors'] ?? null);
-
-        /* --- the quantity toggle --- */
-        /* innerText gives what is on screen, and the label style is
-           text-transform:uppercase — so compare without case. */
-        ok(strcasecmp((string)($d['c2start']['label'] ?? ''), 'Quantity per carton') === 0,
-           'per package: the label names the package', $d['c2start'] ?? null);
-        ok(str_contains((string)($d['c2start']['total'] ?? ''), '40 per carton × 125')
-           && str_contains((string)($d['c2start']['total'] ?? ''), '5,000'),
-           'and the total is worked out on the spot', $d['c2start']['total'] ?? null);
-
-        ok(strcasecmp((string)($d['c2direct']['label'] ?? ''), 'Total quantity') === 0,
-           'direct: the label changes the instant it is tapped', $d['c2direct'] ?? null);
-        ok(($d['c2direct']['qty'] ?? '') === '5000',
-           'and the figure is converted, not left meaning something else',
-           $d['c2direct']['qty'] ?? null);
-        ok(str_contains((string)($d['c2direct']['total'] ?? ''), 'over 125 carton'),
-           'the total line reads the other way round now', $d['c2direct']['total'] ?? null);
-        ok(($d['c2back']['qty'] ?? '') === '40',
-           'flipping back gives 40 a carton again, not 5,000', $d['c2back']['qty'] ?? null);
-
-        /* --- the serial, live --- */
-        ok(str_contains((string)($d['c2wider']['serial'] ?? ''), '126'),
-           'one more carton on the serial re-counts at once', $d['c2wider']['serial'] ?? null);
-        ok(str_contains((string)($d['c2wider']['total'] ?? ''), '5,040'),
-           'and the total follows it', $d['c2wider']['total'] ?? null);
-
-        /* --- the size toggle --- */
-        ok(($d['c2start']['oneVisible'] ?? null) === true
-           && ($d['c2start']['mixVisible'] ?? null) === false,
-           'one size: the size and quantity are on screen', $d['c2start'] ?? null);
-        ok(($d['c2mix']['oneVisible'] ?? null) === false
-           && ($d['c2mix']['mixVisible'] ?? null) === true,
-           'assorted: they vanish and the set-up link appears, with no save',
-           $d['c2mix'] ?? null);
-        ok(($d['c1start']['mixVisible'] ?? null) === true
-           && ($d['c1start']['oneVisible'] ?? null) === false,
-           'a range saved as assorted opens that way', $d['c1start'] ?? null);
 
         /* --- switching size on the weight screen --- */
         ok(($d['chips'] ?? []) === ['Small ✓', 'Medium ✓', 'Large ✓'],
@@ -1049,19 +916,13 @@ $l5 = preg_match('~var LINES  = (\{.*?\});\n~s', $w5, $m5l) ? json_decode($m5l[1
 ok(is_array($l5) && array_column($l5['Single'] ?? [], 'g') === [880, 60],
    'the one unit comes down with the one breakdown', $l5['Single'] ?? null);
 
-/* ---- and the approver sees it the same way the packer filed it */
-[$ap] = render($work, ['id' => 1, 't' => 'approve'], 'm_pack.php', 'COLOURRANGES=1');
-ok(!preg_match('~(Fatal error|Parse error|Warning:|Notice:|Deprecated:|Uncaught)~i', $ap),
-   'approve renders the colour ranges without a PHP complaint',
-   preg_match('~^.*(Fatal error|Parse error|Warning:|Notice:|Deprecated:|Uncaught).*$~mi', $ap, $am) ? $am[0] : null);
-ok(str_contains($ap, '<td>White Single</td>') && str_contains($ap, '<td>Navy Single</td>'),
-   'the approve table names the colour with the size');
-/* 900 and 1,000 — read by size alone both rows would show 0 g, because
-   nothing was ever filed under the bare size for that range. */
-ok(preg_match('~<td>White Single</td>.*?<td class="n">900</td>~s', $ap) === 1,
-   'and shows White at 900 g a unit, from where White was actually filed');
-ok(preg_match('~<td>Navy Single</td>.*?<td class="n">1,000</td>~s', $ap) === 1,
-   'and Navy at 1,000 g, which is a different number');
+/* ---- and the totals read it the same way the packer filed it */
+$t8 = json_decode((string)shell_exec('cd ' . escapeshellarg($work) . ' && COLOURRANGES=1 ' . escapeshellarg(PHP_BINARY)
+    . ' totals.php 2>&1'), true);
+ok(is_array($t8) && ($t8['unfinished'] ?? ['?']) === [], 'the colour ranges total with nothing unfinished', $t8['unfinished'] ?? $t8);
+/* 9.400 kg of contents in each of 11 cartons, for both ranges */
+ok(abs((float)($t8['net'] ?? 0) - (5317 + 9.4 * 11 * 2)) < 0.001,
+   'and each adds 11 x 9.400 kg, by its own route', $t8['net'] ?? null);
 
 /* The same carton weight by both routes, which is the point: the switch
    changes how often you are asked, not what the carton weighs. */
@@ -1171,7 +1032,7 @@ head('10. A file that was not uploaded, end to end');
 $goodMobile = (string)file_get_contents($work . '/includes/mobile.php');
 file_put_contents($work . '/includes/mobile.php',
     str_replace('function mob_steps_begin', 'function mob_steps_begin_OLD', $goodMobile));
-[$stale] = render($work, ['id' => 1, 't' => 'serial']);
+[$stale] = render($work, ['id' => 1]);
 file_put_contents($work . '/includes/mobile.php', $goodMobile);
 
 ok(str_contains($stale, 'One file is out of date'),
@@ -1179,45 +1040,28 @@ ok(str_contains($stale, 'One file is out of date'),
    substr($stale, 0, 200));
 ok(str_contains($stale, 'includes/mobile.php') && str_contains($stale, 'mob_steps_begin'),
    'it says which file and what it was looking for');
-ok(!str_contains($stale, 'Serial &amp; qty') && !str_contains($stale, 'Sizes &amp; colours set on'),
+ok(!str_contains($stale, 'id="sp"') && !str_contains($stale, 'var STATE'),
    'and it stops before drawing half a screen, which is what made it look like lost data');
 ok(str_contains($stale, '</html>'), 'the page it does send is a whole one');
 
 /* The page must be no worse off than before when nothing is missing. */
-[$fine] = render($work, ['id' => 1, 't' => 'serial']);
-ok(!str_contains($fine, 'One file is out of date') && str_contains($fine, 'Sizes &amp; colours set on'),
+[$fine] = render($work, ['id' => 1]);
+ok(!str_contains($fine, 'One file is out of date') && str_contains($fine, 'id="sp"') && str_contains($fine, 'var STATE'),
    'and with every file present the screen draws exactly as it did');
 
-head('11. One broken range does not blank the screen');
+head('11. A failure does not blank the screen');
 
-/* WHAT CAME BACK FROM THE LIVE SERVER: the order's sizes and colours,
-   and then nothing — no ranges, no New range card, no Back and Next.
-   One card threw halfway. It left an open form and an open step behind
-   it, the steps stay hidden until a script at the very end reveals one,
-   and that script was never reached. Even the error box was printed
-   inside the hidden step.
-
-   The second range is made to throw here, from the middle of its
-   form. Everything else must still draw. */
-[$br] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'BREAKCSRF=3');
-file_put_contents($work . '/broken.html', $br);
+/* WHAT CAME BACK FROM THE LIVE SERVER once: a header, and then nothing.
+   The packing screen now reads everything before it prints anything, so
+   a throw there is one plain card on a whole page. */
+[$br] = render($work, ['id' => 1], 'm_pack.php', 'BREAKTOKEN=1');
 ok(str_contains($br, '</html>'), 'the page still reaches its end');
-ok(str_contains($br, 'This range could not be drawn.'),
-   'the broken range says plainly that it could not be drawn');
-ok(str_contains($br, 'Column not found: test breakage'),
-   'and, for an admin, why — the very text the server threw');
-ok(preg_match_all('~<input[^>]*name="serial_from"~', $br) === 3,
-   'the two ranges that are fine still draw, and so does the New range card',
-   preg_match_all('~<input[^>]*name="serial_from"~', $br));
-ok(substr_count($br, '<form') === substr_count($br, '</form>'),
-   'no half-drawn form is left open to swallow the rest of the page',
-   [substr_count($br, '<form'), substr_count($br, '</form>')]);
-ok(str_contains($br, 'id="newrange"') && str_contains($br, 'Add this range'),
-   'and the New range card is still there below it');
-
-[$brs] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'BREAKCSRF=3 ROLE=staff');
-ok(str_contains($brs, 'This range could not be drawn.')
-   && !str_contains($brs, 'Column not found'),
+ok(str_contains($br, 'The packing screen could not be drawn.'),
+   'it says plainly that the screen could not be drawn', substr($br, 0, 300));
+ok(str_contains($br, 'Column not found: test breakage'), 'and, for an admin, why — the very text the server threw');
+ok(!str_contains($br, 'var STATE'), 'with no half-drawn screen under it');
+[$brs] = render($work, ['id' => 1], 'm_pack.php', 'BREAKTOKEN=1 ROLE=staff');
+ok(str_contains($brs, 'could not be drawn.') && !str_contains($brs, 'Column not found'),
    'staff are told it failed, but not the reason — that can name a query');
 
 [$bw] = render($work, ['id' => 1, 't' => 'weight', 'g' => 102], 'm_pack.php', 'BREAKCSRF=1');
@@ -1226,216 +1070,28 @@ ok(str_contains($bw, 'The weight for this range could not be drawn.')
    && substr_count($bw, '<form') === substr_count($bw, '</form>'),
    'the weight tab fails the same way: one plain card, a whole page');
 
-[$ba] = render($work, ['id' => 1, 't' => 'approve'], 'm_pack.php', 'BREAKCSRF=1');
-ok(str_contains($ba, 'The approval summary could not be drawn.') && str_contains($ba, '</html>'),
-   'and so does approve');
-
-/* With nothing broken, nothing changes. */
-[$okp] = render($work, ['id' => 1, 't' => 'serial']);
+[$okp] = render($work, ['id' => 1]);
 ok(!str_contains($okp, 'could not be drawn'), 'and with nothing broken there is no error card at all');
 
-$jsb = <<<'JS'
-const { chromium } = require('playwright');
-const path = require('path');
-(async () => {
-  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
-  const errs = []; p.on('pageerror', e => errs.push(String(e)));
-  await p.goto('file://' + path.join(process.argv[2], 'broken.html'));
-  await p.waitForTimeout(300);
-  const out = { errs };
-  // one scrolling page now: every section is on it, in order
-  out.firstOn  = await p.locator('.mstep form.mcard').first().isVisible().catch(() => false);
-  const n = await p.locator('.mstep').count();
-  out.labels = [];
-  for (let i = 0; i < n; i++) {
-    const sec = p.locator('.mstep').nth(i);
-    out.labels.push((await sec.isVisible() ? await sec.innerText() : '(hidden)').split('\n').slice(0, 3).join(' / '));
-  }
-  console.log(JSON.stringify(out));
-  await b.close();
-})();
-JS;
-file_put_contents($work . '/broken.js', $jsb);
-$rb = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
-        . escapeshellarg($work . '/broken.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
-ok(is_array($rb) && $rb['errs'] === [] && $rb['firstOn'],
-   'in a browser the first range shows, broken range or not', $rb);
-ok(is_array($rb) && count($rb['labels']) === 4
-   && str_contains($rb['labels'][1], 'could not be drawn')
-   && str_contains($rb['labels'][3], 'New range'),
-   'and down the page: a good range, the broken one explained, another good one, then New range',
-   $rb['labels'] ?? null);
+head('12. Lines told apart, and lists that follow the line');
 
-head('12. Lines told apart, lists that follow the line, a summary, no carton twice');
-
-/* From the live screenshots: a card saved as "#2 Thermal Blanket" with
-   "Bath Towel" in its dropdown; four "Bath Towel" lines that could not
-   be told apart; sixteen sizes on the phone when each line on the
-   desktop had one or two; no way to see every range at once. */
-[$s12] = render($work, ['id' => 1, 't' => 'serial']);
-file_put_contents($work . '/serial12.html', $s12);
-
-ok(preg_match_all('~<form method="post" class="mcard" autocomplete="off"~', $s12) === 4,
-   'every range form refuses the browser\'s restore, so a reload shows what is saved',
-   preg_match_all('~<form method="post" class="mcard" autocomplete="off"~', $s12));
-ok(str_contains($s12, '>#1 Duvet Cover Set King — Fleece + micro, printed</option>')
-   || preg_match('~>\s*#1 Duvet Cover Set King — Fleece \+ micro, printed</option>~', $s12) === 1,
-   'every invoice line in the dropdown carries its number and its own wording');
-ok(str_contains($s12, '<i class="ihint">#1</i>'),
-   'and the box above it names the line number, small and italic');
-
-/* The top box no longer adds every line's sizes together. */
-ok(str_contains($s12, 'Sizes &amp; colours set on 1 of 3 lines') && str_contains($s12, 'Not set yet: #2, #3'),
-   'the top says how many lines are set up and which are not — not one big pile of sizes');
-ok(!str_contains($s12, 'This order:'), 'the old order-wide pile of sizes is gone');
-
-/* Each card offers its own line's list and nothing else. */
-$pal12 = preg_match('~var PAL = (\{.*?\});~s', $s12, $pm12) ? json_decode($pm12[1], true) : null;
-ok(is_array($pal12) && ($pal12['11']['size'] ?? null) === ['Small', 'Medium', 'Large']
-   && ($pal12['11']['colour'] ?? null) === ['White', 'Navy'] && $pal12['11']['set'] === true,
-   'line #1 offers exactly the three sizes and two colours the office ticked', $pal12['11'] ?? null);
-ok(is_array($pal12) && ($pal12['11']['size'] ?? []) !== [] && !in_array('King', $pal12['11']['size'], true),
+/* From the live screenshots: four "Bath Towel" lines that could not be
+   told apart, and sixteen sizes on the phone when each line on the
+   desktop had one or two. */
+$pr12 = [];
+foreach ($st2['products'] ?? [] as $pp12) $pr12[$pp12['id']] = $pp12;
+ok(($pr12['11']['line'] ?? '') === '#1' && ($pr12['11']['hint'] ?? '') === 'Fleece + micro, printed',
+   'every invoice line carries its number and its own wording', $pr12['11'] ?? null);
+ok(($pr12['11']['sizes'] ?? null) === ['Small', 'Medium', 'Large'] && ($pr12['11']['colors'] ?? null) === ['White', 'Navy'],
+   'line #1 offers exactly the three sizes and two colours the office ticked', $pr12['11'] ?? null);
+ok(!in_array('King', $pr12['11']['sizes'] ?? ['King'], true),
    'and not a size the product is merely costed in, once the line is set up');
-ok(is_array($pal12) && $pal12['12']['set'] === false && $pal12['12']['colour'] === [],
-   'a line not set up is marked as such, with no colours invented for it', $pal12['12'] ?? null);
-ok(str_contains($s12, '3 sizes and 2 colours — exactly what the office set for this line.'),
-   'the card says where its list came from');
-ok(str_contains($s12, 'Pick the invoice line first — its sizes and colours follow.'),
-   'and the New range card says the list comes with the line');
+ok(($pr12['12']['setUp'] ?? true) === false && ($pr12['12']['colors'] ?? ['x']) === [],
+   'a line not set up is marked as such, with no colours invented for it', $pr12['12'] ?? null);
+ok(str_contains($ser, "This line is not set up on Order sizes &amp; colours"),
+   'and the screen says so where it is packed');
 
-/* The summary. */
-ok(str_contains($s12, 'Already packed') && substr_count($s12, 'class="sumr') === 3,
-   'every range is on one list', substr_count($s12, 'class="sumr'));
-ok(str_contains($s12, 'data-mstep-go="0"') && str_contains($s12, 'data-mstep-go="2"'),
-   'each with an Edit that jumps to its own step');
-ok(substr_count($s12, '>Delete</button>') === 3, 'and a Delete');
-ok(str_contains($s12, 'Weighed: 11.420 kg gross per carton'),
-   'and whether it has been weighed — weight lives on its own tab and was invisible from here');
-ok(str_contains($s12, '3 ranges') && str_contains($s12, '245 packages'),
-   'with the whole invoice added up underneath');
-
-/* A clash already in the data is shown, not hidden. */
-[$sc] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'CLASHDATA=1');
-ok(str_contains($sc, 'Shares package numbers with'),
-   'a range that shares package numbers with another is flagged on the list');
-
-$js12 = <<<'JS'
-const { chromium } = require('playwright');
-const path = require('path');
-(async () => {
-  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
-  const errs = []; p.on('pageerror', e => errs.push(String(e)));
-  await p.goto('file://' + path.join(process.argv[2], 'serial12.html'));
-  await p.waitForTimeout(300);
-  await p.evaluate(() => document.querySelectorAll('.mstep').forEach(s => s.classList.add('on')));
-  const out = { errs };
-  const cards = p.locator('form.mcard');
-  const c1 = cards.nth(0), cn = cards.nth(3);
-  const opts = async (c, n) => c.locator('select[name="' + n + '"] option').allInnerTexts();
-
-  out.c1sizes = await opts(c1, 'single_size');
-  out.c1cols  = await opts(c1, 'single_colour');
-  // move range 1 to line #2, which is not set up and has no colours
-  await c1.locator('select[name="invoice_item_id"]').selectOption('12');
-  await p.waitForTimeout(100);
-  out.c1sizesAfter = await opts(c1, 'single_size');
-  out.c1colHidden  = await c1.locator('[data-colbox]').isHidden();
-  out.c1ref        = await c1.locator('[data-ref]').innerText();
-  out.c1note       = await c1.locator('[data-palnote]').innerText();
-
-  // the New range card starts from the range saved last (Bale 226–245,
-  // line #3, direct): same line, same kind, same mode, next free number
-  out.cnItem = await cn.locator('select[name="invoice_item_id"]').inputValue();
-  out.cnUnit = await cn.locator('[name="unit_title"]').inputValue();
-  out.cnFrom = await cn.locator('[name="serial_from"]').inputValue();
-  out.cnMode = await cn.locator('[name="qty_mode"]:checked').inputValue();
-  // change the kind to Carton and the serial moves to the next free Carton
-  await cn.locator('[name="unit_title"]').fill('Carton');
-  await p.waitForTimeout(60);
-  out.cnFromCarton = await cn.locator('[name="serial_from"]').inputValue();
-  await cn.locator('select[name="invoice_item_id"]').selectOption('11');
-  await p.waitForTimeout(100);
-  out.cnSizes = await opts(cn, 'single_size');
-  out.cnCols  = await opts(cn, 'single_colour');
-  out.cnColShown = await cn.locator('[data-colbox]').isVisible();
-
-  // a serial already used is said while typing, and Save waits
-  await cn.locator('[name="serial_from"]').fill('90');
-  await cn.locator('[name="serial_to"]').fill('110');
-  await p.waitForTimeout(80);
-  out.clash = await cn.locator('[data-clash]').innerText();
-  out.saveOff = await cn.locator('button[type="submit"]').isDisabled();
-  await cn.locator('[name="serial_from"]').fill('300');
-  await cn.locator('[name="serial_to"]').fill('320');
-  await p.waitForTimeout(80);
-  out.clashGone = await cn.locator('[data-clash]').isHidden();
-  out.saveOn = await cn.locator('button[type="submit"]').isEnabled();
-
-  // the assorted range's total now reads its saved sizes
-  out.c1total = await c1.locator('[data-total] b').innerText();
-
-  // Edit on the summary scrolls to that range — one page, no flipping
-  await p.goto('about:blank');
-  await p.goto('file://' + path.join(process.argv[2], 'serial12.html'));
-  await p.waitForTimeout(250);
-  out.noNav = await p.locator('.mnav').count();
-  await p.locator('[data-mstep-go="1"]').click();
-  await p.waitForTimeout(250);
-  const bx = await p.locator('#s1').boundingBox();
-  out.editTop = bx ? Math.round(bx.y) : null;
-  out.afterEdit = (await p.locator('#s1').innerText()).split('\n')[0];
-  console.log(JSON.stringify(out));
-  await b.close();
-})();
-JS;
-file_put_contents($work . '/s12.js', $js12);
-$r12 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
-        . escapeshellarg($work . '/s12.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
-ok(is_array($r12) && $r12['errs'] === [], 'the serial page runs with no javascript error', $r12['errs'] ?? $r12);
-ok(($r12['c1sizes'] ?? null) === ['— pick a size —', 'Small', 'Medium', 'Large', '+ type a size not in the list'],
-   'range 1 offers its line\'s three sizes', $r12['c1sizes'] ?? null);
-ok(($r12['c1cols'] ?? null) === ['— no colour —', 'White', 'Navy'],
-   'and its line\'s two colours', $r12['c1cols'] ?? null);
-/* Compared with line #2's own list as the page carried it. (The fake
-   history gives every product the same packed-before sizes, so "not
-   Small" would be a question about the fixture, not the screen.) */
-ok(is_array($r12) && is_array($pal12)
-   && array_slice($r12['c1sizesAfter'], 1, -1) === $pal12['12']['size']
-   && in_array('King', $r12['c1sizesAfter'], true),
-   'moving it to a line not set up refills the sizes from that line, not the old one',
-   [$r12['c1sizesAfter'] ?? null, $pal12['12']['size'] ?? null]);
-ok(($r12['c1colHidden'] ?? false) === true, 'and hides the colour, because that line has none');
-ok(str_contains((string)($r12['c1ref'] ?? ''), 'Hotel Flat Sheet 300TC') && str_contains((string)($r12['c1ref'] ?? ''), '#2'),
-   'the box above follows the dropdown, so the two cannot disagree', $r12['c1ref'] ?? null);
-ok(str_contains((string)($r12['c1note'] ?? ''), 'not set up'),
-   'and the card says this line is not set up yet', $r12['c1note'] ?? null);
-/* "Don't ask again and again": the next range starts from the last. */
-ok(($r12['cnItem'] ?? '') === '13' && ($r12['cnUnit'] ?? '') === 'Bale' && ($r12['cnMode'] ?? '') === 'direct',
-   'the New range card starts with the last range\'s line, kind of package and mode',
-   [$r12['cnItem'] ?? null, $r12['cnUnit'] ?? null, $r12['cnMode'] ?? null]);
-ok(($r12['cnFrom'] ?? '') === '246',
-   'and at the next free number for that kind — Bale 245 was the last', $r12['cnFrom'] ?? null);
-ok(($r12['cnFromCarton'] ?? '') === '226',
-   'change it to Carton and it moves to the next free Carton number', $r12['cnFromCarton'] ?? null);
-ok(($r12['cnSizes'] ?? null) === ['— pick a size —', 'Small', 'Medium', 'Large', '+ type a size not in the list']
-   && ($r12['cnCols'] ?? null) === ['— no colour —', 'White', 'Navy'] && ($r12['cnColShown'] ?? false),
-   'and then exactly that line\'s sizes and colours', [$r12['cnSizes'] ?? null, $r12['cnCols'] ?? null]);
-ok(str_contains((string)($r12['clash'] ?? ''), 'Already used: Carton 1–100')
-   && ($r12['saveOff'] ?? false) === true,
-   'a package number already used is said while typing, and Save waits', $r12['clash'] ?? null);
-ok(($r12['clashGone'] ?? false) && ($r12['saveOn'] ?? false),
-   'and both clear the moment the numbers are free');
-ok(($r12['c1total'] ?? '') === '1,000',
-   'the assorted range shows its total from the saved sizes, not "set the sizes"', $r12['c1total'] ?? null);
-ok(($r12['noNav'] ?? 1) === 0, 'the packing page scrolls — there is no Back/Next bar to press');
-ok(str_contains((string)($r12['afterEdit'] ?? ''), 'Carton 101–225')
-   && is_int($r12['editTop'] ?? null) && $r12['editTop'] >= 0 && $r12['editTop'] < 200,
-   'Edit on the summary scrolls that range to the top of the screen',
-   [$r12['afterEdit'] ?? null, $r12['editTop'] ?? null]);
-
-head('13. One weight per invoice line; numbers per kind; edit from Approve');
+head('13. One weight per invoice line');
 
 /* The weight tab is about the invoice LINE. */
 $w13 = $html['weight'];
@@ -1448,86 +1104,6 @@ ok(str_contains($w13, 'Weight is set once per invoice line'),
    'and it says so where the line is picked');
 ok(str_contains($w13, 'Shared by') && str_contains($w13, 'Carton 1–100'),
    'and names the ranges that will use it');
-
-/* Approve: every range, with Edit, Delete and Edit weight — outside the
-   approve form, because a form inside a form is not allowed. */
-$ap13 = $html['approve'];
-ok(str_contains($ap13, 'All ranges (3) — edit, delete or change a weight'),
-   'Approve opens with every range, ready to edit');
-ok(str_contains($ap13, 't=serial#s0') && str_contains($ap13, 't=serial#s2'),
-   'each Edit opens that range on the serial tab');
-ok(substr_count($ap13, '>Edit weight</a>') === 3, 'and each has an Edit weight');
-ok(substr_count($ap13, '>Delete</button>') === 3, 'and a Delete');
-$apForms = preg_split('~<form~', $ap13);
-$depth = 0; $nested = false;
-foreach (preg_split('~(<form\b|</form>)~', $ap13, -1, PREG_SPLIT_DELIM_CAPTURE) as $tok) {
-    if ($tok === '<form') { $depth++; if ($depth > 1) $nested = true; }
-    elseif ($tok === '</form>') $depth--;
-}
-ok(!$nested, 'and no form ends up inside another form');
-
-$js13 = <<<'JS'
-const { chromium } = require('playwright');
-const path = require('path');
-(async () => {
-  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
-  const errs = []; p.on('pageerror', e => errs.push(String(e)));
-  await p.goto('file://' + path.join(process.argv[2], 'serial12.html'));
-  await p.waitForTimeout(250);
-  await p.evaluate(() => document.querySelectorAll('.mstep').forEach(s => s.classList.add('on')));
-  const cn = p.locator('form.mcard').nth(3);
-  const out = { errs };
-  // Carton 50–60 clashes with Carton 1–100 … (the card starts as a Bale,
-  // the last range's kind, so it is set to Carton first)
-  await cn.locator('[name="unit_title"]').fill('Carton');
-  await cn.locator('[name="serial_from"]').fill('50'); await cn.locator('[name="serial_to"]').fill('60');
-  await p.waitForTimeout(60);
-  out.cartonClash = await cn.locator('[data-clash]').isVisible();
-  // … but Roll 50–60 does not: a different kind of package may reuse it
-  await cn.locator('[name="unit_title"]').fill('Roll');
-  await p.waitForTimeout(60);
-  out.rollClash = await cn.locator('[data-clash]').isVisible();
-  out.rollSave  = await cn.locator('button[type="submit"]').isEnabled();
-  // and " carton" is still a carton
-  await cn.locator('[name="unit_title"]').fill(' carton');
-  await p.waitForTimeout(60);
-  out.caseClash = await cn.locator('[data-clash]').isVisible();
-
-  // Edit from Approve lands on that range: #s1 is the second range, and
-  // on one scrolling page the browser scrolls there by itself.
-  // A blank page first — the same page with only a # added is not a new load.
-  await p.goto('about:blank');
-  await p.goto('file://' + path.join(process.argv[2], 'serial12.html') + '#s1');
-  await p.waitForTimeout(250);
-  out.hashStep = (await p.locator('#s1').innerText()).split('\n')[0];
-  const hb = await p.locator('#s1').boundingBox();
-  out.hashTop = hb ? Math.round(hb.y) : null;
-  // and after a save the page lands on the New range card
-  await p.goto('about:blank');
-  await p.goto('file://' + path.join(process.argv[2], 'serial12.html') + '#newrange');
-  await p.waitForTimeout(250);
-  const nr = await p.locator('form.mcard').nth(3).boundingBox();
-  out.newTop = nr ? Math.round(nr.y) : null;
-  console.log(JSON.stringify(out));
-  await b.close();
-})();
-JS;
-file_put_contents($work . '/s13.js', $js13);
-$r13 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
-        . escapeshellarg($work . '/s13.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
-ok(is_array($r13) && $r13['errs'] === [], 'no javascript error', $r13);
-ok(($r13['cartonClash'] ?? false) === true, 'Carton 50–60 is flagged where Carton 1–100 already is');
-ok(($r13['rollClash'] ?? true) === false && ($r13['rollSave'] ?? false) === true,
-   'but Roll 50–60 is allowed — the same number on a different kind of package');
-ok(($r13['caseClash'] ?? false) === true, 'and " carton" is still a Carton');
-ok(str_contains((string)($r13['hashStep'] ?? ''), 'Carton 101–225')
-   && is_int($r13['hashTop'] ?? null) && $r13['hashTop'] < 200,
-   'Edit from Approve opens the serial tab scrolled to that range',
-   [$r13['hashStep'] ?? null, $r13['hashTop'] ?? null]);
-ok(is_int($r13['newTop'] ?? null) && $r13['newTop'] >= 0 && $r13['newTop'] < 300,
-   'and a save lands with the New range card on screen, not back at the top',
-   $r13['newTop'] ?? null);
 
 /* ONE LINE, TWO RANGES — the case he described. */
 [$wsh] = render($work, ['id' => 1, 't' => 'weight', 'g' => 101], 'm_pack.php', 'SHARELINE=1');
@@ -1594,179 +1170,6 @@ ok(($r14['value2'] ?? '') === '25.5' && ($r14['value1after'] ?? '') === '312',
 ok(($r14['type'] ?? '') === 'text' && ($r14['width'] ?? 0) >= 95,
    'the box is wide enough to show four digits, with no arrows eating into it',
    [$r14['type'] ?? null, $r14['width'] ?? null]);
-
-head('15. After Save: straight on to the next range, at the next free number');
-
-/* A saved range lands on the New range card — not back at the top. */
-$pr = post_to($work, ['id' => 1, 't' => 'serial'], [
-    'action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 12,
-    'unit_title' => 'Carton', 'serial_from' => 600, 'serial_to' => 610, 'qty_mode' => 'per',
-    'size_mode' => 'one', 'single_size' => '152x200', 'single_qty' => 40]);
-ok(str_contains($pr, '__REDIRECT__ m_pack.php?id=1&t=serial#newrange'),
-   'a save goes straight to the New range card', preg_match('~__REDIRECT__.*~', $pr, $rm) ? $rm[0] : substr($pr, 0, 200));
-
-/* A refused save keeps what was typed. */
-$pr2 = post_to($work, ['id' => 1, 't' => 'serial'], [
-    'action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 0,
-    'unit_title' => 'Roll', 'serial_from' => 7, 'serial_to' => 9, 'qty_mode' => 'per',
-    'size_mode' => 'one', 'single_size' => 'King', 'single_qty' => 12]);
-ok(str_contains($pr2, '__REDIRECT__ m_pack.php?id=1&t=serial#newrange || Pick the item'),
-   'a refused save also lands on the card, saying why');
-$dr = preg_match('~__DRAFT__ (\{.*\})~', $pr2, $dm) ? json_decode($dm[1], true) : null;
-ok(is_array($dr) && $dr['unit'] === 'Roll' && $dr['from'] === 7 && $dr['to'] === 9
-   && $dr['size'] === 'King' && (float)$dr['qty'] === 12.0,
-   'and what was typed is kept for the card, not wiped', $dr);
-
-/* And when the save itself refuses — here a serial that cannot be — the
-   figures are kept the same way. (Missing the item and the save refusing
-   are two different branches; both must keep the draft.) */
-$pr3 = post_to($work, ['id' => 1, 't' => 'serial'], [
-    'action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 12,
-    'unit_title' => 'Carton', 'serial_from' => 0, 'serial_to' => 5, 'qty_mode' => 'per',
-    'size_mode' => 'one', 'single_size' => '152x200', 'single_qty' => 40]);
-$dr3 = preg_match('~__DRAFT__ (\{.*\})~', $pr3, $dm3) ? json_decode($dm3[1], true) : null;
-ok(str_contains($pr3, 'The first serial must be 1 or more.') && is_array($dr3)
-   && $dr3['item'] === 12 && $dr3['size'] === '152x200' && (float)$dr3['qty'] === 40.0,
-   'a save the server refuses keeps what was typed too', $dr3);
-
-/* The next free number is per kind, from the range saved last. */
-[$ex] = render($work, ['id' => 1, 't' => 'serial'], 'm_pack.php', 'EXTRA2=1');
-preg_match_all('~<form method="post" class="mcard" autocomplete="off".*?</form>~s', $ex, $exf);
-$newCard = end($exf[0]) ?: '';
-ok(str_contains($newCard, 'name="unit_title" value="Carton" aria-label="Unit"'),
-   'the New range card takes the kind of the range saved last (Carton 300–310)');
-ok(preg_match('~name="serial_from"[^>]*value="311"~', $newCard) === 1,
-   'and starts at 311 — the next Carton — not 411, the next number of any kind',
-   preg_match('~name="serial_from"[^>]*value="(\d+)"~', $newCard, $fm) ? $fm[1] : null);
-
-head('16. Assorted in the same card: the toggle, two lists, live sums, no reload');
-
-/* "Toggle OFF: Colour and Size. Toggle ON: hide them; show Colour
-    Assortment (White 8, Grey 8, Blue 8) and Size Assortment / Ratio
-    (Single 6, Double 12, King 6). Total pieces per carton stays in both.
-    Everything updates instantly in the same form, without a refresh." */
-[$s16] = render($work, ['id' => 1, 't' => 'serial']);
-file_put_contents($work . '/serial16.html', $s16);
-$js16 = <<<'JS'
-const { chromium } = require('playwright');
-const path = require('path');
-(async () => {
-  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
-  const errs = []; p.on('pageerror', e => errs.push(String(e)));
-  await p.goto('file://' + path.join(process.argv[2], 'serial16.html'));
-  await p.waitForTimeout(300);
-  await p.evaluate(() => { window.__sameDoc = 1; });   // gone if the page reloads
-  const out = { errs };
-  const c1 = p.locator('form.mcard').nth(0);
-  const vals = async (c, sel) => c.locator(sel + ' .arow .in').evaluateAll(n => n.map(x => x.value));
-  const labs = async (c, sel) => c.locator(sel + ' .arow b').allInnerTexts();
-
-  out.sizeLabs = await labs(c1, '[data-asizes]');
-  out.sizeVals = await vals(c1, '[data-asizes]');
-  out.colLabs  = await labs(c1, '[data-acols]');
-  out.sizeSum0 = await c1.locator('[data-asizesum]').innerText();
-  out.colSum0  = await c1.locator('[data-acolsum]').innerText();
-  out.save0    = await c1.locator('button[type="submit"]').isDisabled();
-  out.qtyLabel = await c1.locator('[data-qtylabel]').textContent();   // the words, not the capitals CSS draws
-  out.oneHidden = await c1.locator('select[name="single_size"]').isHidden();
-
-  // type the colours, key by key — the box must keep the cursor
-  const white = c1.locator('[data-acols] .arow .in').nth(0);
-  await white.click(); await p.keyboard.type('6', { delay: 30 });
-  const navy = c1.locator('[data-acols] .arow .in').nth(1);
-  await navy.click(); await p.keyboard.type('4', { delay: 30 });
-  out.navyFocused = await p.evaluate(() => document.activeElement && document.activeElement.getAttribute('aria-label'));
-  out.colSum1 = await c1.locator('[data-acolsum]').innerText();
-  out.save1   = await c1.locator('button[type="submit"]').isEnabled();
-
-  // the total changes: both lists say they are short, Save waits
-  await c1.locator('[name="single_qty"]').fill('12');
-  await p.waitForTimeout(60);
-  out.sizeSum2 = await c1.locator('[data-asizesum]').innerText();
-  out.save2    = await c1.locator('button[type="submit"]').isDisabled();
-  await c1.locator('[name="single_qty"]').fill('10');
-
-  // toggle off: Size and Colour back, the lists hidden; on again: figures kept
-  await c1.locator('[name="size_mode"][value="one"]').check({ force: true });
-  await p.waitForTimeout(60);
-  out.offMixHidden  = await c1.locator('[data-mix]').isHidden();
-  out.offSizeShown  = await c1.locator('select[name="single_size"]').isVisible();
-  out.offLabel      = await c1.locator('[data-qtylabel]').textContent();
-  await c1.locator('[name="size_mode"][value="mix"]').check({ force: true });
-  await p.waitForTimeout(60);
-  out.onAgainSizes = await vals(c1, '[data-asizes]');
-  out.onAgainCols  = await vals(c1, '[data-acols]');
-
-  // the New range card: assorted straight away, rows from the line picked
-  const cn = p.locator('form.mcard').nth(3);
-  await cn.locator('[name="size_mode"][value="mix"]').check({ force: true });
-  await cn.locator('select[name="invoice_item_id"]').selectOption('11');
-  await p.waitForTimeout(80);
-  out.newSizeLabs = await labs(cn, '[data-asizes]');
-  out.newColLabs  = await labs(cn, '[data-acols]');
-  await cn.locator('select[name="invoice_item_id"]').selectOption('12');
-  await p.waitForTimeout(80);
-  out.newColHidden = await cn.locator('[data-acolbox]').isHidden();
-
-  out.sameDoc = await p.evaluate(() => window.__sameDoc === 1);
-  console.log(JSON.stringify(out));
-  await b.close();
-})();
-JS;
-file_put_contents($work . '/s16.js', $js16);
-$r16 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
-        . escapeshellarg($work . '/s16.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
-ok(is_array($r16) && $r16['errs'] === [], 'no javascript error', $r16);
-ok(($r16['sizeLabs'] ?? null) === ['Small', 'Medium', 'Large'] && ($r16['sizeVals'] ?? null) === ['2', '4', '4'],
-   'Size assortment: the line\'s three sizes, holding the saved 2, 4 and 4',
-   [$r16['sizeLabs'] ?? null, $r16['sizeVals'] ?? null]);
-ok(($r16['colLabs'] ?? null) === ['White', 'Navy'], 'Colour assortment: the line\'s two colours',
-   $r16['colLabs'] ?? null);
-ok(($r16['qtyLabel'] ?? '') === 'Total pieces per carton' && ($r16['oneHidden'] ?? false),
-   'the common box reads Total pieces per carton, and the single Size field is hidden',
-   [$r16['qtyLabel'] ?? null, $r16['oneHidden'] ?? null]);
-ok(str_contains((string)($r16['sizeSum0'] ?? ''), '10 of 10 — complete'),
-   'the sizes say they add up', $r16['sizeSum0'] ?? null);
-ok(str_contains((string)($r16['colSum0'] ?? ''), '0 of 10 — 10 pieces still to place') && ($r16['save0'] ?? false),
-   'the colours say what is left, and Save waits for them', [$r16['colSum0'] ?? null, $r16['save0'] ?? null]);
-ok(($r16['navyFocused'] ?? '') === 'Navy', 'typing in a box keeps the cursor in it', $r16['navyFocused'] ?? null);
-ok(str_contains((string)($r16['colSum1'] ?? ''), '10 of 10 — complete') && ($r16['save1'] ?? false),
-   'White 6 + Navy 4 completes it, and Save comes on', [$r16['colSum1'] ?? null, $r16['save1'] ?? null]);
-ok(str_contains((string)($r16['sizeSum2'] ?? ''), '10 of 12 — 2 pieces still to place') && ($r16['save2'] ?? false),
-   'change the total to 12 and both lists say they are short; Save waits', $r16['sizeSum2'] ?? null);
-ok(($r16['offMixHidden'] ?? false) && ($r16['offSizeShown'] ?? false)
-   && ($r16['offLabel'] ?? '') === 'Quantity per carton',
-   'toggle off: Size and Colour come back, the assortment hides — instantly',
-   [$r16['offMixHidden'] ?? null, $r16['offSizeShown'] ?? null, $r16['offLabel'] ?? null]);
-ok(($r16['onAgainSizes'] ?? null) === ['2', '4', '4'] && ($r16['onAgainCols'] ?? null) === ['6', '4'],
-   'toggle on again: every figure typed is still there',
-   [$r16['onAgainSizes'] ?? null, $r16['onAgainCols'] ?? null]);
-ok(($r16['newSizeLabs'] ?? null) === ['Small', 'Medium', 'Large'] && ($r16['newColLabs'] ?? null) === ['White', 'Navy'],
-   'a new range can be assorted at once, with the rows of the line picked',
-   [$r16['newSizeLabs'] ?? null, $r16['newColLabs'] ?? null]);
-ok(($r16['newColHidden'] ?? false) === true,
-   'and a line with no colours shows no colour list');
-ok(($r16['sameDoc'] ?? false) === true, 'and none of it reloaded the page');
-
-/* The server checks the same sums, so a phone with no script is held to them too. */
-$base16 = ['action' => 'group', 'shipment_id' => 1, 'group_id' => 0, 'invoice_item_id' => 11,
-           'unit_title' => 'Carton', 'serial_from' => 700, 'serial_to' => 709, 'qty_mode' => 'per'];
-$asz = ['asz_label' => ['Small', 'Medium', 'Large'], 'asz_qty' => [2, 4, 3]];
-$pa = post_to($work, ['id' => 1, 't' => 'serial'], $base16 + ['size_mode' => 'mix', 'single_qty' => 10] + $asz);
-ok(str_contains($pa, 'The sizes add up to 9, but the total is 10.'),
-   'sizes that do not add up are refused, saying by how much');
-$dra = preg_match('~__DRAFT__ (\{.*\})~', $pa, $dma) ? json_decode($dma[1], true) : null;
-ok(is_array($dra) && $dra['mix'] === true && ($dra['asz']['Large'] ?? null) == 3,
-   'and the assortment typed is kept for the card', $dra);
-$pb = post_to($work, ['id' => 1, 't' => 'serial'], $base16 + ['size_mode' => 'mix', 'single_qty' => 10]
-        + ['asz_label' => ['Small', 'Medium', 'Large'], 'asz_qty' => [2, 4, 4],
-           'acol_label' => ['White', 'Navy'], 'acol_qty' => [6, 2]]);
-ok(str_contains($pb, 'The colours add up to 8, but the total is 10.'), 'so are colours that do not');
-$pc = post_to($work, ['id' => 1, 't' => 'serial'], $base16 + ['size_mode' => 'one', 'single_qty' => 10,
-        'single_size' => '', 'single_colour' => 'White']);
-ok(str_contains($pc, 'Pick the size.'),
-   'and a one-size range with a colour but no size is refused — the live "10 of 10" bug');
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);

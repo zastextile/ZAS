@@ -194,14 +194,17 @@ final class CPdo {
         /* the package-number check: the fake answers with the range that
            owns the numbers, or throws on demand to prove a failed check
            refuses the save instead of waving it through */
-        if (str_contains($q, 'SELECT unit_title, serial_from, serial_to FROM packing_groups')) {
+        if (str_contains($q, 'SELECT unit_title, serial_from, serial_to') && str_contains($q, 'FROM packing_groups')) {
             if (!empty($GLOBALS['BREAKCHECK'])) throw new RuntimeException('lost connection');
             /* THE KIND IS IN THE QUERY, or the fake would answer a
                question the app did not ask */
             if (!str_contains($q, 'LOWER(TRIM(unit_title))=?')) { $T['badsql'][] = 'serial: kind'; return []; }
+            /* and the prefix: C001 and R001 are different packages */
+            if (!str_contains($q, 'UPPER(serial_prefix)=?')) { $T['badsql'][] = 'serial: prefix'; return []; }
             foreach ($T['groups'] as $g) {
                 if ((int)$g['shipment_id'] !== (int)$a[0] || (int)$g['id'] === (int)$a[1]) continue;
                 if (mb_strtolower(trim((string)$g['unit_title'])) !== (string)$a[4]) continue;
+                if (strtoupper((string)($g['serial_prefix'] ?? '')) !== (string)($a[5] ?? '')) continue;
                 if ((int)$g['serial_from'] <= (int)$a[2] && (int)$g['serial_to'] >= (int)$a[3]) return [$g];
             }
             return [];
@@ -364,11 +367,11 @@ t('asking for one kind gives only that kind',
 
 /* The leak that matters: three neighbours, none of them touched. */
 t('the other line of the same invoice is untouched',
-  pack_palette(1, 12) === ['size' => [], 'colour' => []], pack_palette(1, 12));
+  pack_palette(1, 12) === ['size' => [], 'colour' => [], 'style' => []], pack_palette(1, 12));
 t('the next order of the same product is untouched',
-  pack_palette(2, 21) === ['size' => [], 'colour' => []], pack_palette(2, 21));
+  pack_palette(2, 21) === ['size' => [], 'colour' => [], 'style' => []], pack_palette(2, 21));
 t('and an item number that happens to match in another shipment is not borrowed',
-  pack_palette(2, 11) === ['size' => [], 'colour' => []], pack_palette(2, 11));
+  pack_palette(2, 11) === ['size' => [], 'colour' => [], 'style' => []], pack_palette(2, 11));
 
 /* ---- replaced, not merged */
 pack_palette_save(1, 11, 'colour', ['White', 'Grey']);
@@ -535,7 +538,13 @@ function body(string $src, string $fn): string {
 }
 
 t('the phone never invents a colour — it reads the order\'s list',
-  str_contains($mpk, 'pack_palette($id,'), null);
+  /* Smart Packing: the screen draws from pack_state(), whose products
+     offer what pack_line_axes() reads from the order's list */
+  str_contains($mpk, 'pack_state($id, $items, $shipment)')
+  && str_contains(body($pk, 'pack_line_axes'), 'pack_palette($shipmentId, (int)$item[\'id\'])'), null);
+t('the desktop screen sets styles too — Smart Packing counts size × colour × style',
+  str_contains($pp, "foreach (['size', 'colour', 'style'] as \$kind)") && str_contains($pp, 'name="pick_style[]"')
+  && str_contains($pp, 'name="new_style"'), null);
 t('the desktop screen is the one that writes it',
   str_contains($pp, 'pack_palette_save('), null);
 t('the phone does not write the order\'s list',
@@ -577,11 +586,10 @@ t('and will not write once the list is closed',
 t('the old assorted page and its rows are gone',
   !preg_match('~<(input|select)[^>]*name="size_label\[\]"~', $mpkHtml)
   && !str_contains($mpk, "\$('rows').innerHTML"), null);
-t('the card posts a size assortment and a colour assortment',
-  str_contains($mpk, "rowsFor(lp.size, keepS, 'asz')") && str_contains($mpk, "rowsFor(lp.colour, keepC, 'acol')"), null);
-t('and the server reads both, checking each against the total pieces',
-  str_contains($mpk, "\$_POST['asz_label']") && str_contains($mpk, "\$_POST['acol_label']")
-  && str_contains($mpk, "'The colours add up to '"), null);
+t('the screen posts what was counted — size, colour and style with a quantity each',
+  str_contains($mpk, "combos: d.combos.map(function (c) { return { size: c.size, colour: c.color, style: c.style, qty: c.qty }; })"), null);
+t('and the server checks every one against the line\'s own lists and the pieces per package',
+  str_contains(body($pk, 'pack_package_save'), '$bad = pack_combos_problem($axes, $combos, $target);'), null);
 
 /* ============================================ 6. lines and numbers */
 head('6. An invoice line is named so it cannot be mixed up, and no package number twice');
@@ -695,7 +703,7 @@ t('a carton typed by hand on the desktop counts too',
   str_contains(pack_serial_problem(3, 505, 506, 0, 'Carton'), 'Carton (desktop) 500–510'),
   pack_serial_problem(3, 505, 506, 0, 'Carton'));
 t('and the message says a different kind may reuse the number',
-  str_contains(pack_serial_problem(3, 1, 2, 0, 'Carton'), 'different kind'));
+  str_contains(pack_serial_problem(3, 1, 2, 0, 'Carton'), 'a different prefix (R001) or kind (Roll) may reuse it'));
 t('the app named the kind in its query', !in_array('serial: kind', $GLOBALS['T']['badsql'], true),
   $GLOBALS['T']['badsql']);
 
