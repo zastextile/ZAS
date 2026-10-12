@@ -754,8 +754,8 @@ function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGro
         if ($hit) {
             $fmtN = static fn(int $n): string => $pfx . str_pad((string)$n, (int)($hit['serial_pad'] ?? 0), '0', STR_PAD_LEFT);
             return 'Those numbers are already used by ' . $hit['unit_title'] . ' ' . $fmtN((int)$hit['serial_from'])
-                 . '–' . $fmtN((int)$hit['serial_to']) . '. A number can be used once per prefix and kind of package '
-                 . '— a different prefix (R001) or kind (Roll) may reuse it.';
+                 . '–' . $fmtN((int)$hit['serial_to']) . '. A number can be used once per kind of package '
+                 . '— a different kind, like a Roll, may reuse it.';
         }
         /* desktop rows carry no prefix, so they can only clash with an
            unprefixed number */
@@ -1110,6 +1110,14 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
     if ($to - $from + 1 > 5000) return [false, 'Save up to 5,000 packages at a time.', 0];
 
     $type = trim((string)($in['type'] ?? 'Carton')) ?: 'Carton';
+    /* NO PREFIX — "remove prefix". A new package is a plain number, whatever
+       is sent. Only a package that already had one keeps it while it is
+       edited, so editing it cannot move it onto another package's number. */
+    $prefix = '';
+    if ($editG > 0) {
+        $eg = pack_group($editG);
+        if ($eg && (int)$eg['shipment_id'] === $shipmentId) $prefix = (string)($eg['serial_prefix'] ?? '');
+    }
     $fields = [
         'invoice_item_id' => (int)$item['id'],
         'product_name'    => (string)$item['product_name'],
@@ -1120,7 +1128,7 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
         'serial_to'       => $to,
         'qty_mode'        => 'per',
         'auto_assorted'   => true,
-        'serial_prefix'   => (string)($in['prefix'] ?? ''),
+        'serial_prefix'   => $prefix,
         'serial_pad'      => (int)($in['pad'] ?? 0),
         'pkg_spec'        => (string)($in['spec'] ?? ''),
         'edited'          => $editG > 0,
@@ -1182,7 +1190,6 @@ function pack_state(int $shipmentId, array $items, array $shipment): array
                 'size' => (string)$r['size_label'], 'colour' => (string)($r['colour_label'] ?? ''),
                 'style' => (string)($r['style_label'] ?? ''), 'qty' => round(pack_size_per_pkg($g, $r), 3)], $sz),
             'edited' => !empty($g['edited']),
-            'weighed' => pack_contents_kg($g, $sz, pack_per_unit((int)$g['id'])) > 0,
         ];
     }
     return [

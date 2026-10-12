@@ -1103,7 +1103,6 @@ var STATE = <?= json_encode($state, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS 
 var CAN_EDIT = <?= $canEdit ? 'true' : 'false' ?>;
 var CSRF = <?= json_encode($csrfTok) ?>;
 var API = <?= json_encode($self . '&api=1') ?>;
-var WEIGHT_URL = <?= json_encode($self . '&t=weight') ?>;
 var DRAFT_KEY = 'zas-pack-draft-' + STATE.shipment.id;
 
 var tab = 'packing', history = [], recordMode = 'individual', recordQuery = '', recordPage = 0, recordFilter = null;
@@ -1118,7 +1117,7 @@ var fmt = function (n) { return Number(n || 0).toLocaleString('en-US', { maximum
 var prod = function (id) { return STATE.products.find(function (p) { return p.id === String(id); }); };
 var axes = function (p) { return [p.sizes.length ? p.sizes : [''], p.colors.length ? p.colors : [''], p.styles.length ? p.styles : ['']]; };
 var vkey = function (s, c, t) { return JSON.stringify([s || '', c || '', t || '']); };
-var vlabel = function (x) { return [x.size, x.color, x.style].filter(Boolean).join(' / ') || 'Finished unit'; };
+var vlabel = function (x) { return [x.size, x.color, x.style].filter(Boolean).join(' / ') || 'Pieces'; };
 var sumQty = function (cs) { return cs.reduce(function (s, c) { return s + c.qty; }, 0); };
 var serialText = function (prefix, num, pad) { return prefix + String(num).padStart(pad || 0, '0'); };
 var kindOf = function (t) { return String(t || 'Carton').trim().toLowerCase(); };
@@ -1133,22 +1132,23 @@ function packages() {
   var out = [];
   STATE.records.forEach(function (r) {
     for (var n = r.from; n <= r.to; n++) out.push({ gid: r.id, num: n, prefix: r.prefix, pad: r.pad, item: r.item,
-      type: r.type, spec: r.spec, target: r.target, edited: r.edited, weighed: r.weighed,
+      type: r.type, spec: r.spec, target: r.target, edited: r.edited,
       combos: r.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: c.qty }; }) });
   });
   return out.sort(function (a, b) { return a.prefix.localeCompare(b.prefix) || kindOf(a.type).localeCompare(kindOf(b.type)) || a.num - b.num; });
 }
 function parseSerial(value, fallback, pad) {
+  /* NO PREFIX: a package number is a plain number. The only letters
+     accepted are an old package's own, carried while that one is edited. */
   var v = String(value).trim(), m = v.match(/^([A-Za-z_-]*)(\d+)$/);
-  if (!m) throw Error('Use a positive serial number, optionally prefixed: 25, C025 or CTN-025.');
+  if (!m || (m[1] && m[1].toUpperCase() !== String(fallback || '').toUpperCase())) throw Error('Use a whole package number, like 25.');
   var n = Number(m[2]);
   if (!Number.isSafeInteger(n) || n < 1 || n > 999999999) throw Error('Serial must be a whole number from 1 to 999,999,999.');
   var prefix = (m[1] || fallback || '').toUpperCase();
-  if (prefix.length > 16) throw Error('A prefix may be up to 16 letters, hyphens or underscores.');
   return { prefix: prefix, num: n, pad: Math.max(Number(pad) || 0, m[2].charAt(0) === '0' ? m[2].length : 0) };
 }
-/* The next free number for this prefix AND kind of package — the same
-   rule the server keeps: a number once per prefix and kind. */
+/* The next free number for this kind of package — the same rule the
+   server keeps: a number once per kind (Carton 1 and Roll 1 may both be). */
 function nextSerial(prefix, pad, type, after) {
   prefix = (prefix || '').toUpperCase();
   var used = {};
@@ -1159,7 +1159,6 @@ function nextSerial(prefix, pad, type, after) {
 }
 function rangeForDraft(d) {
   var s = parseSerial(d.start, d.prefix, d.pad), e = d.entryMode === 'range' ? parseSerial(d.end, s.prefix, s.pad) : s;
-  if (e.prefix !== s.prefix) throw Error('Start and end must use the same prefix.');
   if (e.num < s.num) throw Error('The ending serial must be at or after the starting one.');
   var count = e.num - s.num + 1;
   if (count > 5000) throw Error('Save up to 5,000 packages at a time.');
@@ -1196,7 +1195,7 @@ function lastConfig(itemId) {
   STATE.records.forEach(function (r) { if (r.item === String(itemId) && (!last || r.id > last.id)) last = r; });
   if (!last) return null;
   var cs = last.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: Math.round(c.qty) }; });
-  return { packageType: last.type, spec: last.spec, target: Math.round(last.target) || 10, prefix: last.prefix, pad: last.pad,
+  return { packageType: last.type, spec: last.spec, target: Math.round(last.target) || 10, prefix: '', pad: last.pad,
     combos: cs, selectedSize: cs[0] && cs[0].size, selectedColor: cs[0] && cs[0].color, selectedStyle: cs[0] && cs[0].style };
 }
 function saveLocal() { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch (e) {} }
@@ -1253,10 +1252,10 @@ function renderPacking() {
     '<div class="row between" style="margin-bottom:10px"><h2>' + (d.edit ? 'Edit package' : 'Pack the next ' + esc(d.packageType.toLowerCase())) + '</h2>'
     + '<span class="pill ' + (d.edit ? 'warn' : 'gray') + '">' + (d.edit ? 'ONE PACKAGE ONLY' : esc(STATE.shipment.invoice)) + '</span></div>'
     + '<div class="sel"><div><div class="name">' + esc(p.name) + '</div><div class="ref">' + lineRef + '</div></div>'
-    + '<span class="pill ' + (p.setUp ? '' : 'warn') + '">' + (p.setUp ? 'Set up' : 'Not set up') + '</span></div>'
+    + (p.setUp ? '<span class="pill">Set up</span>' : '') + '</div>'
     + '<div class="search"><input id="spSearch" type="search" autocomplete="off" placeholder="Search product, line or description…" value="' + esc(searchQuery) + '" aria-label="Search the invoice\'s products">'
     + '<div id="spResults" class="results" hidden></div></div>'
-    + (p.setUp ? '' : '<div class="sp-notice sp-warn gap">This line is not set up on Order sizes &amp; colours, so these are the product\'s own sizes and no colours.</div>')
+    + (p.setUp || !p.sizes.length ? '' : '<div class="sp-notice sp-warn gap">This line is not set up on Order sizes &amp; colours, so these are the product\'s own sizes.</div>')
     + '<div class="card gap">'
     + '<div class="segment"><button type="button" data-a="entry-mode" data-mode="single" class="' + (d.entryMode === 'single' ? 'active' : '') + '">SINGLE ' + esc(d.packageType.toUpperCase())
     + '</button><button type="button" data-a="entry-mode" data-mode="range" class="' + (d.entryMode === 'range' ? 'active' : '') + '"' + (d.edit ? ' disabled' : '') + '>SERIAL RANGE</button></div>'
@@ -1266,10 +1265,9 @@ function renderPacking() {
     + '<div class="qtyf"><label for="spTarget">' + esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase()) + '</label>'
     + '<input id="spTarget" type="text" inputmode="numeric" pattern="[0-9]*" data-sel enterkeyhint="next" value="' + d.target + '"></div></div>'
     + '<div class="preview" id="spPreview">' + esc(rangeLabel) + '</div>'
-    + '<details id="spPkgDetails"' + (d.advancedOpen ? ' open' : '') + '><summary><span>' + esc(d.packageType) + ' · ' + esc(d.spec) + ' · prefix ' + (esc(d.prefix) || 'none') + '</span></summary>'
+    + '<details id="spPkgDetails"' + (d.advancedOpen ? ' open' : '') + '><summary><span>' + esc(d.packageType) + ' · ' + esc(d.spec) + '</span></summary>'
     + '<div class="settings"><div><label for="spType">Package type</label><select id="spType">' + ['Carton', 'Bale', 'Roll', 'Bag', 'Other'].map(function (v) { return '<option' + (v === d.packageType ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>'
     + '<div><label for="spSpec">Packaging specification</label><input id="spSpec" value="' + esc(d.spec) + '" maxlength="80"></div>'
-    + '<div><label for="spPrefix">Serial prefix (optional)</label><input id="spPrefix" value="' + esc(d.prefix) + '" placeholder="C or CTN-" maxlength="16" autocapitalize="characters"></div>'
     + '<div><label for="spPad">Number padding</label><select id="spPad">' + [0, 2, 3, 4, 5, 6].map(function (n) { return '<option value="' + n + '"' + (n === d.pad ? ' selected' : '') + '>' + (n ? n + ' digits' : 'None') + '</option>'; }).join('') + '</select></div></div></details>'
     + '</div>'
     + '<div class="card gap"><div class="row between"><h3>Count the contents</h3><button type="button" class="mini quiet" data-a="undo"' + (history.length ? '' : ' disabled') + '>↶ Undo</button></div>'
@@ -1367,11 +1365,12 @@ function editPackage(pkg, copy) {
     selectedSize: pkg.combos[0] && pkg.combos[0].size, selectedColor: pkg.combos[0] && pkg.combos[0].color, selectedStyle: pkg.combos[0] && pkg.combos[0].style };
   draft = blankDraft(pkg.item, cfg);
   draft.edit = copy ? null : { gid: pkg.gid, num: pkg.num };
-  draft.start = copy ? nextSerial(pkg.prefix, pkg.pad, pkg.type) : serialText(pkg.prefix, pkg.num, pkg.pad); draft.end = draft.start;
+  if (copy) draft.prefix = '';
+  draft.start = copy ? nextSerial('', pkg.pad, pkg.type) : serialText(pkg.prefix, pkg.num, pkg.pad); draft.end = draft.start;
   tab = 'packing'; history = []; saveLocal(); render(); window.scrollTo(0, 0);
   toast(copy ? 'Contents copied onto the next free serial' : 'Editing this package only');
 }
-function cancelEdit() { draft.edit = null; draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start; history = []; saveLocal(); render(); toast('New package ready; the saved one is kept'); }
+function cancelEdit() { draft.edit = null; draft.prefix = ''; draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start; history = []; saveLocal(); render(); toast('New package ready; the saved one is kept'); }
 
 /* ---------------- records */
 function signature(p) { return JSON.stringify([p.item, kindOf(p.type), p.spec, p.target, p.combos.map(function (c) { return [c.size, c.color, c.style, c.qty]; }).sort()]); }
@@ -1448,7 +1447,6 @@ function summaryLines() {
 function renderSummary() {
   var s = totals(), lines = summaryLines(), ids = [];
   lines.forEach(function (l) { if (ids.indexOf(l.item) < 0) ids.push(l.item); });
-  var firstRange = function (item) { var r = STATE.records.find(function (x) { return x.item === item; }); return r ? r.id : 0; };
   $('#spMain').innerHTML = '<div class="row between" style="margin-bottom:10px"><div><div class="eyebrow">Final packing quantities</div><h2>Quantity summary</h2></div>'
     + '<span class="pill ' + (STATE.completed ? '' : 'warn') + '">' + (STATE.completed ? '✓ Packing finished' : 'In progress') + '</span></div>'
     + '<div class="card"><div class="row between"><div><b>' + esc(STATE.shipment.invoice) + '</b><div class="ref">' + esc(STATE.shipment.buyer) + '</div></div><span class="pill gray">' + fmt(s.packages) + ' packages</span></div>'
@@ -1458,15 +1456,13 @@ function renderSummary() {
     + '</div>'
     + ids.map(function (id) {
         var p = prod(id) || { name: '(product removed)', unit: 'pcs', line: '' }, ls = lines.filter(function (l) { return l.item === id; });
-        var weighed = STATE.records.filter(function (r) { return r.item === id; }).every(function (r) { return r.weighed; });
         return '<section class="card sprod"><div class="row between"><div><h3>' + esc(p.name) + '</h3><div class="ref">' + esc(p.line) + (p.hint ? ' · ' + esc(p.hint) : '') + '</div></div>'
           + '<div style="text-align:right"><strong>' + fmt(ls.reduce(function (n, l) { return n + l.qty; }, 0)) + ' ' + esc(p.unit) + '</strong><br>'
-          + '<a class="small" style="color:#087f72" href="' + esc(WEIGHT_URL + '&g=' + firstRange(id)) + '">' + (weighed ? 'Weight ✓' : 'Weight: not entered') + ' →</a></div></div>'
+          + '</div></div>'
           + ls.map(function (l) { return '<div class="sline"><b>' + esc(vlabel(l)) + '</b><div class="small muted">' + fmt(l.qty) + ' ' + esc(p.unit) + ' · in ' + fmt(l.packages) + ' ' + (l.packages === 1 ? 'package' : 'packages') + '</div></div>'; }).join('')
           + '</section>';
       }).join('')
     + (ids.length ? '' : '<div class="empty">Start packing to see the quantity summary.</div>')
-    + '<div class="sp-notice gap">Weight is moving to its own module. Until then each product\'s weight is entered on the Weight screen linked above.</div>'
     + '<div class="row wrap gap"><button type="button" data-a="print">Print / PDF</button><button type="button" data-a="csv">Packing CSV</button><button type="button" data-a="summary-csv">Summary CSV</button></div>';
 }
 
@@ -1476,11 +1472,11 @@ function reportHTML() {
   return '<div class="sp-print"><div style="display:flex;justify-content:space-between;gap:12px"><div><div class="eyebrow">ZAS TEXTILE · FAISALABAD, PAKISTAN</div><h1>EXPORT PACKING LIST</h1>'
     + '<div class="ref">Invoice: <b>' + esc(STATE.shipment.invoice) + '</b> · ' + esc(STATE.shipment.buyer) + '<br>Prepared ' + new Date().toLocaleDateString('en-GB') + ' · ' + (STATE.completed ? 'Packing finished' : 'In progress') + '</div></div>'
     + '<div class="sp-notice">' + fmt(s.packages) + ' packages<br>' + esc(unitText(s)) + '</div></div>'
-    + '<div class="tablewrap"><table><thead><tr><th>Serial / range</th><th>Product</th><th>Package</th><th>Size / colour / style per package</th><th>Qty / pkg</th><th>Packages</th><th>Total qty</th></tr></thead><tbody>'
+    + '<div class="tablewrap"><table><thead><tr><th>Serial / range</th><th>Product</th><th>Package</th><th>Contents per package</th><th>Qty / pkg</th><th>Packages</th><th>Total qty</th></tr></thead><tbody>'
     + gs.map(function (g) { var r = g.first, p = prod(r.item) || { name: '', unit: '', line: '' }, n = g.list.length;
         return '<tr><td><b>' + esc(gSerial(g)) + '</b>' + (r.edited ? '<br><small>Edited on its own</small>' : '') + '</td><td>' + esc(p.name) + '<br><small>' + esc(p.line) + '</small></td><td>' + esc(r.type) + (r.spec ? '<br><small>' + esc(r.spec) + '</small>' : '') + '</td><td>'
           + r.combos.map(function (c) { return esc(vlabel(c)) + ' × ' + fmt(c.qty); }).join('<br>') + '</td><td class="num">' + fmt(r.target) + ' ' + esc(p.unit) + '</td><td class="num">' + n + '</td><td class="num">' + fmt(n * r.target) + ' ' + esc(p.unit) + '</td></tr>'; }).join('')
-    + '</tbody></table></div><h3 style="margin-top:14px">Quantity by product, size, colour and style</h3><div class="tablewrap"><table><thead><tr><th>Product</th><th>Size / colour / style</th><th>Total quantity</th><th>Packages</th></tr></thead><tbody>'
+    + '</tbody></table></div><h3 style="margin-top:14px">Quantity by product</h3><div class="tablewrap"><table><thead><tr><th>Product</th><th>Contents</th><th>Total quantity</th><th>Packages</th></tr></thead><tbody>'
     + lines.map(function (l) { var p = prod(l.item) || { name: '', unit: '' }; return '<tr><td>' + esc(p.name) + '</td><td>' + esc(vlabel(l)) + '</td><td class="num">' + fmt(l.qty) + ' ' + esc(p.unit) + '</td><td class="num">' + fmt(l.packages) + '</td></tr>'; }).join('')
     + '</tbody></table></div></div>';
 }
@@ -1498,8 +1494,11 @@ function packingCSV() {
       return [STATE.shipment.invoice, gSerial(g), p.name, p.line, r.type, r.spec, r.combos.map(function (c) { return vlabel(c) + ': ' + c.qty; }).join('; '), r.target, p.unit, n, r.target * n, r.edited ? 'Yes' : 'No']; })));
 }
 function summaryCSV() {
-  return csvRows([['Invoice', 'Product', 'Line', 'Size', 'Colour', 'Style', 'Total Qty', 'Unit', 'Packages']]
-    .concat(summaryLines().map(function (l) { var p = prod(l.item) || { name: '', unit: '', line: '' }; return [STATE.shipment.invoice, p.name, p.line, l.size, l.color, l.style, l.qty, p.unit, l.packages]; })));
+  /* a column only for what this invoice actually has — no empty Style column */
+  var ls = summaryLines(), cols = [['size', 'Size'], ['color', 'Colour'], ['style', 'Style']].filter(function (c) { return ls.some(function (l) { return l[c[0]]; }); });
+  return csvRows([['Invoice', 'Product', 'Line'].concat(cols.map(function (c) { return c[1]; }), ['Total Qty', 'Unit', 'Packages'])]
+    .concat(ls.map(function (l) { var p = prod(l.item) || { name: '', unit: '', line: '' };
+      return [STATE.shipment.invoice, p.name, p.line].concat(cols.map(function (c) { return l[c[0]]; }), [l.qty, p.unit, l.packages]); })));
 }
 
 /* ---------------- dialogs */
@@ -1628,9 +1627,6 @@ document.addEventListener('change', function (e) {
       if (!d.edit) { d.start = nextSerial(d.prefix, d.pad, d.packageType); d.end = d.start; }
       saveLocal(); renderPacking(); break;
     case 'spSpec': d.spec = el.value.trim() || DEFAULT_SPEC[d.packageType] || ''; saveLocal(); break;
-    case 'spPrefix': { var pf = el.value.toUpperCase();
-      if (!/^[A-Z_-]{0,16}$/.test(pf)) { el.value = d.prefix; throw Error('Use letters, hyphens or underscores for the prefix.'); }
-      d.prefix = pf; if (!d.edit) { d.start = nextSerial(pf, d.pad, d.packageType); d.end = d.start; } saveLocal(); renderPacking(); break; }
     case 'spPad': { var o = parseSerial(d.start, d.prefix, d.pad), en = parseSerial(d.end || d.start, d.prefix, d.pad);
       d.pad = +el.value; d.start = serialText(o.prefix, o.num, d.pad); d.end = serialText(en.prefix, en.num, d.pad); saveLocal(); renderPacking(); break; }
   } } catch (err) { toast(err.message, true); }

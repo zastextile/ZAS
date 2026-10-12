@@ -107,7 +107,7 @@ t('the screen has no field that types a package count',
   !preg_match('~name="packages"~', $mpN), 'a packages input on the phone screen');
 /* Not [^>]* — the value between the two is PHP, and "?>" contains a ">". */
 t('and a serial is required — nothing saves without one',
-  str_contains($mpN, "throw Error('Use a positive serial number, optionally prefixed: 25, C025 or CTN-025.')")
+  str_contains($mpN, "throw Error('Use a whole package number, like 25.')")
   && str_contains($mpN, "range = rangeForDraft(d);"));
 
 /* ============================================ 2. per package versus direct */

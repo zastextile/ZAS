@@ -703,7 +703,7 @@ t('a carton typed by hand on the desktop counts too',
   str_contains(pack_serial_problem(3, 505, 506, 0, 'Carton'), 'Carton (desktop) 500–510'),
   pack_serial_problem(3, 505, 506, 0, 'Carton'));
 t('and the message says a different kind may reuse the number',
-  str_contains(pack_serial_problem(3, 1, 2, 0, 'Carton'), 'a different prefix (R001) or kind (Roll) may reuse it'));
+  str_contains(pack_serial_problem(3, 1, 2, 0, 'Carton'), 'a different kind, like a Roll, may reuse it'));
 t('the app named the kind in its query', !in_array('serial: kind', $GLOBALS['T']['badsql'], true),
   $GLOBALS['T']['badsql']);
 

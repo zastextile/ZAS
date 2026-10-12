@@ -440,8 +440,8 @@ ok(($rec2[101]['target'] ?? 0) == 10 && ($rec2[102]['target'] ?? 0) == 40 && ($r
 ok(array_map(fn($c) => $c['size'] . ' ' . $c['qty'], $rec2[101]['combos'] ?? []) === ['Small 2', 'Medium 4', 'Large 4'],
    'the assorted range carries its 2 Small, 4 Medium, 4 Large', $rec2[101]['combos'] ?? null);
 ok(($rec2[103]['type'] ?? '') === 'Bale', 'and each range its kind of package');
-ok(($rec2[101]['weighed'] ?? false) && ($rec2[102]['weighed'] ?? false) && ($rec2[103]['weighed'] ?? false),
-   'all three are weighed, so Summary shows Weight ✓');
+/* weight is a module of its own now; the packing screen says nothing about it */
+ok(!array_key_exists('weighed', $rec2[101] ?? ['weighed' => 1]), 'the packing state carries no weight');
 ok(!preg_match('~<input[^>]*name="packages"~', $ser), 'nothing on the page types a package count');
 ok(!preg_match('~fix(ed)?\s*qty~i', $ser), 'no fixed-quantity wording anywhere');
 
