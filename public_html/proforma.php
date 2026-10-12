@@ -336,6 +336,83 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'conve
     redirect('shipment_view.php?id=' . $shipmentId);
 }
 
+/* ---------- duplicate ----------
+   "Keep a duplicate": a new proforma that starts as an exact copy of this
+   one — customer, terms, banks, packing details and every line with its
+   product, size, quantity and price — so a repeat order or a second quote
+   is a few changes instead of a retype.
+
+   What makes it a NEW document rather than the same one twice:
+     - its own number from the PI sequence, and today's date;
+     - status back to draft, and created by whoever pressed the button;
+     - not converted to any shipment;
+     - not in production: production is switched off on the copy and no
+       assignments or rates come with it, so the floor never sees a copy
+       it was not given.
+
+   It copies what is SAVED. Unsaved changes on the screen are not in it —
+   the button says so. Columns are copied by name, so a field added to the
+   proforma later is carried over without this needing to change; only the
+   ones listed here are reset. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'duplicate') {
+    verify_csrf();
+    if (!costing_perm('proforma')) { http_response_code(403); exit('No permission to create proforma invoices.'); }
+    $srcId = (int)($_POST['id'] ?? 0);
+    $st = db()->prepare("SELECT * FROM proforma_invoices WHERE id=?");
+    $st->execute([$srcId]);
+    $src = $st->fetch();
+    if (!$src) { $_SESSION['error'] = 'That proforma invoice was not found.'; redirect('proforma.php'); }
+
+    $newNo = next_doc_no('PI');
+    $head = $src;
+    foreach (array_keys($head) as $k) {
+        if (in_array($k, ['id', 'created_at', 'updated_at', 'converted_shipment_id'], true)
+            || str_starts_with($k, 'production_')) unset($head[$k]);
+    }
+    $head['pi_no']      = $newNo;
+    $head['pi_date']    = date('Y-m-d');
+    $head['status']     = 'draft';
+    $head['created_by'] = current_user()['id'];
+
+    try {
+        db()->beginTransaction();
+        $cols = array_keys($head);
+        db()->prepare("INSERT INTO proforma_invoices (`" . implode('`,`', $cols) . "`) VALUES ("
+                      . implode(',', array_fill(0, count($cols), '?')) . ")")
+            ->execute(array_values($head));
+        $newId = (int)db()->lastInsertId();
+
+        $it = db()->prepare("SELECT * FROM proforma_items WHERE proforma_id=? ORDER BY sort_order, id");
+        $it->execute([$srcId]);
+        $n = 0;
+        foreach ($it->fetchAll() as $row) {
+            unset($row['id']);
+            $row['proforma_id'] = $newId;
+            $ic = array_keys($row);
+            db()->prepare("INSERT INTO proforma_items (`" . implode('`,`', $ic) . "`) VALUES ("
+                          . implode(',', array_fill(0, count($ic), '?')) . ")")
+                ->execute(array_values($row));
+            $n++;
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        $_SESSION['error'] = 'The copy could not be made — nothing was created. ' . $e->getMessage();
+        redirect('proforma.php?id=' . $srcId);
+    }
+
+    /* search and AI search know about the copy straight away, as they do
+       after any save; both swallow their own errors */
+    require_once __DIR__ . '/includes/textindex.php';
+    register_shutdown_function(function () use ($newId) { txt_index_proforma($newId); });
+    try { proforma_embed_one($newId); } catch (Throwable $e) {}
+    try { audit_log(0, 'Proforma', 'create', (string)$src['pi_no'], $newNo . ' duplicated from ' . $src['pi_no'],
+                    'Proforma duplicated'); } catch (Throwable $e) {}
+    $_SESSION['flash'] = 'Copied ' . $src['pi_no'] . ' as ' . $newNo . ' — ' . $n . ' line' . ($n === 1 ? '' : 's')
+                       . '. It is a new draft: change what differs and Save.';
+    redirect('proforma.php?id=' . $newId);
+}
+
 /* ---------- delete (requires re-entering your own login password) ---------- */
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='delete') {
     verify_csrf();
@@ -779,12 +856,25 @@ if ($id) {
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px">
         <button class="<?= $btnC ?>" style="<?= $btn ?>">Save Proforma</button>
+        <?php if (costing_perm('proforma')): ?>
+        <?php /* Submits its own form (pfDupForm, below), not this one: a copy
+                 is made from what is saved, so the size check that guards
+                 Save has nothing to say about it. */ ?>
+        <button type="submit" form="pfDupForm" class="<?= $btnC ?>"
+                onclick="return confirm('Make a copy of <?= e((string)$pf['pi_no']) ?> as a new draft proforma?\n\nThe copy is taken from what is saved — Save first if you have changed anything on this screen.')"
+                style="<?= $btn ?>;background:rgba(14,168,201,.12);color:#0b6f86;border:1px solid rgba(14,168,201,.35)">Duplicate</button>
+        <?php endif; ?>
         <?php if(costing_perm('delete')): ?>
         <input type="hidden" id="pfDeletePassword" name="delete_password" value="">
         <button formaction="proforma.php" name="action" value="delete" onclick="return pfConfirmDelete()" class="<?= $btnC ?> del" style="<?= $btn ?>;background:rgba(224,67,93,.15);color:#b8283f;border:1px solid rgba(224,67,93,.3)">Delete</button>
         <?php endif; ?>
       </div>
     </form>
+    <?php if (costing_perm('proforma')): ?>
+    <form method="post" id="pfDupForm" action="proforma.php" style="display:none">
+      <?= csrf_field() ?><input type="hidden" name="action" value="duplicate"><input type="hidden" name="id" value="<?= (int)$id ?>">
+    </form>
+    <?php endif; ?>
     <link rel="stylesheet" href="assets/css/lov.css?v=3">
     <style>
 /* ---- a line that still needs a size ----
