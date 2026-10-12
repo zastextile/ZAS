@@ -986,10 +986,14 @@ function pack_line_axes(int $shipmentId, array $item): array
    quantity; its size, colour and style must be ones this line has (blank
    only where the line has none); no combination twice; and together they
    must make exactly the pieces in one package. '' when it is right. */
-function pack_combos_problem(array $axes, array $combos, $target): string
+function pack_combos_problem(array $axes, array $combos, $target, bool $direct = false): string
 {
-    if (!is_numeric($target) || (float)$target != (int)$target || (int)$target < 1 || (int)$target > 1000000)
-        return 'Quantity per package must be a whole number from 1 to 1,000,000.';
+    /* DIRECT: the figures are totals for the whole range, so the ceiling is
+       the range's, not one package's. Everything else is checked the same. */
+    $max = $direct ? 100000000 : 1000000;
+    if (!is_numeric($target) || (float)$target != (int)$target || (int)$target < 1 || (int)$target > $max)
+        return $direct ? 'The direct total must be a whole number from 1 to 100,000,000.'
+                       : 'Quantity per package must be a whole number from 1 to 1,000,000.';
     $seen = []; $sum = 0;
     foreach ($combos as $c) {
         $q = $c['qty'] ?? 0;
@@ -1006,7 +1010,9 @@ function pack_combos_problem(array $axes, array $combos, $target): string
         $sum += (int)$q;
     }
     if (!$combos) return 'Count what goes in the package first.';
-    if ($sum !== (int)$target) return 'Complete the package first: ' . $sum . ' of ' . (int)$target . ' entered.';
+    if ($sum !== (int)$target) return $direct
+        ? 'Complete the total first: ' . $sum . ' of ' . (int)$target . ' entered.'
+        : 'Complete the package first: ' . $sum . ' of ' . (int)$target . ' entered.';
     return '';
 }
 
@@ -1096,26 +1102,47 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
     foreach ($items as $it) if ((int)$it['id'] === (int)($in['item'] ?? 0)) $item = $it;
     if (!$item) return [false, 'Pick the product from the invoice.', 0];
 
+    /* DIRECT QUANTITY — "give the quantity even by size, colour, style or a
+       mix". The serial is still the serial; what changes is that the figures
+       are the total for the whole range, not for one package. Such a range
+       is changed or deleted as a whole (edit_range), never one package of
+       it, because one package of a direct total has no exact contents. */
+    $direct = ($in['mode'] ?? 'per') === 'direct';
     $axes = pack_line_axes($shipmentId, $item);
     $target = $in['target'] ?? 0;
     $combos = array_values(array_filter((array)($in['combos'] ?? []), static fn($c) => is_array($c)));
-    $bad = pack_combos_problem($axes, $combos, $target);
+    $bad = pack_combos_problem($axes, $combos, $target, $direct);
     if ($bad !== '') return [false, $bad, 0];
 
     $from = (int)($in['from'] ?? 0);
     $to   = (int)($in['to'] ?? $from);
     $editG = (int)($in['edit_group'] ?? 0);
     $editN = (int)($in['edit_num'] ?? 0);
+    $editR = (int)($in['edit_range'] ?? 0);
     if ($editG > 0 && $to !== $from) return [false, 'Edit one package at a time.', 0];
     if ($to - $from + 1 > 5000) return [false, 'Save up to 5,000 packages at a time.', 0];
+    if ($direct && $editG > 0) return [false, 'A direct range is changed as a whole range, not one package of it.', 0];
+    if ($direct && (int)$target < $to - $from + 1) {
+        return [false, 'A direct total needs at least one piece in each package: ' . ($to - $from + 1)
+                     . ' packages need ' . ($to - $from + 1) . ' pieces or more.', 0];
+    }
+    if ($editG > 0) {
+        $eg0 = pack_group($editG);
+        if ($eg0 && ($eg0['qty_mode'] ?? 'per') === 'direct')
+            return [false, 'This range was packed as a direct total — edit the whole range.', 0];
+    }
+    if ($editR > 0) {
+        $er = pack_group($editR);
+        if (!$er || (int)$er['shipment_id'] !== $shipmentId) return [false, 'That range is no longer there.', 0];
+    }
 
     $type = trim((string)($in['type'] ?? 'Carton')) ?: 'Carton';
     /* NO PREFIX — "remove prefix". A new package is a plain number, whatever
        is sent. Only a package that already had one keeps it while it is
        edited, so editing it cannot move it onto another package's number. */
     $prefix = '';
-    if ($editG > 0) {
-        $eg = pack_group($editG);
+    if ($editG > 0 || $editR > 0) {
+        $eg = pack_group($editG ?: $editR);
         if ($eg && (int)$eg['shipment_id'] === $shipmentId) $prefix = (string)($eg['serial_prefix'] ?? '');
     }
     $fields = [
@@ -1126,7 +1153,7 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
         'unit_title'      => $type,
         'serial_from'     => $from,
         'serial_to'       => $to,
-        'qty_mode'        => 'per',
+        'qty_mode'        => $direct ? 'direct' : 'per',
         'auto_assorted'   => true,
         'serial_prefix'   => $prefix,
         'serial_pad'      => (int)($in['pad'] ?? 0),
@@ -1139,7 +1166,7 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
                                         'style_label' => (string)($c['style'] ?? ''),
                                         'qty' => (int)$c['qty']], $combos);
 
-    $gid = 0;
+    $gid = $editR;
     if ($editG > 0) {
         [$ok, $msg, $gid] = pack_split_out($shipmentId, $editG, $editN);
         if (!$ok) return [false, $msg, 0];
@@ -1153,6 +1180,9 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
    the range stays. */
 function pack_package_delete(int $shipmentId, int $groupId, int $num): array
 {
+    $g = pack_group($groupId);
+    if ($g && ($g['qty_mode'] ?? 'per') === 'direct')
+        return [false, 'This range was packed as a direct total — delete the whole range.'];
     [$ok, $msg, $one] = pack_split_out($shipmentId, $groupId, $num);
     if (!$ok) return [false, $msg];
     return pack_group_delete($shipmentId, $one) ? [true, 'Package deleted.'] : [false, 'The package could not be deleted.'];
@@ -1162,6 +1192,14 @@ function pack_package_delete(int $shipmentId, int $groupId, int $num): array
    packed in, every saved range with its contents, and whether packing is
    finished. The screen draws from this and nothing else, and gets a fresh
    copy back after every change, so it never reloads the page. */
+/* DELETE A WHOLE RANGE — how a direct range goes. */
+function pack_range_delete(int $shipmentId, int $groupId): array
+{
+    $g = pack_group($groupId);
+    if (!$g || (int)$g['shipment_id'] !== $shipmentId) return [false, 'That range is no longer there.'];
+    return pack_group_delete($shipmentId, $groupId) ? [true, 'Range deleted.'] : [false, 'The range could not be deleted.'];
+}
+
 function pack_state(int $shipmentId, array $items, array $shipment): array
 {
     $products = [];
@@ -1186,9 +1224,14 @@ function pack_state(int $shipmentId, array $items, array $shipment): array
             'from' => (int)$g['serial_from'], 'to' => (int)$g['serial_to'],
             'type' => (string)$g['unit_title'], 'spec' => (string)($g['pkg_spec'] ?? ''),
             'target' => round(array_sum(array_map(static fn($r) => pack_size_per_pkg($g, $r), $sz)), 3),
+            /* direct ranges also carry their totals, which is how they are
+               shown and edited; per-package figures stay for everything else */
+            'mode' => ($g['qty_mode'] ?? 'per') === 'direct' ? 'direct' : 'per',
+            'total' => round(pack_group_qty($g, $sz), 3),
             'combos' => array_map(static fn($r) => [
                 'size' => (string)$r['size_label'], 'colour' => (string)($r['colour_label'] ?? ''),
-                'style' => (string)($r['style_label'] ?? ''), 'qty' => round(pack_size_per_pkg($g, $r), 3)], $sz),
+                'style' => (string)($r['style_label'] ?? ''), 'qty' => round(pack_size_per_pkg($g, $r), 3),
+                'total' => round((float)$r['total_qty'], 3)], $sz),
             'edited' => !empty($g['edited']),
         ];
     }

@@ -589,7 +589,7 @@ t('the old assorted page and its rows are gone',
 t('the screen posts what was counted — size, colour and style with a quantity each',
   str_contains($mpk, "combos: d.combos.map(function (c) { return { size: c.size, colour: c.color, style: c.style, qty: c.qty }; })"), null);
 t('and the server checks every one against the line\'s own lists and the pieces per package',
-  str_contains(body($pk, 'pack_package_save'), '$bad = pack_combos_problem($axes, $combos, $target);'), null);
+  str_contains(body($pk, 'pack_package_save'), '$bad = pack_combos_problem($axes, $combos, $target, $direct);'), null);
 
 /* ============================================ 6. lines and numbers */
 head('6. An invoice line is named so it cannot be mixed up, and no package number twice');

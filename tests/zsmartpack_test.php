@@ -258,6 +258,51 @@ pack_group_save(7, ['invoice_item_id' => 71, 'product_name' => 'T-Shirt', 'unit_
 ok($okOld && $gidAt(40, 'C') > 0 && $gidAt(41, 'C') > 0 && $gidAt(40, '') === 0,
    'an old prefixed package keeps its prefix when edited', [$mOld, $gidAt(40, 'C'), $gidAt(40, '')]);
 
+head('3b. Direct quantity — the total for the whole range');
+/* "give the qty even by size or colour or style or a mix — but we are not
+   skipping anything, even the serial number". Bale 101–110 of T-Shirt:
+   a total of 250, not a per-bale figure. */
+$dmix = [['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 100],
+         ['size' => 'M', 'colour' => 'White', 'style' => 'V-neck', 'qty' => 150]];
+$dsave = fn(array $over) => pack_package_save(7, $items, array_merge(
+    ['item' => 71, 'type' => 'Bale', 'spec' => 'Standard bale', 'from' => 101, 'to' => 110, 'target' => 250,
+     'combos' => $dmix, 'mode' => 'direct'], $over));
+[$okDd, $mDd] = $dsave([]);
+$dg = $gidAt(101, '', 'Bale');
+$dgr = $dg ? $cnt("SELECT * FROM packing_groups WHERE id=?", [$dg])[0] : [];
+ok($okDd && ($dgr['qty_mode'] ?? '') === 'direct' && (int)$dgr['serial_from'] === 101 && (int)$dgr['serial_to'] === 110
+   && (int)$dgr['packages'] === 10 && (float)$dgr['total_qty'] === 250.0,
+   'a direct range saves with its serials, 10 packages and the 250 total', [$mDd, $dgr]);
+$dtot = array_map(fn($r) => $r['size_label'] . '/' . $r['colour_label'] . '/' . $r['style_label'] . ' ' . (0 + $r['total_qty']),
+    $cnt("SELECT * FROM packing_group_sizes WHERE group_id=? ORDER BY id", [$dg]));
+ok($dtot === ['S/Black/Crew 100', 'M/White/V-neck 150'], 'with the totals by size, colour and style as given', $dtot);
+[$okDs] = $dsave(['target' => 260]);
+ok(!$okDs, 'a direct total that the figures do not add up to is refused');
+[$okDn, $mDn] = $dsave(['from' => 201, 'to' => 210, 'target' => 5, 'combos' => [['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 5]]]);
+ok(!$okDn && str_contains($mDn, 'at least one piece in each package'), '5 pieces cannot fill 10 packages', $mDn);
+[$okDdup, $mDdup] = $dsave(['from' => 105, 'to' => 120]);
+ok(!$okDdup && str_contains($mDdup, 'already used by Bale 101–110'), 'and its serials are guarded like any other', $mDdup);
+[$okDe, $mDe] = pack_package_save(7, $items, ['item' => 71, 'type' => 'Bale', 'from' => 103, 'to' => 103, 'target' => 10,
+    'combos' => [['size' => 'L', 'colour' => 'White', 'style' => 'Crew', 'qty' => 10]], 'edit_group' => $dg, 'edit_num' => 103]);
+ok(!$okDe && str_contains($mDe, 'edit the whole range') && $gidAt(103, '', 'Bale') === $dg,
+   'one package of a direct range is not edited on its own — it has no exact contents', $mDe);
+[$okDx, $mDx] = pack_package_delete(7, $dg, 103);
+ok(!$okDx && $gidAt(103, '', 'Bale') === $dg, 'nor deleted on its own', $mDx);
+[$okDr, $mDr] = $dsave(['from' => 101, 'to' => 112, 'target' => 300, 'edit_range' => $dg,
+    'combos' => [['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 120], ['size' => 'L', 'colour' => 'Navy' === '' ? '' : 'Green', 'style' => 'Crew', 'qty' => 180]]]);
+$dgr2 = $cnt("SELECT * FROM packing_groups WHERE id=?", [$dg])[0] ?? [];
+ok($okDr && (int)$dgr2['serial_to'] === 112 && (float)$dgr2['total_qty'] === 300.0
+   && (int)$cnt("SELECT COUNT(*) c FROM packing_groups WHERE unit_title='Bale'")[0]['c'] === 1,
+   'the whole range is edited in place — longer, new totals, still one range', [$mDr, $dgr2]);
+$stD = pack_state(7, $items, $cnt("SELECT * FROM shipments WHERE id=7")[0]);
+$rd = array_values(array_filter($stD['records'], fn($r) => $r['id'] === $dg))[0] ?? [];
+ok(($rd['mode'] ?? '') === 'direct' && ($rd['total'] ?? 0) == 300 && ($rd['combos'][1]['total'] ?? 0) == 180,
+   'the phone is told it is direct, with its totals', $rd);
+[$okDdel, $mDdel] = pack_range_delete(7, $dg);
+ok($okDdel && !$gidAt(101, '', 'Bale'), 'and it is deleted as a whole range', $mDdel);
+[$okDin] = pack_package_save(7, $items, ['item' => 71, 'type' => 'Carton', 'from' => 1, 'to' => 1, 'target' => 10, 'combos' => $mix]);
+ok(!$okDin, 'per package is untouched: a used number is still refused');
+
 head('4. The state the phone draws from');
 $sh = $cnt("SELECT * FROM shipments WHERE id=7")[0];
 $st = pack_state(7, $items, $sh);
@@ -268,7 +313,8 @@ ok($st['products'][0]['id'] === '71' && $st['products'][0]['line'] === '#1' && $
 ok($st['products'][1]['setUp'] === false && $st['products'][1]['colors'] === [], 'a line not set up says so, with no colours invented', $st['products'][1]);
 $c1 = array_values(array_filter($st['records'], fn($r) => $r['prefix'] === '' && $r['type'] === 'Carton' && $r['from'] === 1))[0] ?? null;
 ok($c1 && $c1['to'] === 4 && $c1['pad'] === 3 && $c1['target'] == 10 && count($c1['combos']) === 3
-   && $c1['combos'][0] == ['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 4],
+   && $c1['combos'][0] == ['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 4, 'total' => 16]
+   && $c1['mode'] === 'per',
    'every range with its serials, pieces per package and contents', $c1);
 
 head('5. Finish packing, reopen');
@@ -440,6 +486,37 @@ let R = {};
   await p.click('#spTarget'); await p.keyboard.type('12'); await W(60);
   R.typed = await p.inputValue('#spTarget'); R.focusKept = await p.evaluate(() => document.activeElement.id);
   await p.fill('#spTarget', '10'); await p.keyboard.press('Tab'); await W(100);
+  /* DIRECT: a small switch in the quantity cell, on a serial range */
+  await p.locator('[data-a=entry-mode][data-mode=single]').click(); await W(100);
+  R.qmodeSingle = await p.locator('.qmode').count();
+  await p.locator('[data-a=entry-mode][data-mode=range]').click(); await W(100);
+  await p.fill('#spStart', '30'); await p.fill('#spEnd', '39'); await W(80);
+  await p.locator('#spEnd').dispatchEvent('input'); await W(80);
+  R.qmodeRange = await p.locator('.qmode button').allTextContents();
+  await p.locator('[data-a=qty-mode][data-mode=direct]').click(); await W(150);
+  d = await D(); R.direct = { mode: d.qtyMode, target: d.target, combos: d.combos.map(c => c.qty).join(',') };
+  R.directLabel = await p.locator('label[for=spTarget]').textContent();
+  R.directNote = await p.locator('#spDirect').textContent();
+  await p.locator('[data-a=clear]').click(); await W(80);
+  await p.fill('#spTarget', '250'); await p.locator('#spTarget').dispatchEvent('change'); await W(120);
+  /* L / Green / V-neck: one tap, then type the total of 100 */
+  await p.locator('#spSizes button', { hasText: /^L/ }).click(); await p.locator('#spStyles button', { hasText: 'V-neck' }).click(); await W(60);
+  await p.locator('#spColors button', { hasText: 'Green' }).click(); await W(60);
+  await p.locator('[data-a=edit-current]').click(); await W(100);
+  await p.fill('#spQty', '100'); await p.locator('[data-a=qty-apply]').click(); await W(100);
+  /* M / Green / Crew: the remaining 150 */
+  await p.locator('#spSizes button', { hasText: /^M/ }).click(); await p.locator('#spStyles button', { hasText: 'Crew' }).click(); await W(60);
+  await p.locator('#spColors button', { hasText: 'Green' }).click(); await W(60);
+  await p.locator('[data-a=fill]').click(); await W(100);
+  R.directSaveBtn = await p.locator('#spSave .sc').textContent();
+  await p.locator('#spSave').click(); await W(900);
+  R.directSaved = await p.evaluate(() => ZASPacking.state.records.filter(r => r.mode === 'direct').map(r => r.from + '-' + r.to + ' ' + r.total + ' ' + r.combos.map(c => c.size + c.colour + c.total).join('+')));
+  R.directNext = (await D()).start;
+  /* back to per package for the rest */
+  await p.locator('[data-a=qty-mode][data-mode=per]').click(); await W(100);
+  await p.locator('[data-a=entry-mode][data-mode=single]').click(); await W(100);
+  if (await p.locator('[data-a=clear]').isEnabled()) await p.locator('[data-a=clear]').click();
+  await p.fill('#spTarget', '10'); await p.locator('#spTarget').dispatchEvent('change'); await W(100);
   /* the draft survives a reload */
   await p.locator('#spSizes button', { hasText: /^L/ }).click(); await W(80);
   await p.reload(); await W(400);
@@ -448,6 +525,25 @@ let R = {};
   await p.locator('[data-a=tab][data-tab=records]').click(); await W();
   await p.locator('[data-a=record-mode][data-mode=ranges]').click(); await W();
   R.rangeRows = await p.locator('#spRecList .serial').allTextContents();
+  await p.locator('[data-a=record-mode][data-mode=individual]').click(); await W();
+  /* the units shown on Records, against the ranges added up here: a direct
+     range counts its total once */
+  R.units = { shown: (await p.locator('.stat .v').nth(1).textContent()).replace(/,/g, ''),
+    expected: String(await p.evaluate(() => ZASPacking.state.records.reduce((s, r) => s + (r.mode === 'direct' ? r.total : r.target * (r.to - r.from + 1)), 0))) };
+  const drec = p.locator('article').filter({ has: p.locator('.pill.direct') });
+  R.directRec = { count: await drec.count(), serial: await drec.locator('.serial').first().textContent().catch(() => ''),
+    acts: await drec.locator('.acts button').allTextContents(), brk: await drec.locator('.brk').first().textContent().catch(() => '') };
+  await drec.locator('[data-a=edit-range]').click(); await W(150);
+  d = await D(); R.editRange = { on: !!d.editRange, start: d.start, end: d.end, target: d.target, mode: d.qtyMode, title: await p.locator('#spMain h2').first().textContent() };
+  await p.fill('#spEnd', '41'); await W(60);
+  await p.locator('#spSave').click(); await W(900);
+  R.afterEditRange = await p.evaluate(() => ZASPacking.state.records.filter(r => r.mode === 'direct').map(r => r.from + '-' + r.to + ' ' + r.total));
+  await p.locator('.sp-tabs [data-tab=summary]').click(); await W();
+  R.summaryDirect = await p.locator('.sline').filter({ hasText: 'L / Green / V-neck' }).locator('.small').textContent().catch(() => '');
+  await p.locator('.sp-tabs [data-tab=records]').click(); await W();
+  await p.locator('article').filter({ has: p.locator('.pill.direct') }).locator('[data-a=delete-range]').click(); await W(900);
+  R.afterDeleteRange = await p.evaluate(() => ZASPacking.state.records.filter(r => r.mode === 'direct').length);
+  await p.locator('[data-a=record-mode][data-mode=ranges]').click(); await W();
   await p.locator('[data-a=record-mode][data-mode=individual]').click(); await W();
   await p.fill('#spRecSearch', 't-shirt'); await W();
   const row = n => p.locator('article').filter({ has: p.locator('.serial', { hasText: new RegExp('^' + n + '$') }) });
@@ -529,6 +625,26 @@ JS;
        [$R['rollStart'] ?? null, $R['cartonAgain'] ?? null]);
     ok(str_contains($R['preview'] ?? '', '3 packages') && str_contains($R['preview'] ?? '', '30 pcs'), 'a range previews its packages and pieces', $R['preview'] ?? null);
     ok(($R['afterRange'] ?? '') === '5', 'and after it the next number is 5', $R['afterRange'] ?? null);
+    ok(($R['qmodeSingle'] ?? 1) === 0, 'one package has no Per/Direct switch — it is always per package', $R['qmodeSingle'] ?? null);
+    ok(($R['qmodeRange'] ?? []) === ['PER PKG', 'DIRECT'], 'a serial range has the small switch in the quantity cell', $R['qmodeRange'] ?? null);
+    ok(($R['direct'] ?? null) === ['mode' => 'direct', 'target' => 100, 'combos' => '40,30,30'],
+       'Direct turns 10 a carton into the 100 total for the ten cartons, counted figures too', $R['direct'] ?? null);
+    ok(trim($R['directLabel'] ?? '') === 'Total pcs' && str_contains($R['directNote'] ?? '', 'total for all 10 packages')
+       && str_contains($R['directNote'] ?? '', 'Every serial number is still saved'),
+       'the box says Total, and one line explains direct — serials still saved', [$R['directLabel'] ?? null, $R['directNote'] ?? null]);
+    ok(str_contains($R['directSaveBtn'] ?? '', '30 – 39') && str_contains($R['directSaveBtn'] ?? '', '250 pcs direct'),
+       'Save says the serials and the direct total', $R['directSaveBtn'] ?? null);
+    ok(($R['directSaved'] ?? []) === ['30-39 250 LGreen100+MGreen150'], 'and saves the range with its totals by size and colour', $R['directSaved'] ?? null);
+    ok(($R['directNext'] ?? '') === '40', 'then moves to the next free number, 40', $R['directNext'] ?? null);
+    ok(($R['directRec']['count'] ?? 0) === 1 && ($R['directRec']['serial'] ?? '') === '30 – 39'
+       && ($R['directRec']['acts'] ?? []) === ['Edit range', 'Delete range'] && str_contains($R['directRec']['brk'] ?? '', 'L / Green / V-neck: 100'),
+       'Records shows the direct range as one record, with its totals, Edit range and Delete range', $R['directRec'] ?? null);
+    ok(($R['editRange'] ?? null) === ['on' => true, 'start' => '30', 'end' => '39', 'target' => 250, 'mode' => 'direct', 'title' => 'Edit range'],
+       'Edit range opens the whole range with its total', $R['editRange'] ?? null);
+    ok(($R['afterEditRange'] ?? []) === ['30-41 250'], 'and saving it changes that range in place', $R['afterEditRange'] ?? null);
+    ok(str_contains($R['summaryDirect'] ?? '', '100 pcs · in 12 packages'), 'Summary counts the direct total once, not per package', $R['summaryDirect'] ?? null);
+    ok(($R['units']['shown'] ?? 'x') === ($R['units']['expected'] ?? 'y'), 'Records counts the direct total once in the packed units', $R['units'] ?? null);
+    ok(($R['afterDeleteRange'] ?? 1) === 0, 'Delete range removes it', $R['afterDeleteRange'] ?? null);
     ok(($R['typed'] ?? '') === '1012' || ($R['typed'] ?? '') === '12', 'typing keeps every key', $R['typed'] ?? null);
     ok(($R['focusKept'] ?? '') === 'spTarget', 'and the cursor stays in the box', $R['focusKept'] ?? null);
     ok(($R['draftKept'] ?? '') === 'L', 'an unsaved draft survives a reload', $R['draftKept'] ?? null);

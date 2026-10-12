@@ -138,7 +138,7 @@ t('and direct works back to 10 in each carton',
 /* SMART PACKING: one quantity, per package — "pcs / carton". Direct
    quantity is gone from the phone; ranges saved that way still show. */
 t('the quantity box says what it is: pieces per package of this kind',
-  str_contains($mpN, "'<div class=\"qtyf\"><label for=\"spTarget\">' + esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase())"),
+  str_contains($mpN, "(dir ? 'Total ' + esc(p.unit) : esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase()))"),
   'the label does not name the unit and the package');
 /* One box, common to both modes — "Total pieces per carton remains
    visible in both". The old tap page and its hidden carry-over are gone. */

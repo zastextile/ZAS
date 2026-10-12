@@ -43,7 +43,7 @@ if (function_exists('mob_needs')) {
     mob_needs(['pack_palette', 'pack_unit_key', 'pack_wkey', 'pack_colour_swatch',
                'pack_weight_missing', 'pack_dedupe', 'pack_state', 'pack_package_save',
                'pack_package_delete', 'pack_split_out', 'pack_finish', 'pack_reopen',
-               'pack_line_axes'], 'includes/packing.php');
+               'pack_line_axes', 'pack_range_delete'], 'includes/packing.php');
 } else {
     http_response_code(500);
     exit('Upload includes/mobile.php — the copy on the server is older than this screen.');
@@ -145,7 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['api'])) {
     if (!$canEdit) { http_response_code(403); $answer(false, 'This packing list can no longer be changed.'); }
     $op   = (string)($in['op'] ?? '');
     $done = ($shipment['packing_status'] ?? 'open') === 'completed';
-    if ($done && in_array($op, ['save', 'delete', 'finish'], true)) {
+    if ($done && in_array($op, ['save', 'delete', 'delete_range', 'finish'], true)) {
         $answer(false, 'Packing is finished. Reopen it on Summary to change anything.');
     }
     try {
@@ -155,6 +155,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['api'])) {
         }
         if ($op === 'delete') {
             [$ok, $msg] = pack_package_delete($id, (int)($in['group'] ?? 0), (int)($in['num'] ?? 0));
+            $answer($ok, $msg);
+        }
+        if ($op === 'delete_range') {
+            [$ok, $msg] = pack_range_delete($id, (int)($in['group'] ?? 0));
             $answer($ok, $msg);
         }
         if ($op === 'finish') { [$ok, $msg] = pack_finish($id); $answer($ok, $msg); }
@@ -984,6 +988,12 @@ mob_header($title, $back, (string)$shipment['buyer_name'], 'manifest_pack.json')
 .sp-tabs button{flex:1;min-width:0;border:1px solid var(--line2);background:#fff;display:flex;align-items:center;
   justify-content:center;gap:6px;min-height:46px;color:var(--muted);font-size:13px;padding:8px 4px;white-space:nowrap}
 #spCount{font-size:11px;font-weight:600}
+/* PER / DIRECT — a small switch in the quantity cell itself */
+.sp .qmode{display:flex;gap:2px;margin-top:5px;padding:2px;border-radius:8px;background:#eef2f0}
+.sp .qmode button{flex:1;min-height:26px;padding:2px 4px;font-size:10.5px;white-space:nowrap;font-weight:750;letter-spacing:.3px;
+  border:0;border-radius:6px;background:transparent;color:var(--muted)}
+.sp .qmode button.active{background:#fff;color:var(--teal);box-shadow:0 1px 4px #173d3518}
+.sp .pill.direct{background:#e8eefb;color:#2c4f9e}
 .sp-tabs button.active{background:var(--dark);color:#fff;border-color:var(--dark)}
 .sp-n{font-size:11px;border:1px solid currentColor;width:20px;height:20px;border-radius:50%;
   display:grid;place-items:center;opacity:.75}
@@ -1121,6 +1131,12 @@ var vlabel = function (x) { return [x.size, x.color, x.style].filter(Boolean).jo
 var sumQty = function (cs) { return cs.reduce(function (s, c) { return s + c.qty; }, 0); };
 var serialText = function (prefix, num, pad) { return prefix + String(num).padStart(pad || 0, '0'); };
 var kindOf = function (t) { return String(t || 'Carton').trim().toLowerCase(); };
+/* DIRECT: the figures are the TOTAL for the whole range, by size, colour,
+   style or a mix; the serial numbers are still every package's own. Only a
+   serial range can be direct — one package is always "per package". */
+var isDirect = function (d) { return d.qtyMode === 'direct' && d.entryMode === 'range'; };
+var totalFor = function (d, count) { return isDirect(d) ? d.target : count * d.target; };
+var recOf = function (gid) { return STATE.records.find(function (r) { return r.id === +gid; }); };
 var DEFAULT_SPEC = { Carton: 'Standard carton', Bale: 'Standard bale', Roll: 'Standard roll', Bag: 'Retail bag', Other: 'Other packaging' };
 var COLOR_DOT = { black: '#202b2b', green: '#558a6b', white: '#fff', grey: '#abb4b8', gray: '#abb4b8', blue: '#709ab8',
   navy: '#1f3356', red: '#b8283f', maroon: '#73202f', pink: '#e39ab0', royal: '#2f55c0', yellow: '#e6c34a', brown: '#7a5438' };
@@ -1132,7 +1148,7 @@ function packages() {
   var out = [];
   STATE.records.forEach(function (r) {
     for (var n = r.from; n <= r.to; n++) out.push({ gid: r.id, num: n, prefix: r.prefix, pad: r.pad, item: r.item,
-      type: r.type, spec: r.spec, target: r.target, edited: r.edited,
+      type: r.type, spec: r.spec, target: r.target, edited: r.edited, direct: r.mode === 'direct',
       combos: r.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: c.qty }; }) });
   });
   return out.sort(function (a, b) { return a.prefix.localeCompare(b.prefix) || kindOf(a.type).localeCompare(kindOf(b.type)) || a.num - b.num; });
@@ -1164,15 +1180,18 @@ function rangeForDraft(d) {
   if (count > 5000) throw Error('Save up to 5,000 packages at a time.');
   return { start: s, end: e, count: count, pad: Math.max(s.pad, e.pad) };
 }
-function checkComposition(p, cs, target) {
-  if (!Number.isInteger(target) || target < 1 || target > 1000000) throw Error('Quantity per package must be a whole number from 1 to 1,000,000.');
+function checkComposition(p, cs, target, direct, count) {
+  if (direct) {
+    if (!Number.isInteger(target) || target < 1 || target > 100000000) throw Error('The direct total must be a whole number from 1 to 100,000,000.');
+    if (target < count) throw Error('A direct total needs at least one piece in each package: ' + count + ' packages need ' + count + ' or more.');
+  } else if (!Number.isInteger(target) || target < 1 || target > 1000000) throw Error('Quantity per package must be a whole number from 1 to 1,000,000.');
   var a = axes(p), keys = {};
   cs.forEach(function (c) {
     if (!Number.isInteger(c.qty) || c.qty <= 0) throw Error('Every combination needs a positive whole quantity.');
     if (a[0].indexOf(c.size) < 0 || a[1].indexOf(c.color) < 0 || a[2].indexOf(c.style) < 0) throw Error('This combination is not one this product is packed in.');
     var k = vkey(c.size, c.color, c.style); if (keys[k]) throw Error('The same combination is listed twice.'); keys[k] = 1;
   });
-  if (sumQty(cs) !== target) throw Error('Complete the package first: ' + sumQty(cs) + ' of ' + target + ' ' + p.unit + ' entered.');
+  if (sumQty(cs) !== target) throw Error((direct ? 'Complete the total first: ' : 'Complete the package first: ') + sumQty(cs) + ' of ' + target + ' ' + p.unit + ' entered.');
 }
 
 /* ---------------- the draft: what is being packed now. Kept in this
@@ -1181,7 +1200,7 @@ function blankDraft(itemId, cfg) {
   var p = prod(itemId), a = axes(p); cfg = cfg || {};
   var type = cfg.packageType || 'Carton';
   return { productId: p.id, packageType: type, spec: cfg.spec || DEFAULT_SPEC[type] || '', target: cfg.target || 10,
-    entryMode: 'single', prefix: cfg.prefix != null ? cfg.prefix : '', pad: cfg.pad != null ? cfg.pad : 0, start: '', end: '',
+    entryMode: cfg.entryMode || 'single', qtyMode: cfg.qtyMode || 'per', editRange: null, prefix: cfg.prefix != null ? cfg.prefix : '', pad: cfg.pad != null ? cfg.pad : 0, start: '', end: '',
     selectedSize: cfg.selectedSize != null && a[0].indexOf(cfg.selectedSize) >= 0 ? cfg.selectedSize : a[0][0],
     selectedColor: cfg.selectedColor != null && a[1].indexOf(cfg.selectedColor) >= 0 ? cfg.selectedColor : a[1][0],
     selectedStyle: cfg.selectedStyle != null && a[2].indexOf(cfg.selectedStyle) >= 0 ? cfg.selectedStyle : a[2][0],
@@ -1194,8 +1213,10 @@ function lastConfig(itemId) {
   var last = null;
   STATE.records.forEach(function (r) { if (r.item === String(itemId) && (!last || r.id > last.id)) last = r; });
   if (!last) return null;
-  var cs = last.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: Math.round(c.qty) }; });
-  return { packageType: last.type, spec: last.spec, target: Math.round(last.target) || 10, prefix: '', pad: last.pad,
+  var dir = last.mode === 'direct';
+  var cs = last.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: Math.round(dir ? c.total : c.qty) }; });
+  return { packageType: last.type, spec: last.spec, target: Math.round(dir ? last.total : last.target) || 10, prefix: '', pad: last.pad,
+    qtyMode: dir ? 'direct' : 'per', entryMode: dir ? 'range' : 'single',
     combos: cs, selectedSize: cs[0] && cs[0].size, selectedColor: cs[0] && cs[0].color, selectedStyle: cs[0] && cs[0].style };
 }
 function saveLocal() { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch (e) {} }
@@ -1245,26 +1266,32 @@ function touchGrid(values, type, d, p) {
   }).join('');
 }
 function renderPacking() {
-  var d = draft, p = prod(d.productId), qty = sumQty(d.combos), complete = qty === d.target, rangeLabel = 'Enter a serial to see the total';
-  try { var r = rangeForDraft(d); rangeLabel = serialLabel(d) + ' · ' + fmt(r.count) + ' ' + (r.count === 1 ? 'package' : 'packages') + ' · ' + fmt(r.count * d.target) + ' ' + p.unit; } catch (e) {}
+  var d = draft, p = prod(d.productId), qty = sumQty(d.combos), complete = qty === d.target, rangeLabel = 'Enter a serial to see the total', cnt = 0;
+  try { var r = rangeForDraft(d); cnt = r.count; rangeLabel = serialLabel(d) + ' · ' + fmt(r.count) + ' ' + (r.count === 1 ? 'package' : 'packages') + ' · ' + fmt(totalFor(d, r.count)) + ' ' + p.unit + (isDirect(d) ? ' in total' : ''); } catch (e) {}
+  var dir = isDirect(d), anyEdit = d.edit || d.editRange;
   var lineRef = esc(p.line) + (p.hint ? ' · ' + esc(p.hint) : '') + ' · ' + esc(p.unit);
   $('#spMain').innerHTML =
-    '<div class="row between" style="margin-bottom:10px"><h2>' + (d.edit ? 'Edit package' : 'Pack the next ' + esc(d.packageType.toLowerCase())) + '</h2>'
-    + '<span class="pill ' + (d.edit ? 'warn' : 'gray') + '">' + (d.edit ? 'ONE PACKAGE ONLY' : esc(STATE.shipment.invoice)) + '</span></div>'
+    '<div class="row between" style="margin-bottom:10px"><h2>' + (d.editRange ? 'Edit range' : d.edit ? 'Edit package' : 'Pack the next ' + esc(d.packageType.toLowerCase())) + '</h2>'
+    + '<span class="pill ' + (anyEdit ? 'warn' : 'gray') + '">' + (d.editRange ? 'WHOLE RANGE' : d.edit ? 'ONE PACKAGE ONLY' : esc(STATE.shipment.invoice)) + '</span></div>'
     + '<div class="sel"><div><div class="name">' + esc(p.name) + '</div><div class="ref">' + lineRef + '</div></div>'
     + (p.setUp ? '<span class="pill">Set up</span>' : '') + '</div>'
     + '<div class="search"><input id="spSearch" type="search" autocomplete="off" placeholder="Search product, line or description…" value="' + esc(searchQuery) + '" aria-label="Search the invoice\'s products">'
     + '<div id="spResults" class="results" hidden></div></div>'
     + (p.setUp || !p.sizes.length ? '' : '<div class="sp-notice sp-warn gap">This line is not set up on Order sizes &amp; colours, so these are the product\'s own sizes.</div>')
     + '<div class="card gap">'
-    + '<div class="segment"><button type="button" data-a="entry-mode" data-mode="single" class="' + (d.entryMode === 'single' ? 'active' : '') + '">SINGLE ' + esc(d.packageType.toUpperCase())
+    + '<div class="segment"><button type="button" data-a="entry-mode" data-mode="single" class="' + (d.entryMode === 'single' ? 'active' : '') + '"' + (d.editRange ? ' disabled' : '') + '>SINGLE ' + esc(d.packageType.toUpperCase())
     + '</button><button type="button" data-a="entry-mode" data-mode="range" class="' + (d.entryMode === 'range' ? 'active' : '') + '"' + (d.edit ? ' disabled' : '') + '>SERIAL RANGE</button></div>'
     + '<div class="sgrid' + (d.entryMode === 'range' ? ' range' : '') + '"><div><label for="spStart">' + (d.entryMode === 'range' ? 'Starting serial' : 'Package serial') + '</label>'
     + '<input id="spStart" data-sel enterkeyhint="next" inputmode="text" autocomplete="off" value="' + esc(d.start) + '"></div>'
     + (d.entryMode === 'range' ? '<div><label for="spEnd">Ending serial</label><input id="spEnd" data-sel enterkeyhint="next" inputmode="text" autocomplete="off" value="' + esc(d.end) + '"></div>' : '')
-    + '<div class="qtyf"><label for="spTarget">' + esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase()) + '</label>'
-    + '<input id="spTarget" type="text" inputmode="numeric" pattern="[0-9]*" data-sel enterkeyhint="next" value="' + d.target + '"></div></div>'
+    + '<div class="qtyf"><label for="spTarget">' + (dir ? 'Total ' + esc(p.unit) : esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase())) + '</label>'
+    + '<input id="spTarget" type="text" inputmode="numeric" pattern="[0-9]*" data-sel enterkeyhint="next" value="' + d.target + '">'
+    + (d.entryMode === 'range' && !d.edit ? '<div class="qmode" role="group" aria-label="Quantity is per package or the direct total">'
+        + '<button type="button" data-a="qty-mode" data-mode="per" class="' + (dir ? '' : 'active') + '" aria-pressed="' + !dir + '" title="Quantity per ' + esc(d.packageType.toLowerCase()) + '">PER PKG</button>'
+        + '<button type="button" data-a="qty-mode" data-mode="direct" class="' + (dir ? 'active' : '') + '" aria-pressed="' + dir + '">DIRECT</button></div>' : '')
+    + '</div></div>'
     + '<div class="preview" id="spPreview">' + esc(rangeLabel) + '</div>'
+    + (dir ? '<div class="sp-notice gap" id="spDirect"><b>Direct quantity.</b> Type or tap the <b>total for all ' + (cnt ? fmt(cnt) + ' ' : '') + 'packages</b> — by size, colour, style or a mix. Every serial number is still saved; only the per-package split is not.</div>' : '')
     + '<details id="spPkgDetails"' + (d.advancedOpen ? ' open' : '') + '><summary><span>' + esc(d.packageType) + ' · ' + esc(d.spec) + '</span></summary>'
     + '<div class="settings"><div><label for="spType">Package type</label><select id="spType">' + ['Carton', 'Bale', 'Roll', 'Bag', 'Other'].map(function (v) { return '<option' + (v === d.packageType ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>'
     + '<div><label for="spSpec">Packaging specification</label><input id="spSpec" value="' + esc(d.spec) + '" maxlength="80"></div>'
@@ -1284,10 +1311,10 @@ function renderPacking() {
           + '<button type="button" class="amt" data-a="combo-edit" data-i="' + i + '" aria-label="Edit ' + esc(vlabel(c)) + '">' + c.qty + '</button>'
           + '<button type="button" data-a="combo-plus" data-i="' + i + '" aria-label="Add one ' + esc(vlabel(c)) + '">+</button></div>'; }).join('')
       : '<div class="hint">Select a size, then tap a colour or style.</div>') + '</div></details></div>'
-    + (d.edit ? '<button type="button" class="quiet full gap" data-a="cancel-edit">Cancel edit · back to new packing</button>'
+    + (anyEdit ? '<button type="button" class="quiet full gap" data-a="cancel-edit">Cancel edit · back to new packing</button>'
               : '<div class="hint" style="text-align:center;margin-top:12px">Save &amp; Next keeps this product, quantity and contents ready.</div>');
   if (!CAN_EDIT || STATE.completed) { $('#spDock').innerHTML = ''; if (STATE.completed && CAN_EDIT) $('#spMain').insertAdjacentHTML('afterbegin', '<div class="sp-notice sp-warn" style="margin-bottom:12px">Packing is finished. Reopen it on Summary to change anything.</div>'); return; }
-  $('#spDock').innerHTML = '<div class="sp-dock"><div class="crow"><div class="cval">' + fmt(qty) + ' <span style="font-weight:500;color:#64797b">/ ' + fmt(d.target) + ' ' + esc(p.unit) + '</span></div>'
+  $('#spDock').innerHTML = '<div class="sp-dock"><div class="crow"><div class="cval">' + fmt(qty) + ' <span style="font-weight:500;color:#64797b">/ ' + fmt(d.target) + ' ' + esc(p.unit) + (dir ? ' total' : '') + '</span></div>'
     + '<div class="crem">' + (complete ? '<span class="pill">✓ COMPLETE</span>' : fmt(Math.max(0, d.target - qty)) + ' remaining') + '</div></div>'
     + '<div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="' + d.target + '" aria-valuenow="' + qty + '"><i style="width:' + Math.min(100, qty / d.target * 100) + '%"></i></div>'
     + '<button type="button" id="spSave" class="sp-save" data-a="save"></button></div>';
@@ -1296,13 +1323,14 @@ function renderPacking() {
 function renderSaveButton() {
   var b = $('#spSave'); if (!b || tab !== 'packing') return;
   var d = draft, p = prod(d.productId), count = 1; try { count = rangeForDraft(d).count; } catch (e) {}
+  var total = totalFor(d, count);
   var ok = receipt && receipt.next === d.start && receipt.productId === d.productId ? receipt : null;
   b.classList.toggle('ok', !!ok); b.disabled = saveBusy;
-  b.innerHTML = '<span class="st">' + (saveBusy ? 'SAVING…' : ok ? '✓ ' + (ok.updated ? 'Updated' : 'Saved') + ' ' + esc(ok.label) : (d.edit ? 'SAVE CHANGES' : 'SAVE &amp; NEXT')) + '</span>'
-    + '<span class="sc">' + (ok ? 'Next · ' : '') + esc(d.packageType + ' ' + serialLabel(d) + ' · ' + fmt(count * d.target) + ' ' + p.unit) + ' →</span>';
+  b.innerHTML = '<span class="st">' + (saveBusy ? 'SAVING…' : ok ? '✓ ' + (ok.updated ? 'Updated' : 'Saved') + ' ' + esc(ok.label) : (d.edit || d.editRange ? 'SAVE CHANGES' : 'SAVE &amp; NEXT')) + '</span>'
+    + '<span class="sc">' + (ok ? 'Next · ' : '') + esc(d.packageType + ' ' + serialLabel(d) + ' · ' + fmt(total) + ' ' + p.unit + (isDirect(d) ? ' direct' : '')) + ' →</span>';
 }
 function updatePreview() {
-  var d = draft; try { var r = rangeForDraft(d); $('#spPreview').textContent = serialLabel(d) + ' · ' + fmt(r.count) + ' packages · ' + fmt(r.count * d.target) + ' ' + prod(d.productId).unit; }
+  var d = draft; try { var r = rangeForDraft(d); $('#spPreview').textContent = serialLabel(d) + ' · ' + fmt(r.count) + ' packages · ' + fmt(totalFor(d, r.count)) + ' ' + prod(d.productId).unit + (isDirect(d) ? ' in total' : ''); }
   catch (e) { $('#spPreview').textContent = e.message; } renderSaveButton();
 }
 
@@ -1312,13 +1340,13 @@ function setCombo(size, color, style, qty) {
   var d = draft; if (!Number.isInteger(qty) || qty < 0) throw Error('Enter a whole quantity of zero or more.');
   var k = vkey(size, color, style), i = d.combos.findIndex(function (c) { return vkey(c.size, c.color, c.style) === k; }), old = i < 0 ? 0 : d.combos[i].qty;
   var total = sumQty(d.combos) - old + qty;
-  if (total > d.target) throw Error('The package holds ' + d.target + '; only ' + Math.max(0, d.target - (sumQty(d.combos) - old)) + ' can go in this combination.');
+  if (total > d.target) throw Error((isDirect(d) ? 'The total is ' : 'The package holds ') + d.target + '; only ' + Math.max(0, d.target - (sumQty(d.combos) - old)) + ' can go in this combination.');
   snapshot();
   if (i < 0) { if (qty) d.combos.push({ size: size, color: color, style: style, qty: qty }); } else if (qty) d.combos[i].qty = qty; else d.combos.splice(i, 1);
   d.selectedColor = color; d.selectedStyle = style; saveLocal(); renderPacking();
 }
 function increment(color, style) {
-  var d = draft; if (sumQty(d.combos) >= d.target) { toast('Package complete · use − or Edit qty to correct'); return; }
+  var d = draft; if (sumQty(d.combos) >= d.target) { toast((isDirect(d) ? 'Total complete' : 'Package complete') + ' · use − or Edit qty to correct'); return; }
   var c = d.combos.find(function (c) { return vkey(c.size, c.color, c.style) === vkey(d.selectedSize, color, style); });
   setCombo(d.selectedSize, color, style, (c ? c.qty : 0) + 1);
 }
@@ -1331,31 +1359,32 @@ function syncEntry() {
   var q = $('#spTarget');
   if (q && Number(q.value) !== d.target) {
     var n = Number(q.value);
-    if (!Number.isInteger(n) || n < 1 || n > 1000000 || sumQty(d.combos) > n) throw Error('Use a package quantity at least equal to what is counted.');
+    if (!Number.isInteger(n) || n < 1 || n > (isDirect(d) ? 100000000 : 1000000) || sumQty(d.combos) > n) throw Error('Use a quantity at least equal to what is counted.');
     d.target = n;
   }
 }
 function saveDraft() {
   if (saveBusy) return;
   var d = draft, p = prod(d.productId), range;
-  try { syncEntry(); checkComposition(p, d.combos, d.target); range = rangeForDraft(d);
+  try { syncEntry(); range = rangeForDraft(d); checkComposition(p, d.combos, d.target, isDirect(d), range.count);
         if (d.edit && range.count !== 1) throw Error('Edit one package at a time.'); }
   catch (e) { toast(e.message, true); return; }
   saveBusy = true; receipt = null; renderSaveButton();
-  var wasEdit = !!d.edit;
+  var wasEdit = !!(d.edit || d.editRange);
   api({ op: 'save', item: p.id, type: d.packageType, spec: (d.spec || '').trim() || DEFAULT_SPEC[d.packageType] || '',
         prefix: range.start.prefix, pad: range.pad, from: range.start.num, to: range.end.num, target: d.target,
         combos: d.combos.map(function (c) { return { size: c.size, colour: c.color, style: c.style, qty: c.qty }; }),
-        edit_group: d.edit ? d.edit.gid : 0, edit_num: d.edit ? d.edit.num : 0 })
+        edit_group: d.edit ? d.edit.gid : 0, edit_num: d.edit ? d.edit.num : 0,
+        mode: isDirect(d) ? 'direct' : 'per', edit_range: d.editRange || 0 })
     .then(function () {
       saveBusy = false;
-      d.prefix = range.start.prefix; d.pad = range.pad; d.edit = null; history = [];
+      d.prefix = wasEdit ? '' : range.start.prefix; d.pad = range.pad; d.edit = null; d.editRange = null; history = [];
       d.start = nextSerial(d.prefix, d.pad, d.packageType, wasEdit ? 0 : range.end.num); d.end = d.start;
       saveLocal(); render();
       var label = serialText(range.start.prefix, range.start.num, range.pad) + (range.count > 1 ? ' – ' + serialText(range.end.prefix, range.end.num, range.pad) : '');
       receipt = { label: label, next: d.start, productId: d.productId, updated: wasEdit }; renderSaveButton();
       clearTimeout(receiptTimer); receiptTimer = setTimeout(function () { receipt = null; renderSaveButton(); }, 1600);
-      toast((wasEdit ? 'Updated ' : 'Saved ') + fmt(range.count) + ' ' + (range.count === 1 ? d.packageType.toLowerCase() : 'packages') + ' · next ' + d.start + ' ready');
+      toast((wasEdit ? 'Updated ' : 'Saved ') + fmt(range.count) + ' ' + (range.count === 1 ? d.packageType.toLowerCase() : 'packages') + (isDirect(d) ? ' (direct)' : '') + ' · next ' + d.start + ' ready');
     })
     .catch(function (e) { saveBusy = false; renderSaveButton(); toast(e.message, true); });
 }
@@ -1370,10 +1399,33 @@ function editPackage(pkg, copy) {
   tab = 'packing'; history = []; saveLocal(); render(); window.scrollTo(0, 0);
   toast(copy ? 'Contents copied onto the next free serial' : 'Editing this package only');
 }
-function cancelEdit() { draft.edit = null; draft.prefix = ''; draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start; history = []; saveLocal(); render(); toast('New package ready; the saved one is kept'); }
+/* A DIRECT RANGE IS EDITED AS A WHOLE: its totals, its serials, its kind. */
+function editRange(gid) {
+  var r = recOf(gid); if (!r) return;
+  draft = blankDraft(r.item, { packageType: r.type, spec: r.spec, target: Math.round(r.total), pad: r.pad, qtyMode: 'direct', entryMode: 'range',
+    combos: r.combos.map(function (c) { return { size: c.size, color: c.colour, style: c.style, qty: Math.round(c.total) }; }),
+    selectedSize: r.combos[0] && r.combos[0].size, selectedColor: r.combos[0] && r.combos[0].colour, selectedStyle: r.combos[0] && r.combos[0].style });
+  draft.editRange = r.id; draft.prefix = r.prefix;
+  draft.start = serialText(r.prefix, r.from, r.pad); draft.end = serialText(r.prefix, r.to, r.pad);
+  tab = 'packing'; history = []; saveLocal(); render(); window.scrollTo(0, 0);
+  toast('Editing this direct range as a whole');
+}
+/* PER ⇄ DIRECT, keeping what was counted: per → direct multiplies by the
+   packages; direct → per divides when it divides evenly, and otherwise asks
+   for a recount rather than inventing a split. */
+function setQtyMode(mode) {
+  var d = draft; if ((d.qtyMode || 'per') === mode) return;
+  var n = 1; try { n = rangeForDraft(d).count; } catch (e) {}
+  snapshot();
+  if (mode === 'direct') { d.target = d.target * n; d.combos.forEach(function (c) { c.qty = c.qty * n; }); }
+  else if (d.combos.every(function (c) { return c.qty % n === 0; }) && d.target % n === 0) { d.target = d.target / n; d.combos.forEach(function (c) { c.qty = c.qty / n; }); }
+  else { d.target = Math.max(1, Math.round(d.target / n)); d.combos = []; toast('The totals do not split evenly into ' + n + ' packages — count one package', true); }
+  d.qtyMode = mode; saveLocal(); renderPacking();
+}
+function cancelEdit() { draft.edit = null; draft.editRange = null; draft.prefix = ''; draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start; history = []; saveLocal(); render(); toast('New package ready; the saved one is kept'); }
 
 /* ---------------- records */
-function signature(p) { return JSON.stringify([p.item, kindOf(p.type), p.spec, p.target, p.combos.map(function (c) { return [c.size, c.color, c.style, c.qty]; }).sort()]); }
+function signature(p) { return JSON.stringify([p.direct ? 'D' + p.gid : '', p.item, kindOf(p.type), p.spec, p.target, p.combos.map(function (c) { return [c.size, c.color, c.style, c.qty]; }).sort()]); }
 function grouped(list) {
   var gs = [];
   list.forEach(function (p) {
@@ -1384,11 +1436,13 @@ function grouped(list) {
   return gs;
 }
 var gSerial = function (g) { return serialText(g.first.prefix, g.first.num, g.first.pad) + (g.list.length > 1 ? ' – ' + serialText(g.last.prefix, g.last.num, g.last.pad) : ''); };
+/* quantities from the ranges: a direct range counts its total once */
+function recQty(r) { return r.mode === 'direct' ? r.total : r.target * (r.to - r.from + 1); }
 function totals() {
-  var units = {}, all = packages();
-  all.forEach(function (p) { var u = prod(p.item) ? prod(p.item).unit : 'pcs'; units[u] = (units[u] || 0) + p.target; });
-  return { packages: all.length, quantity: all.reduce(function (s, p) { return s + p.target; }, 0), units: units,
-    products: Object.keys(all.reduce(function (o, p) { o[p.item] = 1; return o; }, {})).length };
+  var units = {}, q = 0, items = {}, n = 0;
+  STATE.records.forEach(function (r) { var u = prod(r.item) ? prod(r.item).unit : 'pcs', x = recQty(r);
+    units[u] = (units[u] || 0) + x; q += x; items[r.item] = 1; n += r.to - r.from + 1; });
+  return { packages: n, quantity: q, units: units, products: Object.keys(items).length };
 }
 var unitText = function (s) { return Object.keys(s.units).map(function (u) { return fmt(s.units[u]) + ' ' + u; }).join(' + '); };
 function filtered() {
@@ -1414,11 +1468,24 @@ function renderRecords() {
   renderRecordList();
 }
 function renderRecordList() {
-  var rs = filtered(), items = recordMode === 'ranges' ? grouped(rs) : rs.map(function (p) { return { first: p, last: p, list: [p] }; });
+  var rs = filtered(), items = [];
+  if (recordMode === 'ranges') items = grouped(rs);
+  /* a direct range is one record even here: its packages have no contents of their own */
+  else rs.forEach(function (p) { var l = items[items.length - 1];
+    if (p.direct && l && l.first.direct && l.first.gid === p.gid && l.last.num + 1 === p.num) { l.list.push(p); l.last = p; }
+    else items.push({ first: p, last: p, list: [p] }); });
   var pages = Math.max(1, Math.ceil(items.length / 25)); recordPage = Math.min(recordPage, pages - 1);
   var live = CAN_EDIT && !STATE.completed;
   $('#spRecList').innerHTML = items.slice(recordPage * 25, recordPage * 25 + 25).map(function (g) {
     var r = g.first, p = prod(r.item) || { name: '(product removed)', unit: 'pcs', line: '' }, n = g.list.length;
+    if (r.direct) {
+      var dr = recOf(r.gid) || { total: 0, combos: [] };
+      return '<article class="rec card"><div><div class="row wrap"><span class="serial">' + esc(gSerial(g)) + '</span><span class="pill">' + esc(r.type) + '</span><span class="pill direct">Direct</span></div>'
+        + '<div class="rprod">' + esc(p.name) + ' <span class="muted" style="font-weight:600">' + esc(p.line) + '</span> · ' + fmt(dr.total) + ' ' + esc(p.unit) + ' in total</div>'
+        + '<div class="brk">' + dr.combos.map(function (c) { return esc(vlabel({ size: c.size, color: c.colour, style: c.style })) + ': <b>' + fmt(c.total) + '</b>'; }).join(' · ') + '</div></div>'
+        + '<div class="acts">' + (live ? '<button type="button" data-a="edit-range" data-g="' + r.gid + '">Edit range</button><button type="button" class="danger" data-a="delete-range" data-g="' + r.gid + '">Delete range</button>' : '') + '</div>'
+        + '<div class="rfoot"><span>' + fmt(n) + ' packages · ' + esc(r.type) + (r.spec ? ' · ' + esc(r.spec) : '') + '</span><span>Direct quantity</span></div></article>';
+    }
     return '<article class="rec card"><div><div class="row wrap"><span class="serial">' + esc(gSerial(g)) + '</span><span class="pill">' + esc(r.type) + '</span>' + (r.edited ? '<span class="pill warn">Edited</span>' : '') + '</div>'
       + '<div class="rprod">' + esc(p.name) + ' <span class="muted" style="font-weight:600">' + esc(p.line) + '</span> · ' + fmt(r.target) + ' ' + esc(p.unit) + ' / ' + esc(r.type.toLowerCase()) + '</div>'
       + '<div class="brk">' + r.combos.map(function (c) { return esc(vlabel(c)) + ': <b>' + fmt(c.qty) + '</b>'; }).join(' · ') + '</div></div>'
@@ -1435,14 +1502,15 @@ function findPkg(g, n) { return packages().find(function (p) { return p.gid === 
 /* ---------------- summary */
 function summaryLines() {
   var map = {}, order = [];
-  packages().forEach(function (pk) {
-    pk.combos.forEach(function (c) {
-      var k = JSON.stringify([pk.item, c.size, c.color, c.style]);
-      if (!map[k]) { map[k] = { item: pk.item, size: c.size, color: c.color, style: c.style, qty: 0, pk: {} }; order.push(k); }
-      map[k].qty += c.qty; map[k].pk[pk.gid + ':' + pk.num] = 1;
+  STATE.records.forEach(function (r) {
+    var n = r.to - r.from + 1;
+    r.combos.forEach(function (c) {
+      var k = JSON.stringify([r.item, c.size, c.colour, c.style]);
+      if (!map[k]) { map[k] = { item: r.item, size: c.size, color: c.colour, style: c.style, qty: 0, packages: 0 }; order.push(k); }
+      map[k].qty += r.mode === 'direct' ? c.total : c.qty * n; map[k].packages += n;
     });
   });
-  return order.map(function (k) { var l = map[k]; l.packages = Object.keys(l.pk).length; return l; });
+  return order.map(function (k) { return map[k]; });
 }
 function renderSummary() {
   var s = totals(), lines = summaryLines(), ids = [];
@@ -1473,9 +1541,11 @@ function reportHTML() {
     + '<div class="ref">Invoice: <b>' + esc(STATE.shipment.invoice) + '</b> · ' + esc(STATE.shipment.buyer) + '<br>Prepared ' + new Date().toLocaleDateString('en-GB') + ' · ' + (STATE.completed ? 'Packing finished' : 'In progress') + '</div></div>'
     + '<div class="sp-notice">' + fmt(s.packages) + ' packages<br>' + esc(unitText(s)) + '</div></div>'
     + '<div class="tablewrap"><table><thead><tr><th>Serial / range</th><th>Product</th><th>Package</th><th>Contents per package</th><th>Qty / pkg</th><th>Packages</th><th>Total qty</th></tr></thead><tbody>'
-    + gs.map(function (g) { var r = g.first, p = prod(r.item) || { name: '', unit: '', line: '' }, n = g.list.length;
+    + gs.map(function (g) { var r = g.first, p = prod(r.item) || { name: '', unit: '', line: '' }, n = g.list.length, dr = r.direct ? recOf(r.gid) : null;
         return '<tr><td><b>' + esc(gSerial(g)) + '</b>' + (r.edited ? '<br><small>Edited on its own</small>' : '') + '</td><td>' + esc(p.name) + '<br><small>' + esc(p.line) + '</small></td><td>' + esc(r.type) + (r.spec ? '<br><small>' + esc(r.spec) + '</small>' : '') + '</td><td>'
-          + r.combos.map(function (c) { return esc(vlabel(c)) + ' × ' + fmt(c.qty); }).join('<br>') + '</td><td class="num">' + fmt(r.target) + ' ' + esc(p.unit) + '</td><td class="num">' + n + '</td><td class="num">' + fmt(n * r.target) + ' ' + esc(p.unit) + '</td></tr>'; }).join('')
+          + (dr ? dr.combos.map(function (c) { return esc(vlabel({ size: c.size, color: c.colour, style: c.style })) + ' × ' + fmt(c.total); }).join('<br>') + '<br><small>total for the range</small>'
+                : r.combos.map(function (c) { return esc(vlabel(c)) + ' × ' + fmt(c.qty); }).join('<br>'))
+          + '</td><td class="num">' + (dr ? 'direct' : fmt(r.target) + ' ' + esc(p.unit)) + '</td><td class="num">' + n + '</td><td class="num">' + fmt(dr ? dr.total : n * r.target) + ' ' + esc(p.unit) + '</td></tr>'; }).join('')
     + '</tbody></table></div><h3 style="margin-top:14px">Quantity by product</h3><div class="tablewrap"><table><thead><tr><th>Product</th><th>Contents</th><th>Total quantity</th><th>Packages</th></tr></thead><tbody>'
     + lines.map(function (l) { var p = prod(l.item) || { name: '', unit: '' }; return '<tr><td>' + esc(p.name) + '</td><td>' + esc(vlabel(l)) + '</td><td class="num">' + fmt(l.qty) + ' ' + esc(p.unit) + '</td><td class="num">' + fmt(l.packages) + '</td></tr>'; }).join('')
     + '</tbody></table></div></div>';
@@ -1490,8 +1560,11 @@ function download(text, name) {
 }
 function packingCSV() {
   return csvRows([['Invoice', 'Serial / Range', 'Product', 'Line', 'Package Type', 'Packaging Spec', 'Contents per Package', 'Qty per Package', 'Unit', 'Packages', 'Total Qty', 'Edited on its own']]
-    .concat(grouped(packages()).map(function (g) { var r = g.first, p = prod(r.item) || { name: '', unit: '', line: '' }, n = g.list.length;
-      return [STATE.shipment.invoice, gSerial(g), p.name, p.line, r.type, r.spec, r.combos.map(function (c) { return vlabel(c) + ': ' + c.qty; }).join('; '), r.target, p.unit, n, r.target * n, r.edited ? 'Yes' : 'No']; })));
+    .concat(grouped(packages()).map(function (g) { var r = g.first, p = prod(r.item) || { name: '', unit: '', line: '' }, n = g.list.length, dr = r.direct ? recOf(r.gid) : null;
+      return [STATE.shipment.invoice, gSerial(g), p.name, p.line, r.type, r.spec,
+        dr ? dr.combos.map(function (c) { return vlabel({ size: c.size, color: c.colour, style: c.style }) + ': ' + c.total; }).join('; ') + ' (total for the range)'
+           : r.combos.map(function (c) { return vlabel(c) + ': ' + c.qty; }).join('; '),
+        dr ? 'direct' : r.target, p.unit, n, dr ? dr.total : r.target * n, r.edited ? 'Yes' : 'No']; })));
 }
 function summaryCSV() {
   /* a column only for what this invoice actually has — no empty Style column */
@@ -1526,9 +1599,19 @@ function onAction(el) {
     case 'tab': tab = el.dataset.tab; searchQuery = ''; render(); window.scrollTo(0, 0); break;
     case 'product': {
       var id = el.dataset.id, prev = draft; freshDraft(id);
+      if (prev.editRange) { draft.editRange = prev.editRange; draft.entryMode = 'range'; draft.qtyMode = 'direct'; draft.start = prev.start; draft.end = prev.end; draft.prefix = prev.prefix; draft.pad = prev.pad; }
       if (prev.edit) { draft.edit = prev.edit; draft.start = prev.start; draft.end = prev.start; draft.prefix = prev.prefix; draft.pad = prev.pad; }
       history = []; searchQuery = ''; saveLocal(); render(); toast('Sizes and colours of this line loaded · last packing details restored'); break; }
-    case 'entry-mode': d.entryMode = el.dataset.mode; if (d.entryMode === 'range') d.end = d.start; saveLocal(); renderPacking(); break;
+    case 'entry-mode':
+      if (el.dataset.mode === 'single' && isDirect(d)) setQtyMode('per');
+      d.entryMode = el.dataset.mode; if (d.entryMode === 'range') d.end = d.start; saveLocal(); renderPacking(); break;
+    case 'qty-mode': setQtyMode(el.dataset.mode); break;
+    case 'edit-range': editRange(el.dataset.g); break;
+    case 'delete-range': {
+      var dr = recOf(el.dataset.g);
+      if (!dr || !window.confirm('Delete ' + dr.type + ' ' + serialText(dr.prefix, dr.from, dr.pad) + '–' + serialText(dr.prefix, dr.to, dr.pad) + ' (direct, ' + fmt(dr.total) + ' in total)?')) break;
+      api({ op: 'delete_range', group: dr.id }).then(function () { render(); toast('Range deleted'); }).catch(function (e) { render(); toast(e.message, true); });
+      break; }
     case 'select-attr': snapshot(); d['selected' + el.dataset.type.charAt(0).toUpperCase() + el.dataset.type.slice(1)] = el.dataset.value; saveLocal(); renderPacking(); break;
     case 'count':
       if (suppressTap) { suppressTap = false; break; }
@@ -1558,7 +1641,7 @@ function onAction(el) {
     case 'clear-filter': recordFilter = null; recordPage = 0; renderRecords(); break;
     case 'page': recordPage += +el.dataset.dir; renderRecordList(); break;
     case 'finish':
-      if (draft.edit) throw Error('Save or cancel the package being edited first.');
+      if (draft.edit || draft.editRange) throw Error('Save or cancel the package being edited first.');
       if (sumQty(draft.combos) > 0 && !window.confirm('The package on the Packing tab has not been saved. Finish with the saved packages only?')) break;
       if (!window.confirm('Finish packing? The packing list rows and the shipment totals are written from the saved packages.')) break;
       api({ op: 'finish' }).then(function (j) { render(); toast(j.msg); }).catch(function (e) { render(); toast(e.message, true); });
@@ -1620,7 +1703,7 @@ document.addEventListener('change', function (e) {
   var el = e.target, d = draft;
   try { switch (el.id) {
     case 'spTarget': { var n = Number(el.value);
-      if (!Number.isInteger(n) || n < 1 || n > 1000000) { el.value = d.target; throw Error('Enter a whole quantity from 1 to 1,000,000.'); }
+      if (!Number.isInteger(n) || n < 1 || n > (isDirect(d) ? 100000000 : 1000000)) { el.value = d.target; throw Error(isDirect(d) ? 'Enter a whole total from 1 to 100,000,000.' : 'Enter a whole quantity from 1 to 1,000,000.'); }
       if (sumQty(d.combos) > n) { el.value = d.target; throw Error('Take some out of the contents before lowering the quantity.'); }
       snapshot(); d.target = n; saveLocal(); renderPacking(); break; }
     case 'spType': d.packageType = el.value; d.spec = DEFAULT_SPEC[d.packageType] || ''; d.advancedOpen = true;
