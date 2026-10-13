@@ -1532,6 +1532,14 @@ function pack_size_text(array $g, array $sizes): string
     };
     if (empty($g['assorted'])) return $one($sizes[0]);
     $fmt = static fn(float $q): string => rtrim(rtrim(number_format($q, 2, '.', ''), '0'), '.');
+    /* A DIRECT range from the phone: the figures were entered as totals for
+       the whole range, so they are written as totals — "100 Black S, 150
+       White M (in total)" — never as a per-package average like 33.33. */
+    if (($g['qty_mode'] ?? 'per') === 'direct' && empty($g['colour_mix'])) {
+        $bits = [];
+        foreach ($sizes as $s) $bits[] = $fmt((float)$s['total_qty']) . ' ' . $one($s);
+        return implode(', ', $bits) . ' (in total)';
+    }
     $bits = [];
     foreach ($sizes as $s) $bits[] = $fmt(pack_size_per_pkg($g, $s)) . ' ' . $one($s);
     $text = implode(', ', $bits);

@@ -296,6 +296,12 @@ ok($okDr && (int)$dgr2['serial_to'] === 112 && (float)$dgr2['total_qty'] === 300
    'the whole range is edited in place — longer, new totals, still one range', [$mDr, $dgr2]);
 $stD = pack_state(7, $items, $cnt("SELECT * FROM shipments WHERE id=7")[0]);
 $rd = array_values(array_filter($stD['records'], fn($r) => $r['id'] === $dg))[0] ?? [];
+$dgFull = pack_group($dg);
+ok(pack_size_text($dgFull, pack_sizes($dg)) === '120 Black S Crew, 180 Green L Crew (in total)',
+   'the packing list text for a direct range gives the totals entered, not a per-package average', pack_size_text($dgFull, pack_sizes($dg)));
+$g1Full = pack_group($gidAt(1));
+ok(pack_size_text($g1Full, pack_sizes($gidAt(1))) === '4 Black S Crew, 3 Green S Crew, 3 White M V-neck',
+   'and a per-package range reads exactly as before', pack_size_text($g1Full, pack_sizes($gidAt(1))));
 ok(($rd['mode'] ?? '') === 'direct' && ($rd['total'] ?? 0) == 300 && ($rd['combos'][1]['total'] ?? 0) == 180,
    'the phone is told it is direct, with its totals', $rd);
 [$okDdel, $mDdel] = pack_range_delete(7, $dg);
