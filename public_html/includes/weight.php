@@ -614,6 +614,101 @@ function wt_apply(int $shipmentId, array $items, $finalNet = null, $finalGross =
                   . ($pend ? '. ' . $pend . ' packed line' . ($pend === 1 ? '' : 's') . ' still without a profile — weight pending.' : '.')];
 }
 
+/* THE WEIGHT FOLLOWS THE PACKING.
+
+   afnan: "I given 600 gram per pc so if 1000 pcs then 600 kg — if two lines
+   packed why it shows 300 kg". Apply used to fix a total; packing changed
+   afterwards only split that same total over more rows (600 kg over 2,000
+   pcs = 300 + 300). Now, whenever the packing changes — a range saved or
+   deleted on the phone, a desktop row, Finish — every applied line is
+   worked out again from what is packed now:
+
+     net   = the grams per unit THAT WERE APPLIED × packed qty ÷ 1,000
+     gross = net + the empty-package weight that was applied × packages
+     both scaled by the scale override (±10%) if one was given
+
+   What it does NOT do by itself: take a CHANGED PROFILE (that still says
+   "apply again", as agreed), or a newly linked line (Apply adds it). A line
+   no longer packed drops out. Then the rows get their shares (wt_spread). */
+function wt_refresh(int $shipmentId): void
+{
+    try {
+        $a = db()->prepare("SELECT * FROM weight_applied WHERE shipment_id=?");
+        $a->execute([$shipmentId]);
+        $applied = $a->fetchAll();
+        $m = db()->prepare("SELECT * FROM weight_shipment WHERE shipment_id=?");
+        $m->execute([$shipmentId]);
+        $meta = $m->fetch() ?: null;
+        if (!$applied || !$meta) { wt_spread($shipmentId); return; }
+
+        $packed = wt_packed($shipmentId);
+        /* the empty-package weights as applied; a kind packed since then
+           takes today's figure (and the page will ask for Apply) */
+        $kinds = [];
+        foreach ($packed as $pk) foreach ($pk['byType'] as $k => $n) $kinds[$k] = ($kinds[$k] ?? 0) + $n;
+        $profiles = [];
+        foreach (array_unique(array_values(wt_links($shipmentId))) as $pid) { $p = wt_profile($pid); if ($p) $profiles[] = $p; }
+        $now = wt_tares($shipmentId, $kinds, $profiles);
+        $was = json_decode((string)$meta['tare_key'], true) ?: [];
+        $tareOf = static fn(string $k) => array_key_exists($k, $was) ? (float)$was[$k] : (float)($now[$k]['kg'] ?? 0);
+
+        $sn = (float)$meta['calc_net'] > 0 ? (float)$meta['final_net'] / (float)$meta['calc_net'] : 1.0;
+        $sg = (float)$meta['calc_gross'] > 0 ? (float)$meta['final_gross'] / (float)$meta['calc_gross'] : 1.0;
+
+        db()->beginTransaction();
+        $up  = db()->prepare("UPDATE weight_applied SET qty=?, packages=?, pkg_key=?, net_kg=?, gross_kg=? WHERE id=?");
+        $del = db()->prepare("DELETE FROM weight_applied WHERE id=?");
+        $cn = 0.0; $cg = 0.0; $fn = 0.0; $fg = 0.0;
+        foreach ($applied as $r) {
+            $pk = $packed[(int)$r['invoice_item_id']] ?? null;
+            if (!$pk || $pk['qty'] <= 0) { $del->execute([(int)$r['id']]); continue; }
+            $net = (int)$r['unit_grams'] * $pk['qty'] / 1000;
+            $tare = 0.0;
+            foreach ($pk['byType'] as $k => $n) $tare += $tareOf($k) * $n;
+            $n3 = round($net * $sn, 3);
+            $g3 = max($n3, round(($net + $tare) * $sg, 3));
+            $up->execute([$pk['qty'], $pk['packages'], json_encode($pk['byType']), $n3, $g3, (int)$r['id']]);
+            $cn += $net; $cg += $net + $tare; $fn += $n3; $fg += $g3;
+        }
+        if ($cn <= 0) {
+            /* nothing applied is packed any more: no applied weight at all */
+            db()->prepare("DELETE FROM weight_shipment WHERE shipment_id=?")->execute([$shipmentId]);
+        } else {
+            db()->prepare("UPDATE weight_shipment SET calc_net=?, calc_gross=?, final_net=?, final_gross=? WHERE shipment_id=?")
+                ->execute([round($cn, 3), round($cg, 3), round($fn, 3), round($fg, 3), $shipmentId]);
+        }
+        db()->prepare("UPDATE shipments SET total_net_weight=?, total_gross_weight=? WHERE id=?")
+            ->execute([round($fn, 3), round($fg, 3), $shipmentId]);
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        error_log('wt_refresh: ' . $e->getMessage());
+    }
+    wt_spread($shipmentId);
+}
+
+/* Applied before the weight followed the packing (or packed by a path that
+   did not call wt_refresh): if any applied line's quantity or packages no
+   longer match what is packed, it is worked out again. True if it was. */
+function wt_refresh_if_stale(int $shipmentId): bool
+{
+    try {
+        $a = db()->prepare("SELECT invoice_item_id, qty, pkg_key FROM weight_applied WHERE shipment_id=?");
+        $a->execute([$shipmentId]);
+        $rows = $a->fetchAll();
+        if (!$rows) return false;
+        $packed = wt_packed($shipmentId);
+        foreach ($rows as $r) {
+            $pk = $packed[(int)$r['invoice_item_id']] ?? ['qty' => 0.0, 'byType' => []];
+            if (abs((float)$r['qty'] - $pk['qty']) > 0.0005 || (string)$r['pkg_key'] !== json_encode($pk['byType'])) {
+                wt_refresh($shipmentId);
+                return true;
+            }
+        }
+    } catch (Throwable $e) {}
+    return false;
+}
+
 /* Each packing row gets its line's share: net by quantity, the package
    part by packages. Called after Apply, and after the packing rows are
    rewritten (Finish packing, a desktop row saved), so the rows always

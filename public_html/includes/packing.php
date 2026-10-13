@@ -1557,6 +1557,119 @@ function pack_deviation_pct(float $calculated, float $given): float
     return abs($given - $calculated) / $calculated * 100;
 }
 
+/* ------------------------------------------- the phone's rows on the desktop
+
+   afnan: "if removed from mobile so why show here". Finish packing writes
+   a copy of every phone range into the desktop packing list (packing_items
+   with packing_group_id set) — that copy is what the printed packing list
+   reads. It used to be written ONLY on Finish, so a range deleted or changed
+   on the phone after reopening stayed on the desktop and on the print, and
+   with every range gone Finish could not even run to clear it.
+
+   Now the copy follows the phone: once it exists, every phone change
+   rewrites it (pack_after_phone_change), and a page that finds it out of
+   step puts it right (pack_sync_if_stale). Rows typed on the desktop
+   (packing_group_id empty) are never touched. */
+
+/* Writes the copy: the phone's rows go, and are written again from the
+   ranges. Runs inside the caller's transaction when there is one. */
+function pack_write_rows(int $shipmentId, ?array $groups = null): void
+{
+    $groups = $groups ?? pack_groups($shipmentId);
+    db()->prepare("DELETE FROM packing_items WHERE shipment_id=? AND packing_group_id IS NOT NULL")
+        ->execute([$shipmentId]);
+
+    $ln = db()->prepare("SELECT COALESCE(MAX(line_no),0)+1 FROM packing_items WHERE shipment_id=?");
+    $ins = db()->prepare("INSERT INTO packing_items
+        (shipment_id, invoice_item_id, line_no, product_name, des_col, optional_value,
+         pack_unit_title, carton_from, carton_to, packages, qty_per_carton, qty_mode,
+         total_qty, net_weight, gross_weight, size_text, packing_group_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+
+    foreach ($groups as $g) {
+        $sizes   = pack_sizes((int)$g['id']);
+        $p       = pack_packages($g);
+
+        $ln->execute([$shipmentId]);
+        $ins->execute([
+            $shipmentId,
+            (int)$g['invoice_item_id'] ?: null,
+            (int)$ln->fetchColumn(),
+            (string)$g['product_name'], (string)$g['des_col'], (string)$g['optional_value'],
+            (string)$g['unit_title'],
+            (int)$g['serial_from'], (int)$g['serial_to'], $p,
+            $p > 0 ? pack_group_qty($g, $sizes) / $p : 0,
+            $g['qty_mode'] === 'direct' ? 'direct' : 'auto',
+            pack_group_qty($g, $sizes),
+            0,
+            0,
+            mb_substr(pack_size_text($g, $sizes), 0, 190),
+            (int)$g['id'],
+        ]);
+    }
+}
+
+/* The copy written again, on its own, with the package total that the
+   printed list shows — every row, phone and desktop. */
+function pack_sync_rows(int $shipmentId): bool
+{
+    try {
+        db()->beginTransaction();
+        pack_write_rows($shipmentId);
+        $t = db()->prepare("SELECT COALESCE(SUM(packages),0) FROM packing_items WHERE shipment_id=?");
+        $t->execute([$shipmentId]);
+        db()->prepare("UPDATE shipments SET total_packages=? WHERE id=?")->execute([(float)$t->fetchColumn(), $shipmentId]);
+        db()->commit();
+        return true;
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        error_log('pack_sync_rows: ' . $e->getMessage());
+        return false;
+    }
+}
+
+/* After a range is saved, edited or deleted on the phone: the desktop copy
+   (if packing was ever finished) and the weight follow straight away. */
+function pack_after_phone_change(int $shipmentId): void
+{
+    try {
+        $c = db()->prepare("SELECT COUNT(*) FROM packing_items WHERE shipment_id=? AND packing_group_id IS NOT NULL");
+        $c->execute([$shipmentId]);
+        if ((int)$c->fetchColumn() > 0) pack_sync_rows($shipmentId);
+    } catch (Throwable $e) {}
+    if (function_exists('wt_refresh')) wt_refresh($shipmentId);
+}
+
+/* Is the desktop copy out of step with the phone? A row whose range is
+   gone, a range changed since, or a range added since. Mended if so;
+   true when something was mended. */
+function pack_sync_if_stale(int $shipmentId): bool
+{
+    try {
+        $s = db()->prepare("SELECT packing_group_id g, pack_unit_title u, carton_from f, carton_to t, total_qty q
+                            FROM packing_items WHERE shipment_id=? AND packing_group_id IS NOT NULL");
+        $s->execute([$shipmentId]);
+        $copies = [];
+        foreach ($s->fetchAll() as $r) $copies[(int)$r['g']] = $r;
+        if (!$copies) return false;
+        $stale = false;
+        $groups = pack_groups($shipmentId);
+        $seen = [];
+        foreach ($groups as $g) {
+            $r = $copies[(int)$g['id']] ?? null;
+            $seen[(int)$g['id']] = true;
+            if (!$r || (string)$r['u'] !== (string)$g['unit_title'] || (int)$r['f'] !== (int)$g['serial_from']
+                || (int)$r['t'] !== (int)$g['serial_to']
+                || abs((float)$r['q'] - pack_group_qty($g, pack_sizes((int)$g['id']))) > 0.0005) { $stale = true; break; }
+        }
+        if (!$stale) foreach ($copies as $gid => $r) if (!isset($seen[$gid])) { $stale = true; break; }
+        if (!$stale) return false;
+    } catch (Throwable $e) { return false; }
+    pack_sync_rows($shipmentId);
+    if (function_exists('wt_refresh')) wt_refresh($shipmentId);
+    return true;
+}
+
 /* ------------------------------------------------------------- the approve
 
    Writes the finished packing_items rows from the ranges. Rows this
@@ -1583,37 +1696,7 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
     try {
         db()->beginTransaction();
 
-        db()->prepare("DELETE FROM packing_items WHERE shipment_id=? AND packing_group_id IS NOT NULL")
-            ->execute([$shipmentId]);
-
-        $ln = db()->prepare("SELECT COALESCE(MAX(line_no),0)+1 FROM packing_items WHERE shipment_id=?");
-        $ins = db()->prepare("INSERT INTO packing_items
-            (shipment_id, invoice_item_id, line_no, product_name, des_col, optional_value,
-             pack_unit_title, carton_from, carton_to, packages, qty_per_carton, qty_mode,
-             total_qty, net_weight, gross_weight, size_text, packing_group_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-
-        foreach ($groups as $g) {
-            $sizes   = pack_sizes((int)$g['id']);
-            $p       = pack_packages($g);
-
-            $ln->execute([$shipmentId]);
-            $ins->execute([
-                $shipmentId,
-                (int)$g['invoice_item_id'] ?: null,
-                (int)$ln->fetchColumn(),
-                (string)$g['product_name'], (string)$g['des_col'], (string)$g['optional_value'],
-                (string)$g['unit_title'],
-                (int)$g['serial_from'], (int)$g['serial_to'], $p,
-                $p > 0 ? pack_group_qty($g, $sizes) / $p : 0,
-                $g['qty_mode'] === 'direct' ? 'direct' : 'auto',
-                pack_group_qty($g, $sizes),
-                0,
-                0,
-                mb_substr(pack_size_text($g, $sizes), 0, 190),
-                (int)$g['id'],
-            ]);
-        }
+        pack_write_rows($shipmentId, $groups);
 
         /* The package count straight off the serials. The weight totals are
            the weight module's and are left as they are. */
@@ -1626,8 +1709,9 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
         return [false, 'The packing list could not be approved. ' . $e->getMessage()];
     }
 
-    /* the rows were rewritten: give them back the applied weight */
-    if (function_exists('wt_spread')) wt_spread($shipmentId);
+    /* the rows were rewritten: the weight follows the packing (weight.php) */
+    if (function_exists('wt_refresh')) wt_refresh($shipmentId);
+    elseif (function_exists('wt_spread')) wt_spread($shipmentId);
 
     if (function_exists('audit_log')) {
         try {

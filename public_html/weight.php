@@ -56,6 +56,9 @@ if ($id > 0) {
     $items = $it->fetchAll();
     /* links cut off by an old invoice save are mended before anything is counted */
     if (function_exists('pack_relink_orphans')) pack_relink_orphans($id, $items);
+    /* the packing rows match the phone, and the weight follows, before it is shown */
+    if (function_exists('pack_sync_if_stale')) pack_sync_if_stale($id);
+    wt_refresh_if_stale($id);
 }
 
 /* Everything the screen draws from. */

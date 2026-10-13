@@ -49,7 +49,7 @@ require_once __DIR__ . '/includes/mobile.php';
 if (function_exists('mob_needs')) {
     mob_show_fatal();
     mob_needs(['mob_header', 'mob_footer', 'mob_card_error'], 'includes/mobile.php');
-    mob_needs(['pack_palette', 'pack_dedupe', 'pack_state', 'pack_package_save', 'pack_relink_orphans', 'pack_packed_by_item',
+    mob_needs(['pack_palette', 'pack_dedupe', 'pack_state', 'pack_package_save', 'pack_relink_orphans', 'pack_packed_by_item', 'pack_after_phone_change', 'pack_sync_if_stale',
                'pack_package_delete', 'pack_split_out', 'pack_finish', 'pack_reopen',
                'pack_line_axes', 'pack_range_delete'], 'includes/packing.php');
 } else {
@@ -120,6 +120,8 @@ $items = $itStmt->fetchAll();
 /* packing cut off its invoice line by an old invoice save is put back on
    the matching line first (only an exact, single match — see packing.php) */
 pack_relink_orphans($id, $items);
+/* the desktop copy of the ranges, if out of step, is put right */
+pack_sync_if_stale($id);
 
 $title = 'Packing — ' . (string)$shipment['invoice_no'];
 $back  = 'm_pack.php';
@@ -157,16 +159,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['api'])) {
         $answer(false, 'Packing is finished. Reopen it on Summary to change anything.');
     }
     try {
+        /* after each change the desktop copy and the weight follow at once
+           (pack_after_phone_change) — a deleted range leaves no row behind */
         if ($op === 'save') {
             [$ok, $msg] = pack_package_save($id, $items, $in);
+            if ($ok) pack_after_phone_change($id);
             $answer($ok, $msg);
         }
         if ($op === 'delete') {
             [$ok, $msg] = pack_package_delete($id, (int)($in['group'] ?? 0), (int)($in['num'] ?? 0));
+            if ($ok) pack_after_phone_change($id);
             $answer($ok, $msg);
         }
         if ($op === 'delete_range') {
             [$ok, $msg] = pack_range_delete($id, (int)($in['group'] ?? 0));
+            if ($ok) pack_after_phone_change($id);
             $answer($ok, $msg);
         }
         if ($op === 'finish') { [$ok, $msg] = pack_finish($id); $answer($ok, $msg); }

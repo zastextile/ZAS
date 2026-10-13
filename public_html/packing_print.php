@@ -18,6 +18,23 @@ if (is_staff()) {
     exit('Staff cannot access print reports.');
 }
 
+/* THE PRINT MATCHES THE PHONE. If the phone's ranges changed after Finish
+   packing (a range deleted or edited after reopening), the copy this print
+   reads is put right first, and the weight follows (includes/packing.php,
+   pack_sync_if_stale). Optional: without the files the print is as before. */
+if (is_file(__DIR__ . '/includes/packing.php')) {
+    try {
+        require_once __DIR__ . '/includes/packing.php';
+        if (is_file(__DIR__ . '/includes/weight.php')) require_once __DIR__ . '/includes/weight.php';
+        $mended = function_exists('pack_sync_if_stale') && pack_sync_if_stale($id);
+        if (function_exists('wt_refresh_if_stale') && wt_refresh_if_stale($id)) $mended = true;
+        if ($mended) {
+            $stmt->execute([$id]);
+            $shipment = $stmt->fetch();
+        }
+    } catch (Throwable $e) { error_log('packing_print sync: ' . $e->getMessage()); }
+}
+
 function rpt_v($arr, $key, $default = '') {
     $v = trim((string)($arr[$key] ?? ''));
     return $v === '' ? $default : $v;

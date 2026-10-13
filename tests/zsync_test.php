@@ -85,6 +85,16 @@ CREATE TABLE weight_line_links (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_i
 CREATE TABLE weight_applied (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT NOT NULL, invoice_item_id INT NOT NULL, profile_id INT NOT NULL,
   profile_version INT NOT NULL DEFAULT 1, unit_grams INT NOT NULL DEFAULT 0, qty REAL NOT NULL DEFAULT 0, packages INT NOT NULL DEFAULT 0,
   pkg_key TEXT NOT NULL DEFAULT '', net_kg REAL NOT NULL DEFAULT 0, gross_kg REAL NOT NULL DEFAULT 0, UNIQUE (shipment_id, invoice_item_id));
+CREATE TABLE weight_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, reference TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+  unit TEXT NOT NULL DEFAULT 'pcs', notes TEXT NOT NULL DEFAULT '', version INT NOT NULL DEFAULT 1, unit_net_grams INT NOT NULL DEFAULT 0,
+  sample_qty INT, sample_gross_kg REAL, sample_net_kg REAL, sample_pkg_type TEXT NOT NULL DEFAULT '', active INT NOT NULL DEFAULT 1,
+  created_by INT, created_at TEXT, updated_by INT, updated_at TEXT);
+CREATE TABLE weight_profile_materials (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INT NOT NULL, line_no INT NOT NULL DEFAULT 0,
+  category TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', grams INT NOT NULL DEFAULT 0);
+CREATE TABLE weight_tare (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT NOT NULL, pkg_type TEXT NOT NULL, kg REAL NOT NULL DEFAULT 0,
+  updated_by INT, updated_at TEXT, UNIQUE (shipment_id, pkg_type));
+CREATE TABLE weight_shipment (shipment_id INTEGER PRIMARY KEY, calc_net REAL NOT NULL DEFAULT 0, calc_gross REAL NOT NULL DEFAULT 0,
+  final_net REAL NOT NULL DEFAULT 0, final_gross REAL NOT NULL DEFAULT 0, tare_key TEXT NOT NULL DEFAULT '', applied_by INT, applied_at TEXT);
 
 INSERT INTO shipments (id, invoice_no, buyer_name, currency) VALUES (7, 'ZAS/5400', 'Gulf Textiles LLC', 'USD');
 INSERT INTO shipment_items (id, shipment_id, line_no, product_name, des_col, optional_value, qty, unit, rate, amount) VALUES
@@ -133,6 +143,7 @@ $pdo = new PDO('sqlite:' . $work . '/db.sqlite'); $pdo->exec($schema); $pdo = nu
 
 require $work . '/includes/bootstrap.php';
 require $work . '/includes/packing.php';
+require $work . '/includes/weight.php';
 $q = function (string $sql, array $a = []) { $s = db()->prepare($sql); $s->execute($a); return $s->fetchAll(); };
 $items = fn() => $q("SELECT * FROM shipment_items WHERE shipment_id=7 ORDER BY line_no, id");
 $one = fn($qty) => [['size' => '', 'colour' => '', 'style' => '', 'qty' => $qty]];
@@ -286,6 +297,54 @@ db()->exec("UPDATE packing_groups SET invoice_item_id=999 WHERE invoice_item_id=
 db()->exec("INSERT INTO shipment_items (shipment_id, line_no, product_name, des_col, optional_value, qty, unit) VALUES (7, 9, 'Bath Sheet', 'Grey', '', 5, 'Pcs')");
 pack_relink_orphans(7, $items());
 ok((int)$q("SELECT COUNT(*) c FROM packing_groups WHERE invoice_item_id=999")[0]['c'] > 0, 'two lines that both match: left alone, never guessed');
+
+head('6. afnan\'s case: 600 g a piece, a second range, then all deleted on the phone');
+/* "I given 600 gram per pc so if 1000 pcs then its 600 kg and if two lines
+    packed so why it shows 300 kg — but also if removed from mobile so why
+    show here" */
+db()->exec("INSERT INTO shipments (id, invoice_no, buyer_name, currency) VALUES (8, 'ZAS/5223', 'Al-Berjas Trading LLC', 'USD')");
+db()->exec("INSERT INTO shipment_items (id, shipment_id, line_no, product_name, des_col, optional_value, qty, unit) VALUES (81, 8, 1, 'Bath Towel', 'Royal blue', '', 2000, 'Pcs')");
+$items8 = $q("SELECT * FROM shipment_items WHERE shipment_id=8");
+$api8 = fn(array $b) => json_decode(page($work, 'm_pack.php', ['id' => 8, 'api' => 1], '', json_encode(['_csrf' => 'testtoken'] + $b)), true);
+[$okP, $mP, $prof] = wt_profile_save(['name' => 'Bath towel royal', 'unit' => 'pcs', 'materials' => [['category' => 'Fabric', 'grams' => '600']]]);
+wt_link(8, $items8, 81, $prof['id']);
+$r = $api8(['op' => 'save', 'item' => 81, 'type' => 'Carton', 'from' => 1, 'to' => 100, 'target' => 1000, 'mode' => 'direct', 'combos' => $one(1000)]);
+[$okA, $mA] = wt_apply(8, $items8);
+ok(($r['ok'] ?? false) && $okA && abs($q("SELECT total_net_weight n FROM shipments WHERE id=8")[0]['n'] - 600) < 0.0005,
+   'Carton 1–100, 1,000 pcs direct, applied at 600 g: 600 kg', [$r['msg'] ?? $r, $mA]);
+[$okF] = pack_finish(8); pack_reopen(8);
+$r = $api8(['op' => 'save', 'item' => 81, 'type' => 'Carton', 'from' => 101, 'to' => 101, 'target' => 1000, 'combos' => $one(1000)]);
+$rows8 = $q("SELECT carton_from f, total_qty q, net_weight n FROM packing_items WHERE shipment_id=8 ORDER BY carton_from");
+$sh8 = $q("SELECT total_net_weight n FROM shipments WHERE id=8")[0];
+ok(($r['ok'] ?? false) && count($rows8) === 2 && abs($rows8[0]['n'] - 600) < 0.0005 && abs($rows8[1]['n'] - 600) < 0.0005 && abs($sh8['n'] - 1200) < 0.0005,
+   'Carton 101 with 1,000 more, packed after Finish: the desktop rows show it at once, 600 kg each, 1,200 kg in all — not 300 + 300', [$rows8, $sh8]);
+$g8 = $q("SELECT id FROM packing_groups WHERE shipment_id=8 ORDER BY serial_from");
+foreach ($g8 as $g) $api8(['op' => 'delete_range', 'group' => (int)$g['id']]);
+ok((int)$q("SELECT COUNT(*) c FROM packing_items WHERE shipment_id=8")[0]['c'] === 0,
+   'both ranges deleted on the phone: no row is left on the desktop (or the print)');
+ok(abs($q("SELECT total_net_weight n FROM shipments WHERE id=8")[0]['n']) < 0.0005 && (int)$q("SELECT COUNT(*) c FROM weight_applied WHERE shipment_id=8")[0]['c'] === 0,
+   'and the weight goes with them: 0 kg, nothing applied');
+/* the state afnan's shipment was left in by the old files: copies whose ranges are gone */
+$api8(['op' => 'save', 'item' => 81, 'type' => 'Carton', 'from' => 1, 'to' => 1, 'target' => 10, 'combos' => $one(10)]);
+pack_finish(8); pack_reopen(8);
+db()->exec("DELETE FROM packing_group_sizes WHERE group_id IN (SELECT id FROM packing_groups WHERE shipment_id=8)");
+db()->exec("DELETE FROM packing_groups WHERE shipment_id=8");
+ok(pack_sync_if_stale(8) === true && (int)$q("SELECT COUNT(*) c FROM packing_items WHERE shipment_id=8")[0]['c'] === 0,
+   'rows left behind by the old files are cleared the next time a page opens');
+ok(pack_sync_if_stale(8) === false, 'and nothing is rewritten when it already matches');
+/* a changed profile still waits for Apply */
+$api8(['op' => 'save', 'item' => 81, 'type' => 'Carton', 'from' => 1, 'to' => 10, 'target' => 100, 'combos' => $one(100)]);
+wt_apply(8, $items8);
+wt_profile_save(['id' => $prof['id'], 'name' => 'Bath towel royal', 'unit' => 'pcs', 'materials' => [['category' => 'Fabric', 'grams' => '650']]]);
+$api8(['op' => 'save', 'item' => 81, 'type' => 'Carton', 'from' => 11, 'to' => 11, 'target' => 100, 'combos' => $one(100)]);
+$c8 = wt_calc(8, $items8);
+ok(abs($q("SELECT total_net_weight n FROM shipments WHERE id=8")[0]['n'] - 660) < 0.0005 && ($c8['lines'][0]['applied']['state'] ?? '') === 'profile_updated',
+   'the profile changed to 650 g: more packing still counts at the applied 600 g (1,100 pcs = 660 kg) and the page says "apply again"',
+   [$q("SELECT total_net_weight n FROM shipments WHERE id=8")[0]['n'], $c8['lines'][0]['applied'] ?? null]);
+/* applied before this fix: the page catches it up */
+db()->exec("UPDATE weight_applied SET qty=100, net_kg=60 WHERE shipment_id=8");
+ok(wt_refresh_if_stale(8) === true && abs((float)$q("SELECT net_kg n FROM weight_applied WHERE shipment_id=8")[0]['n'] - 660) < 0.0005,
+   'weight applied on an older quantity is worked out again when the page opens');
 
 echo "\n" . ($F === 0 ? "ALL PASS   ($P checks)\n" : "FAILED  $F   (" . ($P + $F) . " checks)\n");
 exit($F === 0 ? 0 : 1);

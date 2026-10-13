@@ -117,7 +117,9 @@ function zas_pack_recalc_totals_v21(int $shipmentId): void {
             current_user()['id'],
             $shipmentId
         ]);
-    if (function_exists('wt_spread')) wt_spread($shipmentId);
+    /* the weight follows the packing (weight.php: applied grams × packed qty) */
+    if (function_exists('wt_refresh')) wt_refresh($shipmentId);
+    elseif (function_exists('wt_spread')) wt_spread($shipmentId);
 }
 
 /*
@@ -370,6 +372,10 @@ $invoiceItems = $itemsStmt->fetchAll();
 /* packing cut off its invoice line by an old invoice save goes back on the
    matching line (exact, single match only — see includes/packing.php) */
 pack_relink_orphans($id, $invoiceItems);
+/* the phone's rows below match the phone — a range deleted or changed there
+   after Finish is put right here before anything is shown */
+pack_sync_if_stale($id);
+if (function_exists('wt_refresh_if_stale')) wt_refresh_if_stale($id);
 
 $itemMap = [];
 foreach ($invoiceItems as $it) {
