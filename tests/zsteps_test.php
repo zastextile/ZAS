@@ -318,8 +318,10 @@ head('4. The packing screen keeps its sections, on one scrolling page');
 
 $mp  = (string)file_get_contents($B . 'm_pack.php');
 $mpN = nocomments($mp);
-t('the packing screen asks for scroll, not flip',
-  str_contains($mpN, 'mob_steps_scroll(true);'));
+/* Smart Packing draws its own tabs and the old weight screen is gone, so
+   the packing screen uses no steps at all now. */
+t('the packing screen uses no steps — it draws its own tabs',
+  !str_contains($mpN, 'mob_steps_scroll(true);') && !str_contains($mpN, 'mob_steps_begin('));
 t('and the gate screen does not — it keeps its flip',
   !str_contains(nocomments((string)file_get_contents($B . 'm_gate.php')), 'mob_steps_scroll(true)'));
 $mobS = nocomments((string)file_get_contents($B . 'includes/mobile.php'));
@@ -330,8 +332,8 @@ t('in scroll mode every section is shown and there is no Back/Next bar',
    browser, not steps; only the weight screen still uses steps. */
 t('the packing screen is three tabs drawn in the browser, with no steps',
   !str_contains($mpN, "mob_steps_begin('serialsteps')") && str_contains($mpN, 'data-tab="packing"'));
-t('the weight tab is stepped',
-  str_contains($mpN, "mob_steps_begin('weightsteps')"));
+t('the weight tab is gone from packing — weight is its own module',
+  !str_contains($mpN, "mob_steps_begin('weightsteps')") && str_contains($mpN, "redirect('weight.php?id='"));
 t('the old approve tab is gone — Finish packing is on Summary',
   !str_contains($mpN, "mob_steps_begin('approvesteps')") && str_contains($mpN, "data-a=\"finish\""));
 t('every steps_begin is closed',
@@ -340,8 +342,7 @@ t('every steps_begin is closed',
 /* ONE UNIT, NOT ONE SIZE. Three colours of one size that weigh the same
    are one thing to weigh, so that range gets no step either — a screen
    asking which of the one to pick is a screen for nothing. */
-t('a range with only one thing to weigh gets no step asking which one',
-  preg_match('~count\(\$units\) > 1\):.*?mob_step\(\x27Which one\x27~s', $mpN) === 1);
+
 /* The recall button used to be a second form, which cannot be nested,
    so it became a submit inside the one form. Then the whole weight
    screen stopped needing a round trip at all and it became an ordinary
@@ -351,9 +352,7 @@ t('no form is nested inside another form',
   'a nested form would be dropped by the browser without a word');
 t('the recall button no longer posts anything',
   !preg_match('~name="recall"~', $mpN) && !str_contains($mpN, "isset(\$_POST['recall'])"));
-t('and the weight screen posts once, for every size together',
-  str_contains($mpN, 'name="weights_json"')
-  && substr_count($mpN, "<button class=\"btn go\" type=\"submit\">Save the weight") === 1);
+
 
 head('5. The gate form is stepped too, with the picker left out of it');
 
@@ -431,8 +430,10 @@ t('and it says plainly that nothing was lost',
 /* Both phone screens must actually ask. A guard nobody calls is no
    guard at all, and this is exactly the kind of thing that rots. */
 foreach (['m_pack.php' => $mpN, 'm_gate.php' => $mgN] as $file => $src) {
-    t("$file asks for the step helpers before it draws",
-      preg_match('~mob_needs\(\[[^\]]*\x27mob_steps_begin\x27~s', $src) === 1);
+    /* the gate still uses steps; packing (no steps now) asks for what it uses */
+    t("$file asks for the helpers it uses before it draws",
+      $file === 'm_pack.php' ? preg_match('~mob_needs\(\[[^\]]*\x27mob_header\x27~s', $src) === 1
+                             : preg_match('~mob_needs\(\[[^\]]*\x27mob_steps_begin\x27~s', $src) === 1);
     t("$file is covered even when mobile.php is far too old to have the guard",
       str_contains($src, "function_exists('mob_needs')"));
 }

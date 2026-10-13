@@ -5,6 +5,8 @@ require_once __DIR__ . '/includes/export.php';
    packing helpers before, and calling one without this line is a fatal
    error on the live packing list rather than a missing strip. */
 require_once __DIR__ . '/includes/packing.php';
+/* the weight module, when it is there — weight is entered there now, not here */
+if (is_file(__DIR__ . '/includes/weight.php')) require_once __DIR__ . '/includes/weight.php';
 require_login();
 if (is_production_staff()) { http_response_code(403); exit('Production Staff cannot access the packing list.'); }
 exp_ensure_schema();
@@ -101,19 +103,21 @@ function zas_pack_selected_item_id_v21(array $pack, array $invoiceItems): int {
     return 0;
 }
 
+/* PACKAGES ONLY. Weight is the weight module's (weight.php): its totals are
+   left alone here, and the rows get their applied share back after a row
+   is added or removed. */
 function zas_pack_recalc_totals_v21(int $shipmentId): void {
-    $stmt = db()->prepare("SELECT COALESCE(SUM(packages),0) units, COALESCE(SUM(net_weight),0) net, COALESCE(SUM(gross_weight),0) gross FROM packing_items WHERE shipment_id=?");
+    $stmt = db()->prepare("SELECT COALESCE(SUM(packages),0) units FROM packing_items WHERE shipment_id=?");
     $stmt->execute([$shipmentId]);
     $t = $stmt->fetch();
 
-    db()->prepare("UPDATE shipments SET total_packages=?, total_net_weight=?, total_gross_weight=?, updated_by=?, updated_at=NOW() WHERE id=?")
+    db()->prepare("UPDATE shipments SET total_packages=?, updated_by=?, updated_at=NOW() WHERE id=?")
         ->execute([
             (float)$t['units'],
-            (float)$t['net'],
-            (float)$t['gross'],
             current_user()['id'],
             $shipmentId
         ]);
+    if (function_exists('wt_spread')) wt_spread($shipmentId);
 }
 
 /*
@@ -345,10 +349,11 @@ foreach ($invoiceItems as $it) {
     $itemMap[(int)$it['id']] = $it;
 }
 
-/* Product Master lookup (auto-weight) — keyed by normalized product name */
+/* Product Master lookup — standard pack and CBM, keyed by normalized product
+   name. Its weights are no longer used: weight is the Weight page's. */
 $pmByName = [];
 try {
-    foreach (db()->query("SELECT name, net_weight, gross_weight, std_pack_qty, cbm_per_unit, is_active FROM products")->fetchAll() as $pmRow) {
+    foreach (db()->query("SELECT name, std_pack_qty, cbm_per_unit, is_active FROM products")->fetchAll() as $pmRow) {
         $key = strtolower(trim(preg_replace('/[^a-z0-9]+/i',' ', (string)$pmRow['name'])));
         $pmByName[$key] = $pmRow;
     }
@@ -463,8 +468,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_r
         $totalQty = ($qtyMode === 'direct') ? $directQty : ($units * $qtyPerUnit);
         if ($totalQty <= 0) throw new Exception('Total quantity must be greater than zero.');
 
-        $net = (float)($_POST['net_weight'] ?? 0);
-        $gross = (float)($_POST['gross_weight'] ?? 0);
+        /* weight is entered on the Weight page, not per row */
+        $net = 0.0;
+        $gross = 0.0;
 
         zas_pack_validate_qty_v21($id, $itemId, $it, $totalQty);
 
@@ -742,10 +748,6 @@ foreach ($invoiceItems as $pit) {
           <div class="staff-field"><label>Qty / Unit</label><input name="qty_per_unit" id="staffQtyPerUnit" type="number" step="0.001" value="0" inputmode="decimal"></div>
           <div class="staff-field"><label>Total Qty</label><input name="direct_total_qty" id="staffDirectTotalQty" type="number" step="0.001" value="0" inputmode="decimal"></div>
         </div>
-        <div class="staff-grid2">
-          <div class="staff-field"><label>Net Weight</label><input name="net_weight" type="number" step="0.001" value="0" inputmode="decimal"></div>
-          <div class="staff-field"><label>Gross Weight</label><input name="gross_weight" type="number" step="0.001" value="0" inputmode="decimal"></div>
-        </div>
         <div id="staffCalcMsg" class="staff-alert ok">Ready</div>
         <button class="staff-big-btn" type="submit">Save Packing Row</button>
       </div>
@@ -767,8 +769,7 @@ foreach ($invoiceItems as $pit) {
         <div class="staff-row-title"><?= e($p['pack_unit_title'] ?? 'Carton') ?> <?= e($p['carton_from']) ?> - <?= e($p['carton_to']) ?></div>
         <div class="staff-row-sub">
           Mode: <?= e(($p['qty_mode'] ?? 'auto') === 'direct' ? 'Direct Qty' : 'Auto Qty') ?><br>
-          Units: <?= e(num_fmt($p['packages'],0)) ?> | Qty: <?= e(trim_num($p['total_qty'], 3)) ?><br>
-          Net: <?= e(trim_num($p['net_weight'], 3)) ?> | Gross: <?= e(trim_num($p['gross_weight'], 3)) ?>
+          Units: <?= e(num_fmt($p['packages'],0)) ?> | Qty: <?= e(trim_num($p['total_qty'], 3)) ?>
         </div>
         <?php if($canEdit): ?>
         <form class="staff-delete-form" method="post" onsubmit="return confirm('Delete this wrong packing row?')">
@@ -933,7 +934,7 @@ exp_tab_strip($shipment, 'packing');
           <label>Invoice Item</label>
           <select name="invoice_item_id" id="pcInvoiceItem">
             <?php foreach($packableInvoiceItems as $it): $pm = pm_lookup($pmByName, $it['product_name']); ?>
-            <option value="<?= e($it['id']) ?>" data-left="<?= e(((float)$it['qty']) - ($packedByItem[(int)$it['id']] ?? 0)) ?>" data-pmnet="<?= e($pm['net_weight'] ?? 0) ?>" data-pmgross="<?= e($pm['gross_weight'] ?? 0) ?>" data-pmpack="<?= e($pm['std_pack_qty'] ?? 0) ?>" data-pmcbm="<?= e($pm['cbm_per_unit'] ?? 0) ?>" data-pmactive="<?= e($pm ? (int)$pm['is_active'] : 1) ?>" data-pmfound="<?= $pm ? 1 : 0 ?>">
+            <option value="<?= e($it['id']) ?>" data-left="<?= e(((float)$it['qty']) - ($packedByItem[(int)$it['id']] ?? 0)) ?>" data-pmpack="<?= e($pm['std_pack_qty'] ?? 0) ?>" data-pmcbm="<?= e($pm['cbm_per_unit'] ?? 0) ?>" data-pmactive="<?= e($pm ? (int)$pm['is_active'] : 1) ?>" data-pmfound="<?= $pm ? 1 : 0 ?>">
               Line <?= e($it['line_no']) ?> - <?= e($it['product_name']) ?> | <?= e($it['des_col']) ?>
             </option>
             <?php endforeach; ?>
@@ -973,16 +974,6 @@ exp_tab_strip($shipment, 'packing');
         <div class="pc-compact-field">
           <label>Total Qty</label>
           <input name="direct_total_qty" id="pcTotalQty" type="number" step="0.001" value="0">
-        </div>
-
-        <div class="pc-compact-field">
-          <label>Net Wt</label>
-          <input name="net_weight" type="number" step="0.001" value="0">
-        </div>
-
-        <div class="pc-compact-field">
-          <label>Gross Wt</label>
-          <input name="gross_weight" type="number" step="0.001" value="0">
         </div>
 
         <div class="pc-compact-field">
@@ -1046,6 +1037,7 @@ exp_tab_strip($shipment, 'packing');
 <div class="card">
   <div class="actions">
     <a class="btn secondary" href="pack_palette.php?id=<?= e($id) ?>">Order Sizes &amp; Colours</a>
+    <a class="btn secondary" href="weight.php?id=<?= e($id) ?>#link">Weight</a>
     <a class="btn secondary" href="shipment_view.php?id=<?= e($id) ?>">Back to Shipment</a>
     <a class="btn secondary" href="packing_list.php">All Packing Shipments</a>
   </div>
@@ -1060,20 +1052,18 @@ exp_tab_strip($shipment, 'packing');
   function calc(){
     var item=document.getElementById('pcInvoiceItem');
     var left=item ? parseFloat(item.options[item.selectedIndex].getAttribute('data-left') || '0') : 0;
-    // Product Master auto-weight suggestion
+    // Product Master: standard pack and CBM (weight is on the Weight page)
     var pmInfo=document.getElementById('pcPmInfo');
     if(item && pmInfo){
       var op=item.options[item.selectedIndex];
       var found=op.getAttribute('data-pmfound')==='1';
       var pmPack=parseFloat(op.getAttribute('data-pmpack')||'0');
-      var pmNet=parseFloat(op.getAttribute('data-pmnet')||'0');
-      var pmGross=parseFloat(op.getAttribute('data-pmgross')||'0');
       var pmCbm=parseFloat(op.getAttribute('data-pmcbm')||'0');
       var active=op.getAttribute('data-pmactive')!=='0';
       var qpuEl0=document.getElementById('pcQtyPerUnit');
       if(found && pmPack>0 && qpuEl0 && parseFloat(qpuEl0.value||'0')===0) qpuEl0.value=pmPack;
       if(found){
-        pmInfo.innerHTML='Product Master: '+(pmPack>0?pmPack+' /carton':'no std pack')+' · net '+pmNet+' kg · gross '+pmGross+' kg per piece'+(pmCbm>0?' · CBM '+pmCbm+' /unit':'')+(active?'':' · <span style="color:#d97706">INACTIVE product</span>');
+        pmInfo.innerHTML='Product Master: '+(pmPack>0?pmPack+' /carton':'no std pack')+(pmCbm>0?' · CBM '+pmCbm+' /unit':'')+(active?'':' · <span style="color:#d97706">INACTIVE product</span>');
       } else { pmInfo.textContent='No Product Master match for this item (manual entry).'; }
     }
     var from=n('pcFrom'), to=n('pcTo');
@@ -1104,23 +1094,13 @@ exp_tab_strip($shipment, 'packing');
 
     msg.className='alert success';
     msg.textContent='Units: '+units+' | Total Qty: '+totalQty.toLocaleString(undefined,{maximumFractionDigits:3})+' | Left after save: '+(left-totalQty).toLocaleString(undefined,{maximumFractionDigits:3});
-    // Auto-fill weights from Product Master when blank; warn on big difference
+    // total CBM for this row, from Product Master
     (function(){
       var op=item?item.options[item.selectedIndex]:null; if(!op)return;
-      var pmNet=parseFloat(op.getAttribute('data-pmnet')||'0'), pmGross=parseFloat(op.getAttribute('data-pmgross')||'0');
-      if(pmGross<=0)return;
-      var netEl=document.querySelector('[name=net_weight]'), grossEl=document.querySelector('[name=gross_weight]');
-      var sugNet=pmNet*totalQty, sugGross=pmGross*totalQty;
-      if(netEl && parseFloat(netEl.value||'0')===0 && sugNet>0) netEl.value=trimDec(sugNet,3);
-      if(grossEl && parseFloat(grossEl.value||'0')===0 && sugGross>0) grossEl.value=trimDec(sugGross,3);
-      var actGross=parseFloat(grossEl&&grossEl.value||'0');
       var pmInfo=document.getElementById('pcPmInfo');
       var pmCbm2=parseFloat(op.getAttribute('data-pmcbm')||'0');
       if(pmInfo && pmCbm2>0 && totalQty>0){
         pmInfo.innerHTML+=' <span style="color:#0ea8c9">· total CBM for this row: '+(pmCbm2*totalQty).toFixed(3)+' m³</span>';
-      }
-      if(pmInfo && actGross>0 && sugGross>0 && Math.abs(actGross-sugGross)/sugGross>0.2){
-        pmInfo.innerHTML+=' <span style="color:#d97706">⚠ actual gross ('+actGross+') differs &gt;20% from standard ('+sugGross.toFixed(2)+')</span>';
       }
     })();
     return true;

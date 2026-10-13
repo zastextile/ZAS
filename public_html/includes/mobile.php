@@ -537,8 +537,11 @@ function mob_screens(): array
          'href' => 'm_gate.php?dir=in',  'show' => $gate, 'tone' => 'in'],
         ['key' => 'gate_out', 'label' => 'Gate Out', 'sub' => 'Record what went out',
          'href' => 'm_gate.php?dir=out', 'show' => $gate, 'tone' => 'out'],
-        ['key' => 'packing', 'label' => 'Packing', 'sub' => 'Serial, sizes and weight',
+        ['key' => 'packing', 'label' => 'Packing', 'sub' => 'Serial, sizes and colours',
          'href' => 'm_pack.php',         'show' => $pack, 'tone' => 'pack'],
+        /* the same people as packing; the weight of each line comes from it */
+        ['key' => 'weight', 'label' => 'Weight', 'sub' => 'Profiles and shipment weight',
+         'href' => 'weight.php',         'show' => $pack, 'tone' => 'pack'],
     ];
 
     $out = [];

@@ -196,7 +196,9 @@ function ai_check_compute(int $id, array $skipItemIds = []): ?array {
             if ((int)$prod['is_active']===0) $add('warning','MASTER_INACTIVE',"Line $line: '$name' is INACTIVE in Product Master.",$line);
             $packed = $packedByItem[$dk] ?? 0;
             if ($packed>0 && abs($packed-$qty)>max(1,$qty*0.001)){ $lvl=$packed>$qty?'error':'warning'; $add($lvl,$packed>$qty?'PACK_OVER':'PACK_SHORT',"Line $line ($name): invoice qty ".number_format($qty)." vs packed ".number_format($packed).($packed>$qty?' — OVER-packed.':' — short/incomplete.'),$line); }
-            if ((float)$prod['gross_weight']>0 && $packed>0 && ($grossByItem[$dk]??0)>0){ $perUnit=($grossByItem[$dk])/max(1,$packed); $std=(float)$prod['gross_weight']; if(abs($perUnit-$std)/$std>$th('weight_dev_pct',0.25)) $add('warning','WT_DEV',"Line $line ($name): packed gross ≈ ".number_format($perUnit,3)." kg/unit vs master ".number_format($std,3)." kg.",$line); }
+            /* the weight check against Product Master is gone: weight is the
+               Weight module's now (a profile per invoice line), not a figure
+               kept on the product */
 
             // price history — FIXED: only compares against past invoices in the
             // SAME currency, so a EUR/USD price never gets blended with PKR

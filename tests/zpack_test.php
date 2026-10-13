@@ -88,6 +88,19 @@ $pkSrc  = (string)file_get_contents($B . 'includes/packing.php');
 $pkN    = nocomments($pkSrc);
 $mp     = (string)file_get_contents($B . 'm_pack.php');
 $mpN    = nocomments($mp);
+/* the weight module — its own page and its own rules */
+$wtN    = nocomments((string)file_get_contents($B . 'includes/weight.php'));
+$wpN    = nocomments((string)file_get_contents($B . 'weight.php'));
+$fnBody = function (string $src, string $fn): string {
+    $a = strpos($src, 'function ' . $fn . '(');
+    if ($a === false) return '';
+    $o = strpos($src, '{', $a); $d = 0;
+    for ($i = $o, $n = strlen($src); $i < $n; $i++) {
+        if ($src[$i] === '{') $d++;
+        elseif ($src[$i] === '}') { $d--; if ($d === 0) return substr($src, $a, $i - $a + 1); }
+    }
+    return '';
+};
 
 /* ===================================================== 1. serial to count */
 head('1. The serial produces the count — it is never typed');
@@ -245,11 +258,11 @@ t('a size with no breakdown counts as nothing, not as the others',
 t('net and gross are not asked for on the packing screen',
   !preg_match('~name="net_weight"|name="gross_weight"~', $mpN),
   'a net or gross input survived');
-t('a weight line is still a material, a name and grams',
-  str_contains($mpN, "class=\"in ty\"") && str_contains($mpN, "class=\"in nmi\"")
-  && str_contains($mpN, "class=\"in g\""));
-t('and every size goes back in one field',
-  str_contains($mpN, 'name="weights_json"'));
+/* THE WEIGHT MODULE — a profile per finished unit, by material type, in
+   whole grams; afnan's five types. */
+t('a profile is material types in whole grams, checked on the server',
+  str_contains($wtN, "const WT_TYPES = ['Fabric', 'PVC / Polybag', 'Polyester', 'Accessories', 'Miscellaneous'];")
+  && str_contains($fnBody($wtN, 'wt_profile_save'), "if (!in_array(\$cat, WT_TYPES, true)) return [false, 'Choose a valid material type.', null];"));
 t('the material types are the ones he asked for, in his words',
   PACK_WTYPES === ['Fabric', 'Fiber', 'PVC', 'Cardboard', 'Accessories', 'Other'],
   PACK_WTYPES);
@@ -258,8 +271,10 @@ t('the material types are the ones he asked for, in his words',
 t('and none of them is too long for the row it sits in',
   max(array_map('strlen', PACK_WTYPES)) <= 11,
   array_combine(PACK_WTYPES, array_map('strlen', PACK_WTYPES)));
-t('a new line starts as Fabric, not as the last type in the list',
-  str_contains($mp, 'rows().push({ t: TYPES[0]'), 'the new-line default is not the first type');
+t('a new profile starts its first material as Fabric',
+  str_contains($wpN, "materials: [{ category: S.types[0], description: '', grams: '' }]"), 'the first material is not the first type');
+t('a target, when set, is a fixed limit the types must meet exactly',
+  str_contains($fnBody($wtN, 'wt_profile_save'), 'if ($target !== null && $target !== $total) {'));
 t('a line worth nothing is not stored',
   preg_match('~if \(\$g <= 0\) continue;~', $pkN) === 1);
 
@@ -281,14 +296,12 @@ t('and two different products still differ',
 t('the standard is replaced, not merged — a deleted line must go',
   preg_match('~DELETE FROM packing_weight_std\s+WHERE product_key=\? AND size_label=\? AND colour_label=\?~', $pkN) === 1,
   'the standard is no longer replaced wholesale');
-t('it is saved when the list is approved',
-  preg_match('~pack_approve.*?pack_std_save~s', $pkN) === 1);
+t('the next shipment of the same product is offered the profile used last',
+  str_contains($fnBody($wtN, 'wt_suggest'), 'WHERE l.product_key=? AND l.shipment_id<>? ORDER BY l.linked_at DESC'));
 t('and a standard that will not save cannot lose the packing',
   preg_match('~function pack_std_save.*?catch \(Throwable \$e\) \{~s', $pkN) === 1);
-t('the screen offers it only when something is remembered',
-  str_contains($mpN, 'pack_std_get(')
-  && str_contains($mpN, 'if ($std) {')
-  && str_contains($mpN, 'std.hidden = !STD[at];'));
+t('offered for one tap, never linked by itself',
+  str_contains($wpN, 'data-a="choose" data-line="\' + l.id + \'" data-pid="\' + l.suggest.profileId'));
 t('and filling from it is instant, with no round trip',
   !preg_match('~name="recall"~', $mpN),
   'the recall button still posts');
@@ -306,12 +319,17 @@ t('under is measured the same as over',
   abs(pack_deviation_pct(100.0, 90.0) - 10.0) < 0.0001, pack_deviation_pct(100.0, 90.0));
 t('nothing calculated yet cannot be a percentage of nothing',
   abs(pack_deviation_pct(0.0, 50.0)) < 0.0001, pack_deviation_pct(0.0, 50.0));
-t('approve refuses beyond the tolerance, before it writes anything',
-  preg_match('~pack_deviation_pct\(\$t\[\x27net\x27\], \$finalNet\) > PACK_TOLERANCE_PCT~', $pkN) === 1
-  && preg_match('~> PACK_TOLERANCE_PCT.*?return \[false~s', $pkN) === 1);
-t('an approved override is spread over the rows, so they still add up',
-  str_contains($pkN, '$netScale') && str_contains($pkN, '$grossScale'),
+/* The ten per cent now belongs to the Weight module's Apply. */
+$wApply = $fnBody($wtN, 'wt_apply');
+t('Apply refuses a final weight beyond the tolerance, before it writes anything',
+  str_contains($wtN, 'const WT_TOLERANCE_PCT = 10;')
+  && strpos($wApply, 'WT_TOLERANCE_PCT + 1e-9') !== false
+  && strpos($wApply, 'WT_TOLERANCE_PCT + 1e-9') < strpos($wApply, 'beginTransaction'));
+t('an override is spread over the lines and the rows, so they still add up',
+  str_contains($wApply, 'round($l[\'net\'] * $sn, 3)') && str_contains($wApply, 'wt_spread($shipmentId);'),
   'the rows keep calculated weights while the header says something else');
+t('Finish packing no longer decides any weight',
+  !str_contains($fnBody($pkN, 'pack_approve'), 'PACK_TOLERANCE_PCT') && str_contains($fnBody($pkN, 'pack_approve'), 'wt_spread($shipmentId)'));
 
 /* ============================================= 9. it is the same database */
 head('9. The same tables the desktop already uses');
@@ -323,8 +341,9 @@ t('the phone screen builds no table of its own',
 t('approve only clears rows the ranges own, never hand-entered ones',
   str_contains($pkN, 'DELETE FROM packing_items WHERE shipment_id=? AND packing_group_id IS NOT NULL'),
   'approve deletes more than its own rows');
-t('the shipment header is updated from the approved figures',
-  preg_match('~UPDATE shipments SET total_packages=\?, total_net_weight=\?, total_gross_weight=\?~', $pkN) === 1);
+t('Finish writes the package count; the weight totals are the Weight module\'s',
+  str_contains($fnBody($pkN, 'pack_approve'), 'UPDATE shipments SET total_packages=?, updated_by=?, updated_at=NOW() WHERE id=?')
+  && str_contains($wApply, 'UPDATE shipments SET total_net_weight=?, total_gross_weight=? WHERE id=?'));
 t('the schema is guarded by a version marker, not run every page load',
   str_contains($pkN, "k='pack_schema_version'") && str_contains($pkN, 'PACK_SCHEMA_VERSION'));
 t('and it has its own key, so it cannot fight the export version',
@@ -337,11 +356,13 @@ t('login is required',          str_contains($mpN, 'require_login()'));
 t('production staff cannot open it', str_contains($mpN, 'is_production_staff()'));
 t('an unassigned shipment is refused',
   str_contains($mpN, 'assigned_shipment_ids()') && str_contains($mpN, 'not assigned to you'));
-t('every POST verifies CSRF before anything else',
-  preg_match('~REQUEST_METHOD.*?===\s*\x27POST\x27.*?\{\s*verify_csrf\(\);~s', $mpN) === 1,
+/* Smart Packing has ONE way to change anything: the JSON API. */
+t('there is one POST handler, and it verifies CSRF before anything else',
+  substr_count($mpN, "\$_SERVER['REQUEST_METHOD'] === 'POST'") === 1
+  && preg_match('~REQUEST_METHOD.{0,40}===\s*\x27POST\x27.*?\{[^}]*?verify_csrf\(\);~s', $mpN) === 1,
   'a POST is handled before CSRF is checked');
 t('and a POST is refused outright when the list is closed',
-  preg_match('~verify_csrf\(\);\s*if \(!\$canEdit\)~', $mpN) === 1);
+  preg_match('~verify_csrf\(\);.*?if \(!\$canEdit\) \{ http_response_code\(403\);~s', $mpN) === 1);
 t('a closed list is read-only, not merely hidden — the server refuses, and the screen hides the buttons',
   str_contains($mpN, "if (!\$canEdit) { http_response_code(403); \$answer(false, 'This packing list can no longer be changed.'); }")
   && substr_count($mpN, 'CAN_EDIT') >= 4);
@@ -393,33 +414,24 @@ t('and m.php requires the file that answers it',
    decides it, and pack_unit_key() is the one place that reads the
    switch. The colour a breakdown is filed under therefore comes from
    the database row, never from the post. */
-head('10c. The posted breakdown is checked, not trusted');
+head('10c. The Weight page: the same permission, nothing trusted from the browser');
 
-$mpSrc = nocomments((string)file_get_contents($B . 'm_pack.php'));
-/* The save, cut out. A match across the whole file found the right words
-   in the wrong function twice before. */
-$wsave = preg_match('~if \(\$action === \x27weight\x27\).*?\n    \}~s', $mpSrc, $wm) ? $wm[0] : '';
-t('the weight save was found at all, so the checks below looked at something',
-  $wsave !== '');
-/* Every range of the invoice line, now — the weight is the line's. */
-t('what this line\'s ranges own is read from the database first',
-  str_contains($wsave, '$sibs = pack_siblings($grp);')
-  && preg_match('~foreach \(pack_sizes\(\(int\)\$sg\[\x27id\x27\]\) as \$srow\)~', $wsave) === 1
-  && str_contains($wsave, 'pack_unit_key($sg, $srow)'));
-t('and a key that is not one of them is skipped, not created',
-  str_contains($wsave, 'if (!isset($own[$unitKey]) || !is_array($rows)) continue;'));
-t('the colour it is filed under comes from that row, never from the post',
-  str_contains($wsave, '[$uSz, $uCol] = $own[$unitKey];')
-  && preg_match('~pack_weight_save\(\$gId, \$uSz, \$lines, true, \$uCol\)~', $wsave) === 1);
-t('a field that is not valid JSON is simply ignored',
-  str_contains($mpSrc, 'if (is_array($sent)) {'));
-t('the material type is still forced back to the known list',
-  str_contains($pkN, 'if (!in_array($type, PACK_WTYPES, true)) $type = \'Other\';'));
-t('the range still has to belong to this shipment',
-  str_contains($mpSrc, "if (!\$grp || (int)\$grp['shipment_id'] !== \$id)"));
-t('nothing is written straight from the request into a query',
-  !preg_match('~weights_json.{0,200}(prepare|exec)\(~s', $mpSrc),
-  'the raw field reaches a query');
+t('weight needs a login, and production staff are turned away',
+  str_contains($wpN, 'require_login();') && str_contains($wpN, "if (is_production_staff()) { http_response_code(403);"));
+t('it is for the people who work on packing lists',
+  str_contains($wpN, 'if (!wt_may_use())') && str_contains($fnBody($wtN, 'wt_may_use'), 'pack_may_use()'));
+t('an unassigned shipment is refused',
+  str_contains($wpN, 'assigned_shipment_ids()') && str_contains($wpN, 'not assigned to you'));
+t('every change verifies CSRF first',
+  preg_match('~isset\(\$_GET\[\x27api\x27\]\)\) \{.*?verify_csrf\(\);.*?\$op = ~s', $wpN) === 1);
+t('a shipment change needs the shipment open to this person',
+  preg_match('~if \(!\$canEdit\) \{ http_response_code\(403\);.*?case \x27link\x27~s', $wpN) === 1);
+t('a profile linked to a shipment is never deleted, only taken out of use',
+  str_contains($fnBody($wtN, 'wt_profile_delete'), "if (isset(wt_profiles_in_use()[\$id])) return [false,"));
+t('a profile made per piece cannot be linked to a line counted in sets',
+  str_contains($fnBody($wtN, 'wt_link'), "if (\$p['unit'] !== \$lu)"));
+t('the quantity comes from packing, never from the browser',
+  !str_contains($fnBody($wtN, 'wt_calc'), '$_POST') && str_contains($fnBody($wtN, 'wt_calc'), '$packed = wt_packed($shipmentId);'));
 
 /* ================================================ 11. the require chain
    The dashboard 500 was a function called from a page that never required

@@ -217,13 +217,14 @@ echo "1. The grid renders without a single JavaScript error\n";
 ok($r['pageErrors'] === [], 'no errors, got ' . json_encode($r['pageErrors']));
 
 echo "2. Every row has exactly as many cells as the header has columns\n";
-ok($r['headCount'] === 9, 'the header has 9 columns, got ' . $r['headCount']);
+/* 8 since the weight column went to the Weight module */
+ok($r['headCount'] === 8, 'the header has 8 columns, got ' . $r['headCount']);
 ok(in_array('Code', $r['headText'], true), 'one of them is Code: ' . json_encode($r['headText']));
 ok($r['headText'][1] === 'Code', '  and it sits beside Item, got ' . json_encode($r['headText'][1]));
-ok(count(array_unique($r['cellCounts'])) === 1 && $r['cellCounts'][0] === 9,
-   'EVERY data row has 9 cells, got ' . json_encode($r['cellCounts']));
+ok(count(array_unique($r['cellCounts'])) === 1 && $r['cellCounts'][0] === 8,
+   'EVERY data row has 8 cells, got ' . json_encode($r['cellCounts']));
 /* a colspan that does not add up silently shears the whole table */
-ok($r['wmSpan'] === 9, 'the locked Workmanship row spans 9 too, got ' . $r['wmSpan']);
+ok($r['wmSpan'] === 8, 'the locked Workmanship row spans 8 too, got ' . $r['wmSpan']);
 
 echo "3. The row is ONE line — this is the whole point\n";
 ok(count(array_unique($r['rowHeights'])) === 1,
@@ -319,7 +320,7 @@ ok(str_contains($php, 'bottom:calc(100% + 6px)'), 'which opens upward, off a bar
 ok(str_contains($php, 'discards unsaved changes'), 'and Reset now says what it discards');
 
 echo "11. The cache is busted, or nobody sees any of this\n";
-ok(str_contains($php, 'costing.js?v=27'), 'costing.js version raised');
+ok(str_contains($php, 'costing.js?v=28'), 'costing.js version raised');
 /* NOT PINNED TO A NUMBER. Asserting v=6 here meant the next legitimate
    cache-bust failed this test — the same trap batch2_test.php had. */
 ok((bool)preg_match('~zskin\.css\?v=\d+~', file_get_contents($B . 'includes/layout.php')),

@@ -94,7 +94,7 @@ function rp_note(string $t): string {
 function rp_mat_table(array $mats, string $cur, array $fx): string {
     if (!$mats) return '<p style="color:#8a97ab;font-size:11px;margin:4px 0 0">No costed materials for this line.</p>';
     usort($mats, fn($a,$b)=>strcmp($a['category'].$a['material'],$b['category'].$b['material']));
-    $h = '<div class="tablewrap"><table><thead><tr><th>Group</th><th>Item</th><th>Description</th><th class="num">Qty</th><th class="num">Total Qty</th><th class="num">Wt</th><th class="num">Total Wt</th><th class="num">Rate</th><th class="num">Total Amount</th></tr></thead><tbody>';
+    $h = '<div class="tablewrap"><table><thead><tr><th>Group</th><th>Item</th><th>Description</th><th class="num">Qty</th><th class="num">Total Qty</th><th class="num">Rate</th><th class="num">Total Amount</th></tr></thead><tbody>';
     foreach ($mats as $m) {
         $shared = !empty($m['shared']);
         $unit = trim((string)($m['unit'] ?? '')) !== '' ? trim((string)($m['unit'] ?? '')) : 'unit';
@@ -109,14 +109,10 @@ function rp_mat_table(array $mats, string $cur, array $fx): string {
         // small note under Qty / Total Qty / Rate instead, same convention as "Per cone".
         $qtyCell = number_format($consumEach,3) . ($shared ? rp_note('1 '.e($unit).' &divide; '.$shareQty.' pcs') : rp_note(e($unit)));
         $totalQtyCell = rp_qty($totalQty) . rp_note(e($unit));
-        $totalWtCell = rp_qty($m['wt']) . rp_note('Kg');
-        $wtCell = number_format($wtEach,3) . ($shared ? rp_note(number_format((float)($m['weight_raw'] ?? 0),3).' kg &divide; '.$shareQty.' pcs') : '');
         $rateCell = number_format($rate,2) . rp_note('Per '.e($unit));
         $h .= '<tr><td>'.e($m['category']).'</td><td>'.e($m['material']).'</td><td>'.e($m['description'] ?? '').'</td>'
             .'<td class="num">'.$qtyCell.'</td>'
             .'<td class="num">'.$totalQtyCell.'</td>'
-            .'<td class="num">'.$wtCell.'</td>'
-            .'<td class="num">'.$totalWtCell.'</td>'
             .'<td class="num">'.$rateCell.'</td>'
             .'<td class="num">'.number_format($totalAmt,2).'</td></tr>';
     }
@@ -242,15 +238,14 @@ tr.tot td{border-top:2px solid var(--navy);font-weight:800;font-size:11.5px;back
     $grandCost = array_sum(array_column($grandList,'cost'));
   ?>
   <div class="tablewrap"><table>
-    <thead><tr><th>Category</th><th>Material</th><th>Unit</th><th class="num">Total Qty (approx)</th><th class="num">Wt Total</th><th class="num">Total Value</th></tr></thead>
+    <thead><tr><th>Category</th><th>Material</th><th>Unit</th><th class="num">Total Qty (approx)</th><th class="num">Total Value</th></tr></thead>
     <tbody>
       <?php if ($grandList): foreach ($grandList as $m): ?>
       <tr><td><?= e($m['category']) ?></td><td><?= e($m['material']) ?></td><td><?= e($m['unit']) ?></td>
         <td class="num"><?= rp_qty($m['qty']) ?></td>
-        <td class="num"><?= $m['wt']>0 ? rp_qty($m['wt']) : '—' ?></td>
         <td class="num"><?= rp_both($m['cost'],$cur,$fx) ?></td></tr>
-      <?php endforeach; else: ?><tr><td colspan="6" style="text-align:center;color:#8a97ab">No costed materials on this shipment.</td></tr><?php endif; ?>
-      <?php if ($grandList): ?><tr class="tot"><td colspan="5">Total Material Cost</td><td class="num"><?= rp_both($grandCost,$cur,$fx) ?></td></tr><?php endif; ?>
+      <?php endforeach; else: ?><tr><td colspan="5" style="text-align:center;color:#8a97ab">No costed materials on this shipment.</td></tr><?php endif; ?>
+      <?php if ($grandList): ?><tr class="tot"><td colspan="4">Total Material Cost</td><td class="num"><?= rp_both($grandCost,$cur,$fx) ?></td></tr><?php endif; ?>
     </tbody>
   </table></div>
 

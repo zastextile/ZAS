@@ -142,7 +142,59 @@ foreach ($packs as $p) {
     $totalNet += (float)($p['net_weight'] ?? 0);
     $totalGross += (float)($p['gross_weight'] ?? 0);
 }
-$totalColspan = $showOptional ? 6 : 5;
+
+/* ONE ROW PER INVOICE LINE AND PACKAGE TYPE. "If the package type is the
+   same it must sum" — ranges of one line in cartons are one row, listing
+   their serials; a new row only where the package type changes. */
+$rpt_line_key = static fn(array $p): string => (int)($p['invoice_item_id'] ?? 0) > 0
+    ? 'i' . (int)$p['invoice_item_id']
+    : 'n' . mb_strtolower(trim((string)($p['product_name'] ?? '') . '|' . (string)($p['des_col'] ?? '') . '|' . (string)($p['optional_value'] ?? '')));
+$rpt_rows = [];
+foreach ($packs as $p) {
+    $kind = trim((string)($p['pack_unit_title'] ?? '')) ?: 'Carton';
+    $k = $rpt_line_key($p) . '|' . mb_strtolower($kind);
+    if (!isset($rpt_rows[$k])) $rpt_rows[$k] = ['p' => $p, 'kind' => $kind, 'ranges' => [], 'serials' => [], 'packages' => 0, 'qty' => 0, 'per' => []];
+    $rpt_rows[$k]['ranges'][] = [(int)($p['carton_from'] ?? 0), (int)($p['carton_to'] ?? 0)];
+    $rpt_rows[$k]['packages'] += (float)($p['packages'] ?? 0);
+    $rpt_rows[$k]['qty'] += (float)($p['total_qty'] ?? 0);
+    $rpt_rows[$k]['per'][rpt_qty($p['qty_per_carton'] ?? 0)] = true;
+}
+/* ranges that touch read as one: 1–36, 37, 38–49 is 1–49 */
+foreach ($rpt_rows as $k => $g) {
+    $r = $g['ranges'];
+    usort($r, static fn($a, $b) => $a[0] <=> $b[0]);
+    $m = [];
+    foreach ($r as $x) {
+        if ($m && $x[0] <= $m[count($m) - 1][1] + 1) $m[count($m) - 1][1] = max($m[count($m) - 1][1], $x[1]);
+        else $m[] = $x;
+    }
+    $rpt_rows[$k]['serials'] = array_map(static fn($x) => $x[0] . ($x[1] !== $x[0] ? '–' . $x[1] : ''), $m);
+}
+
+/* THE WEIGHT SUMMARY, one row per invoice line, at the end. The figures
+   are the weight module's (spread onto the rows when it applies them); a
+   packed line with no applied weight says so instead of printing 0. */
+$rpt_wt = [];
+$wtApplied = null;
+if (is_file(__DIR__ . '/includes/weight.php')) {
+    require_once __DIR__ . '/includes/weight.php';
+    try { $wtApplied = wt_summary($id); } catch (Throwable $e) { $wtApplied = null; }
+}
+foreach ($packs as $p) {
+    $k = $rpt_line_key($p);
+    if (!isset($rpt_wt[$k])) $rpt_wt[$k] = ['p' => $p, 'packages' => 0, 'qty' => 0, 'net' => 0, 'gross' => 0];
+    $rpt_wt[$k]['packages'] += (float)($p['packages'] ?? 0);
+    $rpt_wt[$k]['qty'] += (float)($p['total_qty'] ?? 0);
+    $rpt_wt[$k]['net'] += (float)($p['net_weight'] ?? 0);
+    $rpt_wt[$k]['gross'] += (float)($p['gross_weight'] ?? 0);
+}
+$rpt_pending = 0;
+foreach ($rpt_wt as $k => $w) {
+    $item = (int)($w['p']['invoice_item_id'] ?? 0);
+    $rpt_wt[$k]['pending'] = $wtApplied !== null ? !isset($wtApplied['lines'][$item]) : ($w['net'] <= 0);
+    if ($rpt_wt[$k]['pending']) $rpt_pending++;
+}
+$totalColspan = $showOptional ? 5 : 4;
 $statusText = rpt_v($shipment, 'packing_status', '') === 'completed' ? 'Packing Completed' : ucfirst(str_replace('_', ' ', (string)($shipment['status'] ?? '')));
 ?>
 <!doctype html>
@@ -467,32 +519,26 @@ table.report-table{
           <th>Item Description</th>
           <?php if($showOptional): ?><th><?= e($optionalTitle) ?></th><?php endif; ?>
           <th>Unit Type</th>
-          <th class="num">From</th>
-          <th class="num">To</th>
+          <th>Serial Nos</th>
           <th class="num">Units</th>
           <th class="num">Qty / Unit</th>
           <th class="num">Total Qty</th>
-          <th class="num">Net Wt</th>
-          <th class="num">Gross Wt</th>
         </tr>
       </thead>
       <tbody>
-        <?php foreach($packs as $i => $p): ?>
+        <?php $sr = 0; foreach($rpt_rows as $g): $p = $g['p']; $sr++; ?>
         <tr>
-          <td><?= e($p['line_no'] ?? ($i+1)) ?></td>
+          <td><?= $sr ?></td>
           <td>
             <b><?= e($p['product_name'] ?? '') ?></b>
             <?php if(rpt_has_value($p['des_col'] ?? '')): ?><br><?= e($p['des_col']) ?><?php endif; ?>
           </td>
           <?php if($showOptional): ?><td><?= e($p['optional_value'] ?? '') ?></td><?php endif; ?>
-          <td><?= e($p['pack_unit_title'] ?? 'Carton') ?></td>
-          <td class="num"><?= e((string)($p['carton_from'] ?? '')) ?></td>
-          <td class="num"><?= e((string)($p['carton_to'] ?? '')) ?></td>
-          <td class="num"><?= e(rpt_qty($p['packages'] ?? 0)) ?></td>
-          <td class="num"><?= e(rpt_qty($p['qty_per_carton'] ?? 0)) ?></td>
-          <td class="num"><?= e(rpt_qty($p['total_qty'] ?? 0)) ?></td>
-          <td class="num"><?= e(rpt_num($p['net_weight'] ?? 0, 3)) ?></td>
-          <td class="num"><?= e(rpt_num($p['gross_weight'] ?? 0, 3)) ?></td>
+          <td><?= e($g['kind']) ?></td>
+          <td><?= e(implode(', ', $g['serials'])) ?></td>
+          <td class="num"><?= e(rpt_qty($g['packages'])) ?></td>
+          <td class="num"><?= count($g['per']) === 1 ? e((string)array_key_first($g['per'])) : 'mixed' ?></td>
+          <td class="num"><?= e(rpt_qty($g['qty'])) ?></td>
         </tr>
         <?php endforeach; ?>
         <tr class="total-row">
@@ -500,6 +546,38 @@ table.report-table{
           <td class="num"><?= e(rpt_qty($totalPackages)) ?></td>
           <td></td>
           <td class="num"><?= e(rpt_qty($totalQty)) ?></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="report-table" style="margin-top:14px">
+      <thead>
+        <tr>
+          <th>Weight Summary</th>
+          <th class="num">Packed Qty</th>
+          <th class="num">Units</th>
+          <th class="num">Net Wt (Kg)</th>
+          <th class="num">Gross Wt (Kg)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach($rpt_wt as $w): $p = $w['p']; ?>
+        <tr>
+          <td><b><?= e($p['product_name'] ?? '') ?></b><?php if(rpt_has_value($p['des_col'] ?? '')): ?> · <?= e($p['des_col']) ?><?php endif; ?></td>
+          <td class="num"><?= e(rpt_qty($w['qty'])) ?></td>
+          <td class="num"><?= e(rpt_qty($w['packages'])) ?></td>
+          <?php if($w['pending']): ?>
+          <td class="num" colspan="2">weight pending</td>
+          <?php else: ?>
+          <td class="num"><?= e(rpt_num($w['net'], 3)) ?></td>
+          <td class="num"><?= e(rpt_num($w['gross'], 3)) ?></td>
+          <?php endif; ?>
+        </tr>
+        <?php endforeach; ?>
+        <tr class="total-row">
+          <td>Total<?= $rpt_pending ? ' (weight pending for ' . $rpt_pending . ' line' . ($rpt_pending === 1 ? '' : 's') . ')' : '' ?></td>
+          <td class="num"><?= e(rpt_qty($totalQty)) ?></td>
+          <td class="num"><?= e(rpt_qty($totalPackages)) ?></td>
           <td class="num"><?= e(rpt_num($totalNet, 3)) ?></td>
           <td class="num"><?= e(rpt_num($totalGross, 3)) ?></td>
         </tr>

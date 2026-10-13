@@ -316,13 +316,14 @@ t('a gatekeeper sees Gate In and Gate Out',
 t('and Packing, which needs no gate permission',
   str_contains($gateman, 'Packing'));
 /* class="tiles" is the wrapper, not a tile — match the space. */
-t('three tiles, no more', substr_count($gateman, 'class="tile ') === 3,
+/* Gate In, Gate Out, Packing and Weight — Weight goes with packing */
+t('four tiles, no more', substr_count($gateman, 'class="tile ') === 4,
   substr_count($gateman, 'class="tile '));
 
 t('without the gate permission the gate tiles are gone',
   !str_contains($packer, 'Gate In') && !str_contains($packer, 'Gate Out'));
 t('but packing is still there',
-  str_contains($packer, 'Packing') && substr_count($packer, 'class="tile ') === 1,
+  str_contains($packer, 'Packing') && str_contains($packer, 'Weight') && substr_count($packer, 'class="tile ') === 2,
   substr_count($packer, 'class="tile '));
 
 t('staff with no shipment assigned get no Packing tile either',

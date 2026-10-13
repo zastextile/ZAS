@@ -662,7 +662,7 @@ async function aiCreateProductAndContinue(){
          every single load. It DECLARES only; nothing in it runs at load time,
          so it must come BEFORE the inline block below, which supplies the
          PHP-rendered data those functions read and then calls renderAll(). */ ?>
-<script src="assets/js/costing.js?v=27"></script>
+<script src="assets/js/costing.js?v=28"></script>
 <script>
 /* CSRF, PRODUCT_ID and HAS_PRODUCT are already declared above, in the
    always-present AI-Assisted Costing script — this block only exists when

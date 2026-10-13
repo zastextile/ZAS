@@ -191,7 +191,7 @@ endforeach; ?>
 <div class="zcard"><p style="color:#8a97ab;text-align:center;margin:0">No invoice lines on this shipment yet.</p></div>
 <?php endif; ?>
 
-<script src="assets/js/final_costing.js?v=26"></script>
+<script src="assets/js/final_costing.js?v=27"></script>
 <script>
 /* ---- the item picker + spreadsheet keys ---------------------------------
    Same two shared files as Gate Inward/Outward and the invoice, so there is
@@ -249,7 +249,7 @@ endforeach; ?>
      swapped in later by fcAjaxSubmit are picked up with no re-attach. */
   LOV.attach(document.body);
 
-  var COLS = ['grp','item','desc','qty','unit','wt','rate'];
+  var COLS = ['grp','item','desc','qty','unit','rate'];
 
   /* GRID is different — it walks root.children, so it belongs to one tbody
      and dies with it when a card is replaced. Re-wire per card after every
@@ -273,7 +273,7 @@ endforeach; ?>
       afterChange: function(){ fcRecalcTotal(tb); },
       onPasteProblem: function(bad){
         if(!warn) return;
-        var LBL = { qty:'Qty', rate:'Rate', wt:'Alloc. Wt' };
+        var LBL = { qty:'Qty', rate:'Rate' };
         warn.innerHTML = '<b>Check these before saving:</b> ' + bad.slice(0,6).map(function(b){
             return 'line ' + b.row + ' ' + (LBL[b.col]||b.col) + ' ("' + LOV.esc(b.text) + '")';
           }).join(', ') + (bad.length>6 ? ' and ' + (bad.length-6) + ' more' : '')

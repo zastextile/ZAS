@@ -530,17 +530,16 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
 
   <?php if ($locked): ?>
     <div class="fc-table" style="overflow-x:auto"><table class="fc-table">
-      <thead><tr><th>Group</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Alloc. Wt (kg)</th><th>Rate</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Group</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
       <?php foreach ($fc['lines'] as $l): ?>
         <tr><td><?= e($l['line_group']) ?></td><td><?= e($l['item_name']) ?></td><td><?= e($l['description']) ?></td>
           <td><?= e(fc_disp($l['quantity'])) ?></td><td><?= e($l['unit']) ?></td>
-          <td><?= e(fc_disp($l['weight_kg'])) ?></td>
           <td><?= number_format((float)$l['rate'],2) ?></td>
           <td class="num"><?= number_format((float)$l['amount'],2) ?><?= $l['shared'] ? ' <span style="color:#6d5bd0;font-weight:400">÷</span>' : '' ?></td></tr>
       <?php endforeach; ?>
-      <?php if (!$fc['lines']): ?><tr><td colspan="8" style="text-align:center;color:#8a97ab">No lines.</td></tr><?php endif; ?>
-      <tr style="font-weight:700;border-top:2px solid #cbd5e3"><td colspan="7">Total Final Cost</td><td class="num"><?= e($nativeCur) ?> <?= number_format($nativeTotal,2) ?></td></tr>
+      <?php if (!$fc['lines']): ?><tr><td colspan="7" style="text-align:center;color:#8a97ab">No lines.</td></tr><?php endif; ?>
+      <tr style="font-weight:700;border-top:2px solid #cbd5e3"><td colspan="6">Total Final Cost</td><td class="num"><?= e($nativeCur) ?> <?= number_format($nativeTotal,2) ?></td></tr>
       </tbody>
     </table></div>
     <p style="font-size:11.5px;color:#8a97ab;margin:10px 0 0">Locked <?= $fc['locked_at'] ? e(date('d M Y, H:i', strtotime($fc['locked_at']))) : '' ?>.</p>
@@ -572,7 +571,7 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
       <input type="hidden" name="final_costing_id" value="<?= (int)$fc['id'] ?>">
       <input type="hidden" name="shipment_id" value="<?= (int)$shipmentId ?>">
       <div style="overflow-x:auto"><table class="fc-table" id="fcTable<?= $itemId ?>">
-        <thead><tr><th>Group</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Alloc. Wt (kg)</th><th>Rate</th><th class="num">Amount</th><th></th></tr></thead>
+        <thead><tr><th>Group</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th class="num">Amount</th><th></th></tr></thead>
         <?php /* data-fcgrid marks this tbody for the spreadsheet keyboard, and
                  data-c names each cell in Tab order. Both are read by the
                  script block in final_costing.php after every AJAX swap. */ ?>
@@ -587,8 +586,9 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
               <button type="button" class="shbtn <?= $l['shared']?'on':'' ?>" tabindex="-1" title="<?= $l['shared']?'Shared: amount = rate ÷ qty':'Normal: amount = qty × rate. Click for shared (÷).' ?>" onclick="fcToggleShared(this)">÷</button>
               <input type="hidden" name="shared[]" value="<?= $l['shared']?'1':'0' ?>">
             </div></td>
-            <td><input class="fc-in mini" data-c="unit" name="unit[]" value="<?= e($l['unit']) ?>"></td>
-            <td><input class="fc-in mini" data-c="wt" type="number" step="0.001" name="weight_kg[]" value="<?= e(fc_disp($l['weight_kg'])) ?>"></td>
+            <?php /* Alloc. Wt is no longer shown — weight is the Weight module's. The
+                     stored figure rides along unseen, so saving never wipes it. */ ?>
+            <td><input class="fc-in mini" data-c="unit" name="unit[]" value="<?= e($l['unit']) ?>"><input type="hidden" name="weight_kg[]" value="<?= e(fc_disp($l['weight_kg'])) ?>"></td>
             <td><input class="fc-in mini" data-c="rate" type="number" step="0.01" name="rate[]" value="<?= e(fc_disp($l['rate'])) ?>" oninput="fcCalc(this)">
               <input type="hidden" name="native_currency[]" value="<?= e($l['native_currency'] ?? $nativeCur) ?>">
             </td>

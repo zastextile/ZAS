@@ -47,6 +47,9 @@ function zas_menu(): array {
                    asks the questions in the order the packing team meets
                    them, starting at the serial. */
                 ['label' => 'Packing on Mobile', 'href' => 'm_pack.php',        'show' => $notProd],
+                /* Weight on its own: profiles per finished unit, linked to
+                   each invoice line, the quantity taken from the packing. */
+                ['label' => 'Weight',            'href' => 'weight.php',        'show' => $notProd],
                 ['label' => 'Proforma Invoices', 'href' => 'proforma.php',      'show' => $office],
                 ['label' => 'CSV Import',        'href' => 'import_excel.php',  'show' => $office],
                 /* The four per-shipment tabs are not listed here — they are

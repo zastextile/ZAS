@@ -323,17 +323,11 @@ t('after the commit, not inside the transaction',
   'a nested transaction would throw and the range would fail to save');
 t('the depth counter came back to nothing, so nothing was left open',
   $GLOBALS['DEPTH'] === 0, $GLOBALS['DEPTH']);
-/* STILL OPENS ON WHAT IS MISSING. What changed is only what counts as
-   one thing to weigh: a size, or a size and a colour when the range says
-   its colours differ. The list is therefore keyed by that unit, so the
-   screen can land on it. */
-t('the weight screen opens on what is missing, not on the first one',
-  preg_match('~if \(!pack_weight_lines\(\$unitHome\[\$k\], \$u\[\x27size\x27\], \$u\[\x27colour\x27\]\)\) \$missing\[\$k\]~', $mpN) === 1
-  && str_contains($mpN, "\$sz = (string)(array_key_first(\$missing) ?? (\$labels[0] ?? ''));"));
-t('and what counts as one thing to weigh is decided in one place',
-  str_contains($mpN, 'pack_unit_key($sg, $srow)') && str_contains($mpN, 'pack_wkey($sg, $srow)'));
-t('and says so plainly when there is nothing to do',
-  str_contains($mpN, 'Nothing new to weigh here.'));
+/* The old phone weight screen that used this seeding is gone — weight is
+   the Weight module now (weight.php, includes/weight.php), with profiles
+   per invoice line. The seeding above is kept for ranges already saved. */
+t('the old weight screen is retired and sends you to the Weight module',
+  str_contains($mpN, "if (\$tab === 'weight') redirect('weight.php?id=' . \$id . '#link');"));
 t('the old per-size recall button is gone, because it is automatic now',
   !preg_match('~name="recall"~', $mpN));
 

@@ -363,8 +363,8 @@ ok(!preg_match('~<script[^>]+src=~i', substr($html, strpos($html, 'id="sp"'))), 
 $app = substr($html, strpos($html, 'id="sp"'));
 ok(!str_contains($app, '<form') && !preg_match('~location\.(reload|href\s*=)|\.submit\(\)~', $app),
    'nothing on the packing screen submits a form or reloads the page');
-ok(!str_contains($app, 't=weight') && !preg_match('~weigh~i', substr($app, 0, (int)strpos($app, '<style>'))) && !str_contains($app, 'Weight'),
-   'no weight anywhere on the packing screen — it is a module of its own, later');
+ok(!str_contains($app, 't=weight') && str_contains($html, 'weight.php?id=7#link'),
+   'weight is a module of its own: packing links to weight.php, the old weight screen is not used');
 ok(!str_contains($app, 'id="spPrefix"') && !str_contains($app, 'Serial prefix'), 'and no prefix box');
 $api = fn(array $b, string $env = '') => page($work, ['id' => 7, 'api' => 1], $env, json_encode($b));
 $noTok = $api(['op' => 'finish']);
@@ -387,8 +387,7 @@ ok(($staff['ok'] ?? true) === false, 'staff cannot reopen a finished list — th
 $re = json_decode($api(['_csrf' => 'testtoken', 'op' => 'reopen']), true);
 ok(($re['ok'] ?? false) === true && $re['state']['completed'] === false, 'an admin can', $re);
 $weightPage = page($work, ['id' => 7, 't' => 'weight']);
-ok(str_contains($weightPage, 'id="wform"') && str_contains($weightPage, 'Back to packing')
-   && !preg_match('~(Warning|Notice|Fatal error)~', $weightPage), 'the weight screen still opens, with a way back', substr($weightPage, 0, 300));
+ok(str_contains($weightPage, '__REDIRECT__ weight.php?id=7#link'), 'an old link to the weight screen goes to the Weight module', substr($weightPage, 0, 300));
 
 /* =========================================================== in Chromium */
 head('7. In Chromium, through a real server');
@@ -574,7 +573,7 @@ let R = {};
   /* summary */
   await p.locator('[data-a=tab][data-tab=summary]').click(); await W();
   R.summary = await p.locator('.sline b').allTextContents();
-  R.weightLink = await p.locator('#spMain a[href*="t=weight"]').count() + (/weigh/i.test(await p.locator('#spMain').innerText()) ? 1 : 0);
+  R.weightLink = await p.locator('#spMain a[href*="weight.php"]').count();
   /* a line with no sizes, colours or styles shows none of them */
   await p.locator('.sp-tabs [data-tab=packing]').click(); await W();
   const pick = async q => { await p.fill('#spSearch', q); await W(); await p.locator('#spResults button').first().click(); await W(); };
@@ -663,7 +662,7 @@ JS;
     ok(($R['copyTo'] ?? '') === '4' && array_key_exists('copyEdit', $R) && $R['copyEdit'] === null, 'Copy puts the contents on the next free number, as a new package', [$R['copyTo'] ?? null]);
     ok(in_array('S / Black / Crew', $R['summary'] ?? [], true) && in_array('L / White / Crew', $R['summary'] ?? [], true),
        'Summary adds up by size, colour and style', $R['summary'] ?? null);
-    ok(($R['weightLink'] ?? 1) === 0, 'and nothing about weight', $R['weightLink'] ?? null);
+    ok(($R['weightLink'] ?? 0) === 1, 'with one Weight button, to the Weight module', $R['weightLink'] ?? null);
     ok(($R['towel'] ?? null) === ['sizes' => 0, 'colours' => 0, 'styles' => 0, 'addOne' => 1, 'notice' => 0, 'words' => false],
        'a line with no sizes, colours or styles hides them all — just "+ Add one"', $R['towel'] ?? null);
     ok(($R['towelCombo'] ?? []) === ['Pieces'], 'and its contents read as plain pieces', $R['towelCombo'] ?? null);

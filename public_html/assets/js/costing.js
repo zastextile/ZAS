@@ -72,7 +72,6 @@ ${itemCellHtml(p,l,i)}
 <td><input class="zin" ${ro} style="min-width:150px" value="${esc(l.desc||'')}" onchange="setLine(${p.id},${i},'desc',this.value)"></td>
 <td class="c-qty"><div class="qtywrap"><input class="zin mini" ${ro} type="number" step="0.001" value="${l.qty}" oninput="setLine(${p.id},${i},'qty',this.value,1)">${CAN_EDIT?`<button class="shbtn ${l.shared?'on':''}" type="button" title="${l.shared?'Shared: amount = rate ÷ qty':'Normal: amount = qty × rate. Click for shared (÷).'}" onclick="toggleShared(${p.id},${i})">÷</button>`:''}</div></td>
 <td class="c-unit"><input class="zin mini" ${ro} value="${esc(l.unit||'')}" onchange="setLine(${p.id},${i},'unit',this.value)"></td>
-<td class="c-wt n"><input class="zin mini" ${ro} type="number" step="0.001" value="${l.weight}" oninput="setLine(${p.id},${i},'weight',this.value,1)"></td>
 <td class="c-rate n"><input class="zin mini" ${ro} type="number" step="0.01" value="${l.rate}" oninput="setLine(${p.id},${i},'rate',this.value,1)"></td>
 <td class="num amt c-amt">${fmtNum(lineAmt(l),2)}${l.shared?' <span style="color:#6d5bd0;font-weight:400">÷</span>':''}</td>
 <td class="c-x">${CAN_EDIT?`<button class="rowx zbtn red sm" type="button" title="Remove this cost line" onclick="removeLine(${p.id},${i})">×</button>`:''}</td></tr>`}
@@ -96,10 +95,9 @@ function workmanshipRowHtml(p){
       ? `Sum of active operation rates for this product, using ${bits.join(' and ')}. <a class="wmlink" href="product_master.php?edit=${PRODUCT_ID}#sec-production-ops">Manage rates →</a>`
       : `Sum of active operation rates for this product. <a class="wmlink" href="product_master.php?edit=${PRODUCT_ID}#sec-production-ops">Manage rates →</a>`;
   }
-  /* colspan is 7, not 6: the Code column added one. It stays a locked summary
-     line and stays visually distinct, but on ONE line — the label and its
-     source sit side by side instead of stacked. */
-  return `<tr class="wmrow"><td colspan="7"><span class="wmlabel">Workmanship — from Production Operations</span><span class="wmsrc">${src}</span></td><td class="num amt c-amt">${fmtNum(rate,2)}</td><td class="rm c-x">🔒</td></tr>`;
+  /* colspan 6: the Code column added one, and the weight column (now the
+     Weight module's) took one away. A locked summary line, on ONE line. */
+  return `<tr class="wmrow"><td colspan="6"><span class="wmlabel">Workmanship — from Production Operations</span><span class="wmsrc">${src}</span></td><td class="num amt c-amt">${fmtNum(rate,2)}</td><td class="rm c-x">🔒</td></tr>`;
 }
 function lineAmt(l){return l.shared ? (n(l.qty)>0? n(l.rate)/n(l.qty):0) : n(l.qty)*n(l.rate)}
 function lineWt(l){return l.shared ? (n(l.qty)>0? n(l.weight)/n(l.qty):n(l.weight)) : n(l.qty)*n(l.weight)}
@@ -112,9 +110,9 @@ function renderProfiles(){document.getElementById('profiles').innerHTML=profiles
 ${CAN_EDIT?`<button class="zbtn sec sm" type="button" onclick="renameProfile(${p.id})">Rename</button><button class="zbtn sec sm" type="button" onclick="activeProfileId=${p.id};duplicateActive()">Duplicate</button><button class="zbtn red sm" type="button" onclick="deleteProfile(${p.id})">Delete</button>`:''}</div></div>
 <label class="zlabel" style="margin-top:12px">Applies to sizes</label>
 <div class="sizechecks" onclick="event.stopPropagation()">${sizes.length?sizes.map(s=>`<label class="sizecheck ${p.sizeIds.includes(s.id)?'active':''}"><input type="checkbox" ${ro} ${p.sizeIds.includes(s.id)?'checked':''} onchange="toggleSize(${p.id},${s.id},this.checked)">${esc(s.name)}</label>`).join(''):'<span class="empty">Add sizes above first.</span>'}</div>
-<div class="tablewrap" onclick="event.stopPropagation()"><table class="ct ct-edit"><thead><tr><th>Item</th><th class="codecell">Code</th><th>Description</th><th class="c-qty">Qty</th><th class="c-unit">Unit</th><th class="c-wt">Alloc. Wt</th><th class="c-rate">Rate</th><th class="c-amt">Amount</th><th class="c-x"></th></tr></thead><tbody>${p.lines.map((l,i)=>rowHtml(p,l,i)).join('')}${workmanshipRowHtml(p)}</tbody></table></div>
+<div class="tablewrap" onclick="event.stopPropagation()"><table class="ct ct-edit"><thead><tr><th>Item</th><th class="codecell">Code</th><th>Description</th><th class="c-qty">Qty</th><th class="c-unit">Unit</th><th class="c-rate">Rate</th><th class="c-amt">Amount</th><th class="c-x"></th></tr></thead><tbody>${p.lines.map((l,i)=>rowHtml(p,l,i)).join('')}${workmanshipRowHtml(p)}</tbody></table></div>
 ${CAN_EDIT?`<button class="zbtn sec sm" style="margin-top:10px" type="button" onclick="event.stopPropagation();addLine(${p.id})">+ Add Cost Line</button>`:''}
-<div class="summary"><div class="box"><span>Total Cost / Unit</span><b>${cur} <span class="sm-cost">${fmtNum(t.cost,2)}</span></b></div><div class="box"><span>Total Weight</span><b><span class="sm-wt">${fmtNum(t.wt,3)}</span> kg</b></div><div class="box"><span>Suggested Price</span><b>${cur} <input class="zin" ${ro} style="width:90px;display:inline-block;padding:4px 6px" type="number" step="0.01" value="${p.suggested_price||0}" onclick="event.stopPropagation()" oninput="setNum(${p.id},'suggested_price',this.value)"></b></div></div>
+<div class="summary"><div class="box"><span>Total Cost / Unit</span><b>${cur} <span class="sm-cost">${fmtNum(t.cost,2)}</span></b></div><div class="box"><span>Suggested Price</span><b>${cur} <input class="zin" ${ro} style="width:90px;display:inline-block;padding:4px 6px" type="number" step="0.01" value="${p.suggested_price||0}" onclick="event.stopPropagation()" oninput="setNum(${p.id},'suggested_price',this.value)"></b></div></div>
 <label class="zlabel" style="margin-top:12px">Remarks</label><input class="zin" ${ro} value="${esc(p.remarks||'')}" onclick="event.stopPropagation()" oninput="setText(${p.id},'remarks',this.value)">
 <div class="vactions" onclick="event.stopPropagation()">
 ${saved&&CAN_PRINT?`<a class="zbtn sec sm" target="_blank" href="costing_print.php?version_id=${p.id}">Print / PDF</a>`:''}

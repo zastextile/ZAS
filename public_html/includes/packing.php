@@ -1251,7 +1251,7 @@ function pack_state(int $shipmentId, array $items, array $shipment): array
 function pack_finish(int $shipmentId): array
 {
     $t = pack_totals($shipmentId);
-    [$ok, $msg] = pack_approve($shipmentId, $t['net'], $t['gross']);
+    [$ok, $msg] = pack_approve($shipmentId, 0, 0);
     if (!$ok) return [false, $msg];
     try {
         db()->prepare("UPDATE shipments SET packing_status='completed', packing_completed_by=?, packing_completed_at=NOW()
@@ -1412,14 +1412,11 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
     if (!$groups) return [false, 'There is nothing to approve yet.'];
 
     $t = pack_totals($shipmentId);
-    if (pack_deviation_pct($t['net'], $finalNet) > PACK_TOLERANCE_PCT
-     || pack_deviation_pct($t['gross'], $finalGross) > PACK_TOLERANCE_PCT) {
-        return [false, 'A final weight is more than ' . PACK_TOLERANCE_PCT
-                     . '% away from what the lines give. Check the breakdown first.'];
-    }
-
-    $netScale   = $t['net']   > 0 ? $finalNet   / $t['net']   : 1.0;
-    $grossScale = $t['gross'] > 0 ? $finalGross / $t['gross'] : 1.0;
+    /* WEIGHT IS NOT DECIDED HERE ANY MORE. It belongs to the weight module
+       (includes/weight.php): the rows are written with quantities only, and
+       the weight applied there is spread back onto them below. The two
+       weight arguments are kept so older callers still work; they are
+       ignored. */
 
     try {
         db()->beginTransaction();
@@ -1436,9 +1433,7 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
 
         foreach ($groups as $g) {
             $sizes   = pack_sizes((int)$g['id']);
-            $perUnit = pack_per_unit((int)$g['id']);
             $p       = pack_packages($g);
-            $c       = pack_contents_kg($g, $sizes, $perUnit);
 
             $ln->execute([$shipmentId]);
             $ins->execute([
@@ -1451,27 +1446,17 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
                 $p > 0 ? pack_group_qty($g, $sizes) / $p : 0,
                 $g['qty_mode'] === 'direct' ? 'direct' : 'auto',
                 pack_group_qty($g, $sizes),
-                $c * $p * $netScale,
-                ($c * $p + (float)$g['pkg_tare'] * $p) * $grossScale,
+                0,
+                0,
                 mb_substr(pack_size_text($g, $sizes), 0, 190),
                 (int)$g['id'],
             ]);
-
-            /* Remember this breakdown for the next shipment of the same
-               product and size. */
-            foreach ($sizes as $s) {
-                [$wsz, $wcol] = pack_wkey($g, $s);
-                $lines = pack_weight_lines((int)$g['id'], $wsz, $wcol);
-                if ($lines) pack_std_save((string)$g['product_name'], $wsz, $lines, $wcol);
-            }
         }
 
-        /* The shipment header gets the approved figures, not the calculated
-           ones, and the package count straight off the serials. */
-        db()->prepare("UPDATE shipments SET total_packages=?, total_net_weight=?, total_gross_weight=?,
-                       updated_by=?, updated_at=NOW() WHERE id=?")
-            ->execute([$t['packages'], $finalNet, $finalGross,
-                       (int)(current_user()['id'] ?? 0), $shipmentId]);
+        /* The package count straight off the serials. The weight totals are
+           the weight module's and are left as they are. */
+        db()->prepare("UPDATE shipments SET total_packages=?, updated_by=?, updated_at=NOW() WHERE id=?")
+            ->execute([$t['packages'], (int)(current_user()['id'] ?? 0), $shipmentId]);
 
         db()->commit();
     } catch (Throwable $e) {
@@ -1479,13 +1464,15 @@ function pack_approve(int $shipmentId, float $finalNet, float $finalGross): arra
         return [false, 'The packing list could not be approved. ' . $e->getMessage()];
     }
 
+    /* the rows were rewritten: give them back the applied weight */
+    if (function_exists('wt_spread')) wt_spread($shipmentId);
+
     if (function_exists('audit_log')) {
         try {
             audit_log($shipmentId, 'Packing Approved', 'update', null,
                       'Packing approved from the phone',
                       number_format($t['packages']) . ' packages, '
-                      . number_format($t['qty'], 2) . ' qty, '
-                      . number_format($finalNet, 3) . ' kg net');
+                      . number_format($t['qty'], 2) . ' qty');
         } catch (Throwable $e) {}
     }
 

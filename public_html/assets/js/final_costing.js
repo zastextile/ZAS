@@ -34,8 +34,7 @@ function fcAddRow(itemId, nativeCur){
     + '<td><input class="fc-in lovf" data-lov="fcitem" data-c="item" name="item_name[]" autocomplete="off" value=""></td>'
     + '<td><input class="fc-in" data-c="desc" name="description[]" value=""></td>'
     + '<td><div class="qtywrap"><input class="fc-in mini" data-c="qty" type="number" step="0.001" name="quantity[]" value="0" oninput="fcCalc(this)"><button type="button" class="shbtn" tabindex="-1" title="Normal: amount = qty × rate. Click for shared (÷)." onclick="fcToggleShared(this)">÷</button><input type="hidden" name="shared[]" value="0"></div></td>'
-    + '<td><input class="fc-in mini" data-c="unit" name="unit[]" value=""></td>'
-    + '<td><input class="fc-in mini" data-c="wt" type="number" step="0.001" name="weight_kg[]" value="0"></td>'
+    + '<td><input class="fc-in mini" data-c="unit" name="unit[]" value=""><input type="hidden" name="weight_kg[]" value="0"></td>'
     + '<td><input class="fc-in mini" data-c="rate" type="number" step="0.01" name="rate[]" value="0" oninput="fcCalc(this)"><input type="hidden" name="native_currency[]" value="'+nativeCur+'"></td>'
     + '<td class="num fc-amt">0.00</td>'
     + '<td><button type="button" class="zbtn red sm" tabindex="-1" onclick="this.closest(\'tr\').remove();fcRecalcTotal(this)">✕</button></td>';

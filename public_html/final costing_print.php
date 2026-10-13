@@ -37,7 +37,7 @@ function cst_line_row(array $l): string {
         $rateCell = number_format($rate,2);
     }
     return '<tr><td>'.e($l['line_group']).'</td><td>'.e($l['item_name']).'</td><td>'.e($l['description']).'</td>'
-        .'<td class="num">'.$qtyCell.'</td><td>'.e($l['unit']).'</td><td class="num">'.$wtCell.'</td>'
+        .'<td class="num">'.$qtyCell.'</td><td>'.e($l['unit']).'</td>'
         .'<td class="num">'.$rateCell.'</td><td class="num">'.number_format($amt,2).'</td></tr>';
 }
 
@@ -76,19 +76,19 @@ if ($pid) {
     </div>
 
     <table>
-      <thead><tr><th>Size</th><th>Version</th><th class="num">Gross (kg)</th>
+      <thead><tr><th>Size</th><th>Version</th>
         <?php foreach($curList as $c): ?><th class="num">Cost <?= e($c) ?></th><?php endforeach; ?>
         <?php foreach($curList as $c): ?><th class="num">Sell <?= e($c) ?></th><?php endforeach; ?>
       </tr></thead>
       <tbody>
         <?php foreach($sizeRows as $r): ?>
         <tr>
-          <td><?= e($r['size']) ?></td><td><?= e($r['version']) ?></td><td class="num"><?= e(number_format($r['gross'],3)) ?></td>
+          <td><?= e($r['size']) ?></td><td><?= e($r['version']) ?></td>
           <?php foreach($curList as $c): ?><td class="num"><?= e(cst_money(cst_convert($r['cost'],$r['cur'],$c,$fx))) ?></td><?php endforeach; ?>
           <?php foreach($curList as $c): ?><td class="num"><?= e(cst_money(cst_convert($r['sell'],$r['cur'],$c,$fx))) ?></td><?php endforeach; ?>
         </tr>
         <?php endforeach; ?>
-        <?php if(!$sizeRows): ?><tr><td colspan="<?= 3+2*count($curList) ?>" style="text-align:center;color:#8a97ab">No costing versions yet.</td></tr><?php endif; ?>
+        <?php if(!$sizeRows): ?><tr><td colspan="<?= 2+2*count($curList) ?>" style="text-align:center;color:#8a97ab">No costing versions yet.</td></tr><?php endif; ?>
       </tbody>
     </table>
     <div class="remarks">Currency conversions are indicative, based on the configured FX rates. Costs/prices are per unit as entered in each costing version.</div>
@@ -98,14 +98,14 @@ if ($pid) {
         $cur = $v['currency'] ?: 'PKR'; ?>
     <div class="sect"><?= e($v['version_name']) ?> · <?= e($cur) ?> · Total <?= e(cst_money($v['total_cost'])) ?></div>
     <table>
-      <thead><tr><th>Group</th><th>Item</th><th>Description</th><th class="num">Qty</th><th>Unit</th><th class="num">Wt</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Group</th><th>Item</th><th>Description</th><th class="num">Qty</th><th>Unit</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
       <tbody>
         <?php foreach($lines as $l): ?>
         <?= cst_line_row($l) ?>
         <?php endforeach; ?>
-        <?php if(!$lines): ?><tr><td colspan="8" style="text-align:center;color:#8a97ab">No detail lines.</td></tr><?php endif; ?>
+        <?php if(!$lines): ?><tr><td colspan="7" style="text-align:center;color:#8a97ab">No detail lines.</td></tr><?php endif; ?>
       </tbody>
-      <tfoot><tr class="tot"><td colspan="7">Total (<?= e($cur) ?>)</td><td class="num"><?= e(cst_money($v['total_cost'])) ?></td></tr></tfoot>
+      <tfoot><tr class="tot"><td colspan="6">Total (<?= e($cur) ?>)</td><td class="num"><?= e(cst_money($v['total_cost'])) ?></td></tr></tfoot>
     </table>
     <?php endforeach; ?>
 
@@ -144,20 +144,17 @@ costing_print_head('Product Costing');
 
 <div class="sect">Costing Details</div>
 <table>
-  <thead><tr><th>Group</th><th>Item</th><th>Description</th><th class="num">Qty</th><th>Unit</th><th class="num">Wt (kg)</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+  <thead><tr><th>Group</th><th>Item</th><th>Description</th><th class="num">Qty</th><th>Unit</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
   <tbody>
     <?php foreach($lines as $l): ?>
     <?= cst_line_row($l) ?>
     <?php endforeach; ?>
-    <?php if(!$lines): ?><tr><td colspan="8" style="text-align:center;color:#8a97ab">No detail lines.</td></tr><?php endif; ?>
+    <?php if(!$lines): ?><tr><td colspan="7" style="text-align:center;color:#8a97ab">No detail lines.</td></tr><?php endif; ?>
   </tbody>
-  <tfoot><tr class="tot"><td colspan="7">Total Cost per <?= e($v['default_unit'] ?: 'Unit') ?></td><td class="num"><?= e($cur.' '.number_format((float)$v['total_cost'],2)) ?></td></tr></tfoot>
+  <tfoot><tr class="tot"><td colspan="6">Total Cost per <?= e($v['default_unit'] ?: 'Unit') ?></td><td class="num"><?= e($cur.' '.number_format((float)$v['total_cost'],2)) ?></td></tr></tfoot>
 </table>
 
 <div class="row" style="margin-top:14px">
-  <div><div class="lbl">Net Weight</div><div class="val"><?= e(number_format((float)$v['net_weight'],3)) ?> kg</div></div>
-  <div><div class="lbl">Packing Weight</div><div class="val"><?= e(number_format((float)$v['packing_weight'],3)) ?> kg</div></div>
-  <div><div class="lbl">Gross Weight</div><div class="val"><?= e(number_format((float)$v['gross_weight'],3)) ?> kg</div></div>
   <div><div class="lbl">Suggested Selling Price</div><div class="val"><?= e($cur.' '.number_format((float)$v['suggested_price'],2)) ?></div></div>
 </div>
 

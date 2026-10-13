@@ -392,9 +392,6 @@ head('1. Every tab renders, with nothing complaining');
 $pages = [
     'list'    => [],
     'serial'  => ['id' => 1],
-    'weight'  => ['id' => 1, 't' => 'weight'],
-    'weight2' => ['id' => 1, 't' => 'weight', 'g' => 102],
-    'weight3' => ['id' => 1, 't' => 'weight', 'g' => 103],
 ];
 $html = [];
 foreach ($pages as $name => $get) {
@@ -409,14 +406,10 @@ foreach ($pages as $name => $get) {
     ok(!str_contains($out, '__REDIRECT__'), "$name does not bail out to a redirect");
 }
 
-/* The two colour ranges, rendered here rather than further down so the
-   browser section below loads them too — their chips are drawn by
-   script, and a markup check cannot tell a chip that shows "Navy
-   Single" from one that shows the raw key "Single|Navy". */
-[$w4] = render($work, ['id' => 1, 't' => 'weight', 'g' => 104], 'm_pack.php', 'COLOURRANGES=1');
-[$w5] = render($work, ['id' => 1, 't' => 'weight', 'g' => 105], 'm_pack.php', 'COLOURRANGES=1');
-file_put_contents($work . '/weight4.html', $w4);
-file_put_contents($work . '/weight5.html', $w5);
+/* THE OLD WEIGHT SCREEN IS RETIRED. Weight is its own module now
+   (weight.php, tested in zweight_test.php); an old link goes there. */
+[$oldW] = render($work, ['id' => 1, 't' => 'weight', 'g' => 102]);
+ok(str_contains($oldW, '__REDIRECT__ weight.php?id=1#link'), 'an old link to the weight screen goes to the Weight module', substr($oldW, 0, 200));
 
 head('2. The packing screen is drawn from the saved ranges');
 
@@ -444,43 +437,6 @@ ok(($rec2[103]['type'] ?? '') === 'Bale', 'and each range its kind of package');
 ok(!array_key_exists('weighed', $rec2[101] ?? ['weighed' => 1]), 'the packing state carries no weight');
 ok(!preg_match('~<input[^>]*name="packages"~', $ser), 'nothing on the page types a package count');
 ok(!preg_match('~fix(ed)?\s*qty~i', $ser), 'no fixed-quantity wording anywhere');
-
-head('5. Weight — every size comes down with the page');
-
-$w1 = $html['weight'];
-/* GROSS IS WORKED OUT, NOT TYPED. 2x850 + 4x1030 + 4x1150 = 10.420 kg
-   of contents, plus the 1.000 kg carton — no scale figure asked. */
-ok(str_contains($w1, '10.420 contents + 1.000 package'),
-   'one package is its contents by the breakdown plus the empty carton');
-ok(str_contains($w1, '11.420 kg each'), 'so 11.420 kg gross each, worked out');
-ok(!str_contains($w1, 'name="pkg_gross"'), 'and no gross is typed per range any more');
-ok(str_contains($w1, 'name="tare[Carton]"'),
-   'the empty carton is asked once for the line');
-/* The chips are built by the script from this, so the data is what
-   matters in the markup. */
-ok(preg_match('~var SIZES\s*=\s*\["Small","Medium","Large"\]~', $w1) === 1,
-   'all three sizes are carried down', null);
-ok(str_contains($w1, 'Fleece 220gsm') && str_contains($w1, 'Micro peach'),
-   'with every size\'s lines, not just the one being looked at');
-ok(substr_count($w1, '"Small":') >= 1 && substr_count($w1, '"Large":') >= 1,
-   'keyed by size, ready to switch without a page load');
-ok(str_contains($w1, 'name="weights_json"'),
-   'and one field carries them all back');
-ok(!preg_match('~name="recall"~', $w1),
-   'the recall button no longer posts — it fills from what is already here');
-
-$w2 = $html['weight2'];
-ok(str_contains($w2, '19.800 contents'), 'range 2: 495 g x 40 is 19.800 kg');
-ok(str_contains($w2, 'Percale 300TC'), 'its lines come back with their names');
-ok(preg_match('~var SIZES\s*=\s*\["152x200"\]~', $w2) === 1,
-   'a single-size range carries one size', null);
-
-$w3 = $html['weight3'];
-ok(str_contains($w3, '90.000 contents'), 'range 3: 450 g x 200 is 90.000 kg');
-ok(preg_match('~var STD\s*=\s*\{"Single":~', $w3) === 1,
-   'the remembered breakdown comes down for the product that has one', null);
-ok(preg_match('~var STD\s*=\s*\{\}~', $w2) === 1,
-   'and not for a product that has none', null);
 
 head('6. Finish packing adds the three ranges up');
 
@@ -566,371 +522,7 @@ JS;
         foreach ($got as $name => $r) {
             ok($r['errors'] === [], "$name has no javascript error", $r['errors']);
         }
-        ok(($got['weight2']['wlines'] ?? 0) === 4, 'range 2 draws its four weight lines',
-           $got['weight2']['wlines'] ?? null);
-        /* There is no scale figure per range to run down to any more, so
-           no line claims to "balance" against one. */
-        ok(trim(implode('', $got['weight2']['balances'] ?? [])) === '',
-           'no line claims a balance against a scale figure that is no longer asked',
-           $got['weight2']['balances'] ?? null);
-        ok(($got['weight2']['perunit'] ?? '') === '495 g', 'one unit comes to 495 g',
-           $got['weight2']['perunit'] ?? null);
-        /* range 1 is assorted, so the per-line fill is not claimed */
-        ok(trim(implode('', $got['weight']['balances'] ?? [])) === '',
-           'an assorted range shows no per-line balance, because it cannot know one',
-           $got['weight']['balances'] ?? null);
-        /* ---- the chips on a range whose colours weigh differently.
-           These are drawn by script, so the markup cannot tell the key
-           "Single|Navy" from the name "Navy Single" — only a browser can. */
-        ok(($got['weight4']['chips'] ?? []) === ['White Single ✓', 'Navy Single ✓'],
-           'the chips a packer taps read as a colour and a size, both already weighed',
-           $got['weight4']['chips'] ?? null);
-        ok(($got['weight4']['applies'] ?? []) === ['Navy Single'],
-           'and the copy-to list names the other one the same way',
-           $got['weight4']['applies'] ?? null);
-        ok(in_array('Navy Single', (array)($got['weight4']['copyopts'] ?? []), true),
-           'as does the copy-from list', $got['weight4']['copyopts'] ?? null);
-        ok(($got['weight4']['whead'] ?? '') === 'One unit of White Single',
-           'the heading over the lines names the colour and the size, not the key',
-           $got['weight4']['whead'] ?? null);
-        ok(($got['weight4']['wsub'] ?? '') === '6 of these in each package · used in 1 range of this line',
-           'and says how many of them are in the carton', $got['weight4']['wsub'] ?? null);
-        ok(($got['weight5']['wsub'] ?? '') === '10 of these in each package · used in 1 range of this line',
-           'which on the range whose colours match is ten, not six',
-           $got['weight5']['wsub'] ?? null);
-        ok(($got['weight4']['beforeCopy'] ?? '') === '900 g'
-           && ($got['weight4']['afterCopy'] ?? '') === '1,000 g',
-           'copying the other colour\'s breakdown really copies it',
-           [$got['weight4']['beforeCopy'] ?? null, $got['weight4']['afterCopy'] ?? null]);
-        ok(($got['weight5']['chips'] ?? []) === [],
-           'a range with one thing to weigh draws no chips at all',
-           $got['weight5']['chips'] ?? null);
-
     }
-}
-
-/* ===================================== 8. the toggles, driven for real
-   The whole point of this round is that nothing waits for a save. A
-   markup check cannot tell a live toggle from a dead one — both have the
-   radio — so these are clicked. */
-head('8. The weight screen: live size switching, copy and apply-to-many');
-
-if ($node === '' || !is_dir($root . '/playwright')) {
-    echo "  (skipped — playwright not available)\n";
-} else {
-    $drive = <<<'JS'
-const { chromium } = require('playwright');
-const path = require('path');
-(async () => {
-  const dir = process.argv[2];
-  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-  const out = { errors: [] };
-  const open = async (f) => {
-    const p = await b.newPage({ viewport: { width: 390, height: 844 } });
-    p.on('pageerror', e => out.errors.push(f + ': ' + e));
-    await p.goto('file://' + path.join(dir, f));
-    await p.waitForTimeout(250);
-    // Every step shown at once. Walking the steps is zsteps_test's job;
-    // what is being driven here is what the toggles do, and a control on
-    // a hidden step cannot be clicked.
-    await p.evaluate(() => document.querySelectorAll('.mstep')
-                             .forEach(s => s.classList.add('on')));
-    await p.waitForTimeout(120);
-    return p;
-  };
-
-  let p;
-  // ---------- the weight screen, three sizes ----------
-  p = await open('weight.html');
-  const chipTexts = async () => (await p.locator('#szchips .chip').allInnerTexts()).map(t => t.trim());
-  out.chips = await chipTexts();
-  out.perUnitSmall = await p.locator('#perunit').innerText();
-  out.linesSmall   = await p.locator('#wlines .wrow').count();
-
-  await p.locator('#szchips .chip', { hasText: 'Medium' }).click();
-  await p.waitForTimeout(200);
-  out.perUnitMedium = await p.locator('#perunit').innerText();
-  out.headMedium    = await p.locator('#wsizehead').innerText();
-  out.stillSamePage = !p.url().includes('?');        // no navigation happened
-
-  // copy Small's breakdown into Medium
-  await p.locator('#copybtn').click(); await p.waitForTimeout(120);
-  await p.locator('#copyfrom').selectOption('Small'); await p.waitForTimeout(220);
-  out.perUnitAfterCopy = await p.locator('#perunit').innerText();
-
-  // tick Large and apply this breakdown to it
-  await p.locator('#applychips .chip', { hasText: 'Large' }).click(); await p.waitForTimeout(120);
-  await p.locator('#applybtn').click(); await p.waitForTimeout(220);
-  out.applyMsg = await p.locator('#applymsg').innerText();
-  await p.locator('#szchips .chip', { hasText: 'Large' }).click(); await p.waitForTimeout(200);
-  out.perUnitLarge = await p.locator('#perunit').innerText();
-  out.totalsAfter  = (await p.locator('#pkgtotals').innerText()).replace(/\n/g, ' | ');
-
-  // applying with nothing ticked must say so rather than do nothing
-  await p.locator('#applybtn').click(); await p.waitForTimeout(150);
-  out.applyNone = await p.locator('#applymsg').innerText();
-
-  // what the form would post
-  out.posted = await p.evaluate(() => {
-    const f = document.getElementById('wform');
-    f.dispatchEvent(new Event('submit', { cancelable: true }));
-    return document.getElementById('wjson').value;
-  });
-  await p.close();
-
-  // ---------- the description behind a symbol ----------
-  p = await open('weight2.html');            // one size, four lines, names on three
-  const rowH = async () => p.locator('#wlines .wrow').evaluateAll(
-    els => els.map(e => Math.round(e.getBoundingClientRect().height)));
-  out.rowsClosed   = await rowH();
-  /* AT REST — before a single box has been opened. The first version of
-     this measured after two were open and reported 130 for a layout
-     whose tallest row is 108. */
-  out.heights = await p.locator('#wlines .wrow').evaluateAll(els => els.map(e => ({
-    h: Math.round(e.getBoundingClientRect().height),
-    named: !!e.querySelector('.nmshow')
-  })));
-  out.inputsClosed = await p.locator('#wlines .nmi').count();
-  out.shownClosed  = await p.locator('#wlines .nmshow').allInnerTexts();
-  out.dotsFilled   = await p.locator('#wlines .nt.has').count();
-  out.dotsEmpty    = await p.locator('#wlines .nt:not(.has)').count();
-  /* The glyph, not just the class — a dot that always reads "+" looks
-     identical to one that never learned there is something behind it. */
-  out.glyphs = await p.locator('#wlines .nt').evaluateAll(
-    els => els.map(e => ({ g: e.textContent.trim(), has: e.classList.contains('has') })));
-
-  // open the first line's description
-  await p.locator('#wlines .wrow').first().locator('.nt').click();
-  await p.waitForTimeout(150);
-  out.inputsOpen   = await p.locator('#wlines .nmi').count();
-  out.focused      = await p.evaluate(() => document.activeElement &&
-                       document.activeElement.classList.contains('nmi'));
-  out.openRowTaller = (await rowH())[0] > out.rowsClosed[0];
-
-  // tapping the same symbol again puts it away
-  await p.locator('#wlines .wrow').first().locator('.nt').click();
-  await p.waitForTimeout(150);
-  out.closedBySameTap = await p.locator('#wlines .nmi').count();
-  await p.locator('#wlines .wrow').first().locator('.nt').click();
-  await p.waitForTimeout(150);
-
-  // type into it, then open another: the first must keep what was typed
-  await p.locator('#wlines .nmi').fill('Micro 7668');
-  await p.locator('#wlines .wrow').nth(1).locator('.nt').click();
-  await p.waitForTimeout(150);
-  out.onlyOneOpen  = await p.locator('#wlines .nmi').count();
-  out.keptTyped    = (await p.locator('#wlines .nmshow').allInnerTexts())
-                       .some(t => t.trim() === 'Micro 7668');
-
-
-  // deleting the row whose description is open must not break the next draw
-  await p.locator('#wlines .wrow').nth(1).locator('.x').click();
-  await p.waitForTimeout(150);
-  out.afterDelete = await p.locator('#wlines .wrow').count();
-  out.deleteErrors = out.errors.length;
-  /* The deleted row was the open one. If its index is left behind, the
-     row that slid up into its place opens a box nobody asked for. */
-  out.openAfterDelete = await p.locator('#wlines .nmi').count();
-  await p.close();
-
-  // ---------- the remembered breakdown, filled without a round trip ----------
-  p = await open('weight3.html');
-  out.stdVisible = await p.locator('#stdbtn').isVisible();
-  out.beforeStd  = await p.locator('#wlines .wrow').count();
-  await p.locator('#stdbtn').click(); await p.waitForTimeout(200);
-  out.afterStd   = await p.locator('#wlines .wrow').count();
-  out.stdNoNav   = !p.url().includes('?');
-  await p.close();
-
-  await b.close();
-  console.log(JSON.stringify(out));
-})();
-JS;
-    file_put_contents($work . '/drive.js', $drive);
-    $raw = shell_exec('cd ' . escapeshellarg(__DIR__) . ' && NODE_PATH=' . escapeshellarg($root)
-                    . ' node ' . escapeshellarg($work . '/drive.js') . ' ' . escapeshellarg($work) . ' 2>&1');
-    $d = json_decode((string)$raw, true);
-
-    if (!is_array($d)) {
-        ok(false, 'chromium drove the page', substr((string)$raw, 0, 700));
-    } else {
-        ok(($d['errors'] ?? null) === [], 'no javascript error while driving', $d['errors'] ?? null);
-
-        /* --- switching size on the weight screen --- */
-        ok(($d['chips'] ?? []) === ['Small ✓', 'Medium ✓', 'Large ✓'],
-           'a chip per size, ticked where the weights are in', $d['chips'] ?? null);
-        ok(($d['perUnitSmall'] ?? '') === '850 g', 'Small comes to 850 g', $d['perUnitSmall'] ?? null);
-        ok(($d['perUnitMedium'] ?? '') === '1,030 g',
-           'tapping Medium shows 1,030 g — no page load', $d['perUnitMedium'] ?? null);
-        ok(str_contains((string)($d['headMedium'] ?? ''), 'Medium'),
-           'and the heading follows', $d['headMedium'] ?? null);
-        ok(($d['stillSamePage'] ?? null) === true, 'nothing navigated');
-
-        /* --- copy, and apply to many --- */
-        ok(($d['perUnitAfterCopy'] ?? '') === '850 g',
-           'Copy from Small puts 850 g into Medium', $d['perUnitAfterCopy'] ?? null);
-        ok(str_contains((string)($d['applyMsg'] ?? ''), 'Copied to Large')
-           && str_contains((string)($d['applyMsg'] ?? ''), 'until you press Save'),
-           'applying to a ticked size says what it did, and what it did not',
-           $d['applyMsg'] ?? null);
-        ok(($d['perUnitLarge'] ?? '') === '850 g',
-           'and Large really has it', $d['perUnitLarge'] ?? null);
-        ok(str_contains((string)($d['applyNone'] ?? ''), 'Tick the ones that weigh the same'),
-           'applying with nothing ticked says so instead of doing nothing quietly',
-           $d['applyNone'] ?? null);
-
-        /* 850 g in all three now: 850x2 + 850x4 + 850x4 = 8.500 kg */
-        ok(str_contains((string)($d['totalsAfter'] ?? ''), '8.500 contents'),
-           'the package total follows every copy', $d['totalsAfter'] ?? null);
-
-        /* --- what would actually be posted --- */
-        $posted = json_decode((string)($d['posted'] ?? ''), true);
-        ok(is_array($posted) && count($posted) === 3,
-           'one field carries all three sizes on submit', array_keys((array)$posted));
-        ok(is_array($posted) && array_sum(array_column($posted['Large'] ?? [], 'g')) === 850,
-           'with the copied figures in it', $posted['Large'] ?? null);
-
-        /* --- the description as a symbol --- */
-        ok(($d['inputsClosed'] ?? -1) === 0,
-           'no line carries an open text box until it is asked for',
-           $d['inputsClosed'] ?? null);
-        ok(count($d['shownClosed'] ?? []) === 3
-           && in_array('Percale 300TC', $d['shownClosed'] ?? [], true),
-           'a named quality shows as a thin line of text instead',
-           $d['shownClosed'] ?? null);
-        ok(($d['dotsFilled'] ?? 0) === 3 && ($d['dotsEmpty'] ?? 0) === 1,
-           'the symbol is filled where there is a name and hollow where there is not',
-           [$d['dotsFilled'] ?? null, $d['dotsEmpty'] ?? null]);
-        /* The point of the whole change. Every line used to carry a
-           full-width box whether it was wanted or not; an unnamed line
-           is now the control row and nothing else. */
-        $hs     = $d['heights'] ?? [];
-        $unnamed = array_column(array_filter($hs, fn($r) => !$r['named']), 'h');
-        $named   = array_column(array_filter($hs, fn($r) =>  $r['named']), 'h');
-        ok($unnamed !== [] && $named !== [] && max($unnamed) < min($named),
-           'an unnamed line is shorter than a named one — the box is simply not there',
-           ['unnamed' => $unnamed, 'named' => $named]);
-        ok($unnamed !== [] && max($unnamed) <= 90,
-           'and it is one control row, not two',
-           $unnamed);
-        /* A named line shows text, not a field: a field is ~37px plus its
-           margin, the text line is 24. */
-        ok($named !== [] && $unnamed !== [] && (min($named) - max($unnamed)) <= 30,
-           'a named line costs a line of text, not a second input',
-           ['named' => min($named ?: [0]), 'unnamed' => max($unnamed ?: [0])]);
-        ok(($d['inputsOpen'] ?? 0) === 1 && ($d['openRowTaller'] ?? null) === true,
-           'tapping the symbol opens one input, on that line only',
-           [$d['inputsOpen'] ?? null, $d['openRowTaller'] ?? null]);
-        ok(($d['focused'] ?? null) === true,
-           'and puts the cursor in it, so the keyboard is already there');
-        ok(($d['closedBySameTap'] ?? -1) === 0,
-           'tapping the same symbol again puts the box away',
-           $d['closedBySameTap'] ?? null);
-        $gl = $d['glyphs'] ?? [];
-        ok($gl !== [] && count(array_filter($gl, fn($x) => $x['has'] && $x['g'] === '●')) === 3
-           && count(array_filter($gl, fn($x) => !$x['has'] && $x['g'] === '+')) === 1,
-           'the symbol itself says whether something is behind it, not just its class',
-           $gl);
-        ok(($d['onlyOneOpen'] ?? 0) === 1,
-           'opening another closes the first — one at a time, never a wall of boxes',
-           $d['onlyOneOpen'] ?? null);
-        ok(($d['keptTyped'] ?? null) === true,
-           'what was typed survives the box closing', $d['shownClosed'] ?? null);
-        ok(($d['afterDelete'] ?? 0) === 3 && (int)($d['deleteErrors'] ?? 1) === 0,
-           'deleting the line that was open does not throw on the next draw',
-           [$d['afterDelete'] ?? null, $d['deleteErrors'] ?? null]);
-        ok(($d['openAfterDelete'] ?? -1) === 0,
-           'and the row that slid up into its place does not open a box of its own',
-           $d['openAfterDelete'] ?? null);
-
-        /* --- the remembered breakdown --- */
-        ok(($d['stdVisible'] ?? null) === true, 'the last saved breakdown is offered');
-        ok((int)($d['beforeStd'] ?? -1) === 4 && (int)($d['afterStd'] ?? 0) === 2,
-           'and one tap replaces the lines with it',
-           [$d['beforeStd'] ?? null, $d['afterStd'] ?? null]);
-        ok(($d['stdNoNav'] ?? null) === true, 'without a round trip');
-    }
-}
-
-head('8b. One size in two colours — asked once, or asked twice');
-
-/* "dont ask again and again if u have weight information by size or
-    color already" — against "if any colours weigh differently".
-   Both ranges below hold six White Single and four Navy Single. The ONLY
-   difference is the range's own switch, and it decides whether that is
-   one question or two. */
-foreach (['colours differ' => $w4, 'colours are the same' => $w5] as $what => $pg) {
-    ok(!preg_match('~(Fatal error|Parse error|Warning:|Notice:|Deprecated:|Uncaught)~i', $pg),
-       "the weight tab renders without a PHP complaint when the $what",
-       preg_match('~^.*(Fatal error|Parse error|Warning:|Notice:|Deprecated:|Uncaught).*$~mi', $pg, $em) ? $em[0] : null);
-}
-
-/* ---- the range whose colours differ: two things to weigh */
-$u4 = preg_match('~var SIZES  = (\[.*?\]);~s', $w4, $m4) ? json_decode($m4[1], true) : null;
-ok($u4 === ['Single|White', 'Single|Navy'],
-   'two things to weigh, filed under the size AND the colour', $u4);
-$n4 = preg_match('~var NAMES  = (\{.*?\});~s', $w4, $m4n) ? json_decode($m4n[1], true) : null;
-ok($n4 === ['Single|White' => 'White Single', 'Single|Navy' => 'Navy Single'],
-   'and read by a packer as a colour and a size, never as the key', $n4);
-ok(str_contains($w4, '6 White Single + 4 Navy Single'),
-   'the carton is spelled out colour by colour');
-ok(str_contains($w4, '2 of 2') === false && str_contains($w4, 'Nothing new to weigh here.'),
-   'both are already known, so nothing is asked again');
-$p4 = preg_match('~var PERPKG = (\{.*?\});~s', $w4, $m4p) ? json_decode($m4p[1], true) : null;
-ok($p4 === ['Single|White' => 6, 'Single|Navy' => 4],
-   'six of one and four of the other, kept apart', $p4);
-/* THE LINES THEMSELVES, not just the keys. A page that carried the right
-   keys with nobody's weights under them would look identical in every
-   assertion above and leave the packer re-entering both. */
-$l4 = preg_match('~var LINES  = (\{.*?\});\n~s', $w4, $m4l) ? json_decode($m4l[1], true) : null;
-ok(is_array($l4) && array_column($l4['Single|White'] ?? [], 'g') === [840, 60],
-   'White comes down with White\'s own breakdown', $l4['Single|White'] ?? null);
-ok(is_array($l4) && array_column($l4['Single|Navy'] ?? [], 'g') === [940, 60],
-   'and Navy with Navy\'s, which is a different cloth',
-   $l4['Single|Navy'] ?? null);
-
-/* ---- the range whose colours do not: ONE thing to weigh, ten of it */
-$u5 = preg_match('~var SIZES  = (\[.*?\]);~s', $w5, $m5) ? json_decode($m5[1], true) : null;
-ok($u5 === ['Single'],
-   'ONE thing to weigh, because the dye does not change what it weighs', $u5);
-$p5 = preg_match('~var PERPKG = (\{.*?\});~s', $w5, $m5p) ? json_decode($m5p[1], true) : null;
-ok($p5 === ['Single' => 10],
-   'and TEN of it in the carton — six plus four, not six', $p5);
-ok(str_contains($w5, '10 Single') && !str_contains($w5, '6 White Single'),
-   'the carton reads as ten Singles');
-ok(!preg_match("~mob_step\('Which one'~", $w5)
-   && substr_count($w5, 'id="szchips"') === 0,
-   'with no step and no chips asking which of the one to pick');
-
-/* THE REMEMBERED BREAKDOWN, per colour. Navy has one from an earlier
-   order and White has none, so "Use last saved" must be offered on Navy
-   and not on White. */
-$s4 = preg_match('~var STD    = (\{.*?\});~s', $w4, $m4s) ? json_decode($m4s[1], true) : null;
-ok(is_array($s4) && array_keys($s4) === ['Single|Navy'],
-   'the remembered breakdown comes down for the colour that has one, and only that one',
-   is_array($s4) ? array_keys($s4) : $m4s[1] ?? null);
-ok(is_array($s4) && array_column($s4['Single|Navy'] ?? [], 'g') === [930, 60],
-   'and it is Navy\'s own figures, not the size\'s', $s4['Single|Navy'] ?? null);
-
-$l5 = preg_match('~var LINES  = (\{.*?\});\n~s', $w5, $m5l) ? json_decode($m5l[1], true) : null;
-ok(is_array($l5) && array_column($l5['Single'] ?? [], 'g') === [880, 60],
-   'the one unit comes down with the one breakdown', $l5['Single'] ?? null);
-
-/* ---- and the totals read it the same way the packer filed it */
-$t8 = json_decode((string)shell_exec('cd ' . escapeshellarg($work) . ' && COLOURRANGES=1 ' . escapeshellarg(PHP_BINARY)
-    . ' totals.php 2>&1'), true);
-ok(is_array($t8) && ($t8['unfinished'] ?? ['?']) === [], 'the colour ranges total with nothing unfinished', $t8['unfinished'] ?? $t8);
-/* 9.400 kg of contents in each of 11 cartons, for both ranges */
-ok(abs((float)($t8['net'] ?? 0) - (5317 + 9.4 * 11 * 2)) < 0.001,
-   'and each adds 11 x 9.400 kg, by its own route', $t8['net'] ?? null);
-
-/* The same carton weight by both routes, which is the point: the switch
-   changes how often you are asked, not what the carton weighs. */
-foreach (['differ' => $w4, 'same' => $w5] as $what => $pg) {
-    ok(str_contains($pg, '9.400 contents + 1.000 package'),
-       "the carton holds 9.400 kg whether the colours $what");
-    ok(str_contains($pg, '10.400 kg each'),
-       "and comes to 10.400 kg gross either way ($what), worked out rather than typed");
 }
 
 head('9. The desktop screen the office types the order on');
@@ -1031,14 +623,14 @@ head('10. A file that was not uploaded, end to end');
    in if (false), so this one renders the page against a crippled file. */
 $goodMobile = (string)file_get_contents($work . '/includes/mobile.php');
 file_put_contents($work . '/includes/mobile.php',
-    str_replace('function mob_steps_begin', 'function mob_steps_begin_OLD', $goodMobile));
+    str_replace('function mob_card_error', 'function mob_card_error_OLD', $goodMobile));
 [$stale] = render($work, ['id' => 1]);
 file_put_contents($work . '/includes/mobile.php', $goodMobile);
 
 ok(str_contains($stale, 'One file is out of date'),
    'an out-of-date file is named, instead of the page going blank',
    substr($stale, 0, 200));
-ok(str_contains($stale, 'includes/mobile.php') && str_contains($stale, 'mob_steps_begin'),
+ok(str_contains($stale, 'includes/mobile.php') && str_contains($stale, 'mob_card_error'),
    'it says which file and what it was looking for');
 ok(!str_contains($stale, 'id="sp"') && !str_contains($stale, 'var STATE'),
    'and it stops before drawing half a screen, which is what made it look like lost data');
@@ -1064,12 +656,6 @@ ok(!str_contains($br, 'var STATE'), 'with no half-drawn screen under it');
 ok(str_contains($brs, 'could not be drawn.') && !str_contains($brs, 'Column not found'),
    'staff are told it failed, but not the reason — that can name a query');
 
-[$bw] = render($work, ['id' => 1, 't' => 'weight', 'g' => 102], 'm_pack.php', 'BREAKCSRF=1');
-ok(str_contains($bw, 'The weight for this range could not be drawn.')
-   && str_contains($bw, '</html>')
-   && substr_count($bw, '<form') === substr_count($bw, '</form>'),
-   'the weight tab fails the same way: one plain card, a whole page');
-
 [$okp] = render($work, ['id' => 1]);
 ok(!str_contains($okp, 'could not be drawn'), 'and with nothing broken there is no error card at all');
 
@@ -1090,86 +676,6 @@ ok(($pr12['12']['setUp'] ?? true) === false && ($pr12['12']['colors'] ?? ['x']) 
    'a line not set up is marked as such, with no colours invented for it', $pr12['12'] ?? null);
 ok(str_contains($ser, "This line is not set up on Order sizes &amp; colours"),
    'and the screen says so where it is packed');
-
-head('13. One weight per invoice line');
-
-/* The weight tab is about the invoice LINE. */
-$w13 = $html['weight'];
-ok(preg_match('~<select class="in" onchange="location.href=this.value">(.*?)</select>~s', $w13, $sel13) === 1
-   && substr_count($sel13[1], '<option') === 3,
-   'the weight tab lists each invoice line once, not each range', substr_count($sel13[1] ?? '', '<option'));
-ok(str_contains($sel13[1] ?? '', '#1 Duvet Cover Set King') && str_contains($sel13[1] ?? '', '· 1 range'),
-   'named by line, with how many ranges share it');
-ok(str_contains($w13, 'Weight is set once per invoice line'),
-   'and it says so where the line is picked');
-ok(str_contains($w13, 'Shared by') && str_contains($w13, 'Carton 1–100'),
-   'and names the ranges that will use it');
-
-/* ONE LINE, TWO RANGES — the case he described. */
-[$wsh] = render($work, ['id' => 1, 't' => 'weight', 'g' => 101], 'm_pack.php', 'SHARELINE=1');
-ok(preg_match('~<select class="in" onchange="location.href=this.value">(.*?)</select>~s', $wsh, $ssh) === 1
-   && substr_count($ssh[1], '<option') === 2,
-   'two ranges of one line are one entry in the weight list, not two',
-   substr_count($ssh[1] ?? '', '<option'));
-ok(str_contains($ssh[1] ?? '', '· 2 ranges'), 'and it says two ranges share it');
-ok(preg_match('~Shared by\s+Carton 1–100, Carton 101–225\.~', $wsh) === 1, 'naming both');
-$ush = preg_match('~var SIZES  = (\[.*?\]);~s', $wsh, $mush) ? json_decode($mush[1], true) : null;
-ok($ush === ['Small', 'Medium', 'Large', '152x200'],
-   'every size either range holds is weighed here, once', $ush);
-ok(str_contains($wsh, '10.420 contents') && str_contains($wsh, '19.800 contents'),
-   'and each range is worked out from its own quantities');
-[$wsh2] = render($work, ['id' => 1, 't' => 'weight', 'g' => 102], 'm_pack.php', 'SHARELINE=1');
-ok(preg_match('~var SIZES  = (\[.*?\]);~s', $wsh2, $mush2) && json_decode($mush2[1], true) === $ush,
-   'opening it from the other range shows the same one weight');
-
-head('14. Typing a weight, key by key');
-
-/* THE BUG FROM THE LIVE SCREEN: he typed a weight and only "3" stayed.
-   Every keystroke redrew the whole list, which destroyed the box being
-   typed in, so after the first digit the rest went nowhere. No earlier
-   test typed more than one character — this one types like a person. */
-$js14 = <<<'JS'
-const { chromium } = require('playwright');
-const path = require('path');
-(async () => {
-  const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-  const p = await b.newPage({ viewport: { width: 390, height: 844 } });
-  const errs = []; p.on('pageerror', e => errs.push(String(e)));
-  await p.goto('file://' + path.join(process.argv[2], 'weight2.html'));
-  await p.waitForTimeout(300);
-  const g = p.locator('#wlines .wrow .g').first();
-  await g.click();
-  await p.keyboard.type('312', { delay: 40 });
-  const out = { errs };
-  out.value   = await g.inputValue();
-  out.focused = await p.evaluate(() => document.activeElement && document.activeElement.classList.contains('g'));
-  out.perunit = await p.locator('#perunit').innerText();
-  out.type    = await g.getAttribute('type');
-  out.width   = Math.round((await g.boundingBox()).width);
-  // and a second line, typed straight after, keeps the first
-  const g2 = p.locator('#wlines .wrow .g').nth(1);
-  await g2.click();
-  await p.keyboard.type('25.5', { delay: 40 });
-  out.value2 = await g2.inputValue();
-  out.value1after = await g.inputValue();
-  console.log(JSON.stringify(out));
-  await b.close();
-})();
-JS;
-file_put_contents($work . '/s14.js', $js14);
-$r14 = json_decode((string)shell_exec('cd ' . escapeshellarg(__DIR__) . ' && node '
-        . escapeshellarg($work . '/s14.js') . ' ' . escapeshellarg($work) . ' 2>&1'), true);
-ok(is_array($r14) && $r14['errs'] === [], 'no javascript error while typing', $r14);
-ok(($r14['value'] ?? '') === '312', 'typing 3, 1, 2 leaves 312 in the box, not 3', $r14['value'] ?? null);
-ok(($r14['focused'] ?? false) === true, 'and the cursor is still in it after the last key');
-/* range 2's other three lines are 30 + 25 + 20 = 75 g, so 312 + 75 */
-ok(($r14['perunit'] ?? '') === '387 g', 'the unit total follows every key', $r14['perunit'] ?? null);
-ok(($r14['value2'] ?? '') === '25.5' && ($r14['value1after'] ?? '') === '312',
-   'a second line typed straight after keeps the first, decimals and all',
-   [$r14['value2'] ?? null, $r14['value1after'] ?? null]);
-ok(($r14['type'] ?? '') === 'text' && ($r14['width'] ?? 0) >= 95,
-   'the box is wide enough to show four digits, with no arrows eating into it',
-   [$r14['type'] ?? null, $r14['width'] ?? null]);
 
 echo "\n" . ($F ? "FAILED  $F" : 'ALL PASS') . "   ($P checks)\n";
 exit($F ? 1 : 0);
