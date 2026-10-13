@@ -535,7 +535,7 @@ function api(body) {
   return fetch(API, { method: 'POST', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
     .then(function (r) { return r.json().catch(function () { throw Error('The server did not answer properly (' + r.status + ').'); }); })
-    .then(function (j) { if (j.state) { STATE = j.state; recordFilter = null; } if (!j.ok) throw Error(j.msg || 'That did not save.'); return j; });
+    .then(function (j) { if (j.state) { STATE = j.state; recordFilter = null; dropStaleEdit(); } if (!j.ok) throw Error(j.msg || 'That did not save.'); return j; });
 }
 
 /* ---------------- drawing */
@@ -722,6 +722,25 @@ function setQtyMode(mode) {
   else if (d.combos.every(function (c) { return c.qty % n === 0; }) && d.target % n === 0) { d.target = d.target / n; d.combos.forEach(function (c) { c.qty = c.qty / n; }); }
   else { d.target = Math.max(1, Math.round(d.target / n)); d.combos = []; toast('The totals do not split evenly into ' + n + ' packages — count one package', true); }
   d.qtyMode = mode; saveLocal(); renderPacking();
+}
+/* AN EDIT OF A PACKAGE THAT IS GONE. afnan: "serial range not enabled,
+   also not saving". A draft kept on the phone remembered "editing Carton
+   101" after Carton 101 had been deleted (on the desktop, or on another
+   phone): Serial Range stays off while editing one package, and every save
+   was refused because the package is not there. Now, when the page opens
+   and whenever fresh data arrives, an edit of something no longer saved
+   turns back into a NEW package with the same contents. */
+function dropStaleEdit() {
+  var d = draft; if (!d || !(d.edit || d.editRange)) return false;
+  var r = recOf(d.edit ? d.edit.gid : d.editRange);
+  var there = r && (!d.edit || (d.edit.num >= r.from && d.edit.num <= r.to));
+  if (there) return false;
+  var was = d.packageType + ' ' + (d.edit ? d.edit.num : d.start);
+  d.edit = null; d.editRange = null; d.prefix = ''; history = [];
+  d.start = nextSerial('', 0, d.packageType); d.end = d.start;
+  saveLocal();
+  toast(was + ' was deleted, so this is a new package now: ' + d.packageType + ' ' + d.start, true);
+  return true;
 }
 function cancelEdit() { draft.edit = null; draft.editRange = null; draft.prefix = ''; draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start; history = []; saveLocal(); render(); toast('New package ready; the saved one is kept'); }
 
@@ -1066,6 +1085,7 @@ window.addEventListener('beforeprint', function () { $('#spPrint').innerHTML = r
 /* ---------------- start */
 if (!STATE.products.length) { $('#spMain').innerHTML = '<div class="card empty">This invoice has no lines yet. Add them on the desktop first.</div>'; return; }
 draft = loadLocal();
+if (draft) dropStaleEdit();
 if (!draft) freshDraft(STATE.products[0].id);
 else if (!draft.edit) { /* a kept draft may be behind what was saved since */
   try { var used = packages().some(function (p) { var r = parseSerial(draft.start, draft.prefix, draft.pad); return p.prefix === r.prefix && p.num === r.num && kindOf(p.type) === kindOf(draft.packageType); });

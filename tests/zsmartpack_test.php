@@ -599,7 +599,15 @@ let R = {};
   await p.locator('[data-a=tab][data-tab=summary]').click(); await W();
   await p.locator('[data-a=reopen]').click(); await W(900);
   R.reopened = await p.evaluate(() => ZASPacking.state.completed === false && !!document.querySelector('#spSave'));
-  R.loads = loads; R.errors = errs;
+  R.loads = loads;
+  /* afnan: "serial range not enabled, also not saving" — a kept draft still
+     editing a package that was deleted meanwhile (here: one that never was) */
+  await p.evaluate(() => { const d = JSON.parse(JSON.stringify(ZASPacking.draft)); d.edit = { gid: 987654, num: 777 }; d.start = '777'; d.end = '777'; d.entryMode = 'single';
+    localStorage.setItem('zas-pack-draft-' + ZASPacking.state.shipment.id, JSON.stringify(d)); });
+  await p.reload(); await W(500);
+  R.stale = { toast: await p.locator('#spToast').innerText().catch(() => ''), btn: (await p.locator('#spSave .st').innerText().catch(() => '')).trim(),
+    rangeOff: await p.locator('[data-a=entry-mode][data-mode=range]').isDisabled(), edit: await p.evaluate(() => !!(ZASPacking.draft.edit || ZASPacking.draft.editRange)) };
+  R.errors = errs;
   R.widthEnd = await p.evaluate(() => document.documentElement.scrollWidth);
   console.log(JSON.stringify(R));
   await b.close();
@@ -677,6 +685,9 @@ JS;
        [$R['finished'] ?? null, $R['lockedDock'] ?? null]);
     ok(($R['reopened'] ?? false) === true, 'Reopen brings it back', $R['reopened'] ?? null);
     ok(($R['loads'] ?? 1) === 0, 'and not one page load in all of that', $R['loads'] ?? null);
+    ok(($R['stale']['edit'] ?? true) === false && ($R['stale']['rangeOff'] ?? true) === false && ($R['stale']['btn'] ?? '') === 'SAVE & NEXT'
+       && str_contains($R['stale']['toast'] ?? '', 'was deleted, so this is a new package now'),
+       'a kept draft editing a deleted package opens as a new package: Serial Range back, Save & Next, and it says so', $R['stale'] ?? null);
     ok(($R['errors'] ?? ['?']) === [], 'no javascript error', $R['errors'] ?? null);
 }
 

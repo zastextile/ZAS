@@ -1132,7 +1132,15 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
     }
     if ($editR > 0) {
         $er = pack_group($editR);
-        if (!$er || (int)$er['shipment_id'] !== $shipmentId) return [false, 'That range is no longer there.', 0];
+        if (!$er || (int)$er['shipment_id'] !== $shipmentId)
+            return [false, 'The range you were editing was deleted meanwhile, so nothing was saved. It is a new package on the screen now — tap Save again.', 0];
+    }
+    /* the one package being edited was deleted (on the desktop or another
+       phone): said plainly; the phone turns the draft into a new package */
+    if ($editG > 0) {
+        $eg1 = pack_group($editG);
+        if (!$eg1 || (int)$eg1['shipment_id'] !== $shipmentId || $editN < (int)$eg1['serial_from'] || $editN > (int)$eg1['serial_to'])
+            return [false, 'The package you were editing was deleted meanwhile, so nothing was saved. It is a new package on the screen now — tap Save again.', 0];
     }
 
     $type = trim((string)($in['type'] ?? 'Carton')) ?: 'Carton';

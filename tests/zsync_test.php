@@ -346,6 +346,12 @@ db()->exec("UPDATE weight_applied SET qty=100, net_kg=60 WHERE shipment_id=8");
 ok(wt_refresh_if_stale(8) === true && abs((float)$q("SELECT net_kg n FROM weight_applied WHERE shipment_id=8")[0]['n'] - 660) < 0.0005,
    'weight applied on an older quantity is worked out again when the page opens');
 
+head('6b. Saving an edit of a package deleted meanwhile');
+[$okE, $mE] = pack_package_save(8, $items8, ['item' => 81, 'type' => 'Carton', 'from' => 5, 'to' => 5, 'target' => 100, 'combos' => $one(100), 'edit_group' => 987654, 'edit_num' => 5]);
+ok(!$okE && str_contains($mE, 'deleted meanwhile, so nothing was saved'), 'is refused, saying plainly the package was deleted meanwhile', $mE);
+[$okE2, $mE2] = pack_package_save(8, $items8, ['item' => 81, 'type' => 'Carton', 'from' => 5, 'to' => 6, 'target' => 100, 'mode' => 'direct', 'combos' => $one(100), 'edit_range' => 987654]);
+ok(!$okE2 && str_contains($mE2, 'range you were editing was deleted meanwhile'), 'and the same for a whole range', $mE2);
+
 head('7. Linked means counted: qty up or down moves net and gross by itself');
 /* "when we increase qty of any item it must have effect on weight, as we
     linked it with a weight profile — automatic, gross and net based on that" */
