@@ -9,6 +9,15 @@
 
   Nothing here is hard-deleted by an ordinary user. A wrong upload is
   archived with a reason and drops out of the normal view.
+
+  DELETE — afnan: "allow delete documents but with admin password".
+  Deleting removes the document for good: its record, and the stored file
+  (on this server or on R2). It needs an ADMIN'S password typed in the
+  box, every time — an admin types their own; anyone else with permission
+  to archive needs an admin beside them to type it. A reason is recorded
+  in the history with who deleted it and which admin approved. Five wrong
+  passwords in a row lock the box for 15 minutes. Archive stays the
+  everyday way; delete is for what must not be kept at all.
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
@@ -22,6 +31,19 @@ $id       = (int)$shipment['id'];
    genuinely turn up. Checked on the extension AND on the browser's declared
    type, and the original filename is never used as the stored name. */
 const EXP_DOC_EXT = ['pdf','xlsx','xls','csv','doc','docx','jpg','jpeg','png','webp','txt','zip'];
+
+/* The admin whose password this is, or null. Checked against every active
+   admin account, so the person deleting does not have to be the admin. */
+function exp_doc_admin_for_password(string $pw): ?array {
+    if ($pw === '') return null;
+    try {
+        $st = db()->query("SELECT id, name, password_hash FROM users WHERE role='admin' AND is_active=1");
+        foreach ($st->fetchAll() as $u) {
+            if (password_verify($pw, (string)$u['password_hash'])) return $u;
+        }
+    } catch (Throwable $e) {}
+    return null;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
@@ -161,6 +183,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             audit_log($id, 'Document', 'archive', (string)$row['original_name'], 'ARCHIVED', $reason);
             $_SESSION['flash'] = 'Document archived. The file is still stored and still downloadable from the history.';
             redirect('shipment_documents.php?id=' . $id);
+        }
+
+        if ($action === 'delete') {
+            /* the same permission as Archive, and then an admin's password */
+            exp_require('documents', 'd');
+            $did    = (int)($_POST['doc_id'] ?? 0);
+            $reason = trim((string)($_POST['delete_reason'] ?? ''));
+            if ($reason === '') throw new Exception('A reason is required to delete a document.');
+
+            /* five wrong passwords lock the box for 15 minutes (per session) */
+            $lock = $_SESSION['doc_del_lock'] ?? ['n' => 0, 'until' => 0];
+            if ((int)$lock['until'] > time()) {
+                throw new Exception('Too many wrong passwords. Try again in ' . max(1, (int)ceil(((int)$lock['until'] - time()) / 60)) . ' minutes. Nothing was deleted.');
+            }
+            $admin = exp_doc_admin_for_password((string)($_POST['admin_password'] ?? ''));
+            if (!$admin) {
+                $lock['n'] = (int)$lock['n'] + 1;
+                if ($lock['n'] >= 5) { $lock = ['n' => 0, 'until' => time() + 900]; }
+                $_SESSION['doc_del_lock'] = $lock;
+                audit_log($id, 'Document', 'delete refused', (string)$did, '', 'Wrong admin password');
+                throw new Exception('That is not an admin password — the document was NOT deleted.');
+            }
+            unset($_SESSION['doc_del_lock']);
+
+            $st = db()->prepare("SELECT * FROM shipment_documents WHERE id=? AND shipment_id=?");
+            $st->execute([$did, $id]); $row = $st->fetch();
+            if (!$row) throw new Exception('Document not found on this shipment.');
+
+            $label = exp_master_map('doc_type')[(int)$row['doc_type_id']] ?? 'Document';
+            $what  = $label . ($row['stage'] ? ' ' . ucfirst((string)$row['stage']) : '') . ' V' . (int)$row['version'] . ' — ' . $row['original_name'];
+
+            db()->beginTransaction();
+            /* a payment or cost row that had this as its proof loses the link,
+               rather than pointing at a document that is gone */
+            $unlinked = 0;
+            foreach ([['shipment_payments', 'proof_doc_id'], ['shipment_costs', 'doc_id']] as [$t, $c]) {
+                try {
+                    $u = db()->prepare("UPDATE $t SET $c=NULL WHERE shipment_id=? AND $c=?");
+                    $u->execute([$id, $did]);
+                    $unlinked += $u->rowCount();
+                } catch (Throwable $e) {}
+            }
+            /* the version chain closes over the gap: deleting the current
+               version makes the one before it current again; deleting a
+               middle one points the older one at the newer */
+            $up = db()->prepare("UPDATE shipment_documents SET superseded_by=? WHERE shipment_id=? AND superseded_by=?");
+            $up->execute([$row['superseded_by'] ?: null, $id, $did]);
+            $restored = !$row['superseded_by'] && $up->rowCount() > 0;
+            db()->prepare("DELETE FROM shipment_documents WHERE id=? AND shipment_id=?")->execute([$did, $id]);
+            audit_log($id, 'Document', 'delete', $what, 'DELETED',
+                      $reason . ' — approved with the admin password of ' . $admin['name']);
+            db()->commit();
+            if (function_exists('txt_drop')) txt_drop('document', $did);
+
+            /* The stored file goes too — unless something else still uses the
+               same file: another document, or (for a file brought in from the
+               old Files list, which points at that same file) the old record. */
+            $driver = (string)$row['storage_driver']; $key = (string)$row['storage_key'];
+            $shared = false;
+            try {
+                $c = db()->prepare("SELECT COUNT(*) FROM shipment_documents WHERE storage_driver=? AND storage_key=?");
+                $c->execute([$driver, $key]); $shared = (int)$c->fetchColumn() > 0;
+                if (!$shared && $driver !== 'r2') {
+                    $c = db()->prepare("SELECT COUNT(*) FROM shipment_files WHERE stored_name=?");
+                    $c->execute([$key]); $shared = (int)$c->fetchColumn() > 0;
+                }
+            } catch (Throwable $e) { $shared = true; /* not sure: keep the file */ }
+            $fileNote = '';
+            if ($shared) {
+                $fileNote = ' The file itself is kept, because the old Files list still uses it.';
+            } elseif ($key !== '') {
+                if ($driver === 'r2') {
+                    [$okDel, $errDel] = exp_r2_delete($key);
+                    if (!$okDel) { $fileNote = ' The file could not be removed from R2 (' . $errDel . ').'; error_log('doc delete R2 ' . $key . ': ' . $errDel); }
+                } else {
+                    global $config;
+                    $path = rtrim((string)($config['upload_dir'] ?? (__DIR__ . '/storage/uploads')), '/') . '/' . basename($key);
+                    if (is_file($path) && !@unlink($path)) $fileNote = ' The file could not be removed from the server disk.';
+                }
+            }
+
+            $_SESSION['flash'] = 'Deleted ' . $what . '.'
+                . ($restored ? ' The version before it is current again.' : '')
+                . ($unlinked ? ' It was the proof on ' . $unlinked . ' payment/cost row' . ($unlinked === 1 ? '' : 's') . ', which now has none.' : '')
+                . $fileNote;
+            redirect('shipment_documents.php?id=' . $id . (!empty($_POST['archived']) ? '&archived=1' : ''));
         }
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
@@ -307,6 +415,9 @@ exp_tab_strip($shipment, 'docs');
         <a class="xbtn sec sm" href="shipment_doc_file.php?doc=<?= (int)$d['id'] ?>">Download</a>
         <?php if ($canArchive && (int)$d['is_archived'] === 0): ?>
           <button type="button" class="xbtn red sm" onclick="archiveDoc(<?= (int)$d['id'] ?>,'<?= e(addslashes((string)$d['original_name'])) ?>')">Archive</button>
+        <?php endif; ?>
+        <?php if ($canArchive): /* delete: any version, archived or not — an admin's password decides */ ?>
+          <button type="button" class="xbtn sec sm" style="color:#b8283f;border-color:rgba(224,67,93,.4)" onclick="deleteDoc(<?= (int)$d['id'] ?>,'<?= e(addslashes('V' . (int)$d['version'] . ' · ' . (string)$d['original_name'])) ?>')">Delete</button>
         <?php endif; ?>
       </div>
     </div>
@@ -471,7 +582,42 @@ if ($legacy): ?>
     </form>
   </div>
 </div>
+<div id="delModal" style="display:none;position:fixed;inset:0;background:rgba(10,15,30,.5);z-index:999;align-items:center;justify-content:center;padding:16px">
+  <div style="background:#fff;border-radius:16px;padding:22px;max-width:430px;width:100%;border:1px solid #e3e9f2">
+    <h2 style="font-size:15px;margin:0 0 7px;color:#b8283f">Delete <span id="dName" style="word-break:break-all"></span>?</h2>
+    <p style="font-size:12.5px;color:#5a6b82;line-height:1.55;margin:0 0 14px">
+      This <b>permanently deletes</b> the document and its stored file. It cannot be undone or downloaded again.
+      If you only want it out of the list, use <b>Archive</b> instead.<br>
+      An <b>admin's password</b> is needed.
+    </p>
+    <form method="post" autocomplete="off">
+      <?= csrf_field() ?>
+      <input type="hidden" name="action" value="delete">
+      <input type="hidden" name="shipment_id" value="<?= $id ?>">
+      <input type="hidden" name="doc_id" id="dId">
+      <?php if ($showArchived): ?><input type="hidden" name="archived" value="1"><?php endif; ?>
+      <label class="xlabel">Reason <span style="color:#b8283f">*</span>
+        <input class="xin" name="delete_reason" id="dReason" required placeholder="e.g. uploaded on the wrong shipment">
+      </label>
+      <label class="xlabel" style="margin-top:10px">Admin password <span style="color:#b8283f">*</span>
+        <input class="xin" type="password" name="admin_password" id="dPass" required autocomplete="new-password">
+      </label>
+      <div style="display:flex;gap:9px;margin-top:15px">
+        <button type="button" class="xbtn sec" style="flex:1" onclick="document.getElementById('delModal').style.display='none'">Cancel</button>
+        <button class="xbtn red" style="flex:1">Delete permanently</button>
+      </div>
+    </form>
+  </div>
+</div>
 <script>
+function deleteDoc(id, name) {
+  document.getElementById('dId').value = id;
+  document.getElementById('dName').textContent = name;
+  document.getElementById('dReason').value = '';
+  document.getElementById('dPass').value = '';
+  document.getElementById('delModal').style.display = 'flex';
+  document.getElementById('dReason').focus();
+}
 function archiveDoc(id, name) {
   document.getElementById('aId').value = id;
   document.getElementById('aName').textContent = name;
@@ -526,6 +672,8 @@ function archiveDoc(id, name) {
     if (e.key === 'Escape') {
       var m = document.getElementById('arcModal');
       if (m && m.style.display === 'flex') { m.style.display = 'none'; return; }
+      var dm = document.getElementById('delModal');
+      if (dm && dm.style.display === 'flex') { dm.style.display = 'none'; return; }
       window.location.href = 'shipment_view.php?id=<?= $id ?>';
     }
   });
