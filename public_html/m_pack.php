@@ -18,9 +18,15 @@
   once per piece. One combination is standard packing, more than one is
   assorted — decided by what was counted, not by a switch.
 
-  A NUMBER ONCE PER PREFIX AND KIND OF PACKAGE. Carton 1 and Roll 1 may
-  both exist; two Carton 1s may not. Save & Next moves to the next free
-  number by itself.
+  A NUMBER ONCE PER KIND OF PACKAGE — a plain number, no prefix or
+  padding, the same rule as the desktop packing list. Carton 1 and Roll 1
+  may both exist; two Carton 1s may not, whichever screen typed them.
+  Save & Next moves to the next free number by itself.
+
+  THE INVOICE IS CHECKED, NOT ENFORCED. Each line shows what the invoice
+  says against what is packed here and on the desktop together. Packing
+  past the invoice is allowed (the invoice is sometimes made later) but is
+  said in red, with the quantity to update the invoice to.
 
   WEIGHT IS NOT HERE. It is its own module, weight.php: a profile per
   invoice line, the quantity taken from what is packed here. Summary has a
@@ -43,7 +49,7 @@ require_once __DIR__ . '/includes/mobile.php';
 if (function_exists('mob_needs')) {
     mob_show_fatal();
     mob_needs(['mob_header', 'mob_footer', 'mob_card_error'], 'includes/mobile.php');
-    mob_needs(['pack_palette', 'pack_dedupe', 'pack_state', 'pack_package_save',
+    mob_needs(['pack_palette', 'pack_dedupe', 'pack_state', 'pack_package_save', 'pack_relink_orphans', 'pack_packed_by_item',
                'pack_package_delete', 'pack_split_out', 'pack_finish', 'pack_reopen',
                'pack_line_axes', 'pack_range_delete'], 'includes/packing.php');
 } else {
@@ -111,6 +117,9 @@ $canEdit = pack_may_edit($shipment);
 $itStmt = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORDER BY line_no, id");
 $itStmt->execute([$id]);
 $items = $itStmt->fetchAll();
+/* packing cut off its invoice line by an old invoice save is put back on
+   the matching line first (only an exact, single match — see packing.php) */
+pack_relink_orphans($id, $items);
 
 $title = 'Packing — ' . (string)$shipment['invoice_no'];
 $back  = 'm_pack.php';
@@ -257,6 +266,9 @@ mob_header($title, $back, (string)$shipment['buyer_name'], 'manifest_pack.json')
 .sp .pill.warn{color:var(--amber);background:#fff1d9}.sp .pill.gray{background:#edf1f0;color:var(--muted)}
 .sp-notice{padding:11px 12px;border-radius:10px;background:#eef5f2;color:#456563;font-size:12.5px}
 .sp-warn{background:#fff4df;color:#8b5b0a}
+/* red: packed past the invoice, or a number used twice */
+.sp-bad{background:#fdecec;color:#9b2226;border:1px solid #f3c2c2}
+.sp-bad b{color:#7d1a1d}
 .sp .card{background:#fff;border:1px solid var(--line2);border-radius:16px;padding:14px;box-shadow:var(--shadow)}
 .sp-tabs{display:flex;gap:6px;margin:0 0 14px}
 .sp-tabs button{flex:1;min-width:0;border:1px solid var(--line2);background:#fff;display:flex;align-items:center;
@@ -404,7 +416,9 @@ var axes = function (p) { return [p.sizes.length ? p.sizes : [''], p.colors.leng
 var vkey = function (s, c, t) { return JSON.stringify([s || '', c || '', t || '']); };
 var vlabel = function (x) { return [x.size, x.color, x.style].filter(Boolean).join(' / ') || 'Pieces'; };
 var sumQty = function (cs) { return cs.reduce(function (s, c) { return s + c.qty; }, 0); };
-var serialText = function (prefix, num, pad) { return prefix + String(num).padStart(pad || 0, '0'); };
+/* plain numbers — no prefix, no padding (kept as arguments so the callers
+   below stay as they were; both are always empty now) */
+var serialText = function (prefix, num, pad) { return String(num); };
 var kindOf = function (t) { return String(t || 'Carton').trim().toLowerCase(); };
 /* DIRECT: the figures are the TOTAL for the whole range, by size, colour,
    style or a mix; the serial numbers are still every package's own. Only a
@@ -429,14 +443,13 @@ function packages() {
   return out.sort(function (a, b) { return a.prefix.localeCompare(b.prefix) || kindOf(a.type).localeCompare(kindOf(b.type)) || a.num - b.num; });
 }
 function parseSerial(value, fallback, pad) {
-  /* NO PREFIX: a package number is a plain number. The only letters
-     accepted are an old package's own, carried while that one is edited. */
-  var v = String(value).trim(), m = v.match(/^([A-Za-z_-]*)(\d+)$/);
-  if (!m || (m[1] && m[1].toUpperCase() !== String(fallback || '').toUpperCase())) throw Error('Use a whole package number, like 25.');
-  var n = Number(m[2]);
+  /* NO PREFIX: a package number is a plain number — digits only, as on
+     the desktop. "007" is package 7. */
+  var v = String(value).trim(), m = v.match(/^(\d+)$/);
+  if (!m) throw Error('Use a whole package number, like 25.');
+  var n = Number(m[1]);
   if (!Number.isSafeInteger(n) || n < 1 || n > 999999999) throw Error('Serial must be a whole number from 1 to 999,999,999.');
-  var prefix = (m[1] || fallback || '').toUpperCase();
-  return { prefix: prefix, num: n, pad: Math.max(Number(pad) || 0, m[2].charAt(0) === '0' ? m[2].length : 0) };
+  return { prefix: '', num: n, pad: 0 };
 }
 /* The next free number for this kind of package — the same rule the
    server keeps: a number once per kind (Carton 1 and Roll 1 may both be). */
@@ -495,7 +508,10 @@ function lastConfig(itemId) {
     combos: cs, selectedSize: cs[0] && cs[0].size, selectedColor: cs[0] && cs[0].color, selectedStyle: cs[0] && cs[0].style };
 }
 function saveLocal() { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch (e) {} }
-function loadLocal() { try { var d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); return d && prod(d.productId) ? d : null; } catch (e) { return null; } }
+function loadLocal() { try { var d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
+  /* a draft kept from before the prefix was removed ("C012") comes back as a plain number */
+  if (d) { d.prefix = ''; d.pad = 0; ['start', 'end'].forEach(function (k) { var m = String(d[k] || '').match(/(\d+)$/); d[k] = m ? String(Number(m[1])) : ''; }); }
+  return d && prod(d.productId) ? d : null; } catch (e) { return null; } }
 function freshDraft(itemId) {
   draft = blankDraft(itemId, lastConfig(itemId) || {});
   draft.start = nextSerial(draft.prefix, draft.pad, draft.packageType); draft.end = draft.start;
@@ -550,6 +566,8 @@ function renderPacking() {
     + '<span class="pill ' + (anyEdit ? 'warn' : 'gray') + '">' + (d.editRange ? 'WHOLE RANGE' : d.edit ? 'ONE PACKAGE ONLY' : esc(STATE.shipment.invoice)) + '</span></div>'
     + '<div class="sel"><div><div class="name">' + esc(p.name) + '</div><div class="ref">' + lineRef + '</div></div>'
     + (p.setUp ? '<span class="pill">Set up</span>' : '') + '</div>'
+    + invoiceNote(p)
+    + dupNote()
     + '<div class="search"><input id="spSearch" type="search" autocomplete="off" placeholder="Search product, line or description…" value="' + esc(searchQuery) + '" aria-label="Search the invoice\'s products">'
     + '<div id="spResults" class="results" hidden></div></div>'
     + (p.setUp || !p.sizes.length ? '' : '<div class="sp-notice sp-warn gap">This line is not set up on Order sizes &amp; colours, so these are the product\'s own sizes.</div>')
@@ -557,8 +575,8 @@ function renderPacking() {
     + '<div class="segment"><button type="button" data-a="entry-mode" data-mode="single" class="' + (d.entryMode === 'single' ? 'active' : '') + '"' + (d.editRange ? ' disabled' : '') + '>SINGLE ' + esc(d.packageType.toUpperCase())
     + '</button><button type="button" data-a="entry-mode" data-mode="range" class="' + (d.entryMode === 'range' ? 'active' : '') + '"' + (d.edit ? ' disabled' : '') + '>SERIAL RANGE</button></div>'
     + '<div class="sgrid' + (d.entryMode === 'range' ? ' range' : '') + '"><div><label for="spStart">' + (d.entryMode === 'range' ? 'Starting serial' : 'Package serial') + '</label>'
-    + '<input id="spStart" data-sel enterkeyhint="next" inputmode="text" autocomplete="off" value="' + esc(d.start) + '"></div>'
-    + (d.entryMode === 'range' ? '<div><label for="spEnd">Ending serial</label><input id="spEnd" data-sel enterkeyhint="next" inputmode="text" autocomplete="off" value="' + esc(d.end) + '"></div>' : '')
+    + '<input id="spStart" data-sel enterkeyhint="next" inputmode="numeric" autocomplete="off" value="' + esc(d.start) + '"></div>'
+    + (d.entryMode === 'range' ? '<div><label for="spEnd">Ending serial</label><input id="spEnd" data-sel enterkeyhint="next" inputmode="numeric" autocomplete="off" value="' + esc(d.end) + '"></div>' : '')
     + '<div class="qtyf"><label for="spTarget">' + (dir ? 'Total ' + esc(p.unit) : esc(p.unit) + ' / ' + esc(d.packageType.toLowerCase())) + '</label>'
     + '<input id="spTarget" type="text" inputmode="numeric" pattern="[0-9]*" data-sel enterkeyhint="next" value="' + d.target + '">'
     + (d.entryMode === 'range' && !d.edit ? '<div class="qmode" role="group" aria-label="Quantity is per package or the direct total">'
@@ -569,8 +587,7 @@ function renderPacking() {
     + (dir ? '<div class="sp-notice gap" id="spDirect"><b>Direct quantity.</b> Type or tap the <b>total for all ' + (cnt ? fmt(cnt) + ' ' : '') + 'packages</b> — by size, colour, style or a mix. Every serial number is still saved; only the per-package split is not.</div>' : '')
     + '<details id="spPkgDetails"' + (d.advancedOpen ? ' open' : '') + '><summary><span>' + esc(d.packageType) + ' · ' + esc(d.spec) + '</span></summary>'
     + '<div class="settings"><div><label for="spType">Package type</label><select id="spType">' + ['Carton', 'Bale', 'Roll', 'Bag', 'Other'].map(function (v) { return '<option' + (v === d.packageType ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>'
-    + '<div><label for="spSpec">Packaging specification</label><input id="spSpec" value="' + esc(d.spec) + '" maxlength="80"></div>'
-    + '<div><label for="spPad">Number padding</label><select id="spPad">' + [0, 2, 3, 4, 5, 6].map(function (n) { return '<option value="' + n + '"' + (n === d.pad ? ' selected' : '') + '>' + (n ? n + ' digits' : 'None') + '</option>'; }).join('') + '</select></div></div></details>'
+    + '<div><label for="spSpec">Packaging specification</label><input id="spSpec" value="' + esc(d.spec) + '" maxlength="80"></div></div></details>'
     + '</div>'
     + '<div class="card gap"><div class="row between"><h3>Count the contents</h3><button type="button" class="mini quiet" data-a="undo"' + (history.length ? '' : ' disabled') + '>↶ Undo</button></div>'
     + (p.sizes.length ? '<div class="alabel"><span>1 · Select size</span><span>' + esc(p.unit) + ' by size</span></div><div class="tgrid" id="spSizes" style="grid-template-columns:repeat(' + Math.min(4, p.sizes.length) + ',1fr)">' + touchGrid(p.sizes, 'size', d, p) + '</div>' : '')
@@ -659,7 +676,9 @@ function saveDraft() {
       var label = serialText(range.start.prefix, range.start.num, range.pad) + (range.count > 1 ? ' – ' + serialText(range.end.prefix, range.end.num, range.pad) : '');
       receipt = { label: label, next: d.start, productId: d.productId, updated: wasEdit }; renderSaveButton();
       clearTimeout(receiptTimer); receiptTimer = setTimeout(function () { receipt = null; renderSaveButton(); }, 1600);
-      toast((wasEdit ? 'Updated ' : 'Saved ') + fmt(range.count) + ' ' + (range.count === 1 ? d.packageType.toLowerCase() : 'packages') + (isDirect(d) ? ' (direct)' : '') + ' · next ' + d.start + ' ready');
+      var pk = packedOf(p), over = p.invoiceQty > 0 && pk > p.invoiceQty + 0.0001;
+      toast((wasEdit ? 'Updated ' : 'Saved ') + fmt(range.count) + ' ' + (range.count === 1 ? d.packageType.toLowerCase() : 'packages') + (isDirect(d) ? ' (direct)' : '')
+        + (over ? ' · now ' + fmt(pk) + ' packed, invoice says ' + fmt(p.invoiceQty) + ' — update the invoice' : ' · next ' + d.start + ' ready'), over);
     })
     .catch(function (e) { saveBusy = false; renderSaveButton(); toast(e.message, true); });
 }
@@ -713,6 +732,26 @@ function grouped(list) {
 var gSerial = function (g) { return serialText(g.first.prefix, g.first.num, g.first.pad) + (g.list.length > 1 ? ' – ' + serialText(g.last.prefix, g.last.num, g.last.pad) : ''); };
 /* quantities from the ranges: a direct range counts its total once */
 function recQty(r) { return r.mode === 'direct' ? r.total : r.target * (r.to - r.from + 1); }
+/* THE INVOICE AGAINST WHAT IS PACKED — this phone's ranges (live) plus the
+   desktop packing list's rows (from the server). Allowed past the invoice,
+   but said in red with the figure to put on the invoice. */
+function packedOf(p) {
+  var mine = STATE.records.filter(function (r) { return r.item === p.id; }).reduce(function (n, r) { return n + recQty(r); }, 0);
+  return Math.round((mine + (p.desktopQty || 0)) * 1000) / 1000;
+}
+function invoiceNote(p) {
+  var packed = packedOf(p), inv = p.invoiceQty || 0;
+  if (inv <= 0) return packed > 0
+    ? '<div class="sp-notice sp-bad gap" data-inv="none"><b>Invoice qty not set yet</b> · ' + fmt(packed) + ' ' + esc(p.unit) + ' packed. Put ' + fmt(packed) + ' on the invoice when it is made.</div>'
+    : '<div class="sp-notice gap" data-inv="none">Invoice qty not set yet — packing is allowed.</div>';
+  if (packed > inv + 0.0001) return '<div class="sp-notice sp-bad gap" data-inv="over"><b>' + fmt(packed - inv) + ' ' + esc(p.unit) + ' more than the invoice.</b> Invoice ' + fmt(inv)
+    + ' · packed ' + fmt(packed) + '. Packing is allowed — ask for the invoice to be updated to <b>' + fmt(packed) + '</b>.</div>';
+  return '<div class="sp-notice gap" data-inv="ok">Invoice ' + fmt(inv) + ' · packed ' + fmt(packed) + ' · ' + fmt(inv - packed) + ' left</div>';
+}
+function dupNote() {
+  var d = STATE.duplicates || [];
+  return d.length ? '<div class="sp-notice sp-bad gap" data-dup><b>Numbers used twice:</b> ' + d.map(esc).join(', ') + '. Change or delete one of each, so every package has its own number.</div>' : '';
+}
 function totals() {
   var units = {}, q = 0, items = {}, n = 0;
   STATE.records.forEach(function (r) { var u = prod(r.item) ? prod(r.item).unit : 'pcs', x = recQty(r);
@@ -794,19 +833,30 @@ function renderSummary() {
     + '<span class="pill ' + (STATE.completed ? '' : 'warn') + '">' + (STATE.completed ? '✓ Packing finished' : 'In progress') + '</span></div>'
     + '<div class="card"><div class="row between"><div><b>' + esc(STATE.shipment.invoice) + '</b><div class="ref">' + esc(STATE.shipment.buyer) + '</div></div><span class="pill gray">' + fmt(s.packages) + ' packages</span></div>'
     + '<div class="stotal gap">' + (esc(unitText(s)) || 'Nothing packed yet') + '</div>'
-    + '<div class="hint">Each line adds up the same size, colour and style across every saved package. It is not compared with the invoice.</div>'
+    + '<div class="hint">Each line adds up the same size, colour and style across every saved package, and is compared with the invoice (desktop rows included).</div>'
+    + mismatchCard() + dupNote()
     + (CAN_EDIT ? '<div class="row wrap gap">' + (STATE.completed ? '<button type="button" class="mini" data-a="reopen">Reopen packing</button>' : '<button type="button" class="primary" data-a="finish"' + (s.packages ? '' : ' disabled') + '>Finish packing</button>') + '<button type="button" class="mini" data-a="report">Packing list</button><a class="mini" style="display:inline-flex;align-items:center;padding:6px 12px;border:1px solid #dce7e4;border-radius:11px;text-decoration:none;color:#087f72;font-weight:650;font-size:12px;min-height:36px" href="' + esc(WEIGHT_URL) + '">Weight →</a></div>' : '')
     + '</div>'
     + ids.map(function (id) {
         var p = prod(id) || { name: '(product removed)', unit: 'pcs', line: '' }, ls = lines.filter(function (l) { return l.item === id; });
         return '<section class="card sprod"><div class="row between"><div><h3>' + esc(p.name) + '</h3><div class="ref">' + esc(p.line) + (p.hint ? ' · ' + esc(p.hint) : '') + '</div></div>'
           + '<div style="text-align:right"><strong>' + fmt(ls.reduce(function (n, l) { return n + l.qty; }, 0)) + ' ' + esc(p.unit) + '</strong><br>'
+          + (p.id ? '<span class="small ' + (p.invoiceQty > 0 && packedOf(p) <= p.invoiceQty + 0.0001 ? 'muted' : '" style="color:#9b2226;font-weight:700') + '">invoice ' + (p.invoiceQty > 0 ? fmt(p.invoiceQty) : 'not set') + '</span>' : '')
           + '</div></div>'
           + ls.map(function (l) { return '<div class="sline"><b>' + esc(vlabel(l)) + '</b><div class="small muted">' + fmt(l.qty) + ' ' + esc(p.unit) + ' · in ' + fmt(l.packages) + ' ' + (l.packages === 1 ? 'package' : 'packages') + '</div></div>'; }).join('')
           + '</section>';
       }).join('')
     + (ids.length ? '' : '<div class="empty">Start packing to see the quantity summary.</div>')
     + '<div class="row wrap gap"><button type="button" data-a="print">Print / PDF</button><button type="button" data-a="csv">Packing CSV</button><button type="button" data-a="summary-csv">Summary CSV</button></div>';
+}
+
+/* every line past its invoice, with the quantity the invoice should say */
+function mismatchCard() {
+  var bad = STATE.products.filter(function (p) { var k = packedOf(p); return k > 0 && (p.invoiceQty <= 0 || k > p.invoiceQty + 0.0001); });
+  if (!bad.length) return '';
+  return '<div class="sp-notice sp-bad gap" data-mismatch><b>Update the invoice — packed more than it says:</b>'
+    + bad.map(function (p) { var k = packedOf(p); return '<div style="margin-top:6px">' + esc(p.line) + ' ' + esc(p.name) + (p.hint ? ' · ' + esc(p.hint) : '') + ': invoice <b>' + (p.invoiceQty > 0 ? fmt(p.invoiceQty) : 'not set') + '</b> → packed <b>' + fmt(k) + ' ' + esc(p.unit) + '</b></div>'; }).join('')
+    + '</div>';
 }
 
 /* ---------------- packing list, print and CSV */
@@ -985,8 +1035,7 @@ document.addEventListener('change', function (e) {
       if (!d.edit) { d.start = nextSerial(d.prefix, d.pad, d.packageType); d.end = d.start; }
       saveLocal(); renderPacking(); break;
     case 'spSpec': d.spec = el.value.trim() || DEFAULT_SPEC[d.packageType] || ''; saveLocal(); break;
-    case 'spPad': { var o = parseSerial(d.start, d.prefix, d.pad), en = parseSerial(d.end || d.start, d.prefix, d.pad);
-      d.pad = +el.value; d.start = serialText(o.prefix, o.num, d.pad); d.end = serialText(en.prefix, en.num, d.pad); saveLocal(); renderPacking(); break; }
+    /* 'spPad' (number padding) is gone with the prefix */
   } } catch (err) { toast(err.message, true); }
 });
 document.addEventListener('toggle', function (e) {

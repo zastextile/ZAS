@@ -202,13 +202,13 @@ ok($ok1, 'Carton 001–010 saves', $m1);
 $g1 = $gidAt(1);
 $row = $cnt("SELECT * FROM packing_groups WHERE id=?", [$g1])[0];
 ok($row['serial_prefix'] === '', 'with no prefix, even though one was sent', $row['serial_prefix']);
-ok((int)$row['serial_pad'] === 3 && $row['pkg_spec'] === 'Standard carton'
+ok((int)$row['serial_pad'] === 0 && $row['pkg_spec'] === 'Standard carton'
    && (int)$row['packages'] === 10 && (float)$row['total_qty'] === 100.0,
-   'its padding, spec, 10 packages and 100 pieces', $row);
+   'no padding either (pad 3 was sent), its spec, 10 packages and 100 pieces', $row);
 ok($contents($g1) === ['S/Black/Crew 4', 'S/Green/Crew 3', 'M/White/V-neck 3'],
    'and the contents by size, colour AND style', $contents($g1));
 [$okD, $mD] = $save(['from' => 10, 'to' => 12]);
-ok(!$okD && str_contains($mD, 'already used by Carton 001–010'), '010–012 is refused, naming who has 010', $mD);
+ok(!$okD && str_contains($mD, 'already used by Carton 1–10'), '10–12 is refused, naming who has 10 — as a plain number', $mD);
 ok(str_contains($mD, 'a different kind, like a Roll, may reuse it') && !str_contains($mD, 'prefix'),
    'and the message says a different kind may reuse it, with no word of a prefix', $mD);
 [$okR, $mR] = $save(['prefix' => 'R', 'from' => 1, 'to' => 2]);
@@ -249,14 +249,19 @@ ok($okDel2 && $ranges() === ['1-4', '6-7', '9-10'], 'and a package on its own is
 ok(!$okDel3 && $ranges() === ['1-4', '6-7', '9-10'], 'a number outside the range is refused, not guessed at', $mDel3);
 [$okRe] = $save(['from' => 8, 'to' => 8]);
 ok($okRe, 'a deleted number is free again');
-/* a package saved WITH a prefix before it was removed keeps it while it
-   is edited, so the edit cannot land on another package's number */
-pack_group_save(7, ['invoice_item_id' => 71, 'product_name' => 'T-Shirt', 'unit_title' => 'Carton', 'serial_from' => 40,
-    'serial_to' => 41, 'qty_mode' => 'per', 'auto_assorted' => true, 'serial_prefix' => 'C', 'serial_pad' => 3],
+/* a package saved WITH a prefix before it was removed ("remove prefix
+   first" — afnan never used the prefixed list) is a plain number now: it
+   loses the letter when edited, and its number clashes like any other */
+pack_group_save(7, ['invoice_item_id' => 71, 'product_name' => 'T-Shirt', 'unit_title' => 'Carton', 'serial_from' => 940,
+    'serial_to' => 941, 'qty_mode' => 'per', 'auto_assorted' => true, 'serial_prefix' => 'C', 'serial_pad' => 3],
     [['size_label' => 'S', 'colour_label' => 'Black', 'style_label' => 'Crew', 'qty' => 10]]);
-[$okOld, $mOld] = $save(['from' => 40, 'to' => 40, 'combos' => $one, 'edit_group' => $gidAt(40, 'C'), 'edit_num' => 40]);
-ok($okOld && $gidAt(40, 'C') > 0 && $gidAt(41, 'C') > 0 && $gidAt(40, '') === 0,
-   'an old prefixed package keeps its prefix when edited', [$mOld, $gidAt(40, 'C'), $gidAt(40, '')]);
+/* saving no longer writes a prefix, so the old letter is put in as old data was */
+db()->exec("UPDATE packing_groups SET serial_prefix='C', serial_pad=3 WHERE shipment_id=7 AND serial_from=940");
+[$okOld, $mOld] = $save(['from' => 940, 'to' => 940, 'combos' => $one, 'edit_group' => $gidAt(940, 'C'), 'edit_num' => 940]);
+ok($okOld && $gidAt(940, '') > 0 && $gidAt(941, 'C') > 0,
+   'an old prefixed package, edited, becomes plain Carton 940', [$mOld, $gidAt(940, 'C'), $gidAt(940, '')]);
+[$okC, $mC] = $save(['from' => 941, 'to' => 941, 'combos' => $one]);
+ok(!$okC && str_contains($mC, 'already used by Carton 941'), 'and old C941 is plain 941 to the check: a new Carton 941 is refused', $mC);
 
 head('3b. Direct quantity — the total for the whole range');
 /* "give the qty even by size or colour or style or a mix — but we are not
@@ -318,7 +323,7 @@ ok($st['products'][0]['id'] === '71' && $st['products'][0]['line'] === '#1' && $
    'each invoice line with its number, unit and lists', $st['products'][0]);
 ok($st['products'][1]['setUp'] === false && $st['products'][1]['colors'] === [], 'a line not set up says so, with no colours invented', $st['products'][1]);
 $c1 = array_values(array_filter($st['records'], fn($r) => $r['prefix'] === '' && $r['type'] === 'Carton' && $r['from'] === 1))[0] ?? null;
-ok($c1 && $c1['to'] === 4 && $c1['pad'] === 3 && $c1['target'] == 10 && count($c1['combos']) === 3
+ok($c1 && $c1['to'] === 4 && $c1['pad'] === 0 && $c1['target'] == 10 && count($c1['combos']) === 3
    && $c1['combos'][0] == ['size' => 'S', 'colour' => 'Black', 'style' => 'Crew', 'qty' => 4, 'total' => 16]
    && $c1['mode'] === 'per',
    'every range with its serials, pieces per package and contents', $c1);
@@ -397,8 +402,9 @@ if ($node === '' || !is_dir($root . '/playwright')) {
     echo "  (skipped — playwright not available)\n";
 } else {
     /* the browser packs plain numbers from 1; section 2 left a plain 1 */
-    db()->exec("DELETE FROM packing_group_sizes WHERE group_id IN (SELECT id FROM packing_groups WHERE serial_prefix='')");
-    db()->exec("DELETE FROM packing_groups WHERE serial_prefix=''");
+    /* every range goes, old prefixed ones too — they are plain numbers now */
+    db()->exec("DELETE FROM packing_group_sizes");
+    db()->exec("DELETE FROM packing_groups");
     $port = 18000 + random_int(0, 999);
     $srv = proc_open([PHP_BINARY, '-S', '127.0.0.1:' . $port, '-t', $work], [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes, $work);
     usleep(400000);
@@ -448,10 +454,9 @@ let R = {};
   await p.locator('#spColors button', { hasText: 'Black' }).click(); await W(120);
   R.overfull = (await D()).combos.reduce((s, c) => s + c.qty, 0);
   R.fullToast = await p.locator('#spToast').textContent();
-  /* the line was last packed padded to 3 digits; these are plain numbers */
+  /* plain numbers: no prefix box, no padding box */
   await p.locator('#spPkgDetails summary').click(); await W(80);
-  R.prefixBox = await p.locator('#spPrefix').count();
-  await p.selectOption('#spPad', '0'); await W(120);
+  R.prefixBox = await p.locator('#spPrefix').count() + await p.locator('#spPad').count();
   R.plainStart = (await D()).start;
   /* letters are not a package number any more */
   await p.fill('#spStart', 'C5'); await W(80);
@@ -579,7 +584,7 @@ let R = {};
   const pick = async q => { await p.fill('#spSearch', q); await W(); await p.locator('#spResults button').first().click(); await W(); };
   await pick('towel');
   R.towel = { sizes: await p.locator('#spSizes').count(), colours: await p.locator('#spColors').count(), styles: await p.locator('#spStyles').count(),
-    addOne: await p.locator('[data-a=count][data-type=unit]').count(), notice: await p.locator('#spMain .sp-notice').count(),
+    addOne: await p.locator('[data-a=count][data-type=unit]').count(), notice: await p.locator('#spMain .sp-notice:not([data-inv])').count(), /* the invoice line (V2.5) is not a set-up warning */
     words: /select size|colour|style|not set up/i.test(await p.locator('#spMain').innerText()) };
   await p.locator('[data-a=count][data-type=unit]').click(); await W(80);
   R.towelCombo = await p.locator('.combo .text').allTextContents();

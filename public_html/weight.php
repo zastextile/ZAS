@@ -54,6 +54,8 @@ if ($id > 0) {
     $it = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORDER BY line_no, id");
     $it->execute([$id]);
     $items = $it->fetchAll();
+    /* links cut off by an old invoice save are mended before anything is counted */
+    if (function_exists('pack_relink_orphans')) pack_relink_orphans($id, $items);
 }
 
 /* Everything the screen draws from. */

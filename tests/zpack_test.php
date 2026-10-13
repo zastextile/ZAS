@@ -201,18 +201,21 @@ t('and the size-by-size figures are what save',
   str_contains($pkN, 'INSERT INTO packing_group_sizes'));
 
 /* ============================================== 4. no invoice comparison */
-head('4. Quantity is primary — the invoice is never the judge');
+/* afnan (V2.5): "allow packing but once increase so ask invoice to update
+   with list accurate qty and show red highlight". The invoice is CHECKED,
+   never enforced: packing past it is allowed, and said in red. */
+head('4. Quantity is primary — the invoice is checked, never the judge');
 
 t('the phone screen never calls the desktop over-pack guard',
   !str_contains($mpN, 'zas_pack_validate_qty'), 'the over-pack guard is wired in');
 t('and packing.php does not either',
   !str_contains($pkN, 'zas_pack_validate_qty'));
-t('nothing compares a packed figure with an invoice quantity',
-  !preg_match('~invoice[_ ]?qty~i', $pkN . $mpN), 'an invoice-quantity comparison');
+t('a save past the invoice is not refused by the phone\'s server',
+  !preg_match('~invoiceQty|invoice_qty~i', $fnBody($pkN, 'pack_package_save')), 'pack_package_save compares with the invoice');
 t('the invoice is read for the item only',
   str_contains($mpN, 'SELECT * FROM shipment_items'));
-t('and the screen says so where it is approved',
-  str_contains($mpN, 'It is not compared with the invoice'));
+t('and the screen says it is compared, in red, with the figure to update to',
+  str_contains($mpN, 'is compared with the invoice') && str_contains($mpN, 'ask for the invoice to be updated to'));
 
 /* ===================================================== 5. serial conflicts */
 head('5. Two ranges may not own the same carton');

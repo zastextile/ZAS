@@ -739,27 +739,21 @@ function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGro
        typed by hand on the desktop packing list (packing_group_id empty),
        because both end up on the same printed packing list. */
     $kind = mb_strtolower(trim($unit !== '' ? $unit : 'Carton'));
-    /* AND THE PREFIX. C001 and R001 are different packages even of one kind;
-       the demo keys a package on its prefix and number. A number is refused
-       only when the same prefix AND the same kind already have it. */
-    $pfx = strtoupper(trim($prefix));
+    /* NO PREFIX ANY MORE ("remove prefix first … desktop same pattern").
+       A number is compared as a plain number, whatever letter an old range
+       was stored with, so Carton 5 on the phone and Carton 5 on the desktop
+       are the same package — the same rule zas_pack_serial_counts_v21()
+       keeps on the desktop. ($prefix is still accepted from older callers
+       and ignored.) */
     try {
-        $s = db()->prepare("SELECT unit_title, serial_from, serial_to, serial_prefix, serial_pad FROM packing_groups
+        $s = db()->prepare("SELECT unit_title, serial_from, serial_to FROM packing_groups
                             WHERE shipment_id=? AND id<>? AND serial_from<=? AND serial_to>=?
-                              AND LOWER(TRIM(unit_title))=? AND UPPER(serial_prefix)=?
+                              AND LOWER(TRIM(unit_title))=?
                             ORDER BY serial_from LIMIT 1");
-        $s->execute([$shipmentId, $exceptGroupId, $to, $from, $kind, $pfx]);
+        $s->execute([$shipmentId, $exceptGroupId, $to, $from, $kind]);
         $hit = $s->fetch();
-        /* said the way the package is written: Carton C001–C100 */
-        if ($hit) {
-            $fmtN = static fn(int $n): string => $pfx . str_pad((string)$n, (int)($hit['serial_pad'] ?? 0), '0', STR_PAD_LEFT);
-            return 'Those numbers are already used by ' . $hit['unit_title'] . ' ' . $fmtN((int)$hit['serial_from'])
-                 . '–' . $fmtN((int)$hit['serial_to']) . '. A number can be used once per kind of package '
-                 . '— a different kind, like a Roll, may reuse it.';
-        }
-        /* desktop rows carry no prefix, so they can only clash with an
-           unprefixed number */
-        if (!$hit && $pfx === '') {
+        /* and the rows typed on the desktop packing list (no phone range) */
+        if (!$hit) {
             $s = db()->prepare("SELECT pack_unit_title AS unit_title, carton_from AS serial_from,
                                        carton_to AS serial_to FROM packing_items
                                 WHERE shipment_id=? AND packing_group_id IS NULL
@@ -773,8 +767,8 @@ function pack_serial_problem(int $shipmentId, int $from, int $to, int $exceptGro
         if ($hit) {
             return 'Those numbers are already used by ' . $hit['unit_title'] . ' '
                  . (int)$hit['serial_from'] . '–' . (int)$hit['serial_to']
-                 . '. A number can be used once per kind of package — the same number '
-                 . 'is fine only for a different kind, like a Roll.';
+                 . '. A number can be used once per kind of package '
+                 . '— a different kind, like a Roll, may reuse it.';
         }
     } catch (Throwable $e) {
         /* FAIL CLOSED. This used to swallow the error and return "no
@@ -794,8 +788,13 @@ function pack_group_save(int $shipmentId, array $in, array $sizes, int $groupId 
 {
     $from = (int)($in['serial_from'] ?? 0);
     $to   = (int)($in['serial_to'] ?? 0);
-    $prefix = strtoupper(mb_substr(trim((string)($in['serial_prefix'] ?? '')), 0, 16));
-    $pad    = max(0, min(9, (int)($in['serial_pad'] ?? 0)));
+    /* NO PREFIX, NO PADDING — afnan: "remove prefix first and make desktop
+       version same pattern". A package number is a plain number, as on the
+       desktop packing list. Whatever is sent, '' and 0 are written; the
+       columns stay in the table (nothing stored is deleted), they are just
+       no longer used. */
+    $prefix = '';
+    $pad    = 0;
     $spec   = mb_substr(trim((string)($in['pkg_spec'] ?? '')), 0, 80);
     $bad  = pack_serial_problem($shipmentId, $from, $to, $groupId, (string)($in['unit_title'] ?? 'Carton'), $prefix);
     if ($bad !== '') return [false, $bad, 0];
@@ -1137,14 +1136,10 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
     }
 
     $type = trim((string)($in['type'] ?? 'Carton')) ?: 'Carton';
-    /* NO PREFIX — "remove prefix". A new package is a plain number, whatever
-       is sent. Only a package that already had one keeps it while it is
-       edited, so editing it cannot move it onto another package's number. */
+    /* NO PREFIX — "remove prefix first". Every package is a plain number,
+       new or edited (an old package that had a letter loses it when edited;
+       pack_group_save writes '' in any case). */
     $prefix = '';
-    if ($editG > 0 || $editR > 0) {
-        $eg = pack_group($editG ?: $editR);
-        if ($eg && (int)$eg['shipment_id'] === $shipmentId) $prefix = (string)($eg['serial_prefix'] ?? '');
-    }
     $fields = [
         'invoice_item_id' => (int)$item['id'],
         'product_name'    => (string)$item['product_name'],
@@ -1156,7 +1151,7 @@ function pack_package_save(int $shipmentId, array $items, array $in): array
         'qty_mode'        => $direct ? 'direct' : 'per',
         'auto_assorted'   => true,
         'serial_prefix'   => $prefix,
-        'serial_pad'      => (int)($in['pad'] ?? 0),
+        'serial_pad'      => 0,
         'pkg_spec'        => (string)($in['spec'] ?? ''),
         'edited'          => $editG > 0,
         'weight_by_colour'=> null,
@@ -1200,9 +1195,170 @@ function pack_range_delete(int $shipmentId, int $groupId): array
     return pack_group_delete($shipmentId, $groupId) ? [true, 'Range deleted.'] : [false, 'The range could not be deleted.'];
 }
 
+/* ONE PACKED COUNT FOR THE PHONE AND THE DESKTOP.
+
+   afnan: "cross check packing list desktop and mobile are matching each
+   other" — the desktop counted only its own rows (the phone's ranges
+   arrived there on Finish), and the phone did not look at the invoice at
+   all, so the same 360 towels could be packed twice over.
+
+   Here both are counted, per invoice line:
+     phone   — every range on the packing phone, live (packing_groups)
+     desktop — every row typed on the desktop packing list
+               (packing_items with no phone range behind it)
+   A row the phone's Finish wrote (packing_group_id set) is NOT counted
+   again: its range already is. A desktop row saved before rows carried
+   the line's id is matched on product, description and option, exactly as
+   the desktop list always matched it.
+   Returns [item id => ['phone' => q, 'desktop' => q, 'total' => q]]. */
+function pack_packed_by_item(int $shipmentId, array $items): array
+{
+    $out = [];
+    foreach ($items as $it) $out[(int)$it['id']] = ['phone' => 0.0, 'desktop' => 0.0, 'total' => 0.0];
+    foreach (pack_groups($shipmentId) as $g) {
+        $i = (int)$g['invoice_item_id'];
+        if (!isset($out[$i])) continue;
+        $out[$i]['phone'] += pack_group_qty($g, pack_sizes((int)$g['id']));
+    }
+    try {
+        $s = db()->prepare("SELECT invoice_item_id, product_name, des_col, optional_value, total_qty
+                            FROM packing_items WHERE shipment_id=? AND packing_group_id IS NULL");
+        $s->execute([$shipmentId]);
+        foreach ($s->fetchAll() as $r) {
+            $i = (int)($r['invoice_item_id'] ?? 0);
+            if (!isset($out[$i])) {
+                $i = 0;
+                foreach ($items as $it) {
+                    if ((string)$it['product_name'] === (string)$r['product_name']
+                        && (string)($it['des_col'] ?? '') === (string)($r['des_col'] ?? '')
+                        && (string)($it['optional_value'] ?? '') === (string)($r['optional_value'] ?? '')) { $i = (int)$it['id']; break; }
+                }
+            }
+            if ($i && isset($out[$i])) $out[$i]['desktop'] += (float)$r['total_qty'];
+        }
+    } catch (Throwable $e) {}
+    foreach ($out as $i => $o) $out[$i]['total'] = round($o['phone'] + $o['desktop'], 3);
+    return $out;
+}
+
+/* WHERE THE INVOICE AND THE PACKING DISAGREE — said in red on the phone,
+   the desktop packing list and the invoice.
+   afnan: "allow packing but once increase so ask invoice to update with
+   list accurate qty and show red highlight". Packing more than the invoice
+   is NOT refused (the invoice is sometimes made later, sometimes before);
+   each line that is over, or has no invoice qty yet, is listed with the
+   quantity actually packed, which is what the invoice should be updated to.
+   Returns a list of lines: id, no, name, hint, invoice, packed, over, kind
+   ('over' | 'no_invoice_qty'). */
+function pack_invoice_mismatch(int $shipmentId, array $items, ?array $packed = null): array
+{
+    $packed = $packed ?? pack_packed_by_item($shipmentId, $items);
+    $out = [];
+    foreach ($items as $it) {
+        $i = (int)$it['id']; $inv = round((float)($it['qty'] ?? 0), 3); $pk = $packed[$i]['total'] ?? 0.0;
+        if ($pk <= 0) continue;
+        if ($inv <= 0 || $pk > $inv + 0.0001) {
+            $l = pack_item_label($it);
+            $out[] = ['id' => $i, 'no' => $l['no'], 'name' => (string)$it['product_name'], 'hint' => $l['hint'],
+                      'unit' => (string)($it['unit'] ?? ''), 'invoice' => $inv, 'packed' => $pk,
+                      'over' => round($pk - $inv, 3), 'kind' => $inv <= 0 ? 'no_invoice_qty' : 'over'];
+        }
+    }
+    return $out;
+}
+
+/* NUMBERS ALREADY USED TWICE. With the prefix gone, an old Carton C050 and
+   an old R050 are now both Carton 50 — and a desktop row may already share
+   a number with a phone range. Nothing is changed by itself; the clash is
+   listed in red so it can be fixed. Returns ['Carton 50–60', …]. */
+function pack_duplicate_serials(int $shipmentId): array
+{
+    $by = [];
+    foreach (pack_groups($shipmentId) as $g) {
+        $by[mb_strtolower(trim((string)$g['unit_title'])) ?: 'carton'][] = [(int)$g['serial_from'], (int)$g['serial_to'], (string)$g['unit_title']];
+    }
+    try {
+        $s = db()->prepare("SELECT pack_unit_title, carton_from, carton_to FROM packing_items WHERE shipment_id=? AND packing_group_id IS NULL");
+        $s->execute([$shipmentId]);
+        foreach ($s->fetchAll() as $r) {
+            $t = trim((string)$r['pack_unit_title']) ?: 'Carton';
+            $by[mb_strtolower($t)][] = [(int)$r['carton_from'], (int)$r['carton_to'], $t];
+        }
+    } catch (Throwable $e) {}
+    $out = [];
+    foreach ($by as $list) {
+        usort($list, static fn($a, $b) => $a[0] <=> $b[0] ?: $a[1] <=> $b[1]);
+        $maxTo = 0; $dups = [];
+        foreach ($list as [$f, $t, $name]) {
+            if ($f <= $maxTo) {
+                $a = $f; $b = min($t, $maxTo);
+                if ($dups && $a <= end($dups)[1] + 1) $dups[count($dups) - 1][1] = max(end($dups)[1], $b);
+                else $dups[] = [$a, $b];
+            }
+            $maxTo = max($maxTo, $t);
+        }
+        foreach ($dups as [$a, $b]) $out[] = $list[0][2] . ' ' . ($a === $b ? $a : $a . '–' . $b);
+    }
+    return $out;
+}
+
+/* PACKING THAT LOST ITS INVOICE LINE. Saving the invoice used to delete
+   every line and create it again under a new id (shipment_save.php no
+   longer does), which cut the phone's ranges, the desktop rows, the sizes
+   and colours and the weight links off their line. This puts them back:
+   an old id is moved to the current line with the same product,
+   description and option — only when exactly one line matches, so nothing
+   is guessed. Cheap when there is nothing to do; returns how many links
+   were mended. */
+function pack_relink_orphans(int $shipmentId, array $items): int
+{
+    if (!$items) return 0;
+    $now = []; foreach ($items as $it) $now[(int)$it['id']] = true;
+    $norm = static fn($v) => mb_strtolower(trim((string)$v));
+    $orph = [];
+    foreach (["SELECT invoice_item_id i, product_name n, des_col d, optional_value o FROM packing_groups WHERE shipment_id=?",
+              "SELECT invoice_item_id i, product_name n, des_col d, optional_value o FROM packing_items WHERE shipment_id=?"] as $sql) {
+        try {
+            $s = db()->prepare($sql); $s->execute([$shipmentId]);
+            foreach ($s->fetchAll() as $r) {
+                $i = (int)($r['i'] ?? 0);
+                if ($i > 0 && !isset($now[$i]) && !isset($orph[$i])) $orph[$i] = [$norm($r['n']), $norm($r['d']), $norm($r['o'])];
+            }
+        } catch (Throwable $e) {}
+    }
+    if (!$orph) return 0;
+    $fixed = 0;
+    foreach ($orph as $old => [$n, $d, $o]) {
+        $hits = array_values(array_filter($items, static fn($it) => $norm($it['product_name']) === $n
+            && $norm($it['des_col'] ?? '') === $d && $norm($it['optional_value'] ?? '') === $o));
+        if (count($hits) !== 1) continue;
+        $new = (int)$hits[0]['id'];
+        foreach (['packing_groups', 'packing_items', 'packing_palette', 'weight_line_links', 'weight_applied'] as $t) {
+            try {
+                $u = db()->prepare("UPDATE $t SET invoice_item_id=? WHERE shipment_id=? AND invoice_item_id=?");
+                $u->execute([$new, $shipmentId, $old]);
+                $fixed += $u->rowCount();
+            } catch (Throwable $e) { /* a table not there yet, or the line already has its own — leave it */ }
+        }
+        /* the line's final costing was cut off the same way; it keeps no
+           product name of its own, so it is mended only alongside packing
+           that names the line, and never over a costing the line already has */
+        try {
+            $u = db()->prepare("UPDATE final_costings SET shipment_item_id=? WHERE shipment_id=? AND shipment_item_id=?
+                                AND NOT EXISTS (SELECT 1 FROM (SELECT shipment_item_id FROM final_costings) x WHERE x.shipment_item_id=?)");
+            $u->execute([$new, $shipmentId, $old, $new]);
+            $fixed += $u->rowCount();
+        } catch (Throwable $e) {}
+    }
+    return $fixed;
+}
+
 function pack_state(int $shipmentId, array $items, array $shipment): array
 {
     $products = [];
+    /* the invoice qty and what the desktop packed, so the phone can say in
+       red when a line goes past the invoice (its own ranges it counts live) */
+    $packedBy = pack_packed_by_item($shipmentId, $items);
     foreach ($items as $it) {
         $ax = pack_line_axes($shipmentId, $it);
         $l  = pack_item_label($it);
@@ -1212,6 +1368,8 @@ function pack_state(int $shipmentId, array $items, array $shipment): array
             'unit' => strtolower(trim((string)($it['unit'] ?? ''))) ?: 'pcs',
             'sizes' => array_values($ax['size']), 'colors' => array_values($ax['colour']),
             'styles' => array_values($ax['style']), 'setUp' => (bool)$ax['set'],
+            'invoiceQty' => round((float)($it['qty'] ?? 0), 3),
+            'desktopQty' => round($packedBy[(int)$it['id']]['desktop'] ?? 0, 3),
         ];
     }
     $records = [];
@@ -1220,7 +1378,9 @@ function pack_state(int $shipmentId, array $items, array $shipment): array
         $P  = pack_packages($g);
         $records[] = [
             'id' => (int)$g['id'], 'item' => (string)(int)$g['invoice_item_id'],
-            'prefix' => (string)($g['serial_prefix'] ?? ''), 'pad' => (int)($g['serial_pad'] ?? 0),
+            /* plain numbers: an old range's stored prefix/padding is not sent,
+               so the phone shows and checks it exactly as the desktop does */
+            'prefix' => '', 'pad' => 0,
             'from' => (int)$g['serial_from'], 'to' => (int)$g['serial_to'],
             'type' => (string)$g['unit_title'], 'spec' => (string)($g['pkg_spec'] ?? ''),
             'target' => round(array_sum(array_map(static fn($r) => pack_size_per_pkg($g, $r), $sz)), 3),
@@ -1241,6 +1401,8 @@ function pack_state(int $shipmentId, array $items, array $shipment): array
         'completed' => ($shipment['packing_status'] ?? 'open') === 'completed',
         'products' => $products,
         'records' => $records,
+        /* numbers used twice (old prefixed ranges, or phone and desktop) */
+        'duplicates' => pack_duplicate_serials($shipmentId),
     ];
 }
 

@@ -183,16 +183,33 @@ function zas_pack_find_over_serials_v21(array $currentCounts, int $from, int $to
     return $bad;
 }
 
-function zas_pack_validate_qty_v21(int $shipmentId, int $itemId, array $item, float $newQty): void {
-    $stmt = db()->prepare("SELECT COALESCE(SUM(total_qty),0) FROM packing_items WHERE shipment_id=? AND (invoice_item_id=? OR (product_name=? AND des_col=? AND optional_value=?))");
-    $stmt->execute([$shipmentId, $itemId, $item['product_name'], $item['des_col'], $item['optional_value']]);
+/* V2.5 — THE INVOICE IS CHECKED, NOT ENFORCED (was: refused past the invoice).
 
-    $alreadyPacked = (float)$stmt->fetchColumn();
+   afnan: "allow packing but once increase so ask invoice to update with
+   list accurate qty and show red highlight". The invoice is sometimes made
+   after packing and sometimes before, so packing more than it says is
+   allowed — and said in red, with the quantity to update the invoice to.
+
+   Also counts what the PACKING PHONE has packed (pack_packed_by_item), not
+   only this page's rows: before, the phone's ranges arrived here only on
+   Finish, so this check could not see them.
+
+   Returns the red warning to show after the save, or '' when within the
+   invoice. */
+function zas_pack_validate_qty_v21(int $shipmentId, int $itemId, array $item, float $newQty): string {
+    $packed = pack_packed_by_item($shipmentId, [$item]);
+    $alreadyPacked = (float)($packed[(int)$item['id']]['total'] ?? 0);
     $invoiceQty = (float)$item['qty'];
-
-    if (($alreadyPacked + $newQty) > $invoiceQty + 0.0001) {
-        throw new Exception('Packed qty cannot be more than invoice qty. Invoice Qty: ' . $invoiceQty . ', Already Packed: ' . $alreadyPacked . ', New Qty: ' . $newQty);
+    $after = $alreadyPacked + $newQty;
+    $name = 'Line ' . (int)($item['line_no'] ?? 0) . ' ' . $item['product_name'];
+    if ($invoiceQty <= 0) {
+        return $name . ': invoice qty is not set yet — ' . trim_num($after, 3) . ' now packed. Put ' . trim_num($after, 3) . ' on the invoice when it is made.';
     }
+    if ($after > $invoiceQty + 0.0001) {
+        return $name . ': packed ' . trim_num($after, 3) . ', but the invoice says ' . trim_num($invoiceQty, 3)
+             . ' (' . trim_num($after - $invoiceQty, 3) . ' more). Packing is allowed — update the invoice to ' . trim_num($after, 3) . '.';
+    }
+    return '';
 }
 
 /* REMOVED: zas_pack_filter_items_by_dept_v21().
@@ -241,6 +258,13 @@ function zas_pack_insert_row_v21(int $shipmentId, int $itemId, array $item, stri
 $id = (int)($_GET['id'] ?? $_POST['shipment_id'] ?? 0);
 $itemId = (int)($_GET['item_id'] ?? $_POST['invoice_item_id'] ?? 0);
 $isStaffLayout = is_staff();
+/* ONE PHONE SCREEN. Staff pack on Smart Packing (m_pack.php), which keeps the
+   same rules as this page; the old staff form below used the old "2 times"
+   serial rule. Only a page OPEN is sent there — the old form's posts below
+   still work, so a form left open on a phone does not lose its entry. */
+if ($isStaffLayout && $_SERVER['REQUEST_METHOD'] === 'GET' && is_file(__DIR__ . '/m_pack.php')) {
+    redirect('m_pack.php' . ($id ? '?id=' . $id : ''));
+}
 // $currentDept removed with the filter above — it was assigned and never read.
 
 /* Shipment list screen */
@@ -343,6 +367,9 @@ if (is_staff() && $packingCompleted) {
 $itemsStmt = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORDER BY line_no,id");
 $itemsStmt->execute([$id]);
 $invoiceItems = $itemsStmt->fetchAll();
+/* packing cut off its invoice line by an old invoice save goes back on the
+   matching line (exact, single match only — see includes/packing.php) */
+pack_relink_orphans($id, $invoiceItems);
 
 $itemMap = [];
 foreach ($invoiceItems as $it) {
@@ -472,7 +499,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_r
         $net = 0.0;
         $gross = 0.0;
 
-        zas_pack_validate_qty_v21($id, $itemId, $it, $totalQty);
+        /* past the invoice is allowed now; the warning is shown after the save */
+        $overWarning = zas_pack_validate_qty_v21($id, $itemId, $it, $totalQty);
 
         $counts = zas_pack_serial_counts_v21($id, $unitTitle);
         $badSerials = zas_pack_find_over_serials_v21($counts, $from, $to);
@@ -502,6 +530,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_r
         db()->commit();
 
         $_SESSION['flash'] = 'Packing row saved. Admin/Colleague can see this update live.';
+        if ($overWarning !== '') $_SESSION['error'] = $overWarning;
         redirect('packing_list.php?id=' . $id . (is_staff() ? '&item_id=' . $itemId : '#pcPackForm'));
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
@@ -536,6 +565,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delet
         db()->beginTransaction();
 
         db()->prepare("DELETE FROM packing_items WHERE id=? AND shipment_id=?")->execute([$rowId, $id]);
+        /* V2.5 — A ROW THE PACKING PHONE WROTE goes on the phone too. Before,
+           only this copy went: the phone still showed the range and the next
+           Finish packing wrote it back, so the two screens disagreed. */
+        $gidDel = (int)($oldRow['packing_group_id'] ?? 0);
+        if ($gidDel > 0) {
+            db()->prepare("DELETE FROM packing_weight_lines WHERE group_id=?")->execute([$gidDel]);
+            db()->prepare("DELETE FROM packing_group_sizes WHERE group_id=?")->execute([$gidDel]);
+            db()->prepare("DELETE FROM packing_groups WHERE id=? AND shipment_id=?")->execute([$gidDel, $id]);
+        }
         zas_pack_recalc_totals_v21($id);
 
         if ($locked && is_admin()) {
@@ -562,19 +600,26 @@ $packsStmt = db()->prepare("SELECT * FROM packing_items WHERE shipment_id=? ORDE
 $packsStmt->execute([$id]);
 $packs = $packsStmt->fetchAll();
 
+/* V2.5 — THE SAME COUNT AS THE PACKING PHONE.
+   Packed = the phone's ranges (live, finished or not) + the rows typed here.
+   Before, only this page's rows counted, so what the phone packed showed
+   here only after Finish, and the same quantity could be packed twice. */
 $packedByItem = [];
-$serialCounts = [];
-foreach ($packs as $p) {
-    $sid = zas_pack_selected_item_id_v21($p, $invoiceItems);
-    if ($sid) $packedByItem[$sid] = ($packedByItem[$sid] ?? 0) + (float)$p['total_qty'];
+foreach (pack_packed_by_item($id, $invoiceItems) as $pid => $pq) $packedByItem[$pid] = $pq['total'];
+$invoiceMismatch = pack_invoice_mismatch($id, $invoiceItems);
+$duplicateSerials = pack_duplicate_serials($id);
 
-    $from = (int)$p['carton_from'];
-    $to = (int)$p['carton_to'];
-    if ($from > 0 && $to >= $from && ($to - $from) <= 200000) {
-        for ($s = $from; $s <= $to; $s++) {
-            $serialCounts[$s] = ($serialCounts[$s] ?? 0) + 1;
-        }
-    }
+/* THE SAME SERIAL RULE AS THE PACKING PHONE, in the browser too: a number
+   once per kind of package, counting the phone's ranges as well as this
+   page's rows. (Was: any number up to twice, any kind — the server already
+   refused what this let through.) Ranges per kind, not every number. */
+$serialRanges = [];
+foreach (pack_groups($id) as $g) {
+    $serialRanges[mb_strtolower(trim((string)$g['unit_title'])) ?: 'carton'][] = [(int)$g['serial_from'], (int)$g['serial_to']];
+}
+foreach ($packs as $p) {
+    if (!empty($p['packing_group_id'])) continue; /* the phone's own range, counted above */
+    $serialRanges[mb_strtolower(trim((string)($p['pack_unit_title'] ?? '')) ?: 'carton')][] = [(int)$p['carton_from'], (int)$p['carton_to']];
 }
 
 $selectedItem = $itemId && !empty($itemMap[$itemId]) ? $itemMap[$itemId] : null;
@@ -585,14 +630,12 @@ $selectedLeft = $selectedItem ? ((float)$selectedItem['qty'] - $selectedPacked) 
   Items with zero balance are hidden from packing-entry selection.
   They remain visible in Admin/Colleague balance table and saved rows.
 */
-$packableInvoiceItems = [];
-foreach ($invoiceItems as $it) {
-    $packedQtyForItem = $packedByItem[(int)$it['id']] ?? 0;
-    $leftQtyForItem = (float)$it['qty'] - (float)$packedQtyForItem;
-    if ($leftQtyForItem > 0.0001) {
-        $packableInvoiceItems[] = $it;
-    }
-}
+/* The old staff form (reached now only if m_pack.php is missing) keeps its
+   page; its browser serial check is off — the server checks every save. */
+$serialCounts = [];
+/* V2.5: every line can be packed — past the invoice too (said in red).
+   A fully packed line is still offered, marked as such in the list. */
+$packableInvoiceItems = $invoiceItems;
 $hasPackableItems = count($packableInvoiceItems) > 0;
 
 page_header('Packing List');
@@ -726,7 +769,7 @@ foreach ($invoiceItems as $pit) {
         <span class="staff-pill green">Packed: <?= e(trim_num($selectedPacked, 3)) ?></span>
         <span class="staff-pill red">Left: <?= e(trim_num($selectedLeft, 3)) ?></span>
       </div>
-      <div class="staff-serial"><strong>Serial Rule:</strong><br>One serial number can be used maximum <b>2 times</b>. Third use will not be saved.</div>
+      <div class="staff-serial"><strong>Serial Rule:</strong><br>A number can be used <b>once per kind of package</b> (Carton 5 and Roll 5 may both exist).</div>
     </div>
 
     <?php if($canEdit && $selectedLeft > 0): ?>
@@ -881,8 +924,26 @@ exp_tab_strip($shipment, 'packing');
   </div>
 </div>
 
+<?php /* V2.5 — RED WHERE THE INVOICE MUST CHANGE. Packed (phone + this page)
+         past the invoice, or packed with no invoice qty yet, is listed with
+         the exact figure the invoice should say; numbers used twice too. */ ?>
+<style>.zp-bad{background:#fdecec;color:#9b2226;border:1px solid #f3c2c2;border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:13.5px;line-height:1.55}
+.zp-bad b{color:#7d1a1d}tr.zp-over td{background:#fdecec;color:#9b2226;font-weight:700}</style>
+<?php if ($invoiceMismatch): ?>
+<div class="zp-bad" id="zpMismatch"><b>Update the invoice — packed more than it says.</b> Packing is allowed; the invoice should be changed to the packed quantity:
+  <?php foreach ($invoiceMismatch as $mm): ?>
+  <div>Line <?= e(ltrim($mm['no'], '#')) ?> · <?= e($mm['name']) ?><?= $mm['hint'] !== '' ? ' · ' . e($mm['hint']) : '' ?>: invoice <b><?= $mm['kind'] === 'no_invoice_qty' ? 'not set' : e(trim_num($mm['invoice'], 3)) ?></b> → packed <b><?= e(trim_num($mm['packed'], 3)) ?></b></div>
+  <?php endforeach; ?>
+  <?php if ($canEditBase && !is_staff()): ?><div style="margin-top:6px"><a href="shipment_view.php?id=<?= e($id) ?>#invoiceRows" style="color:#9b2226;font-weight:800">Open the invoice →</a></div><?php endif; ?>
+</div>
+<?php endif; ?>
+<?php if ($duplicateSerials): ?>
+<div class="zp-bad" id="zpDup"><b>Numbers used twice:</b> <?= e(implode(', ', $duplicateSerials)) ?>. Change or delete one of each so every package has its own number.</div>
+<?php endif; ?>
+
 <div class="card">
   <div class="card-head"><h2>Invoice Item Balance</h2></div>
+  <div class="readonly-note">Packed counts the packing phone and this page together.</div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Line</th><th>Item</th><th>Des / Col</th><th class="num">Invoice Qty</th><th class="num">Packed Qty</th><th class="num">Left</th></tr></thead>
@@ -890,14 +951,16 @@ exp_tab_strip($shipment, 'packing');
       <?php foreach($invoiceItems as $it):
         $packed = $packedByItem[(int)$it['id']] ?? 0;
         $left = (float)$it['qty'] - $packed;
+        /* red: past the invoice, or packed with no invoice qty */
+        $overRow = $packed > 0 && ((float)$it['qty'] <= 0 || $left < -0.0001);
       ?>
-      <tr>
+      <tr<?= $overRow ? ' class="zp-over"' : '' ?>>
         <td><?= e($it['line_no']) ?></td>
         <td><?= e($it['product_name']) ?></td>
         <td><?= e($it['des_col']) ?></td>
-        <td class="num"><?= e(trim_num($it['qty'], 3)) ?></td>
+        <td class="num"><?= (float)$it['qty'] <= 0 ? 'not set' : e(trim_num($it['qty'], 3)) ?></td>
         <td class="num"><?= e(trim_num($packed, 3)) ?></td>
-        <td class="num"><?= e(trim_num($left, 3)) ?></td>
+        <td class="num"><?= e(trim_num($left, 3)) ?><?= $overRow ? '<br><span style="font-size:11.5px">update invoice to ' . e(trim_num($packed, 3)) . '</span>' : '' ?></td>
       </tr>
       <?php endforeach; ?>
       </tbody>
@@ -908,7 +971,7 @@ exp_tab_strip($shipment, 'packing');
 <?php if($canEditBase && $hasPackableItems): ?>
 <div class="card pc-compact-card">
   <div class="card-head"><h2>Add / Amend Packing Row</h2></div>
-  <div class="readonly-note">Compact one-line entry for Admin/Colleague PC mode. Zero-balance items are hidden from this selection only.</div>
+  <div class="readonly-note">Compact one-line entry for Admin/Colleague PC mode. Every invoice line is offered; packing past the invoice is allowed and shown in red.</div>
 
   <style>
     .pc-compact-scroll{border:1px solid #e3e9f2;border-radius:14px;background:#ffffff;padding:12px;margin-top:12px}
@@ -934,8 +997,9 @@ exp_tab_strip($shipment, 'packing');
           <label>Invoice Item</label>
           <select name="invoice_item_id" id="pcInvoiceItem">
             <?php foreach($packableInvoiceItems as $it): $pm = pm_lookup($pmByName, $it['product_name']); ?>
-            <option value="<?= e($it['id']) ?>" data-left="<?= e(((float)$it['qty']) - ($packedByItem[(int)$it['id']] ?? 0)) ?>" data-pmpack="<?= e($pm['std_pack_qty'] ?? 0) ?>" data-pmcbm="<?= e($pm['cbm_per_unit'] ?? 0) ?>" data-pmactive="<?= e($pm ? (int)$pm['is_active'] : 1) ?>" data-pmfound="<?= $pm ? 1 : 0 ?>">
-              Line <?= e($it['line_no']) ?> - <?= e($it['product_name']) ?> | <?= e($it['des_col']) ?>
+            <?php $leftHere = ((float)$it['qty']) - ($packedByItem[(int)$it['id']] ?? 0); ?>
+            <option value="<?= e($it['id']) ?>" data-inv="<?= e((float)$it['qty']) ?>" data-left="<?= e($leftHere) ?>" data-pmpack="<?= e($pm['std_pack_qty'] ?? 0) ?>" data-pmcbm="<?= e($pm['cbm_per_unit'] ?? 0) ?>" data-pmactive="<?= e($pm ? (int)$pm['is_active'] : 1) ?>" data-pmfound="<?= $pm ? 1 : 0 ?>">
+              Line <?= e($it['line_no']) ?> - <?= e($it['product_name']) ?> | <?= e($it['des_col']) ?><?= (float)$it['qty'] <= 0 ? ' — invoice qty not set' : ($leftHere < -0.0001 ? ' — OVER the invoice' : ($leftHere <= 0.0001 ? ' — fully packed' : '')) ?>
             </option>
             <?php endforeach; ?>
           </select>
@@ -943,8 +1007,10 @@ exp_tab_strip($shipment, 'packing');
 
         <div class="pc-compact-field">
           <label>Unit</label>
-          <select name="pack_unit_title">
-            <option>Carton</option><option>Roll</option><option>Bale</option><option>Bundle</option><option>Pallet</option><option>Package</option>
+          <?php /* the same kinds as the packing phone, so Carton 5 here and
+                   Carton 5 there are recognised as the same package */ ?>
+          <select name="pack_unit_title" id="pcUnit">
+            <option>Carton</option><option>Bale</option><option>Roll</option><option>Bag</option><option>Other</option>
           </select>
         </div>
 
@@ -989,7 +1055,7 @@ exp_tab_strip($shipment, 'packing');
 </div>
 <?php elseif($canEditBase && !$hasPackableItems): ?>
 <div class="card">
-  <div class="alert success">All invoice items are fully packed. No item is available for new packing row.</div>
+  <div class="alert error">This invoice has no lines yet. Add them on the invoice first.</div>
 </div>
 <?php endif; ?>
 
@@ -1007,7 +1073,7 @@ exp_tab_strip($shipment, 'packing');
         <tr>
           <td><?= e($p['line_no']) ?></td>
           <td><?= e($p['product_name']) ?> | <?= e($p['des_col']) ?></td>
-          <td><?= e($p['pack_unit_title'] ?? 'Carton') ?></td>
+          <td><?= e($p['pack_unit_title'] ?? 'Carton') ?><?= !empty($p['packing_group_id']) ? ' <span class="badge" title="Packed on the phone">phone</span>' : '' ?></td>
           <td class="num"><?= e($p['carton_from']) ?></td>
           <td class="num"><?= e($p['carton_to']) ?></td>
           <td class="num"><?= e(num_fmt($p['packages'],0)) ?></td>
@@ -1018,7 +1084,7 @@ exp_tab_strip($shipment, 'packing');
           <td class="num"><?= e(trim_num($p['gross_weight'], 3)) ?></td>
           <td>
             <?php if($canEditBase): ?>
-            <form method="post" onsubmit="return confirm('Delete this packing row?')" style="margin:0">
+            <form method="post" onsubmit="return confirm(<?= e(json_encode(!empty($p['packing_group_id']) ? 'Delete this row? It was packed on the phone, so it is deleted there too.' : 'Delete this packing row?')) ?>)" style="margin:0">
               <?= csrf_field() ?>
               <input type="hidden" name="action" value="delete_row">
               <input type="hidden" name="shipment_id" value="<?= e($id) ?>">
@@ -1027,6 +1093,29 @@ exp_tab_strip($shipment, 'packing');
             </form>
             <?php endif; ?>
           </td>
+        </tr>
+      <?php endforeach; ?>
+      <?php /* V2.5 — what the phone has packed but not finished yet, so this
+               list and the phone show the same packages. Read-only here:
+               they are changed on the phone, and become rows on Finish. */
+      $finishedGroups = [];
+      foreach ($packs as $p) if (!empty($p['packing_group_id'])) $finishedGroups[(int)$p['packing_group_id']] = true;
+      foreach (pack_groups($id) as $g):
+        if (isset($finishedGroups[(int)$g['id']])) continue;
+        $gq = pack_group_qty($g, pack_sizes((int)$g['id'])); $gp = pack_packages($g); ?>
+        <tr style="background:#f4f8fb">
+          <td>—</td>
+          <td><?= e($g['product_name']) ?> | <?= e($g['des_col']) ?></td>
+          <td><?= e($g['unit_title']) ?> <span class="badge orange" title="On the packing phone, not finished yet">phone · open</span></td>
+          <td class="num"><?= e($g['serial_from']) ?></td>
+          <td class="num"><?= e($g['serial_to']) ?></td>
+          <td class="num"><?= e(num_fmt($gp, 0)) ?></td>
+          <td><?= ($g['qty_mode'] ?? 'per') === 'direct' ? 'Direct Qty' : 'Auto Qty' ?></td>
+          <td class="num"><?= e(trim_num($gp > 0 ? $gq / $gp : 0, 3)) ?></td>
+          <td class="num"><?= e(trim_num($gq, 3)) ?></td>
+          <td class="num">—</td>
+          <td class="num">—</td>
+          <td style="font-size:12px;color:#5a6b82">change on the phone</td>
         </tr>
       <?php endforeach; ?>
       </tbody>
@@ -1045,7 +1134,9 @@ exp_tab_strip($shipment, 'packing');
 
 <script>
 (function(){
-  var serialCounts = <?= json_encode($serialCounts, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>;
+  /* numbers already used, per kind of package — the phone's ranges and this
+     page's rows (V2.5, the packing phone's rule) */
+  var serialRanges = <?= json_encode((object)$serialRanges, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT) ?>;
 
   function n(id){var el=document.getElementById(id); if(!el)return 0; var x=parseFloat(String(el.value||'0').replace(/,/g,'')); return isNaN(x)?0:x;}
   function trimDec(v,d){var s=Number(v||0).toFixed(d); if(s.indexOf('.')>-1) s=s.replace(/0+$/,'').replace(/\.$/,''); return s;}
@@ -1081,19 +1172,27 @@ exp_tab_strip($shipment, 'packing');
 
     if(from<=0 || to<from){msg.className='alert error'; msg.textContent='Serial range is not correct.'; return false;}
 
-    var bad=[];
-    for(var s=from;s<=to;s++){
-      var used=serialCounts[s] || serialCounts[String(s)] || 0;
-      if((used+1)>2){bad.push(s); if(bad.length>=10)break;}
-      if((s-from)>200000){msg.className='alert error'; msg.textContent='Serial range too large.'; return false;}
-    }
-
-    if(bad.length){msg.className='alert error'; msg.textContent='Serial already used 2 times: '+bad.join(', ')+'. Third use not allowed.'; return false;}
+    if((to-from)>200000){msg.className='alert error'; msg.textContent='Serial range too large.'; return false;}
+    /* once per kind of package: Carton 5 twice is refused, Carton 5 and Roll 5 are fine */
+    var unitEl=document.querySelector('#pcPackForm [name=pack_unit_title]');
+    var kind=String(unitEl?unitEl.value:'Carton').trim().toLowerCase()||'carton';
+    var hit=(serialRanges[kind]||[]).filter(function(r){return r[0]<=to && r[1]>=from;})[0];
+    if(hit){msg.className='alert error'; msg.textContent=(unitEl?unitEl.value:'Carton')+' '+Math.max(from,hit[0])+(Math.min(to,hit[1])>Math.max(from,hit[0])?'–'+Math.min(to,hit[1]):'')+' is already used on this shipment (phone or desktop). A number can be used once per kind of package — a different kind, like a Roll, may reuse it.'; return false;}
     if(totalQty<=0){msg.className='alert error'; msg.textContent='Total Qty must be greater than zero.'; return false;}
-    if(totalQty>left+0.0001){msg.className='alert error'; msg.textContent='Qty more than invoice balance. Left: '+left+' | Entered: '+totalQty; return false;}
 
-    msg.className='alert success';
-    msg.textContent='Units: '+units+' | Total Qty: '+totalQty.toLocaleString(undefined,{maximumFractionDigits:3})+' | Left after save: '+(left-totalQty).toLocaleString(undefined,{maximumFractionDigits:3});
+    /* past the invoice is ALLOWED (V2.5) — said in red, with the figure to put on the invoice */
+    var invq=item ? parseFloat(item.options[item.selectedIndex].getAttribute('data-inv') || '0') : 0;
+    var nowPacked=(invq-left)+totalQty;
+    if(invq<=0){
+      msg.className='alert error';
+      msg.textContent='Invoice qty not set yet — saving is allowed. After this row '+nowPacked.toLocaleString(undefined,{maximumFractionDigits:3})+' will be packed; put that on the invoice when it is made. Units: '+units;
+    } else if(totalQty>left+0.0001){
+      msg.className='alert error';
+      msg.textContent='More than the invoice: invoice '+invq.toLocaleString()+' · packed after this row '+nowPacked.toLocaleString(undefined,{maximumFractionDigits:3})+' ('+(nowPacked-invq).toLocaleString(undefined,{maximumFractionDigits:3})+' over). Saving is allowed — update the invoice to '+nowPacked.toLocaleString(undefined,{maximumFractionDigits:3})+'. Units: '+units;
+    } else {
+      msg.className='alert success';
+      msg.textContent='Units: '+units+' | Total Qty: '+totalQty.toLocaleString(undefined,{maximumFractionDigits:3})+' | Left after save: '+(left-totalQty).toLocaleString(undefined,{maximumFractionDigits:3});
+    }
     // total CBM for this row, from Product Master
     (function(){
       var op=item?item.options[item.selectedIndex]:null; if(!op)return;
@@ -1107,7 +1206,7 @@ exp_tab_strip($shipment, 'packing');
   }
 
   document.addEventListener('DOMContentLoaded',function(){
-    ['pcInvoiceItem','pcFrom','pcTo','pcQtyMode','pcQtyPerUnit','pcTotalQty'].forEach(function(id){
+    ['pcInvoiceItem','pcUnit','pcFrom','pcTo','pcQtyMode','pcQtyPerUnit','pcTotalQty'].forEach(function(id){
       var el=document.getElementById(id);
       if(el){el.addEventListener('input',calc); el.addEventListener('change',calc);}
     });

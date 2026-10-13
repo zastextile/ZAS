@@ -85,17 +85,42 @@ try {
             $id
         ]);
 
-        db()->prepare("DELETE FROM shipment_items WHERE shipment_id=?")->execute([$id]);
+        /* THE LINES ARE UPDATED IN PLACE (was: every line deleted and
+           inserted again).
+
+           afnan: "our invoice will be made later and sometimes maybe we make
+           the invoice before" — so the invoice is often saved AFTER packing
+           has started. Deleting and re-inserting gave every line a new id,
+           and everything that points at a line by its id — the packing
+           phone's ranges, the desktop packing rows, the order's sizes and
+           colours, the weight links and the final costing — was left
+           pointing at a line that no longer existed: the packing seemed to
+           vanish and could be packed a second time.
+
+           Now each row posts its own id (item_id[], already on the form):
+           a known id is updated, a row without one is added, and a line no
+           longer on the form is deleted — unless it has packing, in which
+           case it is KEPT and said in red, because deleting it would orphan
+           that packing. Delete the packing first, then the line. */
+        $oldLines = [];
+        $ol = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=?");
+        $ol->execute([$id]);
+        foreach ($ol->fetchAll() as $r) $oldLines[(int)$r['id']] = $r;
+
         $products = post_array('product_name');
         $qtys = post_array('qty');
         $rates = post_array('rate');
+        $postedIds = post_array('item_id');
         /* product_id is the line's link to the Product Master. 0 or
            missing is stored as NULL, which is exactly how every line
            saved before this existed behaves — production falls back to
            matching the name, as it always did. */
         $pids = post_array('product_id');
         $stmtItem = db()->prepare("INSERT INTO shipment_items (shipment_id,line_no,product_name,product_id,des_col,optional_value,qty,unit,rate,amount) VALUES (?,?,?,?,?,?,?,?,?,?)");
+        $stmtUpd  = db()->prepare("UPDATE shipment_items SET line_no=?, product_name=?, product_id=?, des_col=?, optional_value=?, qty=?, unit=?, rate=?, amount=? WHERE id=? AND shipment_id=?");
         $totalQty = 0; $subtotal = 0;
+        $kept = [];
+        $lineNo = 0;
 
         foreach ($products as $i => $product) {
             $product = trim($product);
@@ -103,13 +128,18 @@ try {
 
             $qty = (float)($qtys[$i] ?? 0);
             $rate = (float)($rates[$i] ?? 0);
+            $lid = (int)($postedIds[$i] ?? 0);
+            /* someone who cannot see rates has no rate box, so nothing is
+               posted for it: an existing line keeps its rate instead of
+               being saved at 0 (deleting and re-inserting used to lose it) */
+            if (!$showRates && $lid > 0 && isset($oldLines[$lid])) $rate = (float)$oldLines[$lid]['rate'];
             $amount = $qty * $rate;
             $totalQty += $qty;
             $subtotal += $amount;
+            $lineNo = $i + 1;
 
-            $stmtItem->execute([
-                $id,
-                $i + 1,
+            $vals = [
+                $lineNo,
                 $product,
                 ((int)($pids[$i] ?? 0)) ?: null,
                 trim(post_array('des_col')[$i] ?? ''),
@@ -118,7 +148,13 @@ try {
                 trim(post_array('unit')[$i] ?? 'Pcs'),
                 $rate,
                 $amount
-            ]);
+            ];
+            if ($lid > 0 && isset($oldLines[$lid]) && !isset($kept[$lid])) {
+                $stmtUpd->execute(array_merge($vals, [$lid, $id]));
+                $kept[$lid] = true;
+            } else {
+                $stmtItem->execute(array_merge([$id], $vals));
+            }
             
             /* The per-line Department was removed from the invoice screen.
                It wrote to shipment_items.department, which nothing in the
@@ -131,11 +167,43 @@ try {
                it cleared. */
         }
 
+        /* lines taken off the form: deleted, unless packed */
+        $keptPacked = [];
+        foreach ($oldLines as $lid => $r) {
+            if (isset($kept[$lid])) continue;
+            $hasPacking = false;
+            foreach (["SELECT COUNT(*) FROM packing_groups WHERE shipment_id=? AND invoice_item_id=?",
+                      "SELECT COUNT(*) FROM packing_items WHERE shipment_id=? AND invoice_item_id=?"] as $sql) {
+                try { $c = db()->prepare($sql); $c->execute([$id, $lid]); if ((int)$c->fetchColumn() > 0) $hasPacking = true; }
+                catch (Throwable $e) {}
+            }
+            if ($hasPacking) {
+                $keptPacked[] = trim($r['product_name'] . ' ' . $r['des_col']);
+                $totalQty += (float)$r['qty'];
+                $subtotal += (float)$r['amount'];
+                db()->prepare("UPDATE shipment_items SET line_no=? WHERE id=?")->execute([++$lineNo, $lid]);
+                continue;
+            }
+            db()->prepare("DELETE FROM shipment_items WHERE id=? AND shipment_id=?")->execute([$lid, $id]);
+        }
+        if ($keptPacked) {
+            $_SESSION['error'] = 'Kept on the invoice because it already has packing: ' . implode('; ', $keptPacked)
+                . '. Delete its packing first if the line must go.';
+        }
+
+        /* The charges box is shown only to someone who can see rates. For
+           anyone else nothing is posted, and the charges were deleted on
+           every save; now they are left as they are and only counted. */
+        $charges = 0;
+        if (!$showRates) {
+            $cs = db()->prepare("SELECT COALESCE(SUM(amount),0) FROM shipment_charges WHERE shipment_id=?");
+            $cs->execute([$id]);
+            $charges = (float)$cs->fetchColumn();
+        } else {
         db()->prepare("DELETE FROM shipment_charges WHERE shipment_id=?")->execute([$id]);
         $chargeNames = post_array('charge_name');
         $chargeAmts = post_array('charge_amount');
         $stmtCh = db()->prepare("INSERT INTO shipment_charges (shipment_id,charge_name,amount) VALUES (?,?,?)");
-        $charges = 0;
 
         foreach ($chargeNames as $i => $cn) {
             $cn = trim($cn);
@@ -143,6 +211,7 @@ try {
             if ($cn === '' && $amt == 0) continue;
             $charges += $amt;
             $stmtCh->execute([$id, $cn ?: 'Charge', $amt]);
+        }
         }
 
         db()->prepare("UPDATE shipments SET total_qty=?, total_amount=? WHERE id=?")
@@ -219,6 +288,16 @@ try {
     }
 
     db()->commit();
+    /* packing cut off by an invoice save made before this fix goes back on
+       its line now (exact, single match only — see includes/packing.php) */
+    if (is_file(__DIR__ . '/includes/packing.php')) {
+        try {
+            require_once __DIR__ . '/includes/packing.php';
+            $li = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORDER BY line_no, id");
+            $li->execute([$id]);
+            if (function_exists('pack_relink_orphans')) pack_relink_orphans($id, $li->fetchAll());
+        } catch (Throwable $e) { error_log('shipment_save relink: ' . $e->getMessage()); }
+    }
     $_SESSION['flash'] = $saveAndSubmit ? 'Shipment saved and submitted for Admin approval.' : 'Shipment saved successfully.';
 } catch (Throwable $e) {
     if (db()->inTransaction()) db()->rollBack();

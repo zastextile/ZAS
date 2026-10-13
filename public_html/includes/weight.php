@@ -365,8 +365,8 @@ function wt_packed(int $shipmentId): array
         foreach (pack_groups($shipmentId) as $g) {
             $P = pack_packages($g);
             $q = pack_group_qty($g, pack_sizes((int)$g['id']));
-            $pfx = (string)($g['serial_prefix'] ?? ''); $pad = (int)($g['serial_pad'] ?? 0);
-            $f = static fn(int $n) => $pfx . str_pad((string)$n, $pad, '0', STR_PAD_LEFT);
+            /* plain numbers, as on the packing screens (no prefix any more) */
+            $f = static fn(int $n) => (string)$n;
             $ser = $f((int)$g['serial_from']) . ((int)$g['serial_to'] !== (int)$g['serial_from'] ? ' – ' . $f((int)$g['serial_to']) : '');
             $add((int)$g['invoice_item_id'], (string)$g['unit_title'], $ser, $q, $P, ($g['qty_mode'] ?? 'per') === 'direct' ? 'Direct' : 'Per package');
         }

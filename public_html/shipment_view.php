@@ -72,6 +72,27 @@ $itemsStmt = db()->prepare("SELECT * FROM shipment_items WHERE shipment_id=? ORD
 $itemsStmt->execute([$id]);
 $items = $itemsStmt->fetchAll();
 
+/* THE INVOICE AGAINST THE PACKING (phone + desktop together).
+   afnan: "allow packing but once increase so ask invoice to update with
+   list accurate qty and show red highlight". A line packed past its qty —
+   or packed while its qty is still 0, the invoice being made later — is
+   red, with the packed figure beside it and a button to take it. Nothing is
+   changed until Save. Optional: without includes/packing.php the invoice
+   shows as before. */
+$packedBy = []; $invMismatch = [];
+if (is_file(__DIR__ . '/includes/packing.php')) {
+    try {
+        require_once __DIR__ . '/includes/packing.php';
+        if (function_exists('pack_invoice_mismatch')) {
+            pack_relink_orphans($id, $items);
+            foreach (pack_packed_by_item($id, $items) as $pid => $pq) $packedBy[$pid] = $pq['total'];
+            $invMismatch = pack_invoice_mismatch($id, $items);
+        }
+    } catch (Throwable $e) { $packedBy = []; $invMismatch = []; }
+}
+$overIds = [];
+foreach ($invMismatch as $mm) $overIds[$mm['id']] = $mm['packed'];
+
 $chargesStmt = db()->prepare("SELECT * FROM shipment_charges WHERE shipment_id=? ORDER BY id");
 $chargesStmt->execute([$id]);
 $charges = $chargesStmt->fetchAll();
@@ -236,6 +257,14 @@ exp_tab_strip($shipment, 'invoice');
   <div id="pasteHint" style="font-size:11.5px;color:#5a6b82;margin:-6px 0 10px">Paste from Excel in this column order: <b>Product &middot; Description &middot; Qty &middot; Unit<?= $showRates ? ' &middot; Rate' : '' ?></b><?php if($optOn): ?> — leave the <b><?= e($shipment['optional_column_title'] ?: 'optional') ?></b> column out of the block; it is filled by hand.<?php endif; ?></div>
   <div id="pasteWarn" style="display:none;font-size:12px;margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.3);color:#9a5710"></div>
   <?php endif; ?>
+  <?php if ($invMismatch): ?>
+  <div class="zalert err" id="invMismatch"><b>Update the invoice — packing is more than it says.</b> Packing is allowed past the invoice; these lines should say the packed quantity:
+    <?php foreach ($invMismatch as $mm): ?>
+    <div style="margin-top:4px">Line <?= e(ltrim($mm['no'], '#')) ?> · <?= e($mm['name']) ?><?= $mm['hint'] !== '' ? ' · ' . e($mm['hint']) : '' ?>: invoice <b><?= $mm['kind'] === 'no_invoice_qty' ? 'not set' : e(trim_num($mm['invoice'], 3)) ?></b> → packed <b><?= e(trim_num($mm['packed'], 3)) ?> <?= e($mm['unit']) ?></b></div>
+    <?php endforeach; ?>
+    <?php if ($editInvoice): ?><button type="button" class="zbtn" style="margin-top:10px" onclick="usePackedQty()">Use packed quantities</button> <span style="font-size:12px">then Save — nothing changes until you save.</span><?php endif; ?>
+  </div>
+  <?php endif; ?>
   <div style="overflow-x:auto">
     <table class="ztable" style="min-width:560px;table-layout:fixed">
       <thead><tr><th style="width:40px">Sr</th><th>Product / Article</th><th style="width:22%">Des / Col</th><?php if($optOn): ?><th style="width:12%"><?= e($shipment['optional_column_title']) ?></th><?php endif; ?><th class="num" style="width:64px">Qty</th><th style="width:58px">Unit</th><?php if($showRates): ?><th class="num" style="width:72px">Rate</th><th class="num" style="width:84px">Amount</th><?php endif; ?><th style="width:36px"></th></tr></thead>
@@ -284,7 +313,8 @@ exp_tab_strip($shipment, 'invoice');
                                            : '<span class="un">not linked &mdash; production will have to guess</span>') ?></div></td>
           <td><textarea class="zin" data-c="desc" name="des_col[]" style="min-height:34px" <?= $ro ?>><?= e($it['des_col']) ?></textarea></td>
           <?php if($optOn): ?><td><input class="zin" name="optional_value[]" value="<?= e($it['optional_value']) ?>" <?= $ro ?>></td><?php endif; ?>
-          <td><input class="zin num" data-c="qty" name="qty[]" value="<?= e(trim_num($it['qty'], 3)) ?>" oninput="recalcInvoice()" <?= $ro ?>></td>
+          <?php $ov = $overIds[(int)$it['id']] ?? null; ?>
+          <td<?= $ov !== null ? ' class="qty-over"' : '' ?>><input class="zin num" data-c="qty" name="qty[]" value="<?= e(trim_num($it['qty'], 3)) ?>"<?= $ov !== null ? ' data-packed="' . e(trim_num($ov, 3)) . '" style="border-color:#e0435d;background:rgba(224,67,93,.08);color:#b8283f;font-weight:700"' : '' ?> oninput="recalcInvoice()" <?= $ro ?>><?php if ($ov !== null): ?><div style="font-size:11px;color:#b8283f;font-weight:700;margin-top:3px">packed <?= e(trim_num($ov, 3)) ?></div><?php endif; ?></td>
           <td><input class="zin" data-c="unit" name="unit[]" value="<?= e($it['unit']) ?>" <?= $ro ?>></td>
           <?php if($showRates): ?>
           <td><input class="zin num" data-c="rate" name="rate[]" value="<?= e(trim_num($it['rate'], 4)) ?>" oninput="recalcInvoice()" <?= $ro ?>></td>
@@ -566,6 +596,13 @@ document.addEventListener('DOMContentLoaded', function(){
 </script>
 <?php endif; ?>
 <script>
+/* fills each red qty with what is packed; the invoice is saved as usual */
+window.usePackedQty = function(){
+  document.querySelectorAll('#invoiceRows input[data-packed]').forEach(function(el){
+    el.value = el.getAttribute('data-packed'); el.style.borderColor = '#16a34a'; el.style.background = 'rgba(22,163,74,.08)'; el.style.color = '#127a3f';
+    el.dispatchEvent(new Event('input', { bubbles: true })); /* totals and the unsaved badge follow, as when typed */
+  });
+};
 window.addInvoiceRow = function(){
   var tb = document.getElementById('invoiceRows'); if(!tb) return;
   var opt = <?= $optOn?'true':'false' ?>, rates = <?= $showRates?'true':'false' ?>;

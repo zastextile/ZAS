@@ -454,7 +454,7 @@ ok(abs((float)($t6['qty'] ?? 0) - 10000) < 0.001, 'total quantity 10,000', $t6['
 ok(abs((float)($t6['net'] ?? 0) - 5317) < 0.001, 'net 5,317.000 kg', $t6['net'] ?? null);
 ok(abs((float)($t6['gross'] ?? 0) - 5607) < 0.001, 'gross 5,607.000 kg', $t6['gross'] ?? null);
 ok(($t6['unfinished'] ?? ['?']) === [], 'nothing is flagged unfinished', $t6['unfinished'] ?? null);
-ok(str_contains($ser, 'It is not compared with the invoice'), 'and the screen says the invoice is not the judge');
+ok(str_contains($ser, 'is compared with the invoice'), 'and the screen says it is compared with the invoice (V2.5: checked, not enforced)');
 
 /* ------------------------------------------------------------- Chromium */
 head('7. Chromium loads every page with no javascript error');

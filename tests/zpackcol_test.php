@@ -199,12 +199,12 @@ final class CPdo {
             /* THE KIND IS IN THE QUERY, or the fake would answer a
                question the app did not ask */
             if (!str_contains($q, 'LOWER(TRIM(unit_title))=?')) { $T['badsql'][] = 'serial: kind'; return []; }
-            /* and the prefix: C001 and R001 are different packages */
-            if (!str_contains($q, 'UPPER(serial_prefix)=?')) { $T['badsql'][] = 'serial: prefix'; return []; }
+            /* NO PREFIX any more ("remove prefix first"): a number is a plain
+               number, so the query must NOT narrow by prefix */
+            if (str_contains($q, 'serial_prefix')) { $T['badsql'][] = 'serial: prefix still used'; return []; }
             foreach ($T['groups'] as $g) {
                 if ((int)$g['shipment_id'] !== (int)$a[0] || (int)$g['id'] === (int)$a[1]) continue;
                 if (mb_strtolower(trim((string)$g['unit_title'])) !== (string)$a[4]) continue;
-                if (strtoupper((string)($g['serial_prefix'] ?? '')) !== (string)($a[5] ?? '')) continue;
                 if ((int)$g['serial_from'] <= (int)$a[2] && (int)$g['serial_to'] >= (int)$a[3]) return [$g];
             }
             return [];
