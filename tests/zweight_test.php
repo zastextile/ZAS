@@ -226,11 +226,12 @@ ok(abs($L[71]['gross'] - (62.1 + 15 * 0.75 + 2 * 1.5)) < 0.0005, 'T-Shirt gross 
 ok(abs($L[72]['net'] - 110) < 0.0005 && abs($L[72]['gross'] - 117.5) < 0.0005, 'Bath Towel: 550 g × 200 = 110 kg net, 117.5 kg gross', [$L[72]['net'], $L[72]['gross']]);
 
 head('4. Apply — within ten per cent, adding up, never by itself');
+/* linking already counted the weight, by itself (no Apply needed) */
 $before = $q("SELECT total_net_weight n FROM shipments WHERE id=7")[0]['n'];
+ok(abs($before - 172.1) < 0.0005, 'linking counted the weight by itself: 62.1 + 110 = 172.1 kg net, before any Apply', $before);
 [$ok, $m] = wt_apply(7, $items, '150', '');
-ok(!$ok && str_contains($m, 'more than 10%') && $q("SELECT COUNT(*) c FROM weight_applied")[0]['c'] == 0
-   && $q("SELECT total_net_weight n FROM shipments WHERE id=7")[0]['n'] == $before,
-   'a final net 13% off is refused, and nothing is written', $m);
+ok(!$ok && str_contains($m, 'more than 10%') && $q("SELECT total_net_weight n FROM shipments WHERE id=7")[0]['n'] == $before,
+   'a final net 13% off is refused, and nothing changes', $m);
 [$ok, $m] = wt_apply(7, $items, '180', '179');
 ok(!$ok && str_contains($m, 'Gross cannot be less than net'), 'gross below net is refused', $m);
 [$ok, $m] = wt_apply(7, $items);
@@ -267,8 +268,10 @@ ok(($L[71]['applied']['state'] ?? '') === 'changed' && $c['applied']['current'] 
 wt_apply(7, $items);
 $c = wt_calc(7, $items);
 ok($c['applied']['current'] === true, 'and applying again brings it up to date');
+$g0 = (float)$q("SELECT total_gross_weight g FROM shipments WHERE id=7")[0]['g'];
 wt_tare_save(7, 'Carton', '0.800');
-ok(wt_calc(7, $items)['applied']['current'] === false, 'a changed empty-carton weight also waits for Apply');
+$g1 = (float)$q("SELECT total_gross_weight g FROM shipments WHERE id=7")[0]['g'];
+ok(wt_calc(7, $items)['applied']['current'] === true && $g1 > $g0, 'a changed empty-carton weight moves the gross at once — no Apply', [$g0, $g1]);
 wt_apply(7, $items);
 /* same quantity, another kind of package: the empty weight differs, so it is flagged */
 db()->exec("UPDATE packing_items SET pack_unit_title='Bale' WHERE shipment_id=7 AND packing_group_id IS NULL");
@@ -445,7 +448,7 @@ JS;
     ok(str_contains($R['typing']['gross'] ?? '', '197.180'), 'and the gross follows while typing: 67.68 + 110 net + 26 cartons × 0.75 = 197.180 kg', $R['typing'] ?? null);
     ok(str_contains($R['tooFar']['toast'] ?? '', 'more than 10%') && ($R['tooFar']['open'] ?? false) && ($R['tooFar']['val'] ?? '') === '1',
        'a final net too far off is refused, and the figure typed stays', $R['tooFar'] ?? null);
-    ok(($R['applied']['btn'] ?? '') === '✓ WEIGHT APPLIED' && str_contains($R['applied']['note'] ?? '', '✓ Applied'), 'Apply is confirmed on the page', $R['applied'] ?? null);
+    ok(($R['applied']['btn'] ?? '') === '✓ WEIGHT UP TO DATE' && str_contains($R['applied']['note'] ?? '', '✓ Up to date'), 'the page says the weight is up to date', $R['applied'] ?? null);
     $pv = $R['preview'] ?? [[], []];
     ok(count(array_filter($pv[0] ?? [], fn($r) => str_starts_with($r, 'T-Shirt #1 Carton'))) === 1 && count(array_filter($pv[0] ?? [], fn($r) => str_starts_with($r, 'T-Shirt #1 Bale'))) === 1,
        'packing rows: one per line and package type — the T-Shirt\'s three carton ranges are one row', $pv[0] ?? null);

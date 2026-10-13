@@ -464,7 +464,7 @@ function lineCard(l) {
           + (Math.abs(l.qty - l.invoiceQty) > 0.0005 ? '<div class="hint">Invoice says ' + fmt(l.invoiceQty) + ' ' + esc(l.unit) + '. The packed quantity is used.</div>' : '')
           + '<details><summary>By material type</summary>' + cats(p.materials.map(function (m) { return { category: m.category, grams: m.grams * l.qty }; })).map(function (c) { return '<div class="cat"><span>' + esc(c.category) + '</span><b>' + k3(c.grams / 1000) + ' kg</b></div>'; }).join('') + '</details>'
         : '<div class="hint gap">' + fmt(p.unitNetGrams) + ' g each · the weight appears when packed.</div>')
-      + (a && a.state === 'profile_updated' ? '<div class="notice warn gap">' + esc(p.reference) + ' was updated after this shipment\'s weight was applied. Applied: ' + k3(a.net) + ' kg net. Apply again to use the new figures.</div>' : '')
+      + (a && a.state === 'profile_updated' ? '<div class="notice warn gap">' + esc(p.reference) + ' was updated after this shipment\'s weight was applied. Applied: ' + k3(a.net) + ' kg net. Press Apply to use the new figures.</div>' : '')
       + (a && a.state === 'changed' ? '<div class="notice warn gap">Packing or profile changed since Apply (applied ' + k3(a.net) + ' kg net). Apply again.</div>' : '')
       + '</div>';
   } else {
@@ -490,7 +490,7 @@ function renderLink() {
   var c = S.calc, t = c.totals, ap = c.applied, edit = S.canEditShip;
   tareTyping = {};
   $('#wMain').innerHTML = '<div class="row between" style="margin-bottom:10px"><div><div class="eyebrow">WEIGHT BY INVOICE LINE</div><h2>Shipment weight</h2></div><span class="pill">' + esc(S.shipment.invoice) + '</span></div>'
-    + (ap ? '<div class="notice' + (ap.current ? '' : ' warn') + '" style="margin-bottom:12px">' + (ap.current ? '✓ Applied ' : 'Changes not applied yet. Last applied ') + esc(String(ap.at).slice(0, 16)) + ': ' + k3(ap.net) + ' kg net · ' + k3(ap.gross) + ' kg gross.</div>'
+    + (ap ? '<div class="notice' + (ap.current ? '' : ' warn') + '" style="margin-bottom:12px">' + (ap.current ? '✓ Up to date · ' : 'A profile changed — press Apply to use it. Counted since ') + esc(String(ap.at).slice(0, 16)) + ': ' + k3(ap.net) + ' kg net · ' + k3(ap.gross) + ' kg gross.</div>'
          : '<div class="notice" style="margin-bottom:12px">Link one profile to each invoice line. The quantity is what packing has already packed, so nothing is typed twice. One weight per line, however many serial ranges it has.</div>')
     + (edit ? '' : '<div class="notice warn" style="margin-bottom:12px">This shipment is locked. You can look, not change.</div>')
     + c.lines.map(lineCard).join('')
@@ -499,11 +499,11 @@ function renderLink() {
         + '<div class="hint num" id="tc-' + esc(ty) + '">× ' + fmt(x.packages) + ' = ' + k3(x.kg * x.packages) + ' kg' + (x.source && x.source !== 'typed' ? '<br>from ' + esc(x.source) : '') + '</div></div>'; }).join('') + '</section>' : '')
     + (edit ? '<details class="card" id="finalBox"' + (finalVals.open ? ' open' : '') + '><summary><span>Final weight from the scale · optional · within ±' + S.tolerance + '%</span></summary><div class="grid2 gap"><div><label for="fNet">Final net · kg</label><input id="fNet" type="text" inputmode="decimal" data-sel placeholder="' + k3(t.net) + '" value="' + esc(finalVals.net) + '"></div><div><label for="fGross">Final gross · kg</label><input id="fGross" type="text" inputmode="decimal" data-sel placeholder="' + k3(t.gross) + '" value="' + esc(finalVals.gross) + '"></div></div><div class="hint">Leave blank to use the worked-out figures. Each line is scaled the same way, so the lines still add up.</div></details>' : '')
     + '<div class="row gap"><button type="button" class="mini" data-a="preview">Packing list preview</button></div>'
-    + '<div class="hint" style="margin:15px 0">Apply writes these figures to the packing list rows and the shipment totals, which the packing list, invoice and customs prints read. Changing a profile later does not change this shipment until it is applied again.</div>';
+    + '<div class="hint" style="margin:15px 0">The weight updates by itself: link a profile, pack more or less, type an empty-package weight — the packing list rows, the shipment totals and the prints follow at once. Press Apply only to enter a scale figure (within ±' + S.tolerance + '%) or to take a profile that was edited after it was linked.</div>';
   var now = totalsNow();
   $('#wDock').innerHTML = '<div class="wdock"><div class="cnt" aria-live="polite"><div><label>Net</label><strong id="dNet">' + k3(now.net) + ' kg</strong></div><div><label>Gross</label><strong id="dGross">' + k3(now.gross) + ' kg</strong></div><div><label>Lines linked</label><strong>' + t.linked + ' / ' + t.lines + '</strong></div></div>'
     + '<div class="prog"><i style="width:' + (t.lines ? t.linked / t.lines * 100 : 0) + '%"></i></div>'
-    + (edit ? '<button type="button" id="wApply" class="save" data-a="apply"' + (t.linked ? '' : ' disabled') + '><span class="t">' + (ap && ap.current ? '✓ WEIGHT APPLIED' : 'APPLY WEIGHT TO PACKING LIST') + '</span><span class="c">' + fmt(t.packages) + ' packages · ' + (t.pending ? t.pending + ' packed line' + (t.pending === 1 ? '' : 's') + ' still need a profile' : 'every packed line has a profile') + '</span></button>' : '') + '</div>';
+    + (edit ? '<button type="button" id="wApply" class="save" data-a="apply"' + (t.linked ? '' : ' disabled') + '><span class="t">' + (ap && ap.current ? '✓ WEIGHT UP TO DATE' : 'APPLY WEIGHT TO PACKING LIST') + '</span><span class="c">' + fmt(t.packages) + ' packages · ' + (t.pending ? t.pending + ' packed line' + (t.pending === 1 ? '' : 's') + ' still need a profile' : 'every packed line has a profile') + '</span></button>' : '') + '</div>';
 }
 function previewHTML() {
   var c = S.calc, rows = [], pr = [], tq = 0, tp = 0, tn = 0, tg = 0;

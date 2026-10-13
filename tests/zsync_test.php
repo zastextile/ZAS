@@ -346,5 +346,35 @@ db()->exec("UPDATE weight_applied SET qty=100, net_kg=60 WHERE shipment_id=8");
 ok(wt_refresh_if_stale(8) === true && abs((float)$q("SELECT net_kg n FROM weight_applied WHERE shipment_id=8")[0]['n'] - 660) < 0.0005,
    'weight applied on an older quantity is worked out again when the page opens');
 
+head('7. Linked means counted: qty up or down moves net and gross by itself');
+/* "when we increase qty of any item it must have effect on weight, as we
+    linked it with a weight profile — automatic, gross and net based on that" */
+db()->exec("INSERT INTO shipments (id, invoice_no, buyer_name, currency) VALUES (9, 'ZAS/5500', 'Gulf', 'USD')");
+db()->exec("INSERT INTO shipment_items (id, shipment_id, line_no, product_name, des_col, optional_value, qty, unit) VALUES (91, 9, 1, 'Pillow', 'White', '', 500, 'Pcs')");
+$items9 = $q("SELECT * FROM shipment_items WHERE shipment_id=9");
+$api9 = fn(array $b) => json_decode(page($work, 'm_pack.php', ['id' => 9, 'api' => 1], '', json_encode(['_csrf' => 'testtoken'] + $b)), true);
+$w9 = fn() => $q("SELECT total_net_weight n, total_gross_weight g FROM shipments WHERE id=9")[0];
+[, , $pp] = wt_profile_save(['name' => 'Pillow 800', 'unit' => 'pcs', 'materials' => [['category' => 'Fabric', 'grams' => '800']]]);
+$api9(['op' => 'save', 'item' => 91, 'type' => 'Carton', 'from' => 1, 'to' => 5, 'target' => 20, 'combos' => $one(20)]);
+wt_link(9, $items9, 91, $pp['id']);
+ok(abs($w9()['n'] - 80) < 0.0005, 'linking alone counts it — 800 g × 100 pcs = 80 kg net, without pressing Apply', $w9());
+$api9(['op' => 'save', 'item' => 91, 'type' => 'Carton', 'from' => 6, 'to' => 10, 'target' => 20, 'combos' => $one(20)]);
+ok(abs($w9()['n'] - 160) < 0.0005, '100 more packed on the phone: 160 kg at once', $w9());
+wt_tare_save(9, 'Carton', '0.5');
+ok(abs($w9()['g'] - 165) < 0.0005, 'an empty carton of 0.5 kg: gross 160 + 10 × 0.5 = 165 kg at once', $w9());
+/* the desktop adds a row inside its own transaction — that save must survive */
+db()->beginTransaction();
+db()->exec("INSERT INTO packing_items (shipment_id, invoice_item_id, line_no, product_name, des_col, optional_value, pack_unit_title, carton_from, carton_to, packages, total_qty)
+            VALUES (9, 91, 50, 'Pillow', 'White', '', 'Carton', 100, 101, 2, 50)");
+wt_refresh(9);
+$okTx = db()->inTransaction();
+db()->commit();
+ok($okTx && abs($w9()['n'] - 200) < 0.0005 && abs($w9()['g'] - 206) < 0.0005,
+   'a desktop row of 50 inside the desktop\'s own save: the save is kept and the weight is 200 kg net, 206 kg gross', [$okTx, $w9()]);
+wt_unlink(9, 91);
+ok(abs($w9()['n']) < 0.0005, 'unlinked: its weight comes off at once', $w9());
+wt_link(9, $items9, 91, $pp['id']);
+ok(abs($w9()['n'] - 200) < 0.0005, 'linked again: back at once', $w9());
+
 echo "\n" . ($F === 0 ? "ALL PASS   ($P checks)\n" : "FAILED  $F   (" . ($P + $F) . " checks)\n");
 exit($F === 0 ? 0 : 1);

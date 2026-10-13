@@ -1613,16 +1613,18 @@ function pack_write_rows(int $shipmentId, ?array $groups = null): void
    printed list shows — every row, phone and desktop. */
 function pack_sync_rows(int $shipmentId): bool
 {
+    /* its own transaction only when the caller has none open */
+    $own = !db()->inTransaction();
     try {
-        db()->beginTransaction();
+        if ($own) db()->beginTransaction();
         pack_write_rows($shipmentId);
         $t = db()->prepare("SELECT COALESCE(SUM(packages),0) FROM packing_items WHERE shipment_id=?");
         $t->execute([$shipmentId]);
         db()->prepare("UPDATE shipments SET total_packages=? WHERE id=?")->execute([(float)$t->fetchColumn(), $shipmentId]);
-        db()->commit();
+        if ($own) db()->commit();
         return true;
     } catch (Throwable $e) {
-        if (db()->inTransaction()) db()->rollBack();
+        if ($own && db()->inTransaction()) db()->rollBack();
         error_log('pack_sync_rows: ' . $e->getMessage());
         return false;
     }
