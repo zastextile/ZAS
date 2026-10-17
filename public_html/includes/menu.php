@@ -60,6 +60,16 @@ function zas_menu(): array {
                 ['label' => 'Service Providers', 'href' => 'exp_providers.php',  'show' => $office],
             ],
         ],
+        /* IMPORTS — shown to whoever holds the Imports permission (Admin always) */
+        [
+            'label' => 'Imports', 'icon' => 'import',
+            'show'  => $office && (function_exists('zu_can') ? zu_can('imp', 'v') : $admin),
+            'items' => [
+                ['label' => 'Import Register',  'href' => 'imp_register.php', 'show' => true],
+                ['label' => 'New Import',       'href' => 'imp_new.php',      'show' => function_exists('zu_can') ? zu_can('imp', 'c') : $admin],
+                ['label' => 'Opening Balances', 'href' => 'imp_opening.php',  'show' => function_exists('zu_can') ? zu_can('impefs', 'v') : $admin],
+            ],
+        ],
         [
             'label' => 'Costing &amp; Products', 'icon' => 'tag',
             'show'  => $office || $admin || $colleague,
@@ -204,6 +214,7 @@ function zas_menu_icon(string $name): string {
         'tag'    => '<path d="M3 3h6l8 8-6 6-8-8V3z"/><circle cx="6.5" cy="6.5" r="1.2"/>',
         'gear'   => '<circle cx="10" cy="10" r="3"/><path d="M10 2v2m0 12v2M2 10h2m12 0h2M4.6 4.6l1.4 1.4m8 8 1.4 1.4m0-10.8-1.4 1.4m-8 8-1.4 1.4"/>',
         'box'    => '<path d="M3 6.5 10 3l7 3.5v7L10 17l-7-3.5z"/><path d="M3 6.5 10 10l7-3.5M10 10v7"/>',
+        'import' => '<path d="M10 3v9m0 0-3.5-3.5M10 12l3.5-3.5"/><path d="M3.5 13.5V16a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-2.5"/>',
         'search' => '<circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4 4"/>',
         'shield' => '<path d="M10 2.5 16 5v5c0 4-2.6 6.6-6 7.5-3.4-.9-6-3.5-6-7.5V5z"/>',
     ];

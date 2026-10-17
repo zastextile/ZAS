@@ -26,6 +26,10 @@ const EXP_KINDS = [
     'cost_type'        => ['Cost Types', 'Expense headings for the shipment cost ledger.'],
     'doc_type'         => ['Document Types', 'The official documents a shipment can carry.'],
     'logistics_status' => ['Logistics Statuses', 'Where a shipment has reached — separate from invoice approval.'],
+    /* the Imports module's own two lists (includes/imports.php), kept apart so
+       the export dropdowns above are not changed */
+    'imp_cost_type'    => ['Import Cost Types', 'Cost headings on an import. Tick "duty / tax" for duty and taxes paid through the clearing agent, so they stay apart from his service charges.'],
+    'imp_doc_type'     => ['Import Document Types', 'The documents an import can carry.'],
 ];
 
 $kind = (string)($_GET['kind'] ?? 'port_loading');
@@ -49,6 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $flags = [];
             if ($k === 'cost_type' && !empty($_POST['is_commission']))      $flags['is_commission'] = 1;
             if ($k === 'doc_type'  && !empty($_POST['supports_draft_final'])) $flags['supports_draft_final'] = 1;
+            if ($k === 'imp_cost_type' && !empty($_POST['is_duty']))           $flags['is_duty'] = 1;
             $flagsJson = $flags ? json_encode($flags) : null;
 
             $sort   = (int)($_POST['sort_order'] ?? 0);
@@ -264,6 +269,13 @@ echo exp_page_css();
     <label class="xlabel xspan2" style="display:flex;align-items:center;gap:8px;padding-top:18px">
       <input type="checkbox" name="is_commission" <?= exp_master_flag($edit, 'is_commission') ? 'checked' : '' ?> style="width:15px;height:15px;accent-color:#0ea8c9">
       This is a commission — hide it from users without rate visibility
+    </label>
+    <?php endif; ?>
+
+    <?php if ($kind === 'imp_cost_type'): ?>
+    <label class="xlabel xspan2" style="display:flex;align-items:center;gap:8px;padding-top:18px">
+      <input type="checkbox" name="is_duty" <?= exp_master_flag($edit, 'is_duty') ? 'checked' : '' ?> style="width:15px;height:15px;accent-color:#0ea8c9">
+      Duty / tax paid through the agent — kept apart from service charges
     </label>
     <?php endif; ?>
 

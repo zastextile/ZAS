@@ -52,6 +52,14 @@ function zu_modules(): array {
         ['g' => 'Sales & Export',    'k' => 'shippay',  'n' => 'Shipment Payments',     'a' => 'vcudr'],
         ['g' => 'Sales & Export',    'k' => 'shipcost', 'n' => 'Shipment Costs',        'a' => 'vcudr'],
         ['g' => 'Sales & Export',    'k' => 'shipdoc',  'n' => 'Shipment Documents',    'a' => 'vcud'],
+        /* IMPORTS (includes/imports.php). Like the export rows above, nobody
+           has these until they are ticked here; Admin always does. 'r' on
+           payments and costs is Void — no posted money row is deleted. */
+        ['g' => 'Imports',           'k' => 'imp',      'n' => 'Imports — register, invoice, packing, logistics', 'a' => 'vcud'],
+        ['g' => 'Imports',           'k' => 'imppay',   'n' => 'Import Payments',       'a' => 'vcudr'],
+        ['g' => 'Imports',           'k' => 'impcost',  'n' => 'Import Costs',          'a' => 'vcudr'],
+        ['g' => 'Imports',           'k' => 'impdoc',   'n' => 'Import Documents',      'a' => 'vcud'],
+        ['g' => 'Imports',           'k' => 'impefs',   'n' => 'EFS & Opening Balances','a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'costing',  'n' => 'Product Costing',       'a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'fcost',    'n' => 'Final Costing',         'a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'pmaster',  'n' => 'Product Master & Parts','a' => 'vcud'],
