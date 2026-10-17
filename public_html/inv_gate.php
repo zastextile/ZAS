@@ -23,6 +23,23 @@ $canEdit = inv_perm('gate');
 $canPost = inv_perm('post');
 $canRev  = inv_perm('adjust');
 
+/* IMPORTS (Phase 2) — "Receive into stock" on an import opens this screen
+   filled from the import. Everything below that mentions an import runs
+   ONLY for such a pass: the imports file is loaded on demand, and an
+   ordinary pass never reads or writes the two import columns. */
+$impLoad = function (): bool {
+    if (!is_file(__DIR__ . '/includes/imports.php')) return false;
+    require_once __DIR__ . '/includes/imports.php';
+    imp_ensure_schema();
+    return true;
+};
+/* the import a saved pass came from, or 0 (the column may not exist yet) */
+$impOfGate = function (int $gateId): int {
+    if ($gateId <= 0) return 0;
+    try { $s = db()->prepare("SELECT import_id FROM inv_gate WHERE id=?"); $s->execute([$gateId]); return (int)$s->fetchColumn(); }
+    catch (Throwable $e) { return 0; }
+};
+
 /* Contract lines with their live balance, for the "pull from contract"
    picker. Read-only. */
 if (($_GET['ajax'] ?? '') === 'contract') {
@@ -246,6 +263,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect('inv_gate.php?dir=' . $dir . ($id > 0 ? '&id=' . $id . '&edit=1' : '&new=1'));
         }
 
+        /* IMPORT PASS: a new pass keeps the import it was filled from; a
+           saved one already has it. Only checked when the form says so. */
+        $impId = $id > 0 ? $impOfGate($id) : 0;
+        if ($id === 0 && (int)($_POST['import_id'] ?? 0) > 0 && $impLoad()) {
+            $iq = db()->prepare("SELECT id FROM imp_imports WHERE id=?"); $iq->execute([(int)$_POST['import_id']]);
+            if ($iq->fetchColumn() && imp_can('imp', 'v')) { $impId = (int)$_POST['import_id']; $f['import_id'] = $impId; }
+        }
+        $impLines = [];
+        if ($impId > 0 && $impLoad()) foreach (imp_lines($impId) as $il) $impLines[(int)$il['id']] = true;
+
         try {
             $chk = null;
             if ($id > 0) {
@@ -278,6 +305,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ins = db()->prepare("INSERT INTO inv_gate_items
                 (gate_id,material_id,product_id,size_label,description,article,lot_no,qty,uom,rate,packing,ownership,sort_order,contract_id,contract_item_id,amount)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+            /* an import pass also keeps which import line each row came from */
+            if ($impId > 0) $insImp = db()->prepare("UPDATE inv_gate_items SET imp_line_id=? WHERE id=?");
             $own = $TYPES[$type]['own'];
             $n = 0;
             foreach ((array)($_POST['line'] ?? []) as $ln) {
@@ -315,8 +344,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $own, $n++,
                     $cHead, $cLine,
                     round($qty * $rate, 2)]);
+                $il = (int)($ln['imp_line_id'] ?? 0);
+                if ($impId > 0 && isset($impLines[$il])) $insImp->execute([$il, (int)db()->lastInsertId()]);
             }
             db()->commit();
+            /* the import side of the pass: kg per line for EFS, weighbridge,
+               damaged / rejected / short — kept in the import's own tables */
+            if ($impId > 0) {
+                try { imp_receipt_save($id, $impId, $_POST); }
+                catch (Throwable $ex2) { $_SESSION['error'] = 'The pass was saved, but its import details (kg, weighbridge) were not: ' . $ex2->getMessage(); }
+            }
             inv_audit('gate_save', $id, ['no' => $no, 'type' => $type, 'lines' => $n], 'Gate pass saved');
             $_SESSION['flash'] = $n > 0
                 ? 'Gate pass ' . $no . ' saved with ' . $n . ' line(s). Nothing has moved in stock yet — press "Post to stock" below to update the ledger.'
@@ -331,9 +368,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($act === 'post') {
         if (!$canPost) { http_response_code(403); exit('You do not have permission to post to stock.'); }
         $id = (int)($_POST['id'] ?? 0);
+        /* IMPORT PASS: kg on every import line, no unexplained over-receipt,
+           never an "already in stock" opening import. The normal posting
+           rules below still apply in full. */
+        $impId = $impOfGate($id);
+        if ($impId > 0 && $impLoad() && ($why = imp_receipt_check($id)) !== '') { $_SESSION['error'] = $why; redirect('inv_gate.php?id=' . $id); }
         $r = inv_gate_post($id);
         if ($r['ok']) $_SESSION['flash'] = 'Posted. Stock has been updated.';
         else $_SESSION['error'] = $r['error'];
+        if ($r['ok'] && $impId > 0) imp_receipt_after($id, 'post');
         redirect('inv_gate.php?id=' . $id);
     }
 
@@ -343,6 +386,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $r = inv_gate_reverse($id, (string)($_POST['reason'] ?? ''));
         if ($r['ok']) $_SESSION['flash'] = 'Reversed. An opposite set of stock entries has been written.';
         else $_SESSION['error'] = $r['error'];
+        /* IMPORT PASS: on the import's timeline; its balance comes back by itself */
+        if ($r['ok'] && $impOfGate($id) > 0 && $impLoad()) imp_receipt_after($id, 'reverse', (string)($_POST['reason'] ?? ''));
         redirect('inv_gate.php?id=' . $id);
     }
 
@@ -353,7 +398,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$canEdit) { http_response_code(403); exit('You do not have permission to delete gate passes.'); }
         $id  = (int)($_POST['id'] ?? 0);
         $dir2 = ($_POST['direction'] ?? $dir) === 'out' ? 'out' : 'in';
+        $impGone = $impOfGate($id);
         $r = inv_gate_delete($id, (string)($_POST['reason'] ?? ''));
+        /* IMPORT PASS: its import-side rows go with it */
+        if ($r['ok'] && $impGone > 0 && $impLoad()) imp_receipt_forget($id);
         if ($r['ok']) {
             $_SESSION['flash'] = 'Deleted ' . $r['gate_no'] . '.'
                 . ($r['ledger_removed'] ? ' Its ' . $r['ledger_removed'] . ' stock row(s) were removed with it.' : '');
@@ -403,6 +451,30 @@ if (!empty($_GET['id'])) {
     } catch (Throwable $e) {}
 }
 $isNew  = isset($_GET['new']);
+
+/* IMPORT PASS — a new pass filled from the import (&import=ID): supplier,
+   type Purchase, and each line's balance still to come in the item's own
+   unit, with its lot, its kg and the landed cost as the rate. */
+$IMPPRE = null; $impCtx = 0; $impKg = []; $impRcv = null; $impItems = []; $impCont = [];
+if ($isNew && $dir === 'in' && (int)($_GET['import'] ?? 0) > 0 && $canEdit && $impLoad()) {
+    $iq = db()->prepare("SELECT * FROM imp_imports WHERE id=?"); $iq->execute([(int)$_GET['import']]);
+    $impRow = $iq->fetch();
+    if (!$impRow || !imp_can('imp', 'v')) { $_SESSION['error'] = 'That import is not available to you.'; redirect('inv_gate.php?dir=in'); }
+    $IMPPRE = imp_gate_prefill($impRow);
+    if (!$IMPPRE['ok']) { $_SESSION['error'] = implode(' ', $IMPPRE['errors']); redirect('imp_gatein.php?id=' . (int)$impRow['id']); }
+    $impCtx = (int)$impRow['id'];
+    foreach ($IMPPRE['lines'] as $pl) $impKg[(int)$pl['imp_line_id']] = $pl['imp_kg'];
+} elseif ($doc && (int)($doc['import_id'] ?? 0) > 0 && $impLoad()) {
+    $impCtx = (int)$doc['import_id'];
+    $iq = db()->prepare("SELECT * FROM imp_imports WHERE id=?"); $iq->execute([$impCtx]); $impRow = $iq->fetch() ?: ['ref' => '?', 'id' => $impCtx];
+    try {
+        $k = db()->prepare("SELECT * FROM imp_receipt_lines WHERE gate_id=?"); $k->execute([(int)$doc['id']]);
+        foreach ($k->fetchAll() as $r) { $impKg[(int)$r['imp_line_id']] = (float)$r['net_kg']; $impRcvL[(int)$r['imp_line_id']] = $r; }
+        $k = db()->prepare("SELECT * FROM imp_receipts WHERE gate_id=?"); $k->execute([(int)$doc['id']]); $impRcv = $k->fetch() ?: null;
+    } catch (Throwable $e) {}
+}
+if ($impCtx) { $impCont = imp_containers($impCtx); $impN = []; foreach (array_values(imp_lines($impCtx)) as $i => $il) $impN[(int)$il['id']] = $i + 1; }
+$impRcvL = $impRcvL ?? [];
 /* Opening a saved pass shows the DOCUMENT, not the editor. That is what
    puts "Post to stock" on screen — the button lives in the document view,
    so a draft that always reopened in the editor could never be posted.
@@ -478,6 +550,7 @@ if ($showForm) {
     } catch (Throwable $e) {}
     try { $proformas = db()->query("SELECT id,pi_no,customer_name FROM proforma_invoices ORDER BY id DESC LIMIT 300")->fetchAll(); } catch (Throwable $e) {}
 }
+if ($showForm && $IMPPRE) $lines = $IMPPRE['lines'];   /* IMPORT PASS: filled from the import */
 if ($showForm && !$lines) $lines = [[]];
 
 /* contract balance panel */
@@ -608,6 +681,13 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
 .ig-kpi .l{font-size:10px;color:#8a97ab;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
 .ig-kpi .v{font-size:19px;font-weight:800;margin-top:5px;font-variant-numeric:tabular-nums}
 .ig-bar{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;background:#fff;border:1px solid #e3e9f2;border-radius:14px;padding:14px 16px;margin-bottom:16px}
+/* IMPORT PASS ONLY (Phase 2): the import receipt panel and the net kg in
+   brackets beside a line's quantity. Nothing on an ordinary pass uses these. */
+.ig-imp{margin-top:14px;border:2px solid rgba(14,168,201,.45);border-radius:14px;background:#f5fbfd;padding:12px 14px}
+.ig-imp4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:10px}
+@media(max-width:800px){.ig-imp4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.ig-impkg{display:flex;align-items:center;gap:4px;margin-top:4px;color:#5a49c2;font-weight:700;font-size:11.5px;white-space:nowrap}
+.ig-impkg input{width:90px;border-color:rgba(109,91,208,.45)}
 </style>
 
 <?php /* OPTING IN TO THE SKIN.
@@ -624,7 +704,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
          other way round. It closes before page_footer(). */ ?>
 <div class="zskin">
 
-<?php if ($showForm): $D = $doc ?: []; $curType = $D['txn_type'] ?? array_key_first($TYPES); ?>
+<?php if ($showForm): $D = $doc ?: (($IMPPRE ?? null)['head'] ?? []); $curType = $D['txn_type'] ?? array_key_first($TYPES); ?>
 <div class="ig-card">
   <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800"><?= $doc ? 'Edit ' . e($doc['gate_no']) : 'New ' . e($dirLabel) . ' pass' ?></h2>
   <p style="color:#8a97ab;font-size:12px;margin:0 0 14px">The number is generated on save. Draft and verified do not touch stock.</p>
@@ -633,6 +713,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
     <input type="hidden" name="action" value="save">
     <input type="hidden" name="id" value="<?= (int)($D['id'] ?? 0) ?>">
     <input type="hidden" name="direction" value="<?= e($dir) ?>">
+    <?php if (!empty($IMPPRE)): /* IMPORT PASS: which import this new pass belongs to */ ?><input type="hidden" name="import_id" value="<?= $impCtx ?>"><?php endif; ?>
 
     <div class="ig-grid">
       <div><label class="ig-lbl">Pass no.</label><input class="ig-inp" name="gate_no" value="<?= e($D['gate_no'] ?? '') ?>" placeholder="auto" style="font-family:monospace"></div>
@@ -857,6 +938,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       <span class="ctag<?= $lcid > 0 ? ' set' : '' ?>" title="<?= $lcTxt !== '' ? e($lcTxt) : 'Booked against this contract line' ?>"><?= e(short_ref($lcTxt)) ?></span>
             <input type="hidden" class="cid"   name="line[<?= $i ?>][contract_id]"      value="<?= $lcid > 0 ? $lcid : '' ?>">
             <input type="hidden" class="citem" name="line[<?= $i ?>][contract_item_id]" value="<?= e((string)($L['contract_item_id'] ?? '')) ?>">
+            <?php if (!empty($impCtx)): /* IMPORT PASS: the import line this row came from (a new row added by hand has none) */ ?><input type="hidden" class="impl" name="line[<?= $i ?>][imp_line_id]" value="<?= (int)($L['imp_line_id'] ?? 0) ?: '' ?>"><?php endif; ?>
           </div></td>
           <td><input class="ig-inp lot lovf" data-lov="lot" name="line[<?= $i ?>][lot_no]"
                  value="<?= e($L['lot_no'] ?? '') ?>" style="font-family:monospace" autocomplete="off"
@@ -865,7 +947,12 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
           <?php if ($dir === 'out'): ?><td class="r avail">—</td><?php endif; ?>
           <td><input class="ig-inp uom derived" name="line[<?= $i ?>][uom]" value="<?= e($L['uom'] ?? '') ?>"
                  tabindex="-1" title="From the item. Type over it if this pass is different."></td>
-          <td><input class="ig-inp qty num" name="line[<?= $i ?>][qty]" value="<?= e((string)($L['qty'] ?? '')) ?>" placeholder="0.000"></td>
+          <td><input class="ig-inp qty num" name="line[<?= $i ?>][qty]" value="<?= e((string)($L['qty'] ?? '')) ?>" placeholder="0.000">
+            <?php /* IMPORT PASS: the net kg in brackets, for EFS only — kept on the import, never in the stock ledger. Not shown for an item kept in kg. */
+            $impL = (int)($L['imp_line_id'] ?? 0);
+            if (!empty($impCtx) && $impL && imp_uom_unit((string)($L['uom'] ?? '')) !== 'kg'): ?>
+              <div class="ig-impkg">( <input class="ig-inp num" name="line[<?= $i ?>][imp_kg]" value="<?= e(rtrim(rtrim(number_format((float)($impKg[$impL] ?? 0), 3, '.', ''), '0'), '.')) ?>" placeholder="net kg"> kg )</div>
+            <?php endif; ?></td>
           <td><input class="ig-inp rate num derived" name="line[<?= $i ?>][rate]" value="<?= e((string)($L['rate'] ?? '')) ?>"
                  placeholder="0.0000" title="From the lot, the contract, or the item. Type over it to change this pass."></td>
           <td class="r amt"><?= number_format((float)($L['amount'] ?? 0), 2) ?></td>
@@ -943,6 +1030,40 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
              on an empty quantity and said nothing at all, which reads as a
              frozen screen. Caught by the test, not by reading. */ ?>
     <div id="lineWarn" class="ig-note warn" style="margin-top:12px;display:none"></div>
+
+    <?php if (!empty($impCtx)): /* IMPORT PASS ONLY — the import receipt panel. An ordinary pass never shows it. */ ?>
+    <script>
+    /* a row added by hand on an import pass is not an import line: no kg box */
+    document.addEventListener('DOMContentLoaded', function () {
+      var b = document.getElementById('addg'); if (!b) return;
+      b.addEventListener('click', function () {
+        var rows = document.querySelectorAll('#glines tbody tr:not(.detail)'), last = rows[rows.length - 1];
+        if (last) { var k = last.querySelector('.ig-impkg'); if (k) k.remove(); }
+      });
+    });
+    </script>
+    <div class="ig-imp">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="color:#0b7f99">Import receipt · <?= e($impRow['ref']) ?></b>
+        <a href="imp_gatein.php?id=<?= $impCtx ?>" style="font-size:12px">open the import →</a></div>
+      <div class="ig-imp4">
+        <div><label class="ig-lbl">Container</label><select class="ig-inp" name="imp_container_id"><option value="0">—</option><?php foreach ($impCont as $c): ?><option value="<?= (int)$c['id'] ?>"<?= (int)($impRcv['container_id'] ?? 0) === (int)$c['id'] ? ' selected' : '' ?>><?= e($c['container_no'] ?: ('#' . $c['id'])) ?></option><?php endforeach; ?></select></div>
+        <div><label class="ig-lbl">Packages</label><input class="ig-inp num" name="imp_packages" value="<?= e((string)($impRcv['packages'] ?? '')) ?>"></div>
+        <div><label class="ig-lbl">Weighbridge gross kg</label><input class="ig-inp num" name="imp_gross" value="<?= e(isset($impRcv['gross_kg']) ? rtrim(rtrim((string)$impRcv['gross_kg'], '0'), '.') : '') ?>"></div>
+        <div><label class="ig-lbl">Tare kg (truck)</label><input class="ig-inp num" name="imp_tare" value="<?= e(isset($impRcv['tare_kg']) ? rtrim(rtrim((string)$impRcv['tare_kg'], '0'), '.') : '') ?>"></div>
+      </div>
+      <div style="overflow-x:auto;margin-top:10px"><table class="ig-tbl" style="min-width:620px">
+        <thead><tr><th>Import line</th><th class="r">Damaged</th><th class="r">Rejected</th><th class="r">Short</th><th>Remark</th></tr></thead>
+        <tbody><?php foreach ($lines as $L): $impL = (int)($L['imp_line_id'] ?? 0); if (!$impL) continue; $rv = $impRcvL[$impL] ?? []; $z = fn($v) => (float)$v ? rtrim(rtrim((string)$v, '0'), '.') : ''; ?>
+          <tr><td><?= (int)($impN[$impL] ?? 0) ?> · <?= e(($L['mcode'] ?? '') !== '' ? $L['mcode'] : ($L['description'] ?? '')) ?> <span style="color:#8a97ab">in <?= e($L['uom'] ?? '') ?></span></td>
+            <td><input class="ig-inp num" name="imp_rcv[<?= $impL ?>][damaged]" value="<?= e($z($rv['damaged'] ?? 0)) ?>" placeholder="0"></td>
+            <td><input class="ig-inp num" name="imp_rcv[<?= $impL ?>][rejected]" value="<?= e($z($rv['rejected'] ?? 0)) ?>" placeholder="0"></td>
+            <td><input class="ig-inp num" name="imp_rcv[<?= $impL ?>][short]" value="<?= e($z($rv['short_qty'] ?? 0)) ?>" placeholder="0"></td>
+            <td><input class="ig-inp" name="imp_rcv[<?= $impL ?>][remark]" value="<?= e($rv['remark'] ?? '') ?>" placeholder="e.g. 3 bales wet"></td></tr>
+        <?php endforeach; ?></tbody>
+      </table></div>
+      <p style="font-size:11.5px;color:#5a6b82;margin:8px 0 0"><b>Quantity</b> on each line is what goes into stock, in the item's own unit. The figure in brackets is its net kg, kept on the import for EFS. <b>Damaged / rejected / short</b> are recorded for the supplier claim and never go into stock.</p>
+    </div>
+    <?php endif; ?>
 
     <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="ig-btn sec" id="addg">+ Add line</button>
@@ -2417,6 +2538,23 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   </table></div>
 
   <?php if ($doc['remarks']): ?><p style="font-size:12.5px;color:#5a6b82;margin:14px 0 0"><b>Remarks:</b> <?= e($doc['remarks']) ?></p><?php endif; ?>
+
+  <?php if (!empty($impCtx)): /* IMPORT PASS ONLY — what this pass received for the import, kg in brackets */ ?>
+  <div class="ig-imp">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="color:#0b7f99">Import receipt · <?= e($impRow['ref']) ?></b>
+      <a href="imp_gatein.php?id=<?= $impCtx ?>" style="font-size:12px">open the import →</a></div>
+    <?php $cn = ''; foreach ($impCont as $c) if ((int)$c['id'] === (int)($impRcv['container_id'] ?? 0)) $cn = (string)$c['container_no']; ?>
+    <p style="font-size:12.5px;margin:8px 0">Container <b><?= e($cn ?: '—') ?></b> · packages <b><?= e((string)($impRcv['packages'] ?? '—')) ?></b>
+      <?php if (!empty($impRcv['gross_kg'])): ?> · weighbridge <?= e(number_format((float)$impRcv['gross_kg'], 3)) ?> − <?= e(number_format((float)($impRcv['tare_kg'] ?? 0), 3)) ?> = <b><?= e(number_format((float)$impRcv['gross_kg'] - (float)($impRcv['tare_kg'] ?? 0), 3)) ?> kg</b><?php endif; ?></p>
+    <div style="overflow-x:auto"><table class="ig-tbl" style="min-width:560px"><thead><tr><th>Import line</th><th class="r">Into stock (kg)</th><th class="r">Damaged · rejected · short</th><th>Remark</th></tr></thead><tbody>
+    <?php foreach ($lines as $L): $impL = (int)($L['imp_line_id'] ?? 0); if (!$impL) continue; $rv = $impRcvL[$impL] ?? []; ?>
+      <tr><td><?= (int)($impN[$impL] ?? 0) ?> · <?= e($L['mcode'] ?: ($L['pname'] ?: $L['description'])) ?></td>
+        <td class="r"><b><?= e(imp_qty_kg((float)$L['qty'], (string)$L['uom'], isset($impKg[$impL]) ? (float)$impKg[$impL] : null)) ?></b></td>
+        <td class="r"><?= e(rtrim(rtrim(number_format((float)($rv['damaged'] ?? 0), 3), '0'), '.') . ' · ' . rtrim(rtrim(number_format((float)($rv['rejected'] ?? 0), 3), '0'), '.') . ' · ' . rtrim(rtrim(number_format((float)($rv['short_qty'] ?? 0), 3), '0'), '.')) ?></td>
+        <td><?= e($rv['remark'] ?? '') ?></td></tr>
+    <?php endforeach; ?></tbody></table></div>
+  </div>
+  <?php endif; ?>
 
   <?php
   /* PHOTOGRAPHS TAKEN AT THE GATE.

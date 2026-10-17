@@ -53,7 +53,8 @@ $dl = imp_efs_deadline($imp);
 $canEdit = imp_can('efs', 'u'); $ro = $canEdit ? '' : ' readonly';
 $T = ['kg' => 0.0, 'imported' => 0.0, 'need_kg' => 0.0, 'need_value' => 0.0];
 $rows = [];
-foreach ($lines as $l) { $x = imp_efs_line($l); $rows[] = [$l, $x]; foreach ($T as $k => $v) $T[$k] += $x[$k]; }
+$gdVal = imp_gd_valuation($lines);   /* Phase 2: the assessed value from the GD */
+foreach ($lines as $l) { $x = imp_efs_line($l, $gdVal[(int)$l['id']] ?? null); $rows[] = [$l, $x]; foreach ($T as $k => $v) $T[$k] += $x[$k]; }
 $f = static fn($v, $d = 2) => number_format((float)$v, $d);
 $raw = static fn($v) => $v === null || $v === '' ? '' : rtrim(rtrim((string)$v, '0'), '.');
 
@@ -95,7 +96,7 @@ imp_tab_strip($imp, 'efs');
   </table></div>
   <?php if ($canEdit): ?><div style="margin-top:10px"><button class="xbtn">Save EFS figures</button></div><?php endif; ?>
   <?php endif; ?>
-  <div class="xnote imp-small" style="margin-top:12px">Blank valuation uses the invoice value per kg (shown greyed) until the customs valuation is typed; blank wastage is <?= e($raw(IMP_EFS_WASTE)) ?>%; blank value addition is 0%.
+  <div class="xnote imp-small" style="margin-top:12px">Blank valuation uses the customs-assessed value per kg from the GD on CUSTOMS, or the invoice value per kg until the GD is assessed (shown greyed); blank wastage is <?= e($raw(IMP_EFS_WASTE)) ?>%; blank value addition is 0%.
     The value to export is the <b>full</b> imported value (plus value addition) — it is not reduced by the wastage. Matching exports against each line, and what is still owed, comes in Phase 3.
     Raw material leaves stock once, at consumption; an export only clears the obligation.</div>
 </div>

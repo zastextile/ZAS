@@ -41,14 +41,23 @@ copy($B . 'includes/storage.php', $work . '/includes/storage.php');
 
 $schema = <<<'SQL'
 CREATE TABLE exp_meta (k TEXT PRIMARY KEY, v TEXT, updated_at TEXT);
-INSERT INTO exp_meta VALUES ('imp_schema_version', '1', NULL);
+INSERT INTO exp_meta VALUES ('imp_schema_version', '2', NULL);
 CREATE TABLE exp_masters (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, label TEXT, code TEXT, sort_order INT DEFAULT 0, is_active INT DEFAULT 1, flags TEXT, UNIQUE(kind, label));
 CREATE TABLE exp_providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_active INT DEFAULT 1);
 CREATE TABLE exp_provider_roles (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INT, role TEXT);
 CREATE TABLE exp_banks (id INTEGER PRIMARY KEY AUTOINCREMENT, bank_name TEXT, currency TEXT, sort_order INT DEFAULT 0, is_active INT DEFAULT 1);
 CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, role TEXT, is_active INT DEFAULT 1, password_hash TEXT);
 CREATE TABLE inv_parties (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, party_type TEXT, is_active INT DEFAULT 1);
-CREATE TABLE inv_materials (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, is_active INT DEFAULT 1);
+CREATE TABLE inv_materials (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, item_group TEXT DEFAULT 'Other', material_type TEXT, uom TEXT DEFAULT 'KG', is_active INT DEFAULT 1);
+CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_active INT DEFAULT 1);
+CREATE TABLE costing_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, material_id INT);
+CREATE TABLE inv_gate (id INTEGER PRIMARY KEY AUTOINCREMENT, gate_no TEXT, direction TEXT DEFAULT 'in', gate_date TEXT, status TEXT DEFAULT 'draft', vehicle_no TEXT, remarks TEXT, import_id INT);
+CREATE TABLE inv_gate_items (id INTEGER PRIMARY KEY AUTOINCREMENT, gate_id INT, material_id INT, product_id INT, qty REAL, uom TEXT, rate REAL, lot_no TEXT, sort_order INT DEFAULT 0, imp_line_id INT);
+CREATE TABLE imp_gd_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT NOT NULL, invoice_id INT, line_no INT NOT NULL DEFAULT 0, hs_code TEXT, description TEXT NOT NULL DEFAULT '',
+  declared_qty REAL, declared_unit TEXT, declared_value REAL, assessed_value REAL, exemption_ref TEXT, diff_reason TEXT, updated_by INT, updated_at TEXT);
+CREATE TABLE imp_receipts (gate_id INTEGER PRIMARY KEY, import_id INT NOT NULL, container_id INT, packages INT, gross_kg REAL, tare_kg REAL, updated_by INT, updated_at TEXT);
+CREATE TABLE imp_receipt_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, gate_id INT NOT NULL, import_id INT NOT NULL, imp_line_id INT NOT NULL, net_kg REAL NOT NULL DEFAULT 0,
+  damaged REAL NOT NULL DEFAULT 0, rejected REAL NOT NULL DEFAULT 0, short_qty REAL NOT NULL DEFAULT 0, remark TEXT, UNIQUE(gate_id, imp_line_id));
 CREATE TABLE imp_imports (id INTEGER PRIMARY KEY AUTOINCREMENT, ref TEXT NOT NULL UNIQUE, employee TEXT, supplier_party_id INT, supplier_name TEXT NOT NULL DEFAULT '',
   origin_country TEXT, shipped_from TEXT, contract_no TEXT, contract_date TEXT, incoterm TEXT, incoterm_place TEXT, currency TEXT NOT NULL DEFAULT 'USD',
   import_type TEXT NOT NULL DEFAULT 'ordinary', pay_method TEXT, advance_pct REAL NOT NULL DEFAULT 0, credit INT NOT NULL DEFAULT 0, credit_days INT NOT NULL DEFAULT 0,
@@ -58,11 +67,12 @@ CREATE TABLE imp_imports (id INTEGER PRIMARY KEY AUTOINCREMENT, ref TEXT NOT NUL
   commission INT NOT NULL DEFAULT 0, com_beneficiary TEXT, com_rate_pct REAL NOT NULL DEFAULT 0,
   is_opening INT NOT NULL DEFAULT 0, already_in_stock INT NOT NULL DEFAULT 0, efs_months INT NOT NULL DEFAULT 9, alloc_basis TEXT NOT NULL DEFAULT 'kg',
   manual_status TEXT, notes TEXT, created_by INT, created_at TEXT, updated_by INT, updated_at TEXT);
-CREATE TABLE imp_invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT NOT NULL, sort_order INT NOT NULL DEFAULT 0, invoice_no TEXT, invoice_date TEXT, gd_no TEXT, gd_date TEXT);
+CREATE TABLE imp_invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT NOT NULL, sort_order INT NOT NULL DEFAULT 0, invoice_no TEXT, invoice_date TEXT, gd_no TEXT, gd_date TEXT,
+  gd_station TEXT, gd_agent_id INT, gd_status TEXT, gd_assessed TEXT, gd_released TEXT, gd_notes TEXT);
 CREATE TABLE imp_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT NOT NULL, invoice_id INT, sort_order INT NOT NULL DEFAULT 0, category TEXT NOT NULL DEFAULT 'Other',
   material_id INT, product_id INT, description TEXT NOT NULL DEFAULT '', hs_code TEXT, supplier_ref TEXT, bill_unit TEXT NOT NULL DEFAULT 'kg',
   bill_qty REAL NOT NULL DEFAULT 0, rate REAL NOT NULL DEFAULT 0, net_kg REAL NOT NULL DEFAULT 0, gross_kg REAL NOT NULL DEFAULT 0, packages INT NOT NULL DEFAULT 0,
-  specs TEXT, efs_valuation REAL, efs_waste_pct REAL, efs_va_pct REAL);
+  specs TEXT, efs_valuation REAL, efs_waste_pct REAL, efs_va_pct REAL, stock_qty REAL, gd_line_id INT, size_label TEXT);
 CREATE TABLE imp_logistics (import_id INTEGER PRIMARY KEY, booking_no TEXT, booking_date TEXT, forwarder_id INT, shipping_line_id INT, vessel TEXT, voyage TEXT,
   pol TEXT, transship TEXT, pod TEXT, etd TEXT, eta TEXT, departed TEXT, arrival TEXT, bl_no TEXT, bl_date TEXT, bl_type TEXT, bl_released INT NOT NULL DEFAULT 0,
   gd_filed TEXT, customs_release TEXT, do_date TEXT, port_gate_out TEXT, factory_gate_in TEXT, empty_return TEXT,
@@ -91,7 +101,9 @@ INSERT INTO exp_masters (kind, label, sort_order, flags) VALUES ('imp_doc_type',
 INSERT INTO exp_providers (name) VALUES ('Sea Hawk Logistics'); INSERT INTO exp_provider_roles (provider_id, role) VALUES (1, 'freight_forwarder');
 INSERT INTO exp_banks (bank_name, currency) VALUES ('Meezan Bank', 'USD');
 INSERT INTO inv_parties (code, name, party_type) VALUES ('SUP-0001', 'Shaoxing Huajie Textiles', 'supplier');
-INSERT INTO inv_materials (code, name) VALUES ('MAT-0001', 'Polyester fiber 1.4D');
+INSERT INTO inv_materials (code, name, uom) VALUES ('MAT-0001', 'Polyester fiber 1.4D', 'KG'), ('FAB-0118', 'Poly-cotton 65/35 bleached 250 cm', 'MTR'), ('FAB-0121', 'Poly-cotton dyed navy', 'YDS');
+INSERT INTO products (name) VALUES ('Bed Sheet Set 200 TC King');
+INSERT INTO costing_lines (material_id) VALUES (1), (1), (2);
 SQL;
 
 /* the app's own functions, as small stand-ins on this database */
@@ -146,6 +158,7 @@ $inventory = <<<'PHP'
 <?php
 function inv_parties(string $type = '', bool $active = true): array { return db()->query("SELECT * FROM inv_parties WHERE is_active=1 ORDER BY name")->fetchAll(); }
 function inv_materials(bool $active = true): array { return db()->query("SELECT * FROM inv_materials")->fetchAll(); }
+function inv_perm(string $what): bool { return in_array($GLOBALS['ROLE'], ['admin'], true) || strpos((string)getenv('INVPERM'), $what) !== false; }
 function inv_party_create(string $name, string $type): array {
     $s = db()->prepare("SELECT id, name FROM inv_parties WHERE LOWER(name)=LOWER(?)"); $s->execute([$name]);
     if ($e = $s->fetch()) return ['ok' => true, 'id' => (int)$e['id'], 'name' => $e['name'], 'error' => ''];
@@ -290,7 +303,7 @@ head('4. Invoice lines, packing, logistics');
 $ln = $T + ['import_id' => $id, 'line_id' => [0, 0, 0], 'category' => ['Fiber', 'Fiber', 'PVC'], 'description' => ['Fiber hollow', 'Fiber solid', 'PVC coated fabric'],
             'hs_code' => ['5503.2000', '5503.2000', ''], 'supplier_ref' => ['', '', ''], 'bill_unit' => ['kg', 'kg', 'm'], 'bill_qty' => ['20000', '5000', '2000'],
             'rate' => ['1.75', '1.725', '1.10'], 'net_kg' => ['20000', '', '640'], 'gross_kg' => ['20260', '5065', '660'], 'packages' => ['80', '20', '20'],
-            'specs_json' => ['{"denier":"7D","cut":"64 mm"}', '', '{"thickness":"0.35 mm"}'], 'invoice_id' => [$iv, $iv, $iv], 'material_id' => ['1', '0', '0']];
+            'specs_json' => ['{"denier":"7D","cut":"64 mm"}', '', '{"thickness":"0.35 mm"}'], 'invoice_id' => [$iv, $iv, $iv], 'item_key' => ['m1', '', '']];
 $out = page('imp_invoice.php', ['id' => $id], $ln);
 $lines = imp_lines($id);
 ok(str_contains(said($out), '3 lines') && count($lines) === 3, 'three lines saved', [said($out), said($out, 'error')]);
@@ -310,7 +323,7 @@ $pk = fn(array $o) => page('imp_packing.php', ['id' => $id], array_merge($T + ['
 ok(str_contains(said($pk([])), 'Bale 1–40'), 'Bale 1–40 packed');
 ok(str_contains(said($pk(['serial_from' => '30', 'serial_to' => '50']), 'error'), 'once per kind of package'), 'Bale 30–50 refused: those numbers are taken');
 ok(str_contains(said($pk(['pkg_type' => 'Roll', 'serial_from' => '1', 'serial_to' => '5', 'line_id' => $ids[2], 'net_kg' => '160', 'gross_kg' => '165'])), 'Roll 1–5'), 'but Roll 1–5 is fine — a different kind');
-$noLine = $ln2; foreach (['line_id', 'category', 'description', 'hs_code', 'supplier_ref', 'bill_unit', 'bill_qty', 'rate', 'net_kg', 'gross_kg', 'packages', 'specs_json', 'invoice_id', 'material_id'] as $k) array_shift($noLine[$k]);
+$noLine = $ln2; foreach (['line_id', 'category', 'description', 'hs_code', 'supplier_ref', 'bill_unit', 'bill_qty', 'rate', 'net_kg', 'gross_kg', 'packages', 'specs_json', 'invoice_id', 'item_key'] as $k) array_shift($noLine[$k]);
 ok(str_contains(said(page('imp_invoice.php', ['id' => $id], $noLine), 'error'), 'has packing rows'), 'a line with packing rows cannot be removed from the invoice');
 $html = page('imp_packing.php', ['id' => $id]);
 ok(noWarn($html) && str_contains($html, '40 pkgs short') && str_contains($html, 'not packed yet'), 'the comparison shows a short line and an unpacked one', substr(strip_tags($html), 0, 0));
@@ -408,11 +421,175 @@ foreach (['imp_view.php', 'imp_invoice.php', 'imp_packing.php', 'imp_logistics.p
     $h = page($pg, ['id' => $id]);
     ok(noWarn($h) && str_contains($h, 'Import IMP-'), $pg . ' renders with no PHP warning', preg_match('~.{0,160}(Warning|Notice|Fatal error|Uncaught).{0,200}~s', $h, $mm) ? $mm[0] : substr($h, 0, 200));
 }
-ok(noWarn(page('imp_phase.php', ['id' => $id, 'tab' => 'gatein'])) && str_contains(page('imp_phase.php', ['id' => $imp2['id'], 'tab' => 'gatein']), 'already in stock'), 'Gate In (Phase 2) says when an opening import is already in stock');
+ok(str_contains(page('imp_phase.php', ['id' => $id, 'tab' => 'gatein']), '__REDIRECT__ imp_gatein.php?id=' . $id) && str_contains(page('imp_phase.php', ['id' => $id]), '__REDIRECT__ imp_customs.php?id=' . $id), 'an old Phase 1 tab link forwards to the real CUSTOMS / GATE IN page');
+$gi2 = page('imp_gatein.php', ['id' => $imp2['id']]);
+ok(noWarn($gi2) && str_contains($gi2, 'already in stock') && !str_contains($gi2, 'Receive into stock →'), 'Gate In refuses to receive an opening import that is already in stock', substr(strip_tags($gi2), 0, 300));
 /* delete: never with money on it */
 ok(str_contains(said(page('imp_view.php', ['id' => $id], $T + ['action' => 'delete', 'import_id' => $id, 'confirm_ref' => $imp['ref']]), 'error'), 'payments'), 'an import with payments on it cannot be deleted');
 $out = page('imp_view.php', ['id' => $imp2['id']], $T + ['action' => 'delete', 'import_id' => $imp2['id'], 'confirm_ref' => $imp2['ref']]);
 ok(str_contains(said($out), 'deleted') && !$q("SELECT id FROM imp_imports WHERE id=?", [$imp2['id']]), 'an empty one can be, typing its reference');
+
+
+/* =================================================================== 9 */
+head('9. Phase 2 — items, the stock unit, customs, receiving');
+/* a fresh import: three lines billed in kg, m and yd, paid at a known rate */
+db()->exec("INSERT INTO imp_imports (ref, supplier_party_id, supplier_name, currency, import_type, alloc_basis) VALUES ('IMP-P2-0001', 1, 'Shaoxing Huajie Textiles', 'USD', 'efs', 'value')");
+$pid = (int)db()->lastInsertId();
+db()->exec("INSERT INTO imp_invoices (import_id, sort_order, invoice_no) VALUES ($pid, 1, 'HJ-77')");
+$piv = (int)db()->lastInsertId();
+db()->exec("INSERT INTO imp_payments (import_id, kind, paid_on, amount, rate) VALUES ($pid, 'payment', '2026-10-01', 54200, 280)");
+db()->exec("INSERT INTO imp_costs (import_id, kind, currency, est_amount, amount) VALUES ($pid, 'service', 'PKR', 0, 500000), ($pid, 'duty', 'PKR', 0, 185000)");
+db()->exec("INSERT INTO imp_containers (import_id, container_no) VALUES ($pid, 'TGHU 902115-1')");
+$pcont = (int)db()->lastInsertId();
+$inv = $T + ['import_id' => $pid, 'line_id' => ['0', '0', '0', '0'], 'category' => ['Fiber', 'Fabric', 'Fabric', 'Bedding'], 'description' => ['Polyester fiber hollow', 'PC fabric bleached 250', 'PC fabric dyed navy 280', 'Bed sheet sets King'],
+    'hs_code' => ['5503.2000', '5513.2100', '5513.2100', '6302.2100'], 'supplier_ref' => ['', '', '', ''], 'bill_unit' => ['kg', 'm', 'yd', 'set'], 'bill_qty' => ['20000', '12000', '5000', '100'],
+    'rate' => ['1.75', '1.10', '1.20', '2'], 'net_kg' => ['', '3600', '1408', '150'], 'gross_kg' => ['', '', '', ''], 'packages' => ['', '', '', ''], 'specs_json' => ['', '', '', ''],
+    'invoice_id' => [$piv, $piv, $piv, $piv], 'item_key' => ['m1', 'm2', 'm2', 'p1'], 'stock_qty' => ['', '', '', ''], 'size_label' => ['', '', '', 'King']];
+page('imp_invoice.php', ['id' => $pid], $inv);
+$pl = $q("SELECT * FROM imp_lines WHERE import_id=? ORDER BY sort_order", [$pid]);
+ok(count($pl) === 4 && (int)$pl[0]['material_id'] === 1 && (int)$pl[1]['material_id'] === 2 && (int)$pl[3]['product_id'] === 1 && $pl[3]['material_id'] === null && $pl[3]['size_label'] === 'King',
+   'each line links to an Item Master material or a Product Master product (with its size)', array_map(fn($l) => [$l['material_id'], $l['product_id'], $l['size_label']], $pl));
+$ITEMS = imp_item_options(false);
+ok(($ITEMS['m1']['costing'] ?? 0) === 2 && ($ITEMS['m2']['costing'] ?? 0) === 1 && ($ITEMS['p1']['uom'] ?? '') === 'PCS' && ($ITEMS['p1']['code'] ?? '') === 'PRD-1',
+   'the picker lists both masters, with how many costing lines use each material', $ITEMS);
+
+/* the stock unit rule */
+$st = fn($i) => imp_stock_qty($pl[$i], $ITEMS[imp_line_key($pl[$i])] ?? null);
+ok($st(0)['ok'] && $st(0)['qty'] == 20000 && $st(0)['how'] === 'same as billed', 'billed in kg, kept in KG: the billed quantity', $st(0));
+ok($st(1)['ok'] && $st(1)['qty'] == 12000 && $st(1)['uom'] === 'MTR', 'billed in m, kept in MTR: the billed quantity', $st(1));
+ok($st(2)['ok'] && abs($st(2)['qty'] - 4572) < 0.001 && $st(2)['how'] === 'yd × 0.9144', 'billed in yd, kept in MTR: converted, 5,000 yd = 4,572 m', $st(2));
+ok(!$st(3)['ok'] && $st(3)['need_type'] && str_contains($st(3)['why'], 'PCS'), 'billed in sets, kept in PCS: never guessed — it must be typed', $st(3));
+ok(imp_stock_qty(['bill_unit' => 'm', 'bill_qty' => 100, 'net_kg' => 30, 'stock_qty' => null], ['uom' => 'KGS'])['qty'] == 30, 'an item kept in KGS takes the net kg');
+ok(imp_stock_qty(['bill_unit' => 'm', 'bill_qty' => 914.4, 'net_kg' => 0, 'stock_qty' => null], ['uom' => 'YDS'])['qty'] == 1000, 'billed in m, kept in YDS: 914.4 m = 1,000 yd');
+ok(imp_qty_kg(12000, 'MTR', 3600) === '12,000 MTR (3,600 kg)' && imp_qty_kg(20000, 'KG', 20000) === '20,000 KG', 'shown as real unit first, kg in brackets — once for an item kept in kg');
+$inv2 = $inv; $inv2['line_id'] = array_map(fn($l) => (string)$l['id'], $pl); $inv2['stock_qty'] = ['', '', '', '-5'];
+ok(str_contains(said(page('imp_invoice.php', ['id' => $pid], $inv2), 'error'), 'cannot be negative'), 'a negative quantity into stock is refused');
+$inv2['stock_qty'] = ['', '', '', '100'];
+page('imp_invoice.php', ['id' => $pid], $inv2);
+$pl = $q("SELECT * FROM imp_lines WHERE import_id=? ORDER BY sort_order", [$pid]);
+$st = fn($i) => imp_stock_qty($pl[$i], $ITEMS[imp_line_key($pl[$i])] ?? null);
+ok($st(3)['ok'] && $st(3)['qty'] == 100 && $st(3)['how'] === 'typed' && (int)$pl[0]['id'] === (int)$inv2['line_id'][0], 'typed once, the PCS quantity is used — and the lines keep their ids');
+$ip = page('imp_invoice.php', ['id' => $pid]);
+ok(noWarn($ip) && str_contains($ip, 'name="item_key[]"') && str_contains($ip, 'value="p1"') && str_contains($ip, 'id="ipNew"'), 'the invoice page draws the picker, with New item for an Item Master user', substr(strip_tags($ip), 0, 200));
+ok(!str_contains(page('imp_invoice.php', ['id' => $pid], null, 'ROLE=colleague PERMS=\'{"imp":"vu"}\''), 'id="ipNew"') && str_contains(page('imp_invoice.php', ['id' => $pid], null, 'ROLE=colleague INVPERM=master PERMS=\'{"imp":"vu"}\''), 'id="ipNew"'),
+   'New item is offered only with the Item Master permission');
+
+/* New item (B): save the invoice, go to the existing New Item page, come back linked */
+$nb = $inv2; $nb['new_item_for'] = '1';
+$out = page('imp_invoice.php', ['id' => $pid], $nb);
+ok(str_contains($out, '__REDIRECT__ inv_items.php?new=1&name=PC+fabric+bleached+250&uom=MTR&group=Fabric') && str_contains($out, 'return=imp_invoice.php%3Fid%3D' . $pid),
+   'New item saves the invoice and opens Item Master → New Item, filled from the line, with the way back', substr($out, 0, 260));
+db()->exec("INSERT INTO inv_materials (code, name, uom) VALUES ('FB-0009', 'PC fabric bleached 250', 'MTR')");
+$newMat = (int)db()->lastInsertId();
+$out = page('imp_invoice.php', ['id' => $pid, 'new_item' => $newMat]);
+ok(str_contains(said($out), 'FB-0009 created and linked') && (int)$q("SELECT material_id FROM imp_lines WHERE id=?", [$pl[1]['id']])[0]['material_id'] === $newMat,
+   'back from Item Master, the new item is linked to the line it was made for', said($out));
+db()->exec("UPDATE imp_lines SET material_id=2 WHERE id=" . (int)$pl[1]['id']);
+page('imp_invoice.php', ['id' => $pid, 'new_item' => $newMat]);
+ok((int)$q("SELECT material_id FROM imp_lines WHERE id=?", [$pl[1]['id']])[0]['material_id'] === 2, 'the same link opened again changes nothing — it works once, for the line it was made for');
+page('imp_invoice.php', ['id' => $pid], $nb);
+page('imp_invoice.php', ['id' => $pid, 'new_item' => 1]);
+ok((int)$q("SELECT material_id FROM imp_lines WHERE id=?", [$pl[1]['id']])[0]['material_id'] === 2, 'an item that existed before New item was pressed is not accepted');
+
+/* customs */
+$cus = fn($post) => page('imp_customs.php', ['id' => $pid], $T + ['import_id' => $pid, 'invoice_id' => $piv] + $post);
+$cus(['action' => 'copy']);
+$gd = $q("SELECT * FROM imp_gd_lines WHERE import_id=? ORDER BY line_no", [$pid]);
+ok(count($gd) === 4 && (float)$gd[1]['declared_value'] === 13200.0 && count($q("SELECT id FROM imp_lines WHERE import_id=? AND gd_line_id IS NULL", [$pid])) === 0,
+   'Copy from invoice: one GD line per invoice line, declared at the supplier value, each line remembering its GD line', $gd);
+ok(str_contains(said($cus(['action' => 'copy']), 'error'), 'already on a GD line'), 'copying twice adds nothing');
+$cus(['action' => 'group']);
+$gd = $q("SELECT * FROM imp_gd_lines WHERE import_id=? ORDER BY line_no", [$pid]);
+$pl = $q("SELECT * FROM imp_lines WHERE import_id=? ORDER BY sort_order", [$pid]);
+ok(count($gd) === 3 && (int)$pl[1]['gd_line_id'] === (int)$pl[2]['gd_line_id'] && (float)$gd[1]['declared_value'] === 19200.0 && $gd[1]['declared_qty'] === null,
+   'Group by HS: the two 5513.2100 lines share one GD line; values add up; metres and yards are not added together', $gd);
+ok(array_map(fn($g) => (int)$g['line_no'], $gd) === [1, 2, 3], 'the GD lines are numbered 1, 2, 3 again after grouping', array_column($gd, 'line_no'));
+ok((int)$pl[1]['material_id'] === 2 && (int)$pl[2]['material_id'] === 2 && $pl[1]['id'] !== $pl[2]['id'], 'grouping keeps both invoice lines — the products stay separate');
+$sv = ['action' => 'save_lines', 'gd' => [$gd[1]['id'] => ['hs_code' => '5513.2100', 'description' => 'Woven PC fabric', 'declared_qty' => '', 'declared_unit' => '', 'declared_value' => '19200', 'assessed_value' => '20600', 'exemption_ref' => 'EFS-AUTH-12', 'diff_reason' => '']]];
+ok(str_contains(said($cus($sv), 'error'), 'give the reason') && $q("SELECT assessed_value FROM imp_gd_lines WHERE id=?", [$gd[1]['id']])[0]['assessed_value'] === null, 'assessed different from declared needs a reason — nothing saved without one');
+$sv['gd'][$gd[1]['id']]['diff_reason'] = 'Valuation ruling 1.18/m';
+$cus($sv);
+ok((float)$q("SELECT assessed_value FROM imp_gd_lines WHERE id=?", [$gd[1]['id']])[0]['assessed_value'] === 20600.0, 'with the reason it is saved');
+$gv = imp_gd_valuation($pl);
+ok(abs($gv[(int)$pl[1]['id']] * 3600 - 20600 * 13200 / 19200) < 0.01 && abs($gv[(int)$pl[2]['id']] * 1408 - 20600 * 6000 / 19200) < 0.01 && !isset($gv[(int)$pl[0]['id']]),
+   'the assessed value is shared back by supplier value, giving each line its own valuation per kg; a line not yet assessed has none', $gv);
+$e1 = imp_efs_line($pl[1], $gv[(int)$pl[1]['id']]);
+ok($e1['source'] === 'GD assessed' && abs($e1['imported'] - 14162.5) < 0.01 && imp_efs_line($pl[0], null)['source'] === 'invoice', 'EFS values the line from the GD once assessed, from the invoice until then', $e1);
+$pl[1]['efs_valuation'] = '9'; ok(imp_efs_line($pl[1], $gv[(int)$pl[1]['id']])['source'] === 'typed', 'a valuation typed on the EFS tab still wins');
+$cus(['action' => 'save_gd', 'gd_no' => 'KPAF-1', 'gd_date' => '2026-10-27', 'gd_released' => '2026-10-28', 'gd_status' => '']);
+$lg = $q("SELECT gd_filed, customs_release FROM imp_logistics WHERE import_id=?", [$pid]);
+ok(($q("SELECT gd_status FROM imp_invoices WHERE id=?", [$piv])[0]['gd_status'] ?? '') === 'released' && ($lg[0]['customs_release'] ?? '') === '2026-10-28' && ($lg[0]['gd_filed'] ?? '') === '2026-10-27',
+   'a release date marks the GD released and fills LOGISTICS (which starts the EFS clock)', $lg);
+ok(str_contains(said($cus(['action' => 'save_gd', 'gd_date' => '2026-10-27', 'gd_released' => '2026-10-20']), 'error'), 'cannot be before'), 'released before the GD date is refused');
+ok(str_contains(said(page('imp_invoice.php', ['id' => $pid], $T + ['import_id' => $pid, 'line_id' => [(string)$pl[0]['id']], 'description' => ['Polyester fiber hollow'], 'category' => ['Fiber'], 'bill_unit' => ['kg'], 'bill_qty' => ['20000'], 'rate' => ['1.75'], 'item_key' => ['m1']]), 'error'), 'on a GD line'),
+   'an invoice line on a GD line cannot be removed from the invoice');
+$cp = page('imp_customs.php', ['id' => $pid]);
+ok(noWarn($cp) && str_contains($cp, 'PKR 185,000 of duty and taxes') && str_contains($cp, 'Valuation ruling'), 'the CUSTOMS page shows the GD lines, the reason, and the duty entered on COSTS', substr(strip_tags($cp), 0, 300));
+ok(str_contains(page('imp_customs.php', ['id' => $pid], $T + ['import_id' => $pid, 'invoice_id' => $piv, 'action' => 'copy'], 'ROLE=colleague PERMS=\'{"imp":"v"}\''), 'do not have permission'), 'changing customs needs the Update right');
+
+/* receiving: the pre-fill */
+$pre = imp_gate_prefill($q("SELECT * FROM imp_imports WHERE id=?", [$pid])[0]);
+$land = imp_landed($q("SELECT * FROM imp_imports WHERE id=?", [$pid])[0], $pl);
+ok($pre['ok'] && count($pre['lines']) === 4 && (float)$pre['lines'][1]['qty'] === 12000.0 && $pre['lines'][1]['uom'] === 'MTR' && (float)$pre['lines'][1]['imp_kg'] === 3600.0
+   && (float)$pre['lines'][2]['qty'] === 4572.0 && $pre['lines'][0]['lot_no'] === 'IMP-P2-0001-1' && $pre['head']['party_id'] === 1 && $pre['head']['txn_type'] === 'purchase',
+   'Receive into stock fills Gate Inward: the supplier, Purchase, each line in the item\'s unit with its kg and lot', $pre);
+ok(abs($pre['lines'][1]['rate'] - round($land['rows'][1]['landed'] / 12000, 4)) < 0.0001 && $pre['lines'][3]['product_id'] === 1 && $pre['lines'][3]['size_label'] === 'King',
+   'the rate is the landed cost per stock unit; a product line carries its size', [$pre['lines'][1]['rate'], $land['rows'][1]['landed']]);
+
+/* receiving: a posted pass, a draft, a reversed one */
+$gate = function (string $status, array $rows, string $remarks = '') use ($pid) {
+    db()->prepare("INSERT INTO inv_gate (gate_no, gate_date, status, remarks, import_id) VALUES (?,?,?,?,?)")->execute(['GIP-' . rand(1000, 9999), '2026-10-30', $status, $remarks, $pid]);
+    $g = (int)db()->lastInsertId();
+    foreach ($rows as $r) db()->prepare("INSERT INTO inv_gate_items (gate_id, material_id, product_id, qty, uom, rate, lot_no, imp_line_id) VALUES (?,?,?,?,?,?,?,?)")->execute([$g, $r[0], $r[1], $r[2], $r[3], 100, $r[4], $r[5]]);
+    return $g;
+};
+$g1 = $gate('posted', [[1, null, 10000, 'KG', 'IMP-P2-0001-1', $pl[0]['id']], [2, null, 12000, 'MTR', 'IMP-P2-0001-2', $pl[1]['id']]]);
+imp_receipt_save($g1, $pid, ['line' => [['imp_line_id' => $pl[0]['id'], 'imp_kg' => '999'], ['imp_line_id' => $pl[1]['id'], 'imp_kg' => '3600']],
+    'imp_container_id' => $pcont, 'imp_packages' => '50', 'imp_gross' => '13700', 'imp_tare' => '0', 'imp_rcv' => [$pl[1]['id'] => ['damaged' => '5', 'remark' => '1 roll torn']]]);
+$rl = $q("SELECT * FROM imp_receipt_lines WHERE gate_id=? ORDER BY imp_line_id", [$g1]);
+ok((float)$rl[0]['net_kg'] === 10000.0 && (float)$rl[1]['net_kg'] === 3600.0 && (float)$rl[1]['damaged'] === 5.0 && (int)$q("SELECT container_id FROM imp_receipts WHERE gate_id=?", [$g1])[0]['container_id'] === $pcont,
+   'the import side of a pass: kg for an item kept in KG is its quantity (whatever was typed); kg for metres as typed; damaged for the claim; the container', $rl);
+imp_receipt_save($g1, $pid, ['line' => [['imp_line_id' => $pl[0]['id']], ['imp_line_id' => $pl[1]['id'], 'imp_kg' => '3600']], 'imp_container_id' => '999']);
+ok($q("SELECT container_id FROM imp_receipts WHERE gate_id=?", [$g1])[0]['container_id'] === null && count($q("SELECT id FROM imp_receipt_lines WHERE gate_id=?", [$g1])) === 2,
+   'saving again rewrites it whole; a container from another import is not accepted');
+$g2 = $gate('draft', [[1, null, 4000, 'KG', 'IMP-P2-0001-1', $pl[0]['id']]]);
+imp_receipt_save($g2, $pid, ['line' => [['imp_line_id' => $pl[0]['id']]]]);
+$g3 = $gate('reversed', [[1, null, 6000, 'KG', 'IMP-P2-0001-1', $pl[0]['id']]]);
+$tot = imp_receipt_totals($pid);
+ok($tot[(int)$pl[0]['id']]['posted'] == 10000 && $tot[(int)$pl[0]['id']]['draft'] == 4000 && $tot[(int)$pl[0]['id']]['kg_posted'] == 10000 && $tot[(int)$pl[1]['id']]['kg_posted'] == 3600,
+   'received = posted passes only; a draft is shown apart; a reversed pass counts for nothing', $tot);
+$pre = imp_gate_prefill($q("SELECT * FROM imp_imports WHERE id=?", [$pid])[0]);
+$byL = []; foreach ($pre['lines'] as $x) $byL[$x['imp_line_id']] = $x;
+ok((float)$byL[$pl[0]['id']]['qty'] === 6000.0 && !isset($byL[$pl[1]['id']]) && $byL[$pl[0]['id']]['lot_no'] === 'IMP-P2-0001-1',
+   'the next truck is filled with only what is still to come (20,000 − 10,000 posted − 4,000 on a draft), under the same lot', $byL);
+
+/* the import's checks before Gate Inward posts */
+$g4 = $gate('draft', [[2, null, 4572, 'MTR', 'IMP-P2-0001-3', $pl[2]['id']]]);
+imp_receipt_save($g4, $pid, ['line' => [['imp_line_id' => $pl[2]['id'], 'imp_kg' => '']]]);
+ok(str_contains(imp_receipt_check($g4), 'Net kg is needed on import line 3'), 'a pass cannot post without the kg of each import line (EFS counts in kg)', imp_receipt_check($g4));
+imp_receipt_save($g4, $pid, ['line' => [['imp_line_id' => $pl[2]['id'], 'imp_kg' => '1408']]]);
+ok(imp_receipt_check($g4) === '', 'with the kg it may post');
+$g5 = $gate('draft', [[1, null, 10500, 'KG', 'IMP-P2-0001-1', $pl[0]['id']]]);
+imp_receipt_save($g5, $pid, ['line' => [['imp_line_id' => $pl[0]['id']]]]);
+ok(str_contains(imp_receipt_check($g5), 'brings 500 KG more than the import') && str_contains(imp_receipt_check($g5), 'Remarks'), 'more than the import needs a reason in Remarks', imp_receipt_check($g5));
+db()->exec("UPDATE inv_gate SET remarks='Supplier scale 10,500' WHERE id=$g5");
+ok(imp_receipt_check($g5) === '', 'with the reason it may post');
+ok(imp_receipt_check($gate('draft', [[1, null, 1, 'KG', '', null]])) === '' && imp_receipt_check(999999) === '', 'a pass without an import line, or not an import pass, is not touched');
+db()->exec("UPDATE imp_imports SET already_in_stock=1 WHERE id=$pid");
+ok(str_contains(imp_receipt_check($g4), 'already in stock') && !imp_gate_prefill($q("SELECT * FROM imp_imports WHERE id=?", [$pid])[0])['ok'], 'an opening import "already in stock" can never be received or posted');
+db()->exec("UPDATE imp_imports SET already_in_stock=0 WHERE id=$pid");
+imp_receipt_forget($g2);
+ok(!$q("SELECT id FROM imp_receipt_lines WHERE gate_id=?", [$g2]) && !$q("SELECT gate_id FROM imp_receipts WHERE gate_id=?", [$g2]), 'a deleted pass takes its import rows with it');
+
+/* the GATE IN page */
+$gp = page('imp_gatein.php', ['id' => $pid]);
+ok(noWarn($gp) && str_contains($gp, '12,000 MTR <span class="kgb">(3,600 kg)</span>') && str_contains($gp, 'Partly received') && str_contains($gp, 'inv_gate.php?dir=in&amp;new=1&amp;import=' . $pid),
+   'GATE IN shows each line as real unit (kg), what is still to come, and Receive into stock', substr(strip_tags($gp), 0, 400));
+ok(!str_contains(page('imp_gatein.php', ['id' => $pid], null, 'ROLE=colleague PERMS=\'{"imp":"v"}\''), 'Receive into stock →'), 'Receive into stock needs the Gate Inward permission');
+db()->exec("UPDATE imp_lines SET material_id=NULL WHERE id=" . (int)$pl[0]['id']);
+$gp = page('imp_gatein.php', ['id' => $pid]);
+ok(str_contains($gp, 'Line 1: link it to an Item Master') && !str_contains($gp, 'Receive into stock →'), 'a line not linked to an item stops receiving, and says which line');
+db()->exec("UPDATE imp_lines SET material_id=1 WHERE id=" . (int)$pl[0]['id']);
 
 /* =================================================================== 8 */
 head('8. In Chromium');

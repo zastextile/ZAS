@@ -19,15 +19,20 @@
   banks, ports, container types and shipping lines are the export masters;
   storage is includes/storage.php; exchange rates are includes/fx.php.
 
-  Phase 2 (customs/GD lines, "Receive into Stock" through Gate Inward,
-  landed cost on stock) and Phase 3 (EFS reconciliation) build on the line
-  ids kept here. Nothing here moves stock.
+  PHASE 2 (afnan: "Ok proceed B") adds the CUSTOMS tab (GD and GD lines:
+  supplier, declared and assessed value kept apart) and the GATE IN tab.
+  Receiving is the existing Gate Inward, filled from the import; posting is
+  its normal post. Stock goes in using the item's own unit (MTR, YDS, KG,
+  PCS); the kg for EFS is kept here, on the import side, never in the stock
+  ledger — so regular items are untouched. Shown as "12,000 MTR (3,600 kg)".
+  Phase 3 (EFS reconciliation) builds on the line ids and lots kept here.
+  Nothing in this file writes the stock ledger.
 */
 require_once __DIR__ . '/export.php';
 require_once __DIR__ . '/storage.php';
 if (is_file(__DIR__ . '/inventory.php')) require_once __DIR__ . '/inventory.php';
 
-const IMP_SCHEMA_VERSION = '1';
+const IMP_SCHEMA_VERSION = '2';    /* 2 = Phase 2: GD lines, receipts, the Gate Inward link */
 const IMP_MAX_INVOICES   = 3;      /* afnan: "keep option free up to 3 max" */
 const IMP_EFS_WASTE      = 5.0;    /* the government's wastage allowance, editable per line */
 const IMP_EFS_MONTHS     = 9;      /* export within, from the GD / customs release — editable per import */
@@ -272,6 +277,78 @@ function imp_ensure_schema(): void
         v TEXT NULL,
         updated_at DATETIME NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    /* ---- Phase 2: customs and receiving into stock ---------------------- */
+    /* stock_qty: the quantity in the ITEM's own unit, typed only when it
+       cannot be worked out (billed in kg, item kept in metres). gd_line_id:
+       which GD line the invoice line went under. size_label: a finished
+       product is stocked by size. */
+    $x("ALTER TABLE imp_lines ADD COLUMN stock_qty DECIMAL(16,3) NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_lines ADD COLUMN gd_line_id INT NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_lines ADD COLUMN size_label VARCHAR(80) NULL DEFAULT NULL");
+    /* the GD itself sits on its supplier invoice row (one GD per invoice) */
+    $x("ALTER TABLE imp_invoices ADD COLUMN gd_station VARCHAR(160) NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_invoices ADD COLUMN gd_agent_id INT NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_invoices ADD COLUMN gd_status VARCHAR(12) NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_invoices ADD COLUMN gd_assessed DATE NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_invoices ADD COLUMN gd_released DATE NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_invoices ADD COLUMN gd_notes VARCHAR(300) NULL DEFAULT NULL");
+    /* GD lines: declared and assessed kept apart from the supplier value,
+       never one written over another. Values are in the import's currency. */
+    $x("CREATE TABLE IF NOT EXISTS imp_gd_lines (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        import_id INT NOT NULL,
+        invoice_id INT NULL,
+        line_no INT NOT NULL DEFAULT 0,
+        hs_code VARCHAR(20) NULL,
+        description VARCHAR(300) NOT NULL DEFAULT '',
+        declared_qty DECIMAL(16,3) NULL,
+        declared_unit VARCHAR(10) NULL,
+        declared_value DECIMAL(16,2) NULL,
+        assessed_value DECIMAL(16,2) NULL,
+        exemption_ref VARCHAR(120) NULL,
+        diff_reason VARCHAR(300) NULL,
+        updated_by INT NULL, updated_at DATETIME NULL,
+        INDEX(import_id), INDEX(invoice_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    /* What arrived on one Gate Inward pass, import side. The stock itself is
+       the pass's own lines and ledger rows — nothing is copied. Kept here:
+       the kg for EFS (never in the stock ledger, so regular items are
+       untouched), and damaged / rejected / short for the supplier claim,
+       which never go into stock. */
+    $x("CREATE TABLE IF NOT EXISTS imp_receipts (
+        gate_id INT NOT NULL PRIMARY KEY,
+        import_id INT NOT NULL,
+        container_id INT NULL,
+        packages INT NULL,
+        gross_kg DECIMAL(16,3) NULL,
+        tare_kg DECIMAL(16,3) NULL,
+        updated_by INT NULL, updated_at DATETIME NULL,
+        INDEX(import_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $x("CREATE TABLE IF NOT EXISTS imp_receipt_lines (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        gate_id INT NOT NULL,
+        import_id INT NOT NULL,
+        imp_line_id INT NOT NULL,
+        net_kg DECIMAL(16,3) NOT NULL DEFAULT 0,
+        damaged DECIMAL(16,3) NOT NULL DEFAULT 0,
+        rejected DECIMAL(16,3) NOT NULL DEFAULT 0,
+        short_qty DECIMAL(16,3) NOT NULL DEFAULT 0,
+        remark VARCHAR(190) NULL,
+        UNIQUE KEY uniq_gate_line (gate_id, imp_line_id), INDEX(import_id), INDEX(imp_line_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    /* The link from a Gate Inward pass back to its import: one optional,
+       empty column on each gate table, added the same safe way the
+       inventory module adds its own. Every pass ever saved keeps NULL and
+       reads exactly as before. */
+    if (function_exists('inv_ensure_schema')) {
+        inv_ensure_schema();
+        $x("ALTER TABLE inv_gate ADD COLUMN import_id INT NULL DEFAULT NULL");
+        $x("ALTER TABLE inv_gate ADD INDEX idx_gate_import (import_id)");
+        $x("ALTER TABLE inv_gate_items ADD COLUMN imp_line_id INT NULL DEFAULT NULL");
+        $x("ALTER TABLE inv_gate_items ADD INDEX idx_gi_impline (imp_line_id)");
+    }
 
     imp_seed_masters();
     try {
@@ -592,17 +669,352 @@ function imp_landed(array $imp, array $lines, ?array $costs = null, ?array $paym
    addition % for that HS code). afnan's example: 100 kg × USD 3.50 → 95 kg,
    USD 350. Valuation is the customs value per kg (from the GD in Phase 2);
    until then the invoice value per kg. */
-function imp_efs_line(array $l): array
+function imp_efs_line(array $l, ?float $gdPerKg = null): array
 {
     $kg = (float)$l['net_kg'];
     $perKg = $kg > 0 ? imp_line_amount($l) / $kg : 0.0;
-    $val = $l['efs_valuation'] !== null && $l['efs_valuation'] !== '' ? (float)$l['efs_valuation'] : $perKg;
+    /* Valuation, most certain first: typed by hand on the EFS tab, then the
+       customs-assessed value from the GD (Phase 2), then the invoice. */
+    $typed = $l['efs_valuation'] !== null && $l['efs_valuation'] !== '';
+    $val = $typed ? (float)$l['efs_valuation'] : ($gdPerKg !== null ? $gdPerKg : $perKg);
+    $source = $typed ? 'typed' : ($gdPerKg !== null ? 'GD assessed' : 'invoice');
     $waste = $l['efs_waste_pct'] !== null && $l['efs_waste_pct'] !== '' ? (float)$l['efs_waste_pct'] : IMP_EFS_WASTE;
     $va = $l['efs_va_pct'] !== null && $l['efs_va_pct'] !== '' ? (float)$l['efs_va_pct'] : 0.0;
     $imported = round($kg * $val, 2);
-    return ['kg' => $kg, 'valuation' => $val, 'from_invoice' => $l['efs_valuation'] === null || $l['efs_valuation'] === '',
+    return ['kg' => $kg, 'valuation' => $val, 'from_invoice' => $source === 'invoice', 'source' => $source,
             'waste' => $waste, 'va' => $va, 'imported' => $imported,
             'need_kg' => round($kg * (1 - $waste / 100), 3), 'need_value' => round($imported * (1 + $va / 100), 2)];
+}
+
+/* ================================================== Phase 2 — the GD lines */
+function imp_gd_lines(int $id): array { return imp_rows('imp_gd_lines', $id, 'invoice_id, line_no, id'); }
+
+/* The assessed value per kg for each invoice line, from its GD line. A GD
+   line that groups several invoice lines shares its assessed value back to
+   them in proportion to their declared (supplier) value, so each product
+   keeps its own valuation. Lines whose GD line has no assessed value yet
+   are left out — the invoice value stands for them. */
+function imp_gd_valuation(array $lines, ?array $gdLines = null): array
+{
+    if (!$lines) return [];
+    $gdLines = $gdLines ?? imp_gd_lines((int)$lines[0]['import_id']);
+    $byGd = [];
+    foreach ($lines as $l) if (!empty($l['gd_line_id'])) $byGd[(int)$l['gd_line_id']][] = $l;
+    $out = [];
+    foreach ($gdLines as $g) {
+        if ($g['assessed_value'] === null || $g['assessed_value'] === '' || empty($byGd[(int)$g['id']])) continue;
+        $sum = 0.0;
+        foreach ($byGd[(int)$g['id']] as $l) $sum += imp_line_amount($l);
+        foreach ($byGd[(int)$g['id']] as $l) {
+            $kg = (float)$l['net_kg'];
+            if ($kg <= 0) continue;
+            $share = $sum > 0 ? (float)$g['assessed_value'] * imp_line_amount($l) / $sum : (float)$g['assessed_value'] / count($byGd[(int)$g['id']]);
+            $out[(int)$l['id']] = $share / $kg;
+        }
+    }
+    return $out;
+}
+/* Duty and taxes are entered as costs (afnan: no split by tax head, all of
+   it counts in landed cost). The Customs tab only shows that they are in. */
+function imp_duty_entered(int $id): float
+{
+    $t = 0.0;
+    foreach (imp_costs($id) as $c) if ((int)$c['is_void'] === 0 && ($c['kind'] ?? '') === 'duty') $t += imp_cost_pkr($c);
+    return round($t, 2);
+}
+
+/* ============================================ Phase 2 — the stock unit rule */
+/* Item Master units are typed freely (MTR, KGS, YDS…). This reads them as
+   the units an import line is billed in. */
+const IMP_UOM_MAP = ['KG' => 'kg', 'KGS' => 'kg', 'KILO' => 'kg', 'KILOGRAM' => 'kg',
+    'M' => 'm', 'MTR' => 'm', 'MTRS' => 'm', 'METER' => 'm', 'METRE' => 'm', 'METERS' => 'm', 'METRES' => 'm',
+    'YD' => 'yd', 'YDS' => 'yd', 'YRD' => 'yd', 'YARD' => 'yd', 'YARDS' => 'yd',
+    'PC' => 'pcs', 'PCS' => 'pcs', 'NOS' => 'pcs', 'SET' => 'set', 'SETS' => 'set',
+    'ROLL' => 'roll', 'ROLLS' => 'roll', 'BALE' => 'bale', 'BALES' => 'bale', 'CTN' => 'carton', 'CARTON' => 'carton', 'CARTONS' => 'carton'];
+const IMP_YD_M = 0.9144;
+function imp_uom_unit(string $uom): string
+{
+    $u = strtoupper(trim($uom));
+    return IMP_UOM_MAP[$u] ?? strtolower($u);
+}
+
+/* Everything an import line can be linked to — the same two lists Gate
+   Inward offers: Item Master materials (with how many costing lines use
+   each, since costing picks from the same list) and Product Master finished
+   goods (kept in PCS, by size). Keyed "m12" / "p7" like Gate Inward. */
+function imp_item_options(bool $activeOnly = true): array
+{
+    $out = [];
+    $costing = [];
+    try {
+        foreach (db()->query("SELECT material_id, COUNT(*) n FROM costing_lines WHERE material_id IS NOT NULL GROUP BY material_id")->fetchAll() as $r)
+            $costing[(int)$r['material_id']] = (int)$r['n'];
+    } catch (Throwable $e) {}
+    try {
+        $w = $activeOnly ? ' WHERE is_active=1' : '';
+        foreach (db()->query("SELECT id, code, name, item_group, material_type, uom FROM inv_materials$w ORDER BY item_group, name")->fetchAll() as $m)
+            $out['m' . (int)$m['id']] = ['key' => 'm' . (int)$m['id'], 'kind' => 'mat', 'id' => (int)$m['id'], 'code' => (string)$m['code'], 'name' => (string)$m['name'],
+                'grp' => (string)$m['item_group'], 'type' => (string)($m['material_type'] ?? ''), 'uom' => strtoupper((string)$m['uom']), 'costing' => $costing[(int)$m['id']] ?? 0];
+    } catch (Throwable $e) {}
+    try {
+        $w = $activeOnly ? ' WHERE is_active=1' : '';
+        foreach (db()->query("SELECT id, name FROM products$w ORDER BY name LIMIT 900")->fetchAll() as $p)
+            $out['p' . (int)$p['id']] = ['key' => 'p' . (int)$p['id'], 'kind' => 'prod', 'id' => (int)$p['id'], 'code' => 'PRD-' . (int)$p['id'], 'name' => (string)$p['name'],
+                'grp' => 'Finished goods', 'type' => 'Product Master', 'uom' => 'PCS', 'costing' => 0];
+    } catch (Throwable $e) {}
+    return $out;
+}
+function imp_line_key(array $l): string
+{
+    if (!empty($l['material_id'])) return 'm' . (int)$l['material_id'];
+    if (!empty($l['product_id'])) return 'p' . (int)$l['product_id'];
+    return '';
+}
+
+/* The quantity that goes into stock, in the ITEM's own unit:
+     billed in the same unit      → the billed quantity
+     item kept in kg              → the net kg
+     metres ↔ yards               → converted (1 yd = 0.9144 m)
+     anything else                → typed once on the line, never guessed */
+function imp_stock_qty(array $l, ?array $item): array
+{
+    if (!$item) return ['ok' => false, 'why' => 'Link an item first.', 'need_type' => false, 'uom' => ''];
+    $uom = (string)$item['uom'];
+    $u = imp_uom_unit($uom);
+    $bill = (string)$l['bill_unit'];
+    $q = (float)$l['bill_qty'];
+    if ($u === $bill) return ['ok' => true, 'qty' => $q, 'uom' => $uom, 'how' => 'same as billed'];
+    if ($u === 'kg') return ['ok' => (float)$l['net_kg'] > 0, 'qty' => (float)$l['net_kg'], 'uom' => $uom, 'how' => 'from net kg', 'why' => 'Type the net kg.', 'need_type' => false];
+    if ($u === 'm' && $bill === 'yd') return ['ok' => true, 'qty' => round($q * IMP_YD_M, 3), 'uom' => $uom, 'how' => 'yd × 0.9144'];
+    if ($u === 'yd' && $bill === 'm') return ['ok' => true, 'qty' => round($q / IMP_YD_M, 3), 'uom' => $uom, 'how' => 'm ÷ 0.9144'];
+    if ($l['stock_qty'] !== null && $l['stock_qty'] !== '' && (float)$l['stock_qty'] > 0) return ['ok' => true, 'qty' => (float)$l['stock_qty'], 'uom' => $uom, 'how' => 'typed'];
+    return ['ok' => false, 'why' => 'Billed in ' . $bill . ', the item is kept in ' . $uom . ' — type the quantity in ' . $uom . '.', 'need_type' => true, 'uom' => $uom];
+}
+/* "12,000 MTR (3,600 kg)" — the real unit first, kg in brackets for EFS. An
+   item kept in kg shows one figure. */
+function imp_qty_kg(float $qty, string $uom, ?float $kg): string
+{
+    $f = static fn($v) => rtrim(rtrim(number_format($v, 3), '0'), '.');
+    $s = $f($qty) . ' ' . $uom;
+    if ($kg !== null && imp_uom_unit($uom) !== 'kg') $s .= ' (' . $f($kg) . ' kg)';
+    return $s;
+}
+
+/* ======================================= Phase 2 — what has been received */
+/* Per import line: what posted passes put into stock, what is still on a
+   draft or verified pass, and the kg of each. A reversed pass counts for
+   nothing — reversing on Gate Inward brings the balance back by itself. */
+function imp_receipt_totals(int $importId): array
+{
+    $out = [];
+    $blank = ['posted' => 0.0, 'draft' => 0.0, 'kg_posted' => 0.0, 'kg_draft' => 0.0, 'damaged' => 0.0, 'rejected' => 0.0, 'short' => 0.0];
+    try {
+        $s = db()->prepare("SELECT gi.imp_line_id, g.status, SUM(gi.qty) q FROM inv_gate_items gi JOIN inv_gate g ON g.id = gi.gate_id
+            WHERE g.import_id = ? AND gi.imp_line_id IS NOT NULL GROUP BY gi.imp_line_id, g.status");
+        $s->execute([$importId]);
+        foreach ($s->fetchAll() as $r) {
+            $k = $r['status'] === 'posted' ? 'posted' : (in_array($r['status'], ['draft', 'verified'], true) ? 'draft' : '');
+            if ($k === '') continue;
+            $out[(int)$r['imp_line_id']] = $out[(int)$r['imp_line_id']] ?? $blank;
+            $out[(int)$r['imp_line_id']][$k] += (float)$r['q'];
+        }
+        $s = db()->prepare("SELECT r.imp_line_id, g.status, SUM(r.net_kg) kg, SUM(r.damaged) dm, SUM(r.rejected) rj, SUM(r.short_qty) sh
+            FROM imp_receipt_lines r JOIN inv_gate g ON g.id = r.gate_id WHERE r.import_id = ? GROUP BY r.imp_line_id, g.status");
+        $s->execute([$importId]);
+        foreach ($s->fetchAll() as $r) {
+            $k = $r['status'] === 'posted' ? 'kg_posted' : (in_array($r['status'], ['draft', 'verified'], true) ? 'kg_draft' : '');
+            if ($k === '') continue;
+            $o = &$out[(int)$r['imp_line_id']];
+            $o = $o ?? $blank;
+            $o[$k] += (float)$r['kg'];
+            if ($k === 'kg_posted') { $o['damaged'] += (float)$r['dm']; $o['rejected'] += (float)$r['rj']; $o['short'] += (float)$r['sh']; }
+            unset($o);
+        }
+    } catch (Throwable $e) {}
+    return $out;
+}
+function imp_receipt_passes(int $importId): array
+{
+    try {
+        $s = db()->prepare("SELECT g.id, g.gate_no, g.gate_date, g.status, g.vehicle_no, r.container_id, c.container_no
+            FROM inv_gate g LEFT JOIN imp_receipts r ON r.gate_id = g.id LEFT JOIN imp_containers c ON c.id = r.container_id
+            WHERE g.import_id = ? ORDER BY g.id");
+        $s->execute([$importId]);
+        return $s->fetchAll();
+    } catch (Throwable $e) { return []; }
+}
+
+/* Can this import be received, and if not, why — line by line. */
+function imp_receive_blockers(array $imp, array $lines, array $items, array $landed): array
+{
+    $out = [];
+    if ((int)$imp['already_in_stock'] === 1) return ['This is an opening import marked "already in stock" — receiving it would add the stock twice.'];
+    if (in_array($imp['manual_status'] ?? '', ['closed', 'cancelled'], true)) return ['This import is ' . $imp['manual_status'] . '.'];
+    if (!$lines) return ['There are no invoice lines yet.'];
+    foreach (array_values($lines) as $i => $l) {
+        $n = 'Line ' . ($i + 1);
+        $it = $items[imp_line_key($l)] ?? null;
+        if (!$it) { $out[] = $n . ': link it to an Item Master or Product Master item on INVOICE.'; continue; }
+        $st = imp_stock_qty($l, $it);
+        if (!$st['ok']) $out[] = $n . ': ' . $st['why'];
+        if ((float)$l['net_kg'] <= 0) $out[] = $n . ': the net kg is needed for EFS.';
+        if (($landed['rows'][$i]['landed'] ?? 0) <= 0) $out[] = $n . ': landed cost is 0 — enter a payment or check today\'s exchange rate, so stock gets a rate.';
+    }
+    return $out;
+}
+
+/* A new Gate Inward pass, filled from the import: the balance still to come
+   of every line, in the item's own unit, with its kg, its lot and the landed
+   cost per stock unit as the rate. Staff change only what actually came. */
+function imp_gate_prefill(array $imp): array
+{
+    $id = (int)$imp['id'];
+    $lines = imp_lines($id);
+    $items = imp_item_options(false);
+    $landed = imp_landed($imp, $lines);
+    $err = imp_receive_blockers($imp, $lines, $items, $landed);
+    if ($err) return ['ok' => false, 'errors' => $err, 'head' => [], 'lines' => []];
+    $got = imp_receipt_totals($id);
+    /* a line keeps the lot it was first received under */
+    $lots = [];
+    try {
+        $s = db()->prepare("SELECT gi.imp_line_id, gi.lot_no FROM inv_gate_items gi JOIN inv_gate g ON g.id = gi.gate_id
+            WHERE g.import_id = ? AND gi.imp_line_id IS NOT NULL AND gi.lot_no IS NOT NULL AND g.status <> 'reversed' ORDER BY gi.id");
+        $s->execute([$id]);
+        foreach ($s->fetchAll() as $r) $lots[(int)$r['imp_line_id']] = $lots[(int)$r['imp_line_id']] ?? (string)$r['lot_no'];
+    } catch (Throwable $e) {}
+    $out = [];
+    foreach (array_values($lines) as $i => $l) {
+        $lid = (int)$l['id'];
+        $it = $items[imp_line_key($l)];
+        $st = imp_stock_qty($l, $it);
+        $g = $got[$lid] ?? ['posted' => 0, 'draft' => 0, 'kg_posted' => 0, 'kg_draft' => 0];
+        $bal = round($st['qty'] - $g['posted'] - $g['draft'], 3);
+        if ($bal <= 0.0005) continue;
+        $kgBal = max(0.0, round((float)$l['net_kg'] - $g['kg_posted'] - $g['kg_draft'], 3));
+        $out[] = [
+            'material_id' => $it['kind'] === 'mat' ? $it['id'] : null,
+            'product_id'  => $it['kind'] === 'prod' ? $it['id'] : null,
+            'size_label'  => $it['kind'] === 'prod' ? ($l['size_label'] ?? null) : null,
+            'mcode' => $it['code'], 'mname' => $it['name'], 'pname' => $it['name'],
+            'description' => mb_substr((string)$l['description'], 0, 300),
+            'lot_no' => $lots[$lid] ?? ($imp['ref'] . '-' . ($i + 1)),
+            'qty' => $bal, 'uom' => $it['uom'],
+            'rate' => round($landed['rows'][$i]['landed'] / $st['qty'], 4),
+            'amount' => 0, 'imp_line_id' => $lid, 'imp_kg' => imp_uom_unit($it['uom']) === 'kg' ? $bal : $kgBal,
+        ];
+    }
+    if (!$out) return ['ok' => false, 'errors' => ['Everything on this import has been received or is already on a pass.'], 'head' => [], 'lines' => []];
+    return ['ok' => true, 'errors' => [], 'lines' => $out, 'head' => [
+        'txn_type' => 'purchase', 'party_id' => (int)$imp['supplier_party_id'] ?: null, 'party_text' => (int)$imp['supplier_party_id'] ? '' : $imp['supplier_name'],
+        'remarks' => '', 'purpose' => 'Import ' . $imp['ref'], 'import_id' => $id]];
+}
+
+/* The import side of a saved pass: kg per line (for EFS), the weighbridge,
+   and damaged / rejected / short for the claim. Called by Gate Inward after
+   its own save; rewritten whole each time, like the pass's lines. */
+function imp_receipt_save(int $gateId, int $importId, array $post): void
+{
+    $kgByLine = [];
+    foreach ((array)($post['line'] ?? []) as $ln) {
+        $lid = (int)($ln['imp_line_id'] ?? 0);
+        if ($lid > 0) $kgByLine[$lid] = ($kgByLine[$lid] ?? 0) + imp_num($ln['imp_kg'] ?? 0);
+    }
+    $s = db()->prepare("SELECT gi.imp_line_id, gi.qty, gi.uom FROM inv_gate_items gi WHERE gi.gate_id=? AND gi.imp_line_id IS NOT NULL");
+    $s->execute([$gateId]);
+    $onPass = []; $kgItem = [];
+    foreach ($s->fetchAll() as $r) {
+        $lid = (int)$r['imp_line_id'];
+        $onPass[$lid] = true;
+        if (imp_uom_unit((string)$r['uom']) === 'kg') $kgItem[$lid] = ($kgItem[$lid] ?? 0) + (float)$r['qty'];
+    }
+    /* an item kept in kg: its kg IS the quantity on the pass, whatever was typed */
+    foreach ($kgItem as $lid => $q) $kgByLine[$lid] = $q;
+    $rcv = (array)($post['imp_rcv'] ?? []);
+    $own = !db()->inTransaction();
+    if ($own) db()->beginTransaction();
+    try {
+        $cid = (int)($post['imp_container_id'] ?? 0);
+        if ($cid > 0) { $c = db()->prepare("SELECT id FROM imp_containers WHERE id=? AND import_id=?"); $c->execute([$cid, $importId]); if (!$c->fetchColumn()) $cid = 0; }
+        db()->prepare("DELETE FROM imp_receipts WHERE gate_id=?")->execute([$gateId]);
+        db()->prepare("INSERT INTO imp_receipts (gate_id, import_id, container_id, packages, gross_kg, tare_kg, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,NOW())")
+            ->execute([$gateId, $importId, $cid ?: null, ($post['imp_packages'] ?? '') !== '' ? (int)imp_num($post['imp_packages']) : null,
+                       ($post['imp_gross'] ?? '') !== '' ? imp_num($post['imp_gross']) : null, ($post['imp_tare'] ?? '') !== '' ? imp_num($post['imp_tare']) : null,
+                       current_user()['id'] ?? null]);
+        db()->prepare("DELETE FROM imp_receipt_lines WHERE gate_id=?")->execute([$gateId]);
+        $ins = db()->prepare("INSERT INTO imp_receipt_lines (gate_id, import_id, imp_line_id, net_kg, damaged, rejected, short_qty, remark) VALUES (?,?,?,?,?,?,?,?)");
+        foreach (array_keys($onPass) as $lid) {
+            $r = (array)($rcv[$lid] ?? []);
+            $ins->execute([$gateId, $importId, $lid, round(max(0.0, (float)($kgByLine[$lid] ?? 0)), 3),
+                max(0.0, imp_num($r['damaged'] ?? 0)), max(0.0, imp_num($r['rejected'] ?? 0)), max(0.0, imp_num($r['short'] ?? 0)),
+                mb_substr(trim((string)($r['remark'] ?? '')), 0, 190) ?: null]);
+        }
+        if ($own) db()->commit();
+    } catch (Throwable $e) {
+        if ($own && db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+function imp_receipt_forget(int $gateId): void
+{
+    try {
+        db()->prepare("DELETE FROM imp_receipt_lines WHERE gate_id=?")->execute([$gateId]);
+        db()->prepare("DELETE FROM imp_receipts WHERE gate_id=?")->execute([$gateId]);
+    } catch (Throwable $e) {}
+}
+/* The import's own checks before Gate Inward posts a pass. Returns the
+   problem in words, or '' when it may post. The normal posting rules
+   (rate on every line, one post only) still run afterwards. */
+function imp_receipt_check(int $gateId): string
+{
+    $g = db()->prepare("SELECT * FROM inv_gate WHERE id=?"); $g->execute([$gateId]); $g = $g->fetch();
+    if (!$g || empty($g['import_id'])) return '';
+    $s = db()->prepare("SELECT * FROM imp_imports WHERE id=?"); $s->execute([(int)$g['import_id']]); $imp = $s->fetch();
+    if (!$imp) return 'The import this pass came from no longer exists.';
+    if ((int)$imp['already_in_stock'] === 1) return $imp['ref'] . ' is an opening import marked "already in stock" — posting would add its stock twice.';
+    $lines = [];
+    foreach (imp_lines((int)$imp['id']) as $l) $lines[(int)$l['id']] = $l;
+    $items = imp_item_options(false);
+    $kg = [];
+    $k = db()->prepare("SELECT imp_line_id, net_kg FROM imp_receipt_lines WHERE gate_id=?"); $k->execute([$gateId]);
+    foreach ($k->fetchAll() as $r) $kg[(int)$r['imp_line_id']] = (float)$r['net_kg'];
+    $got = imp_receipt_totals((int)$imp['id']);
+    $q = db()->prepare("SELECT imp_line_id, SUM(qty) q FROM inv_gate_items WHERE gate_id=? AND imp_line_id IS NOT NULL GROUP BY imp_line_id"); $q->execute([$gateId]);
+    $noKg = []; $over = [];
+    foreach ($q->fetchAll() as $r) {
+        $lid = (int)$r['imp_line_id'];
+        $l = $lines[$lid] ?? null;
+        if (!$l) return 'A line on this pass points at an import line that no longer exists. Open the pass and remove it.';
+        $n = array_search($lid, array_keys($lines), true) + 1;
+        if (($kg[$lid] ?? 0) <= 0) $noKg[] = $n;
+        $st = imp_stock_qty($l, $items[imp_line_key($l)] ?? null);
+        $posted = (float)($got[$lid]['posted'] ?? 0);
+        if ($st['ok'] && $posted + (float)$r['q'] > $st['qty'] + 0.0005)
+            $over[] = 'line ' . $n . ' brings ' . rtrim(rtrim(number_format($posted + (float)$r['q'] - $st['qty'], 3), '0'), '.') . ' ' . $st['uom'] . ' more than the import';
+    }
+    if ($noKg) return 'Net kg is needed on import line ' . implode(', ', $noKg) . ' — EFS counts in kg. Open the pass and fill it in.';
+    if ($over && trim((string)$g['remarks']) === '') return ucfirst(implode('; ', $over)) . '. If it is right, write why in Remarks, save, then post.';
+    return '';
+}
+/* After Gate Inward has posted or reversed an import pass: the timeline, and
+   the factory gate-in date on LOGISTICS if it was still empty. */
+function imp_receipt_after(int $gateId, string $what, string $reason = ''): void
+{
+    try {
+        $g = db()->prepare("SELECT gate_no, gate_date, import_id FROM inv_gate WHERE id=?"); $g->execute([$gateId]); $g = $g->fetch();
+        if (!$g || empty($g['import_id'])) return;
+        $iid = (int)$g['import_id'];
+        $parts = [];
+        $s = db()->prepare("SELECT gi.qty, gi.uom, r.net_kg FROM inv_gate_items gi LEFT JOIN imp_receipt_lines r ON r.gate_id = gi.gate_id AND r.imp_line_id = gi.imp_line_id
+            WHERE gi.gate_id=? AND gi.imp_line_id IS NOT NULL ORDER BY gi.sort_order");
+        $s->execute([$gateId]);
+        foreach ($s->fetchAll() as $r) $parts[] = imp_qty_kg((float)$r['qty'], (string)$r['uom'], $r['net_kg'] !== null ? (float)$r['net_kg'] : null);
+        imp_log($iid, $what === 'post' ? 'Received into stock' : 'Receipt reversed', $g['gate_no'] . ' · ' . implode(' · ', $parts), $reason);
+        if ($what === 'post') {
+            db()->prepare("INSERT INTO imp_logistics (import_id) SELECT ? WHERE NOT EXISTS (SELECT 1 FROM imp_logistics WHERE import_id=?)")->execute([$iid, $iid]);
+            db()->prepare("UPDATE imp_logistics SET factory_gate_in=? WHERE import_id=? AND factory_gate_in IS NULL")->execute([$g['gate_date'], $iid]);
+        }
+    } catch (Throwable $e) { error_log('imp_receipt_after: ' . $e->getMessage()); }
 }
 /* The EFS clock starts when customs releases the goods (else the GD date). */
 function imp_efs_deadline(array $imp, ?array $log = null, ?array $invoices = null): array
@@ -734,8 +1146,8 @@ function imp_tab_strip(array $imp, string $active): void
         ['payments', 'PAYMENTS', 'imp_payments.php', imp_can('payments')],
         ['costs', 'COSTS', 'imp_costs.php', imp_can('costs')],
         ['docs', 'DOCS', 'imp_documents.php', imp_can('documents')],
-        ['customs', 'CUSTOMS', 'imp_phase.php', imp_can('imp'), 'P2', '&tab=customs'],
-        ['gatein', 'GATE IN', 'imp_phase.php', imp_can('imp'), 'P2', '&tab=gatein'],
+        ['customs', 'CUSTOMS', 'imp_customs.php', imp_can('imp')],
+        ['gatein', 'GATE IN', 'imp_gatein.php', imp_can('imp')],
         ['efs', 'EFS', 'imp_efs.php', imp_can('efs'), 'P3'],
         ['timeline', 'TIMELINE', 'imp_timeline.php', imp_can('imp')],
     ];

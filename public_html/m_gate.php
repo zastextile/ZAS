@@ -57,6 +57,18 @@ if (!inv_perm('gate')) {
 
 $dirForRecent = ($_GET['dir'] ?? '') === 'out' ? 'out' : 'in';
 
+/* IMPORT PASSES ARE LEFT TO THE DESKTOP. A pass filled from an import
+   (Imports → Gate In) carries, on each line, the import line it belongs
+   to. This screen rewrites every line when it saves and knows nothing of
+   that link, so it would quietly erase it. Such a pass is therefore not
+   listed, opened or saved here. Checked through the column itself, which
+   exists only once Imports has been opened — until then nothing changes. */
+$impPass = function (int $gateId): bool {
+    try { $s = db()->prepare("SELECT import_id FROM inv_gate WHERE id=?"); $s->execute([$gateId]); return (int)$s->fetchColumn() > 0; }
+    catch (Throwable $e) { return false; }
+};
+$impCol = (function (): bool { try { db()->query("SELECT import_id FROM inv_gate LIMIT 0"); return true; } catch (Throwable $e) { return false; } })();
+
 /* ------------------------------------------------------- small answers
 
    Two things are fetched rather than sent with the page: a contract's
@@ -239,6 +251,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
                 $_SESSION['error'] = 'This pass is ' . $st . ' and can only be changed on the desktop.';
                 redirect('m_gate.php?dir=' . $dir);
             }
+            if ($impPass($id)) {
+                $_SESSION['error'] = 'This pass belongs to an import and is finished on the desktop.';
+                redirect('m_gate.php?dir=' . $dir);
+            }
         }
 
         db()->beginTransaction();
@@ -321,6 +337,7 @@ if ($editId > 0) {
         $s->execute([$editId, $dir]);
         $pass = $s->fetch() ?: null;
         if ($pass && $pass['status'] !== 'draft') { $pass = null; $editId = 0; $isNew = false; }
+        if ($pass && (int)($pass['import_id'] ?? 0) > 0) { $pass = null; $editId = 0; $isNew = false; }   /* an import pass: desktop only */
         if ($pass) {
             $s2 = db()->prepare("SELECT * FROM inv_gate_items WHERE gate_id=? ORDER BY sort_order, id");
             $s2->execute([$editId]);
@@ -339,7 +356,7 @@ try {
                                (SELECT COUNT(*) FROM inv_gate_items i WHERE i.gate_id=g.id AND i.rate<=0) norate,
                                (SELECT COUNT(*) FROM inv_gate_photos ph WHERE ph.gate_id=g.id) photos
                           FROM inv_gate g
-                         WHERE g.direction=? AND g.status='draft'
+                         WHERE g.direction=? AND g.status='draft'" . ($impCol ? " AND g.import_id IS NULL" : "") . "
                          ORDER BY g.id DESC LIMIT 15");
     $s->execute([$dir]);
     $drafts = $s->fetchAll();

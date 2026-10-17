@@ -17,6 +17,17 @@ $GROUPS = inv_item_groups();
 $LEGACY = ['Packing'];
 $STAGES = ['na' => 'Not applicable', 'grey' => 'Grey', 'raw' => 'Raw', 'finished' => 'Finished'];
 
+/* OPENED FROM ANOTHER SCREEN. Another page (today: an import line) may send
+   someone here to create an item, with the name, unit, group and type to
+   start from, and the page to go back to after Save — where the new item's
+   id is handed back. Only a page of this app is ever returned to: a plain
+   "name.php?…" with no slashes, so a link cannot send anyone elsewhere.
+   Opened the normal way, none of this is used and the page is unchanged. */
+$back = (static function ($r): string {
+    $r = trim((string)$r);
+    return preg_match('~^[a-z0-9_]+\.php(\?[A-Za-z0-9_=&%.\-]*)?$~', $r) ? $r : '';
+})($_POST['return'] ?? $_GET['return'] ?? '');
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     inv_require('master');
@@ -86,8 +97,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ph = implode(',', array_fill(0, count($fields) + 1, '?'));
                 $vals = array_values($fields); $vals[] = (int)(current_user()['id'] ?? 0);
                 db()->prepare("INSERT INTO inv_materials ($cols) VALUES ($ph)")->execute($vals);
+                $newId = (int)db()->lastInsertId();
                 inv_audit('material_add', '', $fields, 'Item Master created');
                 $_SESSION['flash'] = 'Item ' . $code . ' created.';
+                /* opened from another screen: back there, with the new item */
+                if ($back !== '') redirect($back . (strpos($back, '?') === false ? '?' : '&') . 'new_item=' . $newId);
             }
         } catch (Throwable $e) {
             $_SESSION['error'] = 'Could not save — the item code may already be in use.';
@@ -178,13 +192,19 @@ flash();
          else to undo. It wraps the markup and never the <style>. */ ?>
 <div class="zskin">
 
-<?php if ($showForm): $E = $edit ?: []; ?>
+<?php if ($showForm): $E = $edit ?: [];
+  /* opened from another screen: start from what it sent (still all editable) */
+  if (!$edit && isset($_GET['name'])) {
+      $E = ['name' => mb_substr(trim((string)$_GET['name']), 0, 190), 'uom' => strtoupper(mb_substr(trim((string)($_GET['uom'] ?? '')), 0, 20)) ?: 'MTR',
+            'item_group' => in_array($_GET['group'] ?? '', $GROUPS, true) ? $_GET['group'] : 'Fabric', 'material_type' => mb_substr(trim((string)($_GET['type'] ?? '')), 0, 80)];
+  } ?>
 <div class="im-card">
   <h2 style="font-size:15.5px;margin:0 0 4px;font-weight:800"><?= $edit ? 'Edit item — ' . e($edit['code']) : 'New item' ?></h2>
   <p style="color:#8a97ab;font-size:12px;margin:0 0 16px">Technical fields matter for fabric and are optional for everything else — fill in what is useful and leave the rest.</p>
   <form method="post"><?= csrf_field() ?>
     <input type="hidden" name="action" value="save">
     <input type="hidden" name="id" value="<?= (int)($E['id'] ?? 0) ?>">
+    <?php if ($back !== '' && !$edit): ?><input type="hidden" name="return" value="<?= e($back) ?>"><?php endif; ?>
     <div class="im-grid">
       <div><label class="im-lbl">Item code</label><input class="im-inp" name="code" value="<?= e($E['code'] ?? '') ?>" placeholder="auto" style="width:100%;font-family:monospace"></div>
       <div style="grid-column:span 2"><label class="im-lbl">Item name *</label><input class="im-inp" name="name" value="<?= e($E['name'] ?? '') ?>" required maxlength="190" style="width:100%"></div>
@@ -223,7 +243,7 @@ flash();
         <input type="checkbox" name="is_active" value="1" <?= (!$edit || (int)$E['is_active'] === 1) ? 'checked' : '' ?>> Active
       </label>
       <button class="im-btn" type="submit"><?= $edit ? 'Save changes' : 'Create item' ?></button>
-      <a class="im-btn sec" href="inv_items.php">Cancel</a>
+      <a class="im-btn sec" href="<?= e($back !== '' && !$edit ? $back : 'inv_items.php') ?>">Cancel</a>
     </div>
   </form>
 </div>
