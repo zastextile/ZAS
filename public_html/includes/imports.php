@@ -709,9 +709,11 @@ function imp_page_css(): string
 .spec label{font-size:10.5px;color:#5a6b82;display:flex;flex-direction:column;gap:3px;min-width:110px;flex:1}
 .spec input,.spec select{padding:6px 8px;border:1px solid #cbd5e3;border-radius:8px;font-size:12px;font-family:inherit}
 @media(max-width:700px){.xtabs a{padding:8px 11px;font-size:11px}.xhead{padding:12px 14px}}
-/* on a phone the page keeps the phone\'s width: a wide table scrolls inside
-   its own box instead of stretching the whole page (import pages only) */
-@media(max-width:900px){.app{grid-template-columns:minmax(0,1fr)!important}main.content{min-width:0;max-width:100vw}}
+/* the page keeps the screen\'s width on a phone and a laptop alike: a wide
+   table scrolls inside its own box instead of stretching the whole page
+   (import pages only; same sidebar width and 1100px switch as app.css) */
+.app{grid-template-columns:262px minmax(0,1fr)}main.content{min-width:0}
+@media(max-width:1100px){.app{grid-template-columns:minmax(0,1fr)!important}main.content{max-width:100vw}}
 </style>';
 }
 
