@@ -69,6 +69,7 @@ tfoot td{border-top:1.5px solid var(--navy);font-weight:800}
 .bar button{background:var(--navy);color:#fff;border-color:var(--navy)}
 .stamp{display:inline-block;font-size:9.5px;font-weight:800;padding:3px 9px;border-radius:3px;letter-spacing:.06em}
 .s-posted{background:#e6f5ec;color:#16733d;border:1px solid #b9e0c9}
+.s-short{background:#fdecea;color:#b3261e;border:1px solid #f1b9b3;margin-left:4px}
 .s-draft{background:#eef1f7;color:#5a6b82;border:1px solid #d8e0ea}
 .s-reversed{background:#fdeaee;color:#a8283f;border:1px solid #f2c2cc}
 @media print{
@@ -93,6 +94,7 @@ tfoot td{border-top:1.5px solid var(--navy);font-weight:800}
       Date: <?= e(date('d M Y', strtotime((string)$doc['gate_date']))) ?><br>
       Time <?= $isIn ? 'In' : 'Out' ?>: <?= e(substr((string)$doc['gate_time'], 0, 5)) ?><br>
       <span class="stamp s-<?= e($doc['status']) ?>"><?= e(strtoupper($doc['status'])) ?></span>
+      <?php if ($doc['status'] === 'posted' && trim((string)($doc['posted_short'] ?? '')) !== ''): ?><span class="stamp s-short">POSTED SHORT</span><?php endif; ?>
     </div>
   </div>
 

@@ -374,7 +374,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $impId = $impOfGate($id);
         if ($impId > 0 && $impLoad() && ($why = imp_receipt_check($id)) !== '') { $_SESSION['error'] = $why; redirect('inv_gate.php?id=' . $id); }
         $r = inv_gate_post($id);
-        if ($r['ok']) $_SESSION['flash'] = 'Posted. Stock has been updated.';
+        if ($r['ok']) $_SESSION['flash'] = !empty($r['short'])
+            ? 'Posted short — stock is now below zero: ' . implode(' ', $r['short']) . ' It shows in Stock Health until the stock is booked in.'
+            : 'Posted. Stock has been updated.';
         else $_SESSION['error'] = $r['error'];
         if ($r['ok'] && $impId > 0) imp_receipt_after($id, 'post');
         redirect('inv_gate.php?id=' . $id);
@@ -671,6 +673,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
 .st-draft{background:#f0f3f9;color:#5a6b82}
 .st-verified{background:rgba(14,168,201,.12);color:#0b7f9b}
 .st-posted{background:rgba(22,163,74,.12);color:#16a34a}
+.ig-short{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#c0293f;border:1.5px solid #c0293f;border-radius:5px;padding:1px 7px;margin-right:6px}
 .st-reversed{background:rgba(224,67,93,.12);color:#c0293f}
 .ig-note{border-radius:11px;padding:12px 15px;font-size:12.5px;line-height:1.65;margin-bottom:14px}
 .ig-note.info{background:rgba(14,168,201,.07);border:1px solid rgba(14,168,201,.2);color:#2c4a63}
@@ -1249,6 +1252,9 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
   var IS_OUT = <?= $dir === 'out' ? 'true' : 'false' ?>;
   var ONHAND = {};          // "materialId|locationId" -> {available, lots, ...}
   var TOL = 10, ISADMIN = false;
+  /* Gate Outward may post below zero (Inventory Setup). When on, a short
+     line is a warning, not a stop — see inv_gate_out_negative_ok(). */
+  var NEGOK = <?= inv_gate_out_negative_ok() ? 'true' : 'false' ?>;
 
   function locId(){ var el = document.querySelector('select[name="location_id"]'); return el ? +el.value : 0; }
   function ownOf(){ var o = ts.options[ts.selectedIndex]; return (o && o.dataset.own === 'customer') ? 'customer' : 'own'; }
@@ -1394,11 +1400,17 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       var sel = tr.querySelector('select[name*="[item_key]"]');
       var name = sel ? (sel.options[sel.selectedIndex].text || 'item') : 'item';
       var lim = Math.max(0, av) * TOL / 100;
+      if(NEGOK){ msgs.push('<b>' + name + '</b> — ' + q3(av) + ' here, taking ' + q3(over) + ' more, balance becomes <b>' + q3(av - want) + '</b>'); return; }
       if(over > lim + 0.0005){ hard++; msgs.push('<b>' + name + '</b> — ' + q3(av) + ' here, taking ' + q3(over) + ' more (beyond ' + TOL + '%)'); }
       else msgs.push('<b>' + name + '</b> — ' + q3(av) + ' here, taking ' + q3(over) + ' more (within ' + TOL + '%)');
     });
     if(!msgs.length){ box.style.display = 'none'; return; }
     box.style.display = '';
+    if(NEGOK){
+      box.innerHTML = '<b>Stock will go below zero.</b><br>' + msgs.join('<br>')
+        + '<br><br>You can still save and post. The pass is stamped <b>Posted short</b> and the item shows in Stock Health until the stock is booked in.';
+      return;
+    }
     box.innerHTML = '<b>This pass takes more than is here.</b><br>' + msgs.join('<br>')
       + '<br><br>Put the reason in <b>Remarks</b> and save. '
       + (hard && !ISADMIN
@@ -2605,6 +2617,9 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
 
     <?php elseif ($doc['status'] === 'posted'): ?>
       <div class="ig-note ok" style="margin:0;flex:1">Posted <?= e((string)$doc['posted_at']) ?>. Stock has been updated. A posted pass cannot be edited — use a reversal if it was wrong.</div>
+      <?php if (trim((string)($doc['posted_short'] ?? '')) !== ''): /* posted while stock was short — inv_gate_out_negative_ok() */ ?>
+        <div class="ig-note warn" style="margin:0;flex-basis:100%"><span class="ig-short">Posted short</span> Sent before the stock was booked, so the balance went below zero:<br><?= nl2br(e((string)$doc['posted_short'])) ?></div>
+      <?php endif; ?>
       <?php if ($canRev): ?>
         <form method="post" onsubmit="return this.reason.value.trim()!=='' || (alert('A reason is required.'),false);" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <?= csrf_field() ?><input type="hidden" name="action" value="reverse"><input type="hidden" name="id" value="<?= (int)$doc['id'] ?>">

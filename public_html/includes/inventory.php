@@ -439,6 +439,9 @@ function inv_ensure_schema(): void {
     try { db()->exec("ALTER TABLE inv_gate_items ADD COLUMN amount DECIMAL(18,2) NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE inv_gate ADD COLUMN gst_applicable TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE inv_gate ADD COLUMN gst_pct DECIMAL(6,3) NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    /* What a Gate Outward was short of when it posted, in words; NULL when
+       it had enough. See inv_gate_out_negative_ok(). */
+    try { db()->exec("ALTER TABLE inv_gate ADD COLUMN posted_short TEXT NULL"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE inv_contracts ADD COLUMN gst_applicable TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE inv_contracts ADD COLUMN gst_pct DECIMAL(6,3) NULL DEFAULT NULL"); } catch (Throwable $e) {}
 
@@ -630,6 +633,10 @@ function inv_seed_defaults(): void {
         // how far below a lot's balance an ordinary user may consume, with
         // a reason. Beyond it, only an admin may post. See inv_consume_line_check().
         'neg_tolerance_pct' => '10',
+        // Gate Outward may post with stock short and take the balance below
+        // zero, for anyone with the post right, no reason demanded. Admin
+        // switches it on Inventory Setup. See inv_gate_out_negative_ok().
+        'gate_out_negative' => '1',
         // how much MORE than was sent may come back from a job worker.
         // Quantity can rise a little in processing — their scale, moisture,
         // rounding — but not much. See inv_return_check().
@@ -827,6 +834,21 @@ function inv_fifo_allocate(int $materialId, float $want): array {
 function inv_neg_tolerance_pct(): float {
     $v = (float)inv_setting('neg_tolerance_pct', '10');
     return $v < 0 ? 0.0 : ($v > 100 ? 100.0 : $v);
+}
+
+/* MAY A GATE OUTWARD POST WITH STOCK SHORT?
+   "send gate out as sale or job work out or sample etc even we do not have
+   stock ... show my inventory minus because I do not want to hold or wait."
+   Goods leave before the inward or the production entry is booked, and the
+   allowance above made every such pass wait for an admin — at zero stock
+   the allowance is zero. With this on, the pass posts for anyone holding
+   the post right, the balance goes below zero, and the pass is stamped
+   "posted short" (inv_gate.posted_short). Stock Health already lists every
+   balance below zero until the stock is booked in.
+   Gate Outward only: consumption and store issue keep the allowance.
+   Admin turns it off or on again on Inventory Setup. */
+function inv_gate_out_negative_ok(): bool {
+    return (string)inv_setting('gate_out_negative', '1') === '1';
 }
 
 /* Decide what one consumption line is allowed to do, given what the
@@ -2095,6 +2117,11 @@ function inv_gate_post(int $gateId): array {
         };
 
         $takesOut = in_array($T['move'], ['out', 'to_jw', 'from_cust'], true);
+        /* Gate Outward allowed below zero (Inventory Setup): each shortage is
+           written down here instead of stopping the pass, and saved on the
+           pass as posted_short when it posts. */
+        $negOk = $takesOut && inv_gate_out_negative_ok();
+        $shortNote = [];
         if ($takesOut) {
             /* The stated reason. The screen tells the operator to put it in
                Remarks — which is the only free-text box on the pass — so
@@ -2158,6 +2185,11 @@ function inv_gate_post(int $gateId): array {
                 $where = inv_location_name($fromLoc);
                 $has   = rtrim(rtrim(number_format($chk['bal'], 3), '0'), '.');
                 $over  = rtrim(rtrim(number_format($chk['short'], 3), '0'), '.');
+                if ($negOk) {
+                    $left = rtrim(rtrim(number_format($chk['bal'] - $taken[$bucket], 3), '0'), '.');
+                    $shortNote[] = "$what at $where: $has in stock, sent $over more, balance $left.";
+                    continue;
+                }
                 if ($why === '') {
                     $stop[] = "$what has $has at $where and this pass takes $over more.";
                 } elseif ($chk['level'] === 'admin_only' && !is_admin()) {
@@ -2279,9 +2311,16 @@ function inv_gate_post(int $gateId): array {
         }
         db()->prepare("UPDATE inv_gate SET status='posted', posted_by=?, posted_at=NOW() WHERE id=?")
             ->execute([(int)(current_user()['id'] ?? 0), $gateId]);
+        /* Its own statement, so a database without the column yet can never
+           stop a pass from posting. */
+        if ($shortNote) {
+            try { db()->prepare("UPDATE inv_gate SET posted_short=? WHERE id=?")->execute([implode("\n", $shortNote), $gateId]); }
+            catch (Throwable $e) {}
+        }
         db()->commit();
-        inv_audit('gate_post', $gateId, $g['gate_no'], 'Gate pass posted to stock');
-        return ['ok' => true, 'error' => ''];
+        inv_audit('gate_post', $gateId, $g['gate_no'], 'Gate pass posted to stock'
+            . ($shortNote ? ' — POSTED SHORT: ' . implode(' ', $shortNote) : ''));
+        return ['ok' => true, 'error' => '', 'short' => $shortNote];
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
         return ['ok' => false, 'error' => 'Posting failed: ' . $e->getMessage()];

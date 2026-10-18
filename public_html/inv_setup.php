@@ -26,6 +26,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach (['stage1_label','stage2_label','stage3_label','backdate_days','default_location','neg_tolerance_pct','cost_variance_pct','gst_pct'] as $k) {
             if (isset($_POST[$k])) inv_set_setting($k, trim((string)$_POST[$k]));
         }
+        /* A tick box sends nothing when unticked, so the form carries a
+           marker and the value is written either way. */
+        if (isset($_POST['gate_out_negative_shown'])) {
+            $was = inv_gate_out_negative_ok();
+            $now = !empty($_POST['gate_out_negative']);
+            inv_set_setting('gate_out_negative', $now ? '1' : '0');
+            if ($was !== $now) inv_audit('settings_save', '', 'Gate Outward below zero: ' . ($now ? 'ALLOWED' : 'STOPPED'), '');
+        }
         foreach ($_POST['prefix'] ?? [] as $k => $v) {
             if (strpos($k, 'prefix_') === 0) inv_set_setting($k, strtoupper(trim((string)$v)));
         }
@@ -509,7 +517,12 @@ uasort($deptStray, fn($a, $b) => $b <=> $a);
       <div><label class="iv-lbl">Backdating limit (days)</label><input class="iv-inp" name="backdate_days" value="<?= e(inv_setting('backdate_days', '7')) ?>">
         <p style="font-size:11px;color:#8a97ab;margin:5px 0 0">A document dated more than this many days ago needs an admin. 0 disables the limit.</p></div>
       <div><label class="iv-lbl">Negative stock allowance (%)</label><input class="iv-inp" name="neg_tolerance_pct" value="<?= e(inv_setting('neg_tolerance_pct', '10')) ?>">
-        <p style="font-size:11px;color:#8a97ab;margin:5px 0 0">How far below a lot's balance anyone may consume, as a % of that lot — always with a reason. Beyond it, only an admin can post. 0 blocks every overdraw. A lot holding nothing has no allowance, so drawing on it is always an admin decision.</p></div>
+        <p style="font-size:11px;color:#8a97ab;margin:5px 0 0">How far below a lot's balance anyone may consume, as a % of that lot — always with a reason. Gate Outward has its own switch. Beyond it, only an admin can post. 0 blocks every overdraw. A lot holding nothing has no allowance, so drawing on it is always an admin decision.</p></div>
+      <div><label class="iv-lbl">Gate Outward below zero</label>
+        <input type="hidden" name="gate_out_negative_shown" value="1">
+        <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:600;margin-top:4px">
+          <input type="checkbox" name="gate_out_negative" value="1" <?= inv_gate_out_negative_ok() ? 'checked' : '' ?>> Allow a Gate Outward to post with stock short</label>
+        <p style="font-size:11px;color:#8a97ab;margin:5px 0 0">On: Sale, Job work, Sample and every other outward pass posts even with no stock, for anyone with the Post right. Stock goes minus, the pass is stamped "Posted short", and Stock Health lists it until the stock is booked in. Off: the allowance above applies, and beyond it only an admin can post.</p></div>
       <div><label class="iv-lbl">Cost review threshold (%)</label><input class="iv-inp" name="cost_variance_pct" value="<?= e(inv_setting('cost_variance_pct', '20')) ?>">
         <p style="font-size:11px;color:#8a97ab;margin:5px 0 0">How far a consumption's cost per unit may drift from the costing the order was priced on before a reason is required. A review, never a block — a real price rise has to be recordable. 0 turns the check off.</p></div>
       <div><label class="iv-lbl">Default GST rate (%)</label><input class="iv-inp" name="gst_pct" value="<?= e(inv_setting('gst_pct', '18')) ?>">
