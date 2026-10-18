@@ -32,7 +32,7 @@ require_once __DIR__ . '/export.php';
 require_once __DIR__ . '/storage.php';
 if (is_file(__DIR__ . '/inventory.php')) require_once __DIR__ . '/inventory.php';
 
-const IMP_SCHEMA_VERSION = '2';    /* 2 = Phase 2: GD lines, receipts, the Gate Inward link */
+const IMP_SCHEMA_VERSION = '3';    /* 2 = Phase 2: GD lines, receipts, the Gate Inward link · 3 = Phase 3: EFS reconciliation */
 const IMP_MAX_INVOICES   = 3;      /* afnan: "keep option free up to 3 max" */
 const IMP_EFS_WASTE      = 5.0;    /* the government's wastage allowance, editable per line */
 const IMP_EFS_MONTHS     = 9;      /* export within, from the GD / customs release — editable per import */
@@ -349,6 +349,78 @@ function imp_ensure_schema(): void
         $x("ALTER TABLE inv_gate_items ADD COLUMN imp_line_id INT NULL DEFAULT NULL");
         $x("ALTER TABLE inv_gate_items ADD INDEX idx_gi_impline (imp_line_id)");
     }
+
+    /* ---- Phase 3: EFS reconciliation ------------------------------------ */
+    /* the GD's own (assessed) net kg — EFS counts this, not the invoice kg */
+    $x("ALTER TABLE imp_gd_lines ADD COLUMN assessed_kg DECIMAL(16,3) NULL DEFAULT NULL");
+    /* not every line of an EFS import is EFS; a deadline customs extended */
+    $x("ALTER TABLE imp_lines ADD COLUMN efs_eligible TINYINT(1) NOT NULL DEFAULT 1");
+    $x("ALTER TABLE imp_lines ADD COLUMN efs_ext_date DATE NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_lines ADD COLUMN efs_ext_ref VARCHAR(160) NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_opening_efs ADD COLUMN currency VARCHAR(10) NOT NULL DEFAULT 'USD'");
+    $x("ALTER TABLE imp_opening_efs ADD COLUMN ext_date DATE NULL DEFAULT NULL");
+    $x("ALTER TABLE imp_opening_efs ADD COLUMN ext_ref VARCHAR(160) NULL DEFAULT NULL");
+    /* One export shipment's EFS claim. Its lines are the shipment's CUSTOMS
+       invoice lines (else the sale invoice lines); under each, the import
+       GD lines it used with kg and value. Nothing here touches any invoice,
+       stock or weight. status: open → filed (locked) → reversed. */
+    $x("CREATE TABLE IF NOT EXISTS imp_efs_alloc (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        shipment_id INT NOT NULL,
+        source VARCHAR(10) NOT NULL DEFAULT 'customs',
+        source_hash VARCHAR(40) NULL,
+        currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+        rates TEXT NULL,
+        export_gd_no VARCHAR(80) NULL, export_gd_date DATE NULL,
+        gd_net_kg DECIMAL(16,3) NULL, gd_fob DECIMAL(16,2) NULL,
+        below_reason VARCHAR(300) NULL,
+        warn_reason VARCHAR(300) NULL,
+        status VARCHAR(10) NOT NULL DEFAULT 'open',
+        filed_on DATE NULL, filed_ref VARCHAR(120) NULL, filed_by INT NULL,
+        reversed_by INT NULL, reversed_at DATETIME NULL, reverse_reason VARCHAR(300) NULL,
+        created_by INT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_by INT NULL, updated_at DATETIME NULL,
+        INDEX(shipment_id), INDEX(status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $x("CREATE TABLE IF NOT EXISTS imp_efs_alloc_lines (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        alloc_id INT NOT NULL,
+        src_kind VARCHAR(10) NOT NULL,
+        src_id INT NOT NULL,
+        description VARCHAR(300) NULL, hs_code VARCHAR(40) NULL,
+        line_value DECIMAL(16,2) NOT NULL DEFAULT 0,
+        efs_value DECIMAL(16,2) NOT NULL DEFAULT 0,
+        manual TINYINT(1) NOT NULL DEFAULT 0,
+        sort_order INT NOT NULL DEFAULT 0,
+        INDEX(alloc_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    /* target_kind 'line' = an import invoice line, 'opening' = an opening EFS balance.
+       value_export in the shipment's currency; value_target in the import's. */
+    $x("CREATE TABLE IF NOT EXISTS imp_efs_alloc_uses (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        alloc_id INT NOT NULL,
+        alloc_line_id INT NOT NULL,
+        target_kind VARCHAR(10) NOT NULL,
+        target_id INT NOT NULL,
+        kg DECIMAL(16,3) NOT NULL DEFAULT 0,
+        value_export DECIMAL(16,2) NOT NULL DEFAULT 0,
+        value_target DECIMAL(16,2) NOT NULL DEFAULT 0,
+        floor_target DECIMAL(16,2) NOT NULL DEFAULT 0,
+        INDEX(alloc_id), INDEX(target_kind, target_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    /* an approved reduction: damaged / rejected goods re-exported or destroyed
+       with customs approval. Always with its reference; never automatic. */
+    $x("CREATE TABLE IF NOT EXISTS imp_efs_reductions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        target_kind VARCHAR(10) NOT NULL,
+        target_id INT NOT NULL,
+        kg DECIMAL(16,3) NOT NULL DEFAULT 0,
+        ref VARCHAR(160) NOT NULL,
+        reason VARCHAR(300) NOT NULL,
+        is_void TINYINT(1) NOT NULL DEFAULT 0, void_reason VARCHAR(300) NULL, voided_by INT NULL, voided_at DATETIME NULL,
+        created_by INT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX(target_kind, target_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     imp_seed_masters();
     try {
@@ -669,10 +741,11 @@ function imp_landed(array $imp, array $lines, ?array $costs = null, ?array $paym
    addition % for that HS code). afnan's example: 100 kg × USD 3.50 → 95 kg,
    USD 350. Valuation is the customs value per kg (from the GD in Phase 2);
    until then the invoice value per kg. */
-function imp_efs_line(array $l, ?float $gdPerKg = null): array
+function imp_efs_line(array $l, ?float $gdPerKg = null, ?float $gdKg = null): array
 {
-    $kg = (float)$l['net_kg'];
-    $perKg = $kg > 0 ? imp_line_amount($l) / $kg : 0.0;
+    /* kg: the GD's assessed kg when customs gave one (Phase 3), else the invoice net kg */
+    $kg = $gdKg !== null ? $gdKg : (float)$l['net_kg'];
+    $perKg = (float)$l['net_kg'] > 0 ? imp_line_amount($l) / (float)$l['net_kg'] : 0.0;
     /* Valuation, most certain first: typed by hand on the EFS tab, then the
        customs-assessed value from the GD (Phase 2), then the invoice. */
     $typed = $l['efs_valuation'] !== null && $l['efs_valuation'] !== '';
@@ -681,7 +754,7 @@ function imp_efs_line(array $l, ?float $gdPerKg = null): array
     $waste = $l['efs_waste_pct'] !== null && $l['efs_waste_pct'] !== '' ? (float)$l['efs_waste_pct'] : IMP_EFS_WASTE;
     $va = $l['efs_va_pct'] !== null && $l['efs_va_pct'] !== '' ? (float)$l['efs_va_pct'] : 0.0;
     $imported = round($kg * $val, 2);
-    return ['kg' => $kg, 'valuation' => $val, 'from_invoice' => $source === 'invoice', 'source' => $source,
+    return ['kg' => $kg, 'kg_source' => $gdKg !== null ? 'GD assessed' : 'invoice', 'valuation' => $val, 'from_invoice' => $source === 'invoice', 'source' => $source,
             'waste' => $waste, 'va' => $va, 'imported' => $imported,
             'need_kg' => round($kg * (1 - $waste / 100), 3), 'need_value' => round($imported * (1 + $va / 100), 2)];
 }
@@ -689,12 +762,13 @@ function imp_efs_line(array $l, ?float $gdPerKg = null): array
 /* ================================================== Phase 2 — the GD lines */
 function imp_gd_lines(int $id): array { return imp_rows('imp_gd_lines', $id, 'invoice_id, line_no, id'); }
 
-/* The assessed value per kg for each invoice line, from its GD line. A GD
-   line that groups several invoice lines shares its assessed value back to
-   them in proportion to their declared (supplier) value, so each product
-   keeps its own valuation. Lines whose GD line has no assessed value yet
-   are left out — the invoice value stands for them. */
-function imp_gd_valuation(array $lines, ?array $gdLines = null): array
+/* What the GD says for each invoice line: its assessed kg and assessed value
+   per kg. A GD line that groups several invoice lines shares its assessed
+   value back to them by supplier value, and its assessed kg by net kg, so
+   each product keeps its own figures. A GD line without an assessed kg uses
+   the invoice net kg; one without an assessed value is left out (the invoice
+   value stands for it). Returns [line_id => ['kg' => ?float, 'per_kg' => ?float]]. */
+function imp_gd_basis(array $lines, ?array $gdLines = null): array
 {
     if (!$lines) return [];
     $gdLines = $gdLines ?? imp_gd_lines((int)$lines[0]['import_id']);
@@ -702,16 +776,25 @@ function imp_gd_valuation(array $lines, ?array $gdLines = null): array
     foreach ($lines as $l) if (!empty($l['gd_line_id'])) $byGd[(int)$l['gd_line_id']][] = $l;
     $out = [];
     foreach ($gdLines as $g) {
-        if ($g['assessed_value'] === null || $g['assessed_value'] === '' || empty($byGd[(int)$g['id']])) continue;
-        $sum = 0.0;
-        foreach ($byGd[(int)$g['id']] as $l) $sum += imp_line_amount($l);
-        foreach ($byGd[(int)$g['id']] as $l) {
-            $kg = (float)$l['net_kg'];
-            if ($kg <= 0) continue;
-            $share = $sum > 0 ? (float)$g['assessed_value'] * imp_line_amount($l) / $sum : (float)$g['assessed_value'] / count($byGd[(int)$g['id']]);
-            $out[(int)$l['id']] = $share / $kg;
+        $mine = $byGd[(int)$g['id']] ?? [];
+        if (!$mine) continue;
+        $sumV = 0.0; $sumKg = 0.0;
+        foreach ($mine as $l) { $sumV += imp_line_amount($l); $sumKg += (float)$l['net_kg']; }
+        $hasKg = isset($g['assessed_kg']) && $g['assessed_kg'] !== null && $g['assessed_kg'] !== '';
+        $hasVal = $g['assessed_value'] !== null && $g['assessed_value'] !== '';
+        foreach ($mine as $l) {
+            $kg = $hasKg ? ($sumKg > 0 ? (float)$g['assessed_kg'] * (float)$l['net_kg'] / $sumKg : (float)$g['assessed_kg'] / count($mine)) : (float)$l['net_kg'];
+            $share = $hasVal ? ($sumV > 0 ? (float)$g['assessed_value'] * imp_line_amount($l) / $sumV : (float)$g['assessed_value'] / count($mine)) : null;
+            $out[(int)$l['id']] = ['kg' => $hasKg ? round($kg, 3) : null, 'per_kg' => ($share !== null && $kg > 0) ? $share / $kg : null];
         }
     }
+    return $out;
+}
+/* the assessed value per kg alone (lines whose GD line is assessed) */
+function imp_gd_valuation(array $lines, ?array $gdLines = null): array
+{
+    $out = [];
+    foreach (imp_gd_basis($lines, $gdLines) as $id => $b) if ($b['per_kg'] !== null) $out[$id] = $b['per_kg'];
     return $out;
 }
 /* Duty and taxes are entered as costs (afnan: no split by tax head, all of
@@ -1199,3 +1282,6 @@ function imp_suppliers(): array
     return $out;
 }
 const IMP_CURRENCIES = ['USD', 'EUR', 'GBP', 'CNY', 'AED', 'PKR'];
+
+/* Phase 3 — EFS reconciliation lives in its own file */
+require_once __DIR__ . '/imports_efs.php';

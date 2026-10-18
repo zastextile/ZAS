@@ -67,6 +67,7 @@ function zas_menu(): array {
             'items' => [
                 ['label' => 'Import Register',  'href' => 'imp_register.php', 'show' => true],
                 ['label' => 'New Import',       'href' => 'imp_new.php',      'show' => function_exists('zu_can') ? zu_can('imp', 'c') : $admin],
+                ['label' => 'EFS Reconciliation', 'href' => 'imp_efs_recon.php', 'show' => function_exists('zu_can') ? zu_can('impefs', 'v') : $admin],
                 ['label' => 'Opening Balances', 'href' => 'imp_opening.php',  'show' => function_exists('zu_can') ? zu_can('impefs', 'v') : $admin],
             ],
         ],

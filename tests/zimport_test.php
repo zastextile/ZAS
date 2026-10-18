@@ -37,11 +37,12 @@ exec('rm -rf ' . escapeshellarg($work));
 @mkdir($work . '/includes', 0777, true); @mkdir($work . '/uploads', 0777, true); @mkdir($work . '/sess', 0777, true);
 foreach (glob($B . 'imp_*.php') as $f) copy($f, $work . '/' . basename($f));
 copy($B . 'includes/imports.php', $work . '/includes/imports.php');
+copy($B . 'includes/imports_efs.php', $work . '/includes/imports_efs.php');
 copy($B . 'includes/storage.php', $work . '/includes/storage.php');
 
 $schema = <<<'SQL'
 CREATE TABLE exp_meta (k TEXT PRIMARY KEY, v TEXT, updated_at TEXT);
-INSERT INTO exp_meta VALUES ('imp_schema_version', '2', NULL);
+INSERT INTO exp_meta VALUES ('imp_schema_version', '3', NULL);
 CREATE TABLE exp_masters (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, label TEXT, code TEXT, sort_order INT DEFAULT 0, is_active INT DEFAULT 1, flags TEXT, UNIQUE(kind, label));
 CREATE TABLE exp_providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_active INT DEFAULT 1);
 CREATE TABLE exp_provider_roles (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INT, role TEXT);
@@ -54,7 +55,19 @@ CREATE TABLE costing_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, material_id IN
 CREATE TABLE inv_gate (id INTEGER PRIMARY KEY AUTOINCREMENT, gate_no TEXT, direction TEXT DEFAULT 'in', gate_date TEXT, status TEXT DEFAULT 'draft', vehicle_no TEXT, remarks TEXT, import_id INT);
 CREATE TABLE inv_gate_items (id INTEGER PRIMARY KEY AUTOINCREMENT, gate_id INT, material_id INT, product_id INT, qty REAL, uom TEXT, rate REAL, lot_no TEXT, sort_order INT DEFAULT 0, imp_line_id INT);
 CREATE TABLE imp_gd_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT NOT NULL, invoice_id INT, line_no INT NOT NULL DEFAULT 0, hs_code TEXT, description TEXT NOT NULL DEFAULT '',
-  declared_qty REAL, declared_unit TEXT, declared_value REAL, assessed_value REAL, exemption_ref TEXT, diff_reason TEXT, updated_by INT, updated_at TEXT);
+  declared_qty REAL, declared_unit TEXT, declared_value REAL, assessed_value REAL, exemption_ref TEXT, diff_reason TEXT, updated_by INT, updated_at TEXT, assessed_kg REAL);
+CREATE TABLE shipments (id INTEGER PRIMARY KEY, invoice_no TEXT, invoice_date TEXT, buyer_name TEXT, currency TEXT DEFAULT 'USD', total_amount REAL DEFAULT 0);
+CREATE TABLE shipment_items (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT, line_no INT, product_name TEXT, qty REAL, unit TEXT, rate REAL, amount REAL);
+CREATE TABLE exp_doc_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT, view TEXT, line_no INT, description TEXT, hs_code TEXT, unit TEXT, qty REAL, rate REAL, amount REAL);
+CREATE TABLE imp_efs_alloc (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INT NOT NULL, source TEXT NOT NULL DEFAULT 'customs', source_hash TEXT, currency TEXT NOT NULL DEFAULT 'USD', rates TEXT,
+  export_gd_no TEXT, export_gd_date TEXT, gd_net_kg REAL, gd_fob REAL, below_reason TEXT, warn_reason TEXT, status TEXT NOT NULL DEFAULT 'open', filed_on TEXT, filed_ref TEXT, filed_by INT,
+  reversed_by INT, reversed_at TEXT, reverse_reason TEXT, created_by INT, created_at TEXT, updated_by INT, updated_at TEXT);
+CREATE TABLE imp_efs_alloc_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, alloc_id INT NOT NULL, src_kind TEXT NOT NULL, src_id INT NOT NULL, description TEXT, hs_code TEXT, line_value REAL NOT NULL DEFAULT 0,
+  efs_value REAL NOT NULL DEFAULT 0, manual INT NOT NULL DEFAULT 0, sort_order INT NOT NULL DEFAULT 0);
+CREATE TABLE imp_efs_alloc_uses (id INTEGER PRIMARY KEY AUTOINCREMENT, alloc_id INT NOT NULL, alloc_line_id INT NOT NULL, target_kind TEXT NOT NULL, target_id INT NOT NULL, kg REAL NOT NULL DEFAULT 0,
+  value_export REAL NOT NULL DEFAULT 0, value_target REAL NOT NULL DEFAULT 0, floor_target REAL NOT NULL DEFAULT 0);
+CREATE TABLE imp_efs_reductions (id INTEGER PRIMARY KEY AUTOINCREMENT, target_kind TEXT NOT NULL, target_id INT NOT NULL, kg REAL NOT NULL DEFAULT 0, ref TEXT NOT NULL, reason TEXT NOT NULL,
+  is_void INT NOT NULL DEFAULT 0, void_reason TEXT, voided_by INT, voided_at TEXT, created_by INT, created_at TEXT);
 CREATE TABLE imp_receipts (gate_id INTEGER PRIMARY KEY, import_id INT NOT NULL, container_id INT, packages INT, gross_kg REAL, tare_kg REAL, updated_by INT, updated_at TEXT);
 CREATE TABLE imp_receipt_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, gate_id INT NOT NULL, import_id INT NOT NULL, imp_line_id INT NOT NULL, net_kg REAL NOT NULL DEFAULT 0,
   damaged REAL NOT NULL DEFAULT 0, rejected REAL NOT NULL DEFAULT 0, short_qty REAL NOT NULL DEFAULT 0, remark TEXT, UNIQUE(gate_id, imp_line_id));
@@ -72,7 +85,7 @@ CREATE TABLE imp_invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT N
 CREATE TABLE imp_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT NOT NULL, invoice_id INT, sort_order INT NOT NULL DEFAULT 0, category TEXT NOT NULL DEFAULT 'Other',
   material_id INT, product_id INT, description TEXT NOT NULL DEFAULT '', hs_code TEXT, supplier_ref TEXT, bill_unit TEXT NOT NULL DEFAULT 'kg',
   bill_qty REAL NOT NULL DEFAULT 0, rate REAL NOT NULL DEFAULT 0, net_kg REAL NOT NULL DEFAULT 0, gross_kg REAL NOT NULL DEFAULT 0, packages INT NOT NULL DEFAULT 0,
-  specs TEXT, efs_valuation REAL, efs_waste_pct REAL, efs_va_pct REAL, stock_qty REAL, gd_line_id INT, size_label TEXT);
+  specs TEXT, efs_valuation REAL, efs_waste_pct REAL, efs_va_pct REAL, stock_qty REAL, gd_line_id INT, size_label TEXT, efs_eligible INT NOT NULL DEFAULT 1, efs_ext_date TEXT, efs_ext_ref TEXT);
 CREATE TABLE imp_logistics (import_id INTEGER PRIMARY KEY, booking_no TEXT, booking_date TEXT, forwarder_id INT, shipping_line_id INT, vessel TEXT, voyage TEXT,
   pol TEXT, transship TEXT, pod TEXT, etd TEXT, eta TEXT, departed TEXT, arrival TEXT, bl_no TEXT, bl_date TEXT, bl_type TEXT, bl_released INT NOT NULL DEFAULT 0,
   gd_filed TEXT, customs_release TEXT, do_date TEXT, port_gate_out TEXT, factory_gate_in TEXT, empty_return TEXT,
@@ -93,7 +106,7 @@ CREATE TABLE imp_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT 
 CREATE TABLE imp_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, import_id INT NOT NULL DEFAULT 0, user_id INT, user_name TEXT, action TEXT NOT NULL, detail TEXT, reason TEXT, created_at TEXT);
 CREATE TABLE imp_opening_efs (id INTEGER PRIMARY KEY AUTOINCREMENT, gd_no TEXT NOT NULL DEFAULT '', gd_date TEXT, hs_code TEXT, product TEXT NOT NULL DEFAULT '', imported_kg REAL NOT NULL DEFAULT 0,
   valuation REAL NOT NULL DEFAULT 0, waste_pct REAL NOT NULL DEFAULT 5, va_pct REAL NOT NULL DEFAULT 0, exported_kg REAL NOT NULL DEFAULT 0, exported_value REAL NOT NULL DEFAULT 0,
-  months INT NOT NULL DEFAULT 9, notes TEXT, created_by INT, created_at TEXT, updated_by INT, updated_at TEXT);
+  months INT NOT NULL DEFAULT 9, notes TEXT, created_by INT, created_at TEXT, updated_by INT, updated_at TEXT, currency TEXT NOT NULL DEFAULT 'USD', ext_date TEXT, ext_ref TEXT);
 CREATE TABLE imp_settings (k TEXT PRIMARY KEY, v TEXT, updated_at TEXT);
 INSERT INTO exp_masters (kind, label, sort_order, flags) VALUES ('imp_doc_type', 'Supplier Commercial Invoice', 10, NULL), ('imp_doc_type', 'BL', 20, NULL),
   ('imp_cost_type', 'Ocean Freight', 10, NULL), ('imp_cost_type', 'Clearing Agent Service', 20, NULL), ('imp_cost_type', 'Customs Duty & Taxes (via agent)', 30, '{"is_duty":1}'),
@@ -590,6 +603,144 @@ db()->exec("UPDATE imp_lines SET material_id=NULL WHERE id=" . (int)$pl[0]['id']
 $gp = page('imp_gatein.php', ['id' => $pid]);
 ok(str_contains($gp, 'Line 1: link it to an Item Master') && !str_contains($gp, 'Receive into stock →'), 'a line not linked to an item stops receiving, and says which line');
 db()->exec("UPDATE imp_lines SET material_id=1 WHERE id=" . (int)$pl[0]['id']);
+
+
+/* =================================================================== 10 */
+head('10. Phase 3 — EFS reconciliation');
+$L1 = 'L' . (int)$pl[0]['id']; $L2 = 'L' . (int)$pl[1]['id']; $L4 = 'L' . (int)$pl[3]['id']; $O1 = 'O' . (int)$or[0]['id'];
+/* the GD's assessed kg on CUSTOMS */
+$gdL1 = $q("SELECT * FROM imp_gd_lines WHERE id=?", [$pl[0]['gd_line_id']])[0];
+page('imp_customs.php', ['id' => $pid], $T + ['import_id' => $pid, 'invoice_id' => $piv, 'action' => 'save_lines', 'gd' => [$gdL1['id'] => ['hs_code' => $gdL1['hs_code'], 'description' => $gdL1['description'],
+    'declared_qty' => '', 'declared_unit' => '', 'declared_value' => $gdL1['declared_value'], 'assessed_value' => '', 'assessed_kg' => '19800', 'exemption_ref' => '', 'diff_reason' => '']]]);
+$ob = imp_efs_obligations();
+ok(isset($ob[$L1]) && $ob[$L1]['kg'] == 19800 && $ob[$L1]['kg_source'] === 'GD assessed' && $ob[$L1]['need_kg'] == 18810 && $ob[$L1]['need_value'] == round(19800 * 1.75, 2),
+   'EFS counts the GD\'s assessed kg (19,800) — must export 18,810 kg and USD 34,650 (value not reduced by the 5%)', $ob[$L1] ?? null);
+ok($ob[$O1]['kind'] === 'opening' && $ob[$O1]['done_kg'] == 16000 && $ob[$O1]['need_kg'] == 22800 && $ob[$O1]['deadline'] === '2026-12-14', 'an opening balance is an obligation too, with what was exported before go-live', $ob[$O1]);
+$keys = array_keys($ob);
+ok(array_search($O1, $keys, true) < array_search($L1, $keys, true), 'oldest deadline first');
+/* not every line of an EFS import is EFS */
+$ef = $T + ['import_id' => $pid, 'efs_months' => '9', 'eligible' => [$pl[0]['id'] => '1', $pl[1]['id'] => '1', $pl[2]['id'] => '1']];
+ok(said(page('imp_efs.php', ['id' => $pid], $ef)) === 'EFS figures saved.' && !isset(imp_efs_obligations()[$L4]) && isset(imp_efs_obligations()[$L1]), 'a line switched off EFS is not an obligation');
+$ep = page('imp_efs.php', ['id' => $pid]);
+ok(noWarn($ep) && str_contains($ep, 'GD assessed') && str_contains($ep, 'not EFS'), 'the EFS tab shows the kg source and the line that is not EFS', substr(strip_tags($ep), 0, 200));
+
+/* the export side: the customs invoice, else the sale invoice */
+db()->exec("INSERT INTO shipments (id, invoice_no, invoice_date, buyer_name, currency, total_amount) VALUES (7001, 'ZAS/7001', '2026-11-20', 'Nordic Home AB', 'USD', 16650)");
+db()->exec("INSERT INTO shipment_items (shipment_id, line_no, product_name, qty, unit, rate, amount) VALUES (7001, 1, 'Comforter King', 400, 'Pcs', 30, 12000), (7001, 2, 'Pillow', 1200, 'Pcs', 3.875, 4650)");
+$s1 = imp_efs_source(7001);
+ok($s1['kind'] === 'invoice' && count($s1['lines']) === 2, 'without a customs invoice, the sale invoice lines are offered');
+db()->exec("INSERT INTO exp_doc_lines (shipment_id, view, line_no, description, hs_code, unit, qty, rate, amount) VALUES (7001, 'customs', 1, 'Comforter, hollow-fibre', '9404.9000', 'PCS', 400, 30, 12000),
+    (7001, 'customs', 2, 'Pillow, hollow-fibre (local cover)', '9404.9000', 'PCS', 1200, 3, 3600), (7001, 'customs', 3, 'Bath towel, cotton', '6302.6000', 'PCS', 300, 3.5, 1050), (7001, 'chamber', 1, 'Chamber line', '', 'PCS', 1, 1, 1)");
+$src = imp_efs_source(7001);
+ok($src['kind'] === 'customs' && count($src['lines']) === 3 && $src['hash'] !== $s1['hash'], 'with a customs invoice, its lines are used (not the chamber one, not the sale invoice)');
+[$c1, $c2, $c3] = array_column($src['lines'], 'id');
+
+/* the maths */
+$base = ['shipment_id' => 7001, 'rates' => [], 'lines' => [['src_id' => $c1, 'efs_value' => 12000, 'manual' => false, 'uses' => [['key' => $L1, 'kg' => 3000]]],
+                                                            ['src_id' => $c2, 'efs_value' => 2400, 'manual' => false, 'uses' => [['key' => $L1, 'kg' => 1500]]]]];
+$r = imp_efs_compute($base);
+ok(abs($r['per'][$L1]['kg'] - 4500) < 0.001 && $r['counted'] == 14400.0 && $r['lines'][1]['uses'][0]['floor_target'] == 2625.0 && $r['lines'][1]['uses'][0]['diff'] == -225.0,
+   'the summary is the total of the detail: 4,500 kg, USD 14,400; the pillow\'s 1,500 kg is assessed at 2,625 and counted at 2,400', $r['per'][$L1] ?? $r['errors']);
+ok($r['below'] == 225.0 && str_contains(implode(' ', $r['errors']), 'below the assessed value'), 'one line above never hides another below: 225 below needs a reason', $r['errors']);
+$r = imp_efs_compute($base + ['below_reason' => 'Pillow cover is local']);
+ok(!$r['errors'], 'with the reason it may be saved', $r['errors']);
+$two = $base; $two['lines'][0]['uses'] = [['key' => $L1, 'kg' => 3000], ['key' => $O1, 'kg' => 1000]];
+$r = imp_efs_compute($two + ['below_reason' => 'x']);
+$u = $r['lines'][0]['uses'];
+ok(abs($u[0]['value_export'] - round(12000 * 3000 * 1.75 / (3000 * 1.75 + 1000 * 1.62), 2)) < 0.01 && abs($u[0]['value_export'] + $u[1]['value_export'] - 12000) < 0.001,
+   'the line\'s value is split by material value (kg × valuation), and the split adds up exactly', $u);
+$thr = $base; $thr['lines'] = [['src_id' => $c1, 'efs_value' => 100, 'manual' => false, 'uses' => [['key' => $L1, 'kg' => 10], ['key' => $L1, 'kg' => 10], ['key' => $L1, 'kg' => 10]]]];
+$tu = imp_efs_compute($thr + ['below_reason' => 'x'])['lines'][0]['uses'];
+ok(array_column($tu, 'value_export') === [33.33, 33.33, 33.34], 'USD 100 over three equal uses is 33.33 + 33.33 + 33.34 — the last takes the rounding, so it adds up exactly', array_column($tu, 'value_export'));
+$m = $two; $m['lines'][0]['manual'] = true; $m['lines'][0]['uses'] = [['key' => $L1, 'kg' => 3000, 'value' => 9000], ['key' => $O1, 'kg' => 1000, 'value' => 2000]];
+ok(str_contains(implode(' ', imp_efs_compute($m + ['below_reason' => 'x'])['errors']), 'add up to 11,000.00, not the line\'s 12,000.00'), 'values typed by hand must add up to the line\'s EFS value');
+$big = $base; $big['lines'][0]['efs_value'] = 12500;
+ok(str_contains(implode(' ', imp_efs_compute($big + ['below_reason' => 'x'])['errors']), 'more than the line value'), 'a line can never count more than its own value');
+$over = $base; $over['lines'][0]['uses'] = [['key' => $L1, 'kg' => 19000]];
+ok(str_contains(implode(' ', imp_efs_compute($over + ['below_reason' => 'x', 'warn_reason' => 'x'])['errors']), 'more than the 19,800 kg it has left'), 'never more kg than an import line has left');
+$rc = $base; $rc['lines'][0]['uses'] = [['key' => $L1, 'kg' => 9000]];
+$r = imp_efs_compute($rc + ['below_reason' => 'x']);
+ok($r['warn'] && str_contains(implode(' ', $r['errors']), 'received at Gate In'), 'more kg than received at Gate In (10,000) is highlighted and needs a reason', $r['warn']);
+ok(!imp_efs_compute($rc + ['below_reason' => 'x', 'warn_reason' => 'received before go-live'])['errors'], 'with the reason it may be saved');
+ok(str_contains(implode(' ', imp_efs_compute($base + ['below_reason' => 'x'])['notes']), 'Older pending for HS 5503.2000'), 'an older GD line of the same HS with kg left is pointed out first');
+$r = imp_efs_compute($base + ['below_reason' => 'x', 'gd_net_kg' => 4600, 'gd_fob' => 14000]);
+ok(str_contains(implode(' ', $r['notes']), 'export GD net weight is 4,600') && str_contains(implode(' ', $r['notes']), 'more than the export GD FOB') && !$r['errors'], 'the export GD net weight and FOB differences are shown, never blocked', $r['notes']);
+db()->exec("UPDATE imp_opening_efs SET currency='EUR' WHERE id=" . (int)$or[0]['id']);
+$eu = $base; $eu['lines'][0]['uses'] = [['key' => $O1, 'kg' => 1000]];
+ok(str_contains(implode(' ', imp_efs_compute($eu + ['below_reason' => 'x'])['errors']), '1 USD = how many EUR'), 'an import in another currency needs the export GD\'s exchange rate');
+$eu['rates'] = ['EUR' => 0.92];
+$r = imp_efs_compute($eu + ['below_reason' => 'x']);
+ok($r['lines'][0]['uses'][0]['value_target'] == round(12000 * 0.92, 2) && !$r['errors'], 'with the rate, the value counted against it is in its own currency (12,000 USD × 0.92)', $r['lines'][0]['uses'][0] ?? $r['errors']);
+db()->exec("UPDATE imp_opening_efs SET currency='USD' WHERE id=" . (int)$or[0]['id']);
+
+/* saving through the page */
+$save = fn(array $form, int $aid = 0, string $env = '') => page('imp_efs_alloc.php', $aid ? ['id' => $aid] : ['shipment' => 7001],
+    $T + ['action' => 'save', 'alloc_id' => $aid, 'shipment_id' => 7001, 'payload' => json_encode($form)], $env);
+$out = $save($base);
+ok(str_contains(said($out, 'error'), 'below the assessed value') && !$q("SELECT id FROM imp_efs_alloc"), 'the server checks again: nothing saved without the reason', said($out, 'error'));
+$out = $save($base + ['below_reason' => 'Pillow cover is local', 'export_gd_no' => 'KEXP-1', 'export_gd_date' => '2026-11-21', 'gd_net_kg' => 4600, 'gd_fob' => 16650]);
+$A = $q("SELECT * FROM imp_efs_alloc")[0] ?? null;
+ok($A && str_contains($out, '__REDIRECT__ imp_efs_alloc.php?id=' . $A['id']) && $A['source'] === 'customs' && $A['below_reason'] === 'Pillow cover is local' && (float)$A['gd_net_kg'] === 4600.0,
+   'saved: the customs invoice, the export GD and the reason are kept', $A);
+$U = $q("SELECT * FROM imp_efs_alloc_uses WHERE alloc_id=? ORDER BY id", [$A['id']]);
+ok(count($U) === 2 && (float)$U[1]['value_target'] === 2400.0 && (float)$U[1]['floor_target'] === 2625.0, 'each import use keeps its kg, value and assessed value', $U);
+$ob = imp_efs_obligations();
+ok($ob[$L1]['done_kg'] == 4500 && $ob[$L1]['done_value'] == 14400 && $ob[$L1]['max_kg'] == 15300, 'the import line now shows 4,500 kg / USD 14,400 discharged, 15,300 kg left to allocate', $ob[$L1]);
+ok(str_contains(said($save($base + ['below_reason' => 'x']), 'error'), 'already has an allocation'), 'one allocation per shipment');
+ok(str_contains(page('imp_efs_alloc.php', ['shipment' => 7001]), '__REDIRECT__ imp_efs_alloc.php?id=' . $A['id']), 'opening the shipment again opens its allocation');
+/* an open allocation can be changed */
+$ch = $base; $ch['lines'][1]['efs_value'] = 2700;
+$save($ch, (int)$A['id']);
+ok((float)$q("SELECT efs_value FROM imp_efs_alloc_lines WHERE alloc_id=? AND src_id=?", [$A['id'], $c2])[0]['efs_value'] === 2700.0 && $q("SELECT below_reason FROM imp_efs_alloc WHERE id=?", [$A['id']])[0]['below_reason'] === null,
+   'an open allocation is changed and saved again (2,700 is above the assessed 2,625, so no reason is kept)');
+/* the customs invoice changes afterwards */
+db()->exec("UPDATE exp_doc_lines SET amount=11500 WHERE id=$c1");
+ok(str_contains(imp_efs_recheck(imp_efs_alloc((int)$A['id'])), 'customs invoice changed'), 'a customs invoice changed afterwards → recheck');
+$rp = page('imp_efs_recon.php');
+ok(str_contains($rp, 'recheck'), 'and the reconciliation shows it');
+ok(str_contains(said(page('imp_efs_alloc.php', ['id' => $A['id']], $T + ['action' => 'file', 'alloc_id' => $A['id'], 'filed_on' => '2026-11-25', 'filed_ref' => 'S-118']), 'error'), 'Recheck first'), 'it cannot be filed until rechecked');
+db()->exec("UPDATE exp_doc_lines SET amount=12000 WHERE id=$c1");
+ok(imp_efs_recheck(imp_efs_alloc((int)$A['id'])) === '', 'put back, nothing to recheck');
+/* filed with customs locks it */
+ok(str_contains(said(page('imp_efs_alloc.php', ['id' => $A['id']], $T + ['action' => 'file', 'alloc_id' => $A['id'], 'filed_on' => '2026-11-25', 'filed_ref' => '']), 'error'), 'reference'), 'filing needs the date and the reference');
+page('imp_efs_alloc.php', ['id' => $A['id']], $T + ['action' => 'file', 'alloc_id' => $A['id'], 'filed_on' => '2026-11-25', 'filed_ref' => 'EFS-STMT-118']);
+ok($q("SELECT status FROM imp_efs_alloc WHERE id=?", [$A['id']])[0]['status'] === 'filed', 'filed with customs');
+ok(str_contains(said($save($ch, (int)$A['id']), 'error'), 'can only be reversed'), 'a filed allocation cannot be changed');
+ok(!str_contains(page('imp_efs_alloc.php', ['id' => $A['id']]), 'id="aForm"'), 'and the page shows it read-only');
+/* reversing */
+ok(str_contains(page('imp_efs_alloc.php', ['id' => $A['id']], $T + ['action' => 'reverse', 'alloc_id' => $A['id'], 'reason' => 'Wrong GD line typed'], 'ROLE=colleague PERMS=\'{"impefs":"vcud"}\''), 'do not have permission'), 'reversing needs the Reverse right');
+ok(str_contains(said(page('imp_efs_alloc.php', ['id' => $A['id']], $T + ['action' => 'reverse', 'alloc_id' => $A['id'], 'reason' => 'x']), 'error'), 'at least 5'), 'and a reason');
+page('imp_efs_alloc.php', ['id' => $A['id']], $T + ['action' => 'reverse', 'alloc_id' => $A['id'], 'reason' => 'Wrong GD line typed']);
+$ob = imp_efs_obligations();
+ok($q("SELECT status FROM imp_efs_alloc WHERE id=?", [$A['id']])[0]['status'] === 'reversed' && $ob[$L1]['done_kg'] == 0 && count($q("SELECT id FROM imp_efs_alloc_uses WHERE alloc_id=?", [$A['id']])) === 2,
+   'reversed: the kg go back to the import line, and the allocation stays on the record');
+$out = $save($base + ['below_reason' => 'Pillow cover is local']);
+ok(count($q("SELECT id FROM imp_efs_alloc WHERE shipment_id=7001")) === 2, 'after a reversal the shipment can be allocated again');
+/* approved reductions and extensions */
+$lp = fn(array $post, string $env = '') => page('imp_efs_line.php', ['kind' => 'line', 'id' => $pl[0]['id']], $T + ['kind' => 'line', 'id' => $pl[0]['id']] + $post, $env);
+ok(str_contains(said($lp(['action' => 'extend', 'ext_date' => '2027-12-31', 'ext_ref' => '']), 'error'), 'reference'), 'an extended deadline needs the customs reference');
+$lp(['action' => 'extend', 'ext_date' => '2027-12-31', 'ext_ref' => 'MOC/EFS/EXT/552']);
+ok(imp_efs_obligations()[$L1]['deadline'] === '2027-12-31' && str_contains(imp_efs_obligations()[$L1]['deadline_from'], 'MOC/EFS/EXT/552'), 'the extended deadline counts, with its reference');
+ok(str_contains(said($lp(['action' => 'reduce', 'kg' => '400', 'ref' => '', 'reason' => 'wet']), 'error'), 'reference'), 'an approved reduction needs the reference and the reason');
+ok(str_contains(said($lp(['action' => 'reduce', 'kg' => '99999', 'ref' => 'D-1', 'reason' => 'wet']), 'error'), 'not yet exported'), 'never more than is still to export');
+$lp(['action' => 'reduce', 'kg' => '400', 'ref' => 'DC-DEST-77', 'reason' => '40 bales wet fibre destroyed']);
+$ob = imp_efs_obligations();
+ok($ob[$L1]['reduced_kg'] == 400 && $ob[$L1]['need_kg'] == round((19800 - 400) * 0.95, 3) && $ob[$L1]['need_value'] == round((19800 - 400) * 1.75, 2), 'an approved reduction lowers the kg the obligation is based on', $ob[$L1]);
+$rid = (int)$q("SELECT id FROM imp_efs_reductions")[0]['id'];
+$lp(['action' => 'void_reduction', 'rid' => $rid, 'reason' => 'approval withdrawn']);
+ok(imp_efs_obligations()[$L1]['reduced_kg'] == 0 && count($q("SELECT id FROM imp_efs_reductions")) === 1, 'voided with a reason, never deleted');
+/* a line already used by an export stays EFS */
+$ef2 = $ef; unset($ef2['eligible'][$pl[0]['id']]);
+ok(str_contains(said(page('imp_efs.php', ['id' => $pid], $ef2), 'error'), 'stays EFS'), 'a line already used by an export cannot be switched off EFS');
+/* the pages */
+$rp = page('imp_efs_recon.php');
+ok(noWarn($rp) && str_contains($rp, 'ZAS/7001') && str_contains($rp, 'KAPW-HC-88120') && str_contains($rp, 'Not filed'), 'EFS Reconciliation lists the obligations and the allocations', substr(strip_tags($rp), 0, 300));
+$csv = page('imp_efs_recon.php', ['csv' => '1', 'show' => 'all']);
+ok(str_starts_with($csv, '"Import GD","GD date",Reference') && str_contains($csv, 'KAPW-HC-88120') && noWarn($csv), 'and exports to Excel (CSV) with nothing else in the file', substr($csv, 0, 200));
+$ap = page('imp_efs_alloc.php', ['id' => $q("SELECT MAX(id) m FROM imp_efs_alloc")[0]['m']]);
+ok(noWarn($ap) && str_contains($ap, 'built from the <b>customs invoice</b>') && str_contains($ap, 'id="aForm"'), 'the allocation page opens with its form', substr(strip_tags($ap), 0, 200));
+ok(noWarn(page('imp_efs_alloc.php')) && noWarn(page('imp_efs_line.php', ['kind' => 'opening', 'id' => $or[0]['id']])), 'the shipment picker and an opening balance\'s page open cleanly');
+ok(str_contains(page('imp_efs_recon.php', [], null, 'ROLE=colleague PERMS=\'{"imp":"v"}\''), 'do not have permission'), 'EFS Reconciliation needs the EFS permission');
 
 /* =================================================================== 8 */
 head('8. In Chromium');

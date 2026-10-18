@@ -59,7 +59,7 @@ function zu_modules(): array {
         ['g' => 'Imports',           'k' => 'imppay',   'n' => 'Import Payments',       'a' => 'vcudr'],
         ['g' => 'Imports',           'k' => 'impcost',  'n' => 'Import Costs',          'a' => 'vcudr'],
         ['g' => 'Imports',           'k' => 'impdoc',   'n' => 'Import Documents',      'a' => 'vcud'],
-        ['g' => 'Imports',           'k' => 'impefs',   'n' => 'EFS & Opening Balances','a' => 'vcud'],
+        ['g' => 'Imports',           'k' => 'impefs',   'n' => 'EFS & Opening Balances','a' => 'vcudr'],   /* r: reverse an export allocation (Phase 3) */
         ['g' => 'Costing',           'k' => 'costing',  'n' => 'Product Costing',       'a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'fcost',    'n' => 'Final Costing',         'a' => 'vcud'],
         ['g' => 'Costing',           'k' => 'pmaster',  'n' => 'Product Master & Parts','a' => 'vcud'],

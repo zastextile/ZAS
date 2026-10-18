@@ -11,7 +11,8 @@
   Three values, never written over one another: the supplier value (from
   the invoice lines), the declared value and the assessed value. When
   assessed differs from declared a reason is required and kept on the
-  timeline. The assessed value becomes each line's EFS valuation per kg.
+  timeline. The assessed value becomes each line's EFS valuation per kg, and
+  the assessed kg (Phase 3) the kg EFS counts — the invoice kg until typed.
 
   Duty and taxes are not split by head here (afnan): they are entered as a
   cost on COSTS and all of it counts in landed cost. This page only shows
@@ -125,14 +126,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $dec = trim((string)($r['declared_value'] ?? '')) === '' ? null : imp_num($r['declared_value']);
                 $ass = trim((string)($r['assessed_value'] ?? '')) === '' ? null : imp_num($r['assessed_value']);
                 $dq  = trim((string)($r['declared_qty'] ?? '')) === '' ? null : imp_num($r['declared_qty']);
+                $akg = trim((string)($r['assessed_kg'] ?? '')) === '' ? null : imp_num($r['assessed_kg']);
+                if ($akg !== null && $akg < 0) throw new Exception('GD line ' . $old['line_no'] . ': kg cannot be negative.');
                 if (($dec !== null && $dec < 0) || ($ass !== null && $ass < 0) || ($dq !== null && $dq < 0)) throw new Exception('GD line ' . $old['line_no'] . ': values cannot be negative.');
                 $why = mb_substr(trim((string)($r['diff_reason'] ?? '')), 0, 300);
                 if ($ass !== null && $dec !== null && abs($ass - $dec) >= 0.01 && $why === '')
                     throw new Exception('GD line ' . $old['line_no'] . ': assessed ' . number_format($ass, 2) . ' differs from declared ' . number_format($dec, 2) . ' — give the reason.');
                 $unit = (string)($r['declared_unit'] ?? ''); if (!in_array($unit, IMP_UNITS, true)) $unit = null;
-                db()->prepare("UPDATE imp_gd_lines SET hs_code=?, description=?, declared_qty=?, declared_unit=?, declared_value=?, assessed_value=?, exemption_ref=?, diff_reason=?, updated_by=?, updated_at=NOW() WHERE id=? AND import_id=?")
+                db()->prepare("UPDATE imp_gd_lines SET hs_code=?, description=?, declared_qty=?, declared_unit=?, declared_value=?, assessed_value=?, assessed_kg=?, exemption_ref=?, diff_reason=?, updated_by=?, updated_at=NOW() WHERE id=? AND import_id=?")
                     ->execute([mb_substr(trim((string)($r['hs_code'] ?? '')), 0, 20) ?: null, mb_substr(trim((string)($r['description'] ?? '')), 0, 300),
-                               $dq, $unit, $dec, $ass, mb_substr(trim((string)($r['exemption_ref'] ?? '')), 0, 120) ?: null, $why ?: null, current_user()['id'] ?? null, $gid, $id]);
+                               $dq, $unit, $dec, $ass, $akg, mb_substr(trim((string)($r['exemption_ref'] ?? '')), 0, 120) ?: null, $why ?: null, current_user()['id'] ?? null, $gid, $id]);
+                if (($old['assessed_kg'] ?? null) === null ? $akg !== null : ($akg === null || abs((float)$old['assessed_kg'] - $akg) > 0.0005))
+                    $ch[] = 'GD line ' . $old['line_no'] . ' assessed kg ' . (($old['assessed_kg'] ?? null) === null ? '—' : number_format((float)$old['assessed_kg'], 3)) . ' → ' . ($akg === null ? '—' : number_format($akg, 3));
                 if ((string)$old['assessed_value'] !== (string)($ass === null ? '' : number_format($ass, 2, '.', '')) && !($old['assessed_value'] === null && $ass === null))
                     $ch[] = 'GD line ' . $old['line_no'] . ' assessed ' . ($old['assessed_value'] === null ? '—' : number_format((float)$old['assessed_value'], 2)) . ' → ' . ($ass === null ? '—' : number_format($ass, 2)) . ($why !== '' ? ' (' . $why . ')' : '');
             }
@@ -232,8 +237,8 @@ foreach ($invoices as $n => $iv):
     <div class="xnote" style="margin-top:10px">No GD lines yet. <b>Copy from invoice</b> makes one GD line per invoice line; then group lines with the same HS code if the GD shows them as one.</div>
   <?php else: ?>
   <form method="post" style="margin-top:10px"><?= csrf_field() ?><input type="hidden" name="import_id" value="<?= $id ?>"><input type="hidden" name="invoice_id" value="<?= $ivId ?>"><input type="hidden" name="action" value="save_lines">
-    <div class="xwrap"><table class="xtable" style="min-width:1250px">
-      <thead><tr><th>GD line</th><th style="width:110px">HS / PCT</th><th style="min-width:200px">Customs description</th><th>Invoice lines</th><th class="num">Net kg</th><th class="num">Declared qty</th><th style="width:76px">Unit</th>
+    <div class="xwrap"><table class="xtable" style="min-width:1360px">
+      <thead><tr><th>GD line</th><th style="width:110px">HS / PCT</th><th style="min-width:200px">Customs description</th><th>Invoice lines</th><th class="num">Invoice net kg</th><th class="num" style="width:110px">Assessed kg</th><th class="num">Declared qty</th><th style="width:76px">Unit</th>
         <th class="num">Supplier value</th><th class="num" style="width:120px">Declared</th><th class="num" style="width:120px">Assessed</th><th class="num">Difference</th><th style="width:140px">EFS / exemption ref</th><th></th></tr></thead>
       <tbody>
       <?php $tS = 0; $tD = 0; $tA = 0; $anyA = false;
@@ -247,6 +252,7 @@ foreach ($invoices as $n => $iv):
           <td><input class="xin" name="gd[<?= $gid ?>][description]" value="<?= e($g['description']) ?>"<?= $ro ?>></td>
           <td><?= $mine ? implode(' ', array_map(fn($l) => '<span class="xpill n" title="' . e($l['description']) . '">' . ($invNo[(int)$l['id']] ?? '?') . '</span>', $mine)) : '<span class="imp-small imp-muted">none</span>' ?></td>
           <td class="num"><?= e(number_format($kgOf[$gid] ?? 0, 3)) ?></td>
+          <td><input class="xin num" name="gd[<?= $gid ?>][assessed_kg]" value="<?= e(($g['assessed_kg'] ?? null) === null ? '' : rtrim(rtrim(number_format((float)$g['assessed_kg'], 3, '.', ''), '0'), '.')) ?>" placeholder="<?= e(rtrim(rtrim(number_format($kgOf[$gid] ?? 0, 3, '.', ''), '0'), '.')) ?>"<?= $ro ?>></td>
           <td><input class="xin num" name="gd[<?= $gid ?>][declared_qty]" value="<?= e($g['declared_qty'] === null ? '' : rtrim(rtrim(number_format((float)$g['declared_qty'], 3, '.', ''), '0'), '.')) ?>"<?= $ro ?>></td>
           <td><select class="xin" name="gd[<?= $gid ?>][declared_unit]"<?= $canEdit ? '' : ' disabled' ?>><option value="">—</option><?php foreach (IMP_UNITS as $u): ?><option<?= $u === $g['declared_unit'] ? ' selected' : '' ?>><?= $u ?></option><?php endforeach; ?></select></td>
           <td class="num"><?= e(number_format($sv, 2)) ?></td>
@@ -256,11 +262,11 @@ foreach ($invoices as $n => $iv):
           <td><input class="xin" name="gd[<?= $gid ?>][exemption_ref]" value="<?= e($g['exemption_ref'] ?? '') ?>"<?= $ro ?>></td>
           <td><?php if ($canEdit): ?><button type="submit" form="del<?= $gid ?>" class="xbtn red sm" title="Remove this GD line">✕</button><?php endif; ?></td>
         </tr>
-        <tr><td></td><td colspan="12" style="border-top:0;padding-top:0"><label class="xlabel imp-small" style="margin:0">Reason if assessed ≠ declared
+        <tr><td></td><td colspan="13" style="border-top:0;padding-top:0"><label class="xlabel imp-small" style="margin:0">Reason if assessed ≠ declared
           <input class="xin" name="gd[<?= $gid ?>][diff_reason]" value="<?= e($g['diff_reason'] ?? '') ?>" placeholder="e.g. assessed at USD 1.18/m under a valuation ruling"<?= $ro ?>></label></td></tr>
       <?php endforeach; ?>
       </tbody>
-      <tfoot><tr><td colspan="7"><?= e($cur) ?></td><td class="num"><?= e(number_format($tS, 2)) ?></td><td class="num"><?= e(number_format($tD, 2)) ?></td><td class="num"><?= $anyA ? e(number_format($tA, 2)) : '—' ?></td><td class="num"><?= $anyA ? e(($tA - $tD >= 0 ? '+' : '') . number_format($tA - $tD, 2)) : '—' ?></td><td colspan="2"></td></tr></tfoot>
+      <tfoot><tr><td colspan="8"><?= e($cur) ?></td><td class="num"><?= e(number_format($tS, 2)) ?></td><td class="num"><?= e(number_format($tD, 2)) ?></td><td class="num"><?= $anyA ? e(number_format($tA, 2)) : '—' ?></td><td class="num"><?= $anyA ? e(($tA - $tD >= 0 ? '+' : '') . number_format($tA - $tD, 2)) : '—' ?></td><td colspan="2"></td></tr></tfoot>
     </table></div>
 
     <h3 style="font-size:12.5px;margin:16px 0 8px;color:#5a6b82">Which GD line each invoice line is under</h3>
@@ -274,7 +280,7 @@ foreach ($invoices as $n => $iv):
     <?php if ($canEdit): ?><div style="margin-top:10px"><button class="xbtn">Save GD lines</button></div><?php endif; ?>
   </form>
   <?php foreach ($gds as $g): ?><form method="post" id="del<?= (int)$g['id'] ?>" onsubmit="return confirm('Remove GD line <?= (int)$g['line_no'] ?>? Its invoice lines become free to copy or link again.');"><?= csrf_field() ?><input type="hidden" name="import_id" value="<?= $id ?>"><input type="hidden" name="invoice_id" value="<?= $ivId ?>"><input type="hidden" name="action" value="delete_line"><input type="hidden" name="gd_line_id" value="<?= (int)$g['id'] ?>"></form><?php endforeach; ?>
-  <div class="xnote" style="margin-top:12px"><b>Grouping keeps every product separate.</b> A GD line can cover several invoice lines with the same HS code; in stock they stay different items, and the assessed value is shared back to them by supplier value, so each line gets its own EFS valuation per kg (<a href="imp_efs.php?id=<?= $id ?>">EFS</a> tab).</div>
+  <div class="xnote" style="margin-top:12px"><b>Grouping keeps every product separate.</b> A GD line can cover several invoice lines with the same HS code; in stock they stay different items, and the assessed value is shared back to them by supplier value, so each line gets its own EFS valuation per kg (<a href="imp_efs.php?id=<?= $id ?>">EFS</a> tab). <b>Assessed kg</b> is the net kg on the GD — EFS counts it; blank uses the invoice net kg (shown greyed).</div>
   <?php endif; ?>
 </div>
 <?php endforeach; ?>
