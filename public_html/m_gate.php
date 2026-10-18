@@ -348,11 +348,13 @@ if ($editId > 0) {
 
 /* The drafts this screen can still work on. Capped, and recent first —
    a phone list is for finding what you raised an hour ago, not for
-   browsing a year. */
+   browsing a year.
+   `lines` is quoted because MySQL/MariaDB reserve the word: bare, the
+   query fails, the catch below swallows it and the list is always empty. */
 $drafts = [];
 try {
     $s = db()->prepare("SELECT g.id, g.gate_no, g.txn_type, g.gate_date, g.party_text, g.vehicle_no,
-                               (SELECT COUNT(*) FROM inv_gate_items i WHERE i.gate_id=g.id) lines,
+                               (SELECT COUNT(*) FROM inv_gate_items i WHERE i.gate_id=g.id) `lines`,
                                (SELECT COUNT(*) FROM inv_gate_items i WHERE i.gate_id=g.id AND i.rate<=0) norate,
                                (SELECT COUNT(*) FROM inv_gate_photos ph WHERE ph.gate_id=g.id) photos
                           FROM inv_gate g
