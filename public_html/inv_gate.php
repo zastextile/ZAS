@@ -1658,17 +1658,24 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       var sc = LOV.score(q, it.code, it.name, it.grp);
       if(sc <= 0) return;
       var b = mode === 'all' ? null : balOf(it);
-      if(mode !== 'all' && !(b > 0.0005)){ if(!showAll){ hidden++; return; } }
+      /* Gate Outward below zero is allowed (Inventory Setup), so an item
+         with nothing here can still be sent: it is listed, in red, instead
+         of hiding behind "show all" — a list that opens empty stopped a
+         Sale to a buyer at the gate. */
+      if(mode !== 'all' && !(b > 0.0005) && !(NEGOK && mode === 'here')){ if(!showAll){ hidden++; return; } }
       frows.push({ cl:null, it:it, bal:b, sc:sc, rate:rateFor(it) });
     });
     frows.sort(function(a, b){
       if(a.sc !== b.sc) return b.sc - a.sc;
+      /* in stock first, then the rest — only matters when both are listed */
+      var ia = a.bal > 0.0005 ? 0 : 1, ib = b.bal > 0.0005 ? 0 : 1;
+      if(ia !== ib) return ia - ib;
       return a.it.code.localeCompare(b.it.code);
     });
     if(frows.length){
       /* The heading only earns its line when there is a section above it to
          be told apart from. */
-      if(out.length) out.push({ __sep: mode === 'all' ? 'Any other item' : 'Any other item in stock' });
+      if(out.length) out.push({ __sep: (mode === 'all' || (NEGOK && mode === 'here')) ? 'Any other item' : 'Any other item in stock' });
       out = out.concat(frows);
     }
     return [out, hidden];
@@ -1729,6 +1736,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       var m = pickMode(), c = ctypeOf() ? 'contract lines first, then ' : '';
       if(m === 'atparty') return 'Held by ' + (partyName() || '…');
       if(m === 'all') return 'Receiving — ' + c + 'any item';
+      if(NEGOK) return 'Issuing — ' + c + 'every item, stock at ' + locName() + ' shown';
       return 'Issuing — ' + c + 'what is in stock at ' + locName();
     },
     empty: function(f, q){

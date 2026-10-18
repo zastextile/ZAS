@@ -106,6 +106,14 @@ t('  with the switch off it keeps the old words', str_contains($gate, "'<b>This 
 t('a posted-short pass carries the stamp and the note',
   str_contains($gate, '<span class="ig-short">Posted short</span>') && str_contains($gate, "nl2br(e((string)\$doc['posted_short']))"));
 t('  only on a posted pass with a note', str_contains($gate, "trim((string)(\$doc['posted_short'] ?? '')) !== ''"));
+/* "still not allow gate outward sale ... not show any list": with the switch
+   on, the item list opened on "Nothing is in stock" and hid every item
+   behind a small "show all" link. */
+t('with the switch on, the item list does not hide items with nothing here',
+  str_contains($gate, "if(mode !== 'all' && !(b > 0.0005) && !(NEGOK && mode === 'here')){ if(!showAll){ hidden++; return; } }"));
+t('  in-stock items are listed first', str_contains($gate, "var ia = a.bal > 0.0005 ? 0 : 1, ib = b.bal > 0.0005 ? 0 : 1;"));
+t('  and the heading says every item is offered',
+  str_contains($gate, "if(NEGOK) return 'Issuing — ' + c + 'every item, stock at ' + locName() + ' shown';"));
 t('the print carries POSTED SHORT',
   str_contains($prt, "\$doc['status'] === 'posted' && trim((string)(\$doc['posted_short'] ?? '')) !== ''") && str_contains($prt, 'POSTED SHORT'));
 

@@ -212,6 +212,8 @@ $harness = '<!doctype html><html><head><meta charset="utf-8"></head><body>'
   . '   return h.indexOf(String(q).toLowerCase()) >= 0 ? 2 : 0; } };'
   . 'var ITEMS = ' . json_encode($ITEMS) . ';'
   . 'var CLINES = ' . json_encode($CLINES) . ', CLPARTY = 1;'
+  /* the strict list: Gate Outward below zero switched off */
+  . 'var NEGOK = false;'
   . 'var IS_OUT = true;'
   . 'function clParty(){ return 1; }'
   . 'function partyName(){ return "ABRAR AHMED"; }'

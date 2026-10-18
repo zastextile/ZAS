@@ -146,6 +146,8 @@ $harness = '<!doctype html><meta charset="utf-8"><body><script>' . $lov . '</scr
   . 'var ITEMS = ' . json_encode($ITEMS, JSON_UNESCAPED_UNICODE) . ';'
   . 'var CLINES = ' . json_encode($CLINES, JSON_UNESCAPED_UNICODE) . ';'
   . 'var CLPARTY = 1;'
+  /* the strict list: Gate Outward below zero switched off */
+  . 'var NEGOK = false;'
   /* the knobs each scenario turns */
   . 'var MODE = "all", WANT = "sales";'
   . 'function ctypeOf(){ return WANT; }'
