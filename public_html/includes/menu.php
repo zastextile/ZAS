@@ -9,9 +9,16 @@
   the exact condition that shows it. The renderer below is the only place
   that writes markup.
 
-  THE ROLE RULES ARE UNCHANGED. Every 'show' condition below is a direct
-  copy of the condition that already governed that link. Nobody sees a
-  page they could not see before, and nobody loses one.
+  A LINK SHOWS IF ITS PAGE OPENS, AND ONLY THEN. Every 'show' condition
+  below asks the same question the page itself asks at the top before it
+  answers 403 — the function named beside it. Before this, the menu went by
+  role alone, so a colleague without the Proforma permission saw the link
+  and got "no permission"; and the opposite, colleagues could open every
+  Production page but never saw the folder. If a page's guard changes, its
+  line here changes with it; tests/zmenu_test.php opens every link the menu
+  offers, as each kind of user, and fails on any refusal.
+  A folder with nothing visible inside is dropped by the renderer, so a
+  person with little access gets a short menu, not empty headings.
 
   STRUCTURE
     group  ->  items                     (two levels)
@@ -31,6 +38,23 @@ function zas_menu(): array {
     $inv = function (string $what) { return function_exists('inv_perm') ? inv_perm($what) : false; };
     $invAny = function_exists('inv_can_see') ? inv_can_see() : false;
 
+    /* The pages' own checks, for the ones whose helper file is not loaded
+       on every page (costing.php, export.php, imports.php, packing.php).
+       Each is the same rule as the function named, written against the
+       same columns, so the menu never pulls those files in. */
+    $u    = current_user() ?: [];
+    $zu   = function (string $m, string $a = 'v') use ($admin) { return function_exists('zu_can') ? zu_can($m, $a) : $admin; };
+    // costing_perm(): admin, or a colleague holding that cost_ flag
+    $cost = function (string $w) use ($admin, $colleague, $u) { return $admin || ($colleague && (int)($u['cost_' . $w] ?? 0) === 1); };
+    // imp_can(): never staff or production, then the Imports tick box
+    $imp  = function (string $m, string $a = 'v') use ($office, $zu) { return $office && $zu($m, $a); };
+    // shipment_board.php: exp_can() for logistics, payments or costs
+    $board = $office && ($zu('shiplog') || $zu('shippay') || $zu('shipcost'));
+    // wt_may_use() -> pack_may_use(): admin, colleague, or staff with a shipment assigned
+    $packer = !$prod && ($admin || $colleague || (function_exists('assigned_shipment_ids') && assigned_shipment_ids() !== []));
+    // the production pages: admin, colleague, production staff
+    $prodAny = $admin || $colleague || $prod;
+
     return [
         [
             'label' => 'Dashboard', 'icon' => 'home', 'href' => 'dashboard.php',
@@ -49,33 +73,34 @@ function zas_menu(): array {
                 ['label' => 'Packing on Mobile', 'href' => 'm_pack.php',        'show' => $notProd],
                 /* Weight on its own: profiles per finished unit, linked to
                    each invoice line, the quantity taken from the packing. */
-                ['label' => 'Weight',            'href' => 'weight.php',        'show' => $notProd],
-                ['label' => 'Proforma Invoices', 'href' => 'proforma.php',      'show' => $office],
+                ['label' => 'Weight',            'href' => 'weight.php',        'show' => $packer],
+                ['label' => 'Proforma Invoices', 'href' => 'proforma.php',      'show' => $office && $cost('proforma')],
                 ['label' => 'CSV Import',        'href' => 'import_excel.php',  'show' => $office],
                 /* The four per-shipment tabs are not listed here — they are
                    reached from the tab strip on the shipment, the same way
                    shipment_view.php always has been. Only the two screens that
                    stand on their own get a menu entry. */
-                ['label' => 'Logistics Board',   'href' => 'shipment_board.php', 'show' => $office],
+                ['label' => 'Logistics Board',   'href' => 'shipment_board.php', 'show' => $board],
                 ['label' => 'Service Providers', 'href' => 'exp_providers.php',  'show' => $office],
             ],
         ],
-        /* IMPORTS — shown to whoever holds the Imports permission (Admin always) */
+        /* IMPORTS — each link on its own tick box (Admin always). Someone
+           with EFS but not Imports sees the two EFS links and no register. */
         [
             'label' => 'Imports', 'icon' => 'import',
-            'show'  => $office && (function_exists('zu_can') ? zu_can('imp', 'v') : $admin),
+            'show'  => $office,
             'items' => [
-                ['label' => 'Import Register',  'href' => 'imp_register.php', 'show' => true],
-                ['label' => 'New Import',       'href' => 'imp_new.php',      'show' => function_exists('zu_can') ? zu_can('imp', 'c') : $admin],
-                ['label' => 'EFS Reconciliation', 'href' => 'imp_efs_recon.php', 'show' => function_exists('zu_can') ? zu_can('impefs', 'v') : $admin],
-                ['label' => 'Opening Balances', 'href' => 'imp_opening.php',  'show' => function_exists('zu_can') ? zu_can('impefs', 'v') : $admin],
+                ['label' => 'Import Register',  'href' => 'imp_register.php', 'show' => $imp('imp')],
+                ['label' => 'New Import',       'href' => 'imp_new.php',      'show' => $imp('imp', 'c')],
+                ['label' => 'EFS Reconciliation', 'href' => 'imp_efs_recon.php', 'show' => $imp('impefs')],
+                ['label' => 'Opening Balances', 'href' => 'imp_opening.php',  'show' => $imp('impefs')],
             ],
         ],
         [
             'label' => 'Costing &amp; Products', 'icon' => 'tag',
             'show'  => $office || $admin || $colleague,
             'items' => [
-                ['label' => 'Product Costing', 'href' => 'product_costing.php', 'show' => $office],
+                ['label' => 'Product Costing', 'href' => 'product_costing.php', 'show' => $office && $cost('view')],
                 ['label' => 'Product Master',  'href' => 'product_master.php',  'show' => $admin || $colleague],
                 ['label' => 'Part Library',    'href' => 'part_library.php',    'show' => $admin || $colleague],
                 /* The product list itself, out and back. The safety net before
@@ -93,15 +118,15 @@ function zas_menu(): array {
         ],
         [
             'label' => 'Production', 'icon' => 'gear',
-            'show'  => $prod || $admin,
+            'show'  => $prodAny,
             'items' => [
-                ['label' => 'My Production Work',    'href' => 'production_my_work.php',   'show' => $prod || $admin],
-                ['label' => 'Production Dashboard',  'href' => 'production_dashboard.php', 'show' => $prod || $admin],
-                ['label' => 'Daily Production Entry','href' => 'production_entry.php',     'show' => $prod || $admin],
-                ['label' => 'Production Reports',    'href' => 'production_reports.php',   'show' => $prod || $admin],
-                ['label' => 'Production Workers',    'href' => 'production_workers.php',   'show' => $admin],
-                ['label' => 'Assembly — Make Sets', 'href' => 'production_assembly.php',  'show' => true],
-                ['label' => 'Worker Pay',            'href' => 'production_pay.php',       'show' => $admin],
+                ['label' => 'My Production Work',    'href' => 'production_my_work.php',   'show' => $prodAny],
+                ['label' => 'Production Dashboard',  'href' => 'production_dashboard.php', 'show' => $prodAny],
+                ['label' => 'Daily Production Entry','href' => 'production_entry.php',     'show' => $prodAny],
+                ['label' => 'Production Reports',    'href' => 'production_reports.php',   'show' => $prodAny],
+                ['label' => 'Production Workers',    'href' => 'production_workers.php',   'show' => $admin || $colleague],
+                ['label' => 'Assembly — Make Sets', 'href' => 'production_assembly.php',  'show' => $admin || $colleague],
+                ['label' => 'Worker Pay',            'href' => 'production_pay.php',       'show' => $admin || $colleague],
                 /* One order pays more for one operation — a tighter hem, a
                    quality parameter in the contract. Amended there, not on the
                    product, so no other order moves. A colleague may read it;
@@ -134,11 +159,14 @@ function zas_menu(): array {
                 [
                     'label' => 'Transactions',
                     'items' => [
-                        ['label' => 'Gate Inward',      'href' => 'inv_gate.php?dir=in',      'show' => $inv('gate') || $inv('view')],
-                        ['label' => 'Gate Outward',     'href' => 'inv_gate.php?dir=out',     'show' => $inv('gate') || $inv('view')],
-                        ['label' => 'Store Issue',      'href' => 'inv_store.php?type=issue', 'show' => $inv('store') || $inv('view')],
-                        ['label' => 'Store Return',     'href' => 'inv_store.php?type=return','show' => $inv('store') || $inv('view')],
-                        ['label' => 'Consumption',      'href' => 'inv_consume.php',          'show' => $inv('consume') || $inv('view')],
+                        /* These pages open for anyone who can see the store
+                           (inv_can_see) — read-only without the right to
+                           change — so the links do too. */
+                        ['label' => 'Gate Inward',      'href' => 'inv_gate.php?dir=in',      'show' => $invAny],
+                        ['label' => 'Gate Outward',     'href' => 'inv_gate.php?dir=out',     'show' => $invAny],
+                        ['label' => 'Store Issue',      'href' => 'inv_store.php?type=issue', 'show' => $invAny],
+                        ['label' => 'Store Return',     'href' => 'inv_store.php?type=return','show' => $invAny],
+                        ['label' => 'Consumption',      'href' => 'inv_consume.php',          'show' => $invAny],
                         /* The phone version of the two screens above. Same
                            tables, same permission; it only ever writes a
                            draft and cannot post. Shown to anyone who can
@@ -154,7 +182,7 @@ function zas_menu(): array {
                            It is not something that happens during the week —
                            it is how a balance starts, and it belongs beside
                            the screens that show balances. */
-                        ['label' => 'Opening Stock',  'href' => 'inv_opening.php',          'show' => $inv('gate') || $inv('master') || $inv('view')],
+                        ['label' => 'Opening Stock',  'href' => 'inv_opening.php',          'show' => $invAny],
                         ['label' => 'Current Stock',  'href' => 'inv_stock.php',            'show' => $invAny],
                         ['label' => 'Stock Ledger',   'href' => 'inv_ledger.php',           'show' => $invAny],
                         ['label' => 'Floor Balance',  'href' => 'inv_store.php?tab=bal',    'show' => $invAny],
