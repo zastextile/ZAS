@@ -22,7 +22,7 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 require_once __DIR__ . '/includes/inventory.php';
 inv_ensure_schema();
-if (!inv_can_see()) { http_response_code(403); exit('You do not have permission to view stock documents.'); }
+if (!inv_can_open('opening')) { http_response_code(403); exit('You do not have permission to view stock documents.'); }
 
 /* Opening stock creates quantity out of nothing, which is the same power
    a gate receipt has, so it is the same permission. Posting is separate,

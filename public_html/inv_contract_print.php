@@ -13,7 +13,7 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 require_once __DIR__ . '/includes/inventory.php';
 inv_ensure_schema();
-if (!inv_can_see()) { http_response_code(403); exit('Not permitted.'); }
+if (!inv_can_open('contract')) { http_response_code(403); exit('Not permitted.'); }
 
 $id = (int)($_GET['id'] ?? 0);
 $doc = null;

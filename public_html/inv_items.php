@@ -7,7 +7,7 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 require_once __DIR__ . '/includes/inventory.php';
 inv_ensure_schema();
-if (!inv_perm('master') && !inv_perm('view')) { http_response_code(403); exit('You do not have permission to view the Item Master.'); }
+if (!inv_can_open('invmast')) { http_response_code(403); exit('You do not have permission to view the Item Master.'); }
 $canEdit = inv_perm('master');
 
 /* Fabric / Accessories / Other. Packing was retired — see inv_item_groups().

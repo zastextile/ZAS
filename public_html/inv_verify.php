@@ -17,7 +17,7 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 require_once __DIR__ . '/includes/inventory.php';
 inv_ensure_schema();
-if (!inv_can_see()) { http_response_code(403); exit('You do not have permission to view stock health.'); }
+if (!inv_can_open('stockrep')) { http_response_code(403); exit('You do not have permission to view stock health.'); }
 
 /* --------------------------------------------------------- name lookups */
 $MAT = []; $PRD = [];

@@ -11,7 +11,7 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 require_once __DIR__ . '/includes/inventory.php';
 inv_ensure_schema();
-if (!inv_can_see()) { http_response_code(403); exit('You do not have permission to view job work charges.'); }
+if (!inv_can_open('jobwork')) { http_response_code(403); exit('You do not have permission to view job work charges.'); }
 $canEdit = inv_perm('gate') || inv_perm('master');
 
 $dir = ($_GET['dir'] ?? $_POST['direction'] ?? 'receivable') === 'payable' ? 'payable' : 'receivable';

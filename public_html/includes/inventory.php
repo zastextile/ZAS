@@ -692,6 +692,21 @@ function inv_can_see(): bool {
     return inv_perm('view') || inv_perm('gate') || inv_perm('store') || inv_perm('consume') || inv_perm('master');
 }
 
+/* MAY THIS PERSON OPEN THIS ONE SCREEN — by its own tick box on User
+   Access (includes/access.php: gate, store, consume, opening, contract,
+   jobwork, invmast, stockrep).
+   inv_can_see() is too wide for that: ticking Gate alone sets the legacy
+   inv_view flag, and inv_view opened every stock screen, so a gatekeeper
+   saw the ledger, contracts and job work. Each page now asks for its own
+   module; the menu asks the same question, so a link shows exactly when
+   its page opens. Only VIEW is decided here — create, post and reverse
+   inside a page are unchanged. */
+function inv_can_open(string $module): bool {
+    if (function_exists('is_admin') && is_admin()) return true;
+    if (function_exists('zu_can')) return zu_can($module, 'v');
+    return inv_can_see();
+}
+
 /* ---------------------------------------------------- document numbers */
 /* PREFIX-YYMM-nnnn, sequence restarting each month. Reads the highest
    existing number for the month rather than keeping a counter, so it can

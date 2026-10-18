@@ -17,7 +17,7 @@ require_once __DIR__ . '/includes/inventory.php';
 require_once __DIR__ . '/includes/storage.php';
 require_once __DIR__ . '/includes/mobile.php';
 inv_ensure_schema();
-if (!inv_can_see()) { http_response_code(403); exit('You do not have permission to view gate passes.'); }
+if (!inv_can_open('gate')) { http_response_code(403); exit('You do not have permission to view gate passes.'); }
 
 $canEdit = inv_perm('gate');
 $canPost = inv_perm('post');

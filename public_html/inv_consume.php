@@ -16,7 +16,7 @@ require_once __DIR__ . '/includes/inventory.php';
 // proforma line's product NAME into a Product Master id. Reused, never re-written.
 require_once __DIR__ . '/includes/production.php';
 inv_ensure_schema();
-if (!inv_can_see()) { http_response_code(403); exit('You do not have permission to view consumption.'); }
+if (!inv_can_open('consume')) { http_response_code(403); exit('You do not have permission to view consumption.'); }
 
 $canEdit = inv_perm('consume');
 $canPost = inv_perm('post');

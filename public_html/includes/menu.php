@@ -50,10 +50,14 @@ function zas_menu(): array {
     $imp  = function (string $m, string $a = 'v') use ($office, $zu) { return $office && $zu($m, $a); };
     // shipment_board.php: exp_can() for logistics, payments or costs
     $board = $office && ($zu('shiplog') || $zu('shippay') || $zu('shipcost'));
-    // wt_may_use() -> pack_may_use(): admin, colleague, or staff with a shipment assigned
+    // wt_may_use() -> pack_may_use(): admin, colleague, or staff with a shipment assigned.
+    // Shipments, Packing List and Packing on Mobile use it too: they open for any
+    // staff login, but with nothing assigned the list is empty, so no link.
     $packer = !$prod && ($admin || $colleague || (function_exists('assigned_shipment_ids') && assigned_shipment_ids() !== []));
     // the production pages: admin, colleague, production staff
     $prodAny = $admin || $colleague || $prod;
+    // the Store pages: each by its own tick box, inv_can_open() in includes/inventory.php
+    $st = function (string $m) use ($zu) { return function_exists('inv_can_open') ? inv_can_open($m) : $zu($m, 'v'); };
 
     return [
         [
@@ -65,12 +69,12 @@ function zas_menu(): array {
             'show'  => $notProd,
             'items' => [
                 ['label' => 'New Shipment',      'href' => 'shipment_form.php', 'show' => $office],
-                ['label' => 'Shipments',         'href' => 'shipments.php',     'show' => $notProd],
-                ['label' => 'Packing List',      'href' => 'packing_list.php',  'show' => $notProd],
+                ['label' => 'Shipments',         'href' => 'shipments.php',     'show' => $packer],
+                ['label' => 'Packing List',      'href' => 'packing_list.php',  'show' => $packer],
                 /* The phone version. Same shipments, same permission — it
                    asks the questions in the order the packing team meets
                    them, starting at the serial. */
-                ['label' => 'Packing on Mobile', 'href' => 'm_pack.php',        'show' => $notProd],
+                ['label' => 'Packing on Mobile', 'href' => 'm_pack.php',        'show' => $packer],
                 /* Weight on its own: profiles per finished unit, linked to
                    each invoice line, the quantity taken from the packing. */
                 ['label' => 'Weight',            'href' => 'weight.php',        'show' => $packer],
@@ -147,26 +151,25 @@ function zas_menu(): array {
         ],
         [
             'label' => 'Store &amp; Inventory', 'icon' => 'box',
-            'show'  => $invAny,
+            'show'  => $invAny || $admin,
             'groups' => [
                 [
                     'label' => 'Masters',
                     'items' => [
-                        ['label' => 'Item Master',        'href' => 'inv_items.php',    'show' => $inv('master') || $inv('view')],
-                        ['label' => 'Parties',            'href' => 'inv_parties.php',  'show' => $inv('master') || $inv('view')],
+                        ['label' => 'Item Master',        'href' => 'inv_items.php',    'show' => $st('invmast')],
+                        ['label' => 'Parties',            'href' => 'inv_parties.php',  'show' => $st('invmast')],
                     ],
                 ],
                 [
                     'label' => 'Transactions',
                     'items' => [
-                        /* These pages open for anyone who can see the store
-                           (inv_can_see) — read-only without the right to
-                           change — so the links do too. */
-                        ['label' => 'Gate Inward',      'href' => 'inv_gate.php?dir=in',      'show' => $invAny],
-                        ['label' => 'Gate Outward',     'href' => 'inv_gate.php?dir=out',     'show' => $invAny],
-                        ['label' => 'Store Issue',      'href' => 'inv_store.php?type=issue', 'show' => $invAny],
-                        ['label' => 'Store Return',     'href' => 'inv_store.php?type=return','show' => $invAny],
-                        ['label' => 'Consumption',      'href' => 'inv_consume.php',          'show' => $invAny],
+                        /* Each by its own tick box: Gate shows the gate
+                           screens, not the whole store. */
+                        ['label' => 'Gate Inward',      'href' => 'inv_gate.php?dir=in',      'show' => $st('gate')],
+                        ['label' => 'Gate Outward',     'href' => 'inv_gate.php?dir=out',     'show' => $st('gate')],
+                        ['label' => 'Store Issue',      'href' => 'inv_store.php?type=issue', 'show' => $st('store')],
+                        ['label' => 'Store Return',     'href' => 'inv_store.php?type=return','show' => $st('store')],
+                        ['label' => 'Consumption',      'href' => 'inv_consume.php',          'show' => $st('consume')],
                         /* The phone version of the two screens above. Same
                            tables, same permission; it only ever writes a
                            draft and cannot post. Shown to anyone who can
@@ -182,30 +185,30 @@ function zas_menu(): array {
                            It is not something that happens during the week —
                            it is how a balance starts, and it belongs beside
                            the screens that show balances. */
-                        ['label' => 'Opening Stock',  'href' => 'inv_opening.php',          'show' => $invAny],
-                        ['label' => 'Current Stock',  'href' => 'inv_stock.php',            'show' => $invAny],
-                        ['label' => 'Stock Ledger',   'href' => 'inv_ledger.php',           'show' => $invAny],
-                        ['label' => 'Floor Balance',  'href' => 'inv_store.php?tab=bal',    'show' => $invAny],
-                        ['label' => 'Stock Health',   'href' => 'inv_verify.php',           'show' => $invAny],
+                        ['label' => 'Opening Stock',  'href' => 'inv_opening.php',          'show' => $st('opening')],
+                        ['label' => 'Current Stock',  'href' => 'inv_stock.php',            'show' => $st('stockrep')],
+                        ['label' => 'Stock Ledger',   'href' => 'inv_ledger.php',           'show' => $st('stockrep')],
+                        ['label' => 'Floor Balance',  'href' => 'inv_store.php?tab=bal',    'show' => $st('stockrep') || $st('store')],
+                        ['label' => 'Stock Health',   'href' => 'inv_verify.php',           'show' => $st('stockrep')],
                     ],
                 ],
                 [
                     'label' => 'Contracts',
                     'items' => [
-                        ['label' => 'All Contracts',      'href' => 'inv_contracts.php',                    'show' => $invAny],
-                        ['label' => 'Purchase',           'href' => 'inv_contracts.php?type=purchase',      'show' => $invAny],
-                        ['label' => 'Sales',              'href' => 'inv_contracts.php?type=sales',         'show' => $invAny],
-                        ['label' => 'Job Work — we send', 'href' => 'inv_contracts.php?type=jobwork_out',   'show' => $invAny],
-                        ['label' => 'Job Work — we do',   'href' => 'inv_contracts.php?type=jobwork_in',    'show' => $invAny],
+                        ['label' => 'All Contracts',      'href' => 'inv_contracts.php',                    'show' => $st('contract')],
+                        ['label' => 'Purchase',           'href' => 'inv_contracts.php?type=purchase',      'show' => $st('contract')],
+                        ['label' => 'Sales',              'href' => 'inv_contracts.php?type=sales',         'show' => $st('contract')],
+                        ['label' => 'Job Work — we send', 'href' => 'inv_contracts.php?type=jobwork_out',   'show' => $st('contract')],
+                        ['label' => 'Job Work — we do',   'href' => 'inv_contracts.php?type=jobwork_in',    'show' => $st('contract')],
                     ],
                 ],
                 [
                     'label' => 'Costing &amp; Charges',
                     'items' => [
-                        ['label' => 'Order Costing Control', 'href' => 'inv_ordercost.php',              'show' => $invAny],
-                        ['label' => 'Job Work — we charge',  'href' => 'inv_jobwork.php?dir=receivable', 'show' => $invAny],
-                        ['label' => 'Job Work — we are charged', 'href' => 'inv_jobwork.php?dir=payable','show' => $invAny],
-                        ['label' => 'Production Exceptions',  'href' => 'inv_exceptions.php',            'show' => $admin || $inv('view')],
+                        ['label' => 'Order Costing Control', 'href' => 'inv_ordercost.php',              'show' => $st('contract')],
+                        ['label' => 'Job Work — we charge',  'href' => 'inv_jobwork.php?dir=receivable', 'show' => $st('jobwork')],
+                        ['label' => 'Job Work — we are charged', 'href' => 'inv_jobwork.php?dir=payable','show' => $st('jobwork')],
+                        ['label' => 'Production Exceptions',  'href' => 'inv_exceptions.php',            'show' => $st('stockrep')],
                     ],
                 ],
             ],

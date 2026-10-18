@@ -6,7 +6,9 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 require_once __DIR__ . '/includes/inventory.php';
 inv_ensure_schema();
-if (!inv_can_see()) { http_response_code(403); exit('You do not have permission to view the stock ledger.'); }
+/* The Consumption screen reads one item's history from here (json=1)
+   for its lot picker, so Consumption alone may make that one request. */
+if (!inv_can_open('stockrep') && !(!empty($_GET['json']) && inv_can_open('consume'))) { http_response_code(403); exit('You do not have permission to view the stock ledger.'); }
 
 /* Compact JSON of one item's movements, for the lot picker on the
    Consumption screen. Read-only, both ownerships together, newest last so
