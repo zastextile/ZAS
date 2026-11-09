@@ -397,6 +397,9 @@ ok(str_contains(page('imp_doc_file.php', ['doc' => $docs[1]['id']], null, 'ROLE=
 $del = $T + ['action' => 'delete', 'import_id' => $id, 'doc_id' => $docs[1]['id'], 'reason' => 'wrong file'];
 ok(str_contains(said(page('imp_documents.php', ['id' => $id], ['admin_password' => 'colleague-pw'] + $del), 'error'), 'not an admin password'), "a colleague's password does not delete");
 $out = page('imp_documents.php', ['id' => $id], ['admin_password' => 'admin-two'] + $del);
+/* the page deleted the file in another process; PHP in THIS one still
+   remembers the earlier is_file() answer unless told to look again */
+clearstatcache();
 ok(str_contains(said($out), 'Deleted') && !is_file($work . '/uploads/' . $docs[1]['storage_key']) && $q("SELECT superseded_by FROM imp_documents WHERE id=?", [$docs[0]['id']])[0]['superseded_by'] === null,
    "another admin's password deletes it, the file goes, and V1 is current again", said($out, 'error'));
 for ($i = 0; $i < 5; $i++) page('imp_documents.php', ['id' => $id], ['admin_password' => 'nope', 'doc_id' => $docs[0]['id']] + $del);
@@ -793,6 +796,54 @@ JS;
     ok(($R['ivMax'] ?? []) === [3, true], 'a third invoice / GD can be added, not a fourth', $R['ivMax'] ?? null);
     ok(($R['errors'] ?? ['?']) === [], 'no javascript error', $R['errors'] ?? null);
 }
+
+/* ================================================================== 11 */
+head('11. Delete: the safety check, and a test import deleted completely');
+/* The live server had the check below switched off (if (false)), so any
+   delete erased unvoided money rows and stranded customs, receipts, EFS and
+   files. It is back; the admin-only complete delete is the way out for tests. */
+$imp1 = $q("SELECT * FROM imp_imports WHERE id=?", [$id])[0];
+ok(str_contains(said(page('imp_view.php', ['id' => $id], $T + ['action' => 'delete', 'import_id' => $id, 'confirm_ref' => $imp1['ref']]), 'error'), 'Void or remove them first'),
+   'the ordinary Delete refuses an import with money or documents on it');
+$pg = fn(int $iid, array $post, string $env = '') => page('imp_view.php', ['id' => $iid], $T + ['action' => 'purge_test', 'import_id' => $iid] + $post, $env);
+$ref1 = $imp1['ref'];
+ok(str_contains(said($pg($id, ['confirm_ref' => $ref1, 'reason' => 'test entry'], 'ROLE=colleague PERMS=\'{"imp":"vcud"}\''), 'error'), 'Only an admin'), 'complete delete: admin only, even with Delete ticked');
+ok(str_contains(said($pg($id, ['confirm_ref' => 'IMP-WRONG', 'reason' => 'test entry']), 'error'), 'Type the import reference'), 'the reference must be typed exactly');
+ok(str_contains(said($pg($id, ['confirm_ref' => $ref1, 'reason' => 'x']), 'error'), 'at least 5'), 'and a reason given');
+ok(!str_contains(page('imp_view.php', ['id' => $id], null, 'ROLE=colleague PERMS=\'{"imp":"vcud"}\''), 'value="purge_test"'), 'a colleague does not even see the button');
+/* the Phase 2/3 import: goods went into stock through a posted Gate Inward, and an export allocation uses its lines */
+$imp2 = $q("SELECT * FROM imp_imports WHERE id=?", [$pid])[0];
+db()->exec("UPDATE inv_gate SET status='posted' WHERE import_id=$pid");
+$e2 = said($pg($pid, ['confirm_ref' => $imp2['ref'], 'reason' => 'test entry']), 'error');
+ok(str_contains($e2, 'Gate Inward') && str_contains($e2, 'Reverse'), 'refused while a posted Gate Inward put its goods into stock', $e2);
+db()->exec("UPDATE inv_gate SET status='reversed' WHERE import_id=$pid");
+$e3 = said($pg($pid, ['confirm_ref' => $imp2['ref'], 'reason' => 'test entry']), 'error');
+ok(str_contains($e3, 'EFS allocation for shipment') && str_contains($e3, 'ZAS/7001'), 'refused while a live EFS allocation uses it, naming the shipment', $e3);
+ok((int)$q("SELECT COUNT(*) n FROM imp_imports WHERE id=?", [$pid])[0]['n'] === 1, '  and nothing of it was touched');
+/* the first import: payments, costs, documents and lines, plus a draft gate pass, a receipt and a customs line on it */
+db()->exec("INSERT INTO inv_gate (gate_no, status, import_id) VALUES ('GIP-T-1', 'draft', $id)");
+$dg = (int)db()->lastInsertId();
+$ln1 = (int)$q("SELECT id FROM imp_lines WHERE import_id=? ORDER BY id LIMIT 1", [$id])[0]['id'];
+db()->exec("INSERT INTO inv_gate_items (gate_id, qty, imp_line_id) VALUES ($dg, 5, $ln1)");
+db()->exec("INSERT INTO imp_gd_lines (import_id, line_no, description) VALUES ($id, 1, 'test')");
+$files1 = array_column($q("SELECT storage_key FROM imp_documents WHERE import_id=?", [$id]), 'storage_key');
+$before = [];
+foreach (['imp_payments', 'imp_costs', 'imp_documents', 'imp_lines', 'imp_gd_lines'] as $tb) $before[$tb] = (int)$q("SELECT COUNT(*) n FROM $tb WHERE import_id=?", [$id])[0]['n'];
+ok($before['imp_payments'] > 0 && $before['imp_costs'] > 0 && $before['imp_lines'] > 0, 'there is real money and lines on it to remove', $before);
+$out = $pg($id, ['confirm_ref' => $ref1, 'reason' => 'test entry while learning']);
+ok(str_contains(said($out), 'deleted completely'), 'deleted completely, and the message says what went', said($out));
+$after = 0;
+foreach (['imp_imports' => 'id', 'imp_payments' => 'import_id', 'imp_costs' => 'import_id', 'imp_documents' => 'import_id', 'imp_lines' => 'import_id',
+          'imp_gd_lines' => 'import_id', 'imp_invoices' => 'import_id', 'imp_packing' => 'import_id', 'imp_logistics' => 'import_id'] as $tb => $col)
+    $after += (int)$q("SELECT COUNT(*) n FROM $tb WHERE $col=?", [$id])[0]['n'];
+ok($after === 0, 'every row of it is gone: payments, costs, documents, lines, customs, invoices, packing, logistics', $after);
+clearstatcache();
+ok(!array_filter($files1, fn($k) => is_file($work . '/uploads/' . $k)), 'and its document files are gone from storage');
+$g = $q("SELECT import_id FROM inv_gate WHERE id=?", [$dg]);
+ok(count($g) === 1 && $g[0]['import_id'] === null && $q("SELECT imp_line_id FROM inv_gate_items WHERE gate_id=?", [$dg])[0]['imp_line_id'] === null,
+   'its draft gate pass is kept, only unlinked — no stock row touched');
+ok(count($q("SELECT id FROM imp_audit WHERE import_id=? AND action='Test import deleted completely'", [$id])) === 1, 'the history log keeps who deleted it, when and why');
+ok((int)$q("SELECT COUNT(*) n FROM imp_imports WHERE id=?", [$pid])[0]['n'] === 1, 'the other import is untouched');
 
 echo "\n" . ($F === 0 ? "ALL PASS   ($P checks)\n" : "FAILED  $F   (" . ($P + $F) . " checks)\n");
 exit($F === 0 ? 0 : 1);

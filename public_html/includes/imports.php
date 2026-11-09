@@ -1284,4 +1284,92 @@ function imp_suppliers(): array
 const IMP_CURRENCIES = ['USD', 'EUR', 'GBP', 'CNY', 'AED', 'PKR'];
 
 /* Phase 3 — EFS reconciliation lives in its own file */
+/* ===================================================== delete a test import
+
+   The ordinary Delete refuses an import with payments, costs or documents on
+   it, and removes only the import's own sheet tables. That is right for real
+   work. For an import made while testing it was a dead end, and the check got
+   switched off on the live server — which let any delete erase money rows
+   with no void and strand customs lines, receipts, EFS records and files.
+
+   This is the admin-only way out. It removes EVERYTHING belonging to the
+   import, in one transaction, and refuses only where something OUTSIDE the
+   import still depends on it:
+     - a POSTED Gate Inward from it: its goods are in stock. Reverse it first.
+     - an export allocation (not reversed) using its lines: that shipment's
+       EFS reconciliation counts them. Reverse that allocation first.
+   Gate passes that are only drafts, or already reversed, are kept but
+   unlinked, so no stock history is touched. The audit trail is kept. */
+function imp_purge_test(int $id, string $reason): array
+{
+    if (!function_exists('is_admin') || !is_admin()) return ['ok' => false, 'error' => 'Only an admin can delete a test import completely.'];
+    $reason = trim($reason);
+    if (mb_strlen($reason) < 5) return ['ok' => false, 'error' => 'Write why this import is being removed (at least 5 characters).'];
+    $s = db()->prepare("SELECT * FROM imp_imports WHERE id=?"); $s->execute([$id]);
+    $imp = $s->fetch();
+    if (!$imp) return ['ok' => false, 'error' => 'Import not found.'];
+
+    $gates = [];
+    try { $g = db()->prepare("SELECT id, gate_no, status FROM inv_gate WHERE import_id=?"); $g->execute([$id]); $gates = $g->fetchAll(); }
+    catch (Throwable $e) { $gates = []; }
+    $posted = array_values(array_filter($gates, fn($r) => $r['status'] === 'posted'));
+    if ($posted) return ['ok' => false, 'error' => 'Gate Inward ' . implode(', ', array_column($posted, 'gate_no'))
+        . ' has put this import\'s goods into stock. Reverse ' . (count($posted) === 1 ? 'it' : 'them') . ' on Gate Inward first, then delete.'];
+
+    $s = db()->prepare("SELECT id FROM imp_lines WHERE import_id=?"); $s->execute([$id]);
+    $lineIds = array_map('intval', array_column($s->fetchAll(), 'id'));
+    $in = $lineIds ? implode(',', $lineIds) : '0';
+    $live = db()->query("SELECT DISTINCT a.id, s.invoice_no FROM imp_efs_alloc_uses u JOIN imp_efs_alloc a ON a.id = u.alloc_id
+                         LEFT JOIN shipments s ON s.id = a.shipment_id
+                         WHERE u.target_kind='line' AND u.target_id IN ($in) AND a.status <> 'reversed'")->fetchAll();
+    if ($live) return ['ok' => false, 'error' => 'The EFS allocation for shipment '
+        . implode(', ', array_map(fn($r) => (string)($r['invoice_no'] ?: '#' . $r['id']), $live))
+        . ' uses this import. Reverse that allocation on EFS Reconciliation first, then delete.'];
+
+    $s = db()->prepare("SELECT * FROM imp_documents WHERE import_id=?"); $s->execute([$id]);
+    $docs = $s->fetchAll();
+    $n = ['payments' => 0, 'costs' => 0, 'documents' => count($docs), 'lines' => count($lineIds), 'gates' => count($gates)];
+    try {
+        db()->beginTransaction();
+        $c = db()->prepare("SELECT COUNT(*) FROM imp_payments WHERE import_id=?"); $c->execute([$id]); $n['payments'] = (int)$c->fetchColumn();
+        $c = db()->prepare("SELECT COUNT(*) FROM imp_costs WHERE import_id=?");    $c->execute([$id]); $n['costs'] = (int)$c->fetchColumn();
+        /* only reversed allocations can still point here (live ones refused above) */
+        db()->exec("DELETE FROM imp_efs_alloc_uses WHERE target_kind='line' AND target_id IN ($in)");
+        db()->exec("DELETE FROM imp_efs_reductions WHERE target_kind='line' AND target_id IN ($in)");
+        /* drafts and reversed passes stay, unlinked: no stock row is touched */
+        if ($gates) {
+            $gin = implode(',', array_map('intval', array_column($gates, 'id')));
+            db()->exec("UPDATE inv_gate_items SET imp_line_id=NULL WHERE gate_id IN ($gin)");
+            db()->exec("UPDATE inv_gate SET import_id=NULL WHERE id IN ($gin)");
+        }
+        foreach (['imp_receipt_lines', 'imp_receipts', 'imp_gd_lines', 'imp_documents', 'imp_lines', 'imp_invoices', 'imp_packing',
+                  'imp_containers', 'imp_logistics', 'imp_payments', 'imp_costs'] as $tb)
+            db()->prepare("DELETE FROM $tb WHERE import_id=?")->execute([$id]);
+        db()->prepare("DELETE FROM imp_imports WHERE id=?")->execute([$id]);
+        imp_log($id, 'Test import deleted completely', $imp['ref'] . ' · ' . $imp['supplier_name']
+            . ' — removed ' . $n['payments'] . ' payment(s), ' . $n['costs'] . ' cost(s), ' . $n['documents'] . ' document(s), '
+            . $n['lines'] . ' line(s); ' . $n['gates'] . ' gate pass(es) unlinked', $reason);
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return ['ok' => false, 'error' => 'Nothing was deleted: ' . $e->getMessage()];
+    }
+    /* files last: once the rows are gone. A file that will not go is reported, not fatal. */
+    $left = 0;
+    global $config;
+    foreach ($docs as $d) {
+        if ((string)$d['storage_driver'] === 'r2') {
+            if (function_exists('exp_r2_delete')) { [$ok] = exp_r2_delete((string)$d['storage_key']); if (!$ok) $left++; } else $left++;
+        } else {
+            $path = rtrim((string)($config['upload_dir'] ?? (__DIR__ . '/../storage/uploads')), '/') . '/' . basename((string)$d['storage_key']);
+            if (is_file($path) && !@unlink($path)) $left++;
+        }
+    }
+    $msg = $imp['ref'] . ' deleted completely: ' . $n['payments'] . ' payment(s), ' . $n['costs'] . ' cost(s), '
+         . $n['documents'] . ' document(s) and ' . $n['lines'] . ' line(s) removed.';
+    if ($n['gates']) $msg .= ' ' . $n['gates'] . ' gate pass(es) kept but no longer linked to it.';
+    if ($left) $msg .= ' ' . $left . ' file(s) could not be removed from storage.';
+    return ['ok' => true, 'error' => '', 'msg' => $msg];
+}
+
 require_once __DIR__ . '/imports_efs.php';

@@ -117,6 +117,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             imp_log($id, $to === 'open' ? 'Reopened' : ucfirst($to), '', $reason);
             $_SESSION['flash'] = $to === 'open' ? 'Import reopened.' : 'Import marked ' . $to . '.';
         }
+        if ($action === 'purge_test') {
+            /* admin only, inside imp_purge_test(); everything, or nothing */
+            if (trim((string)($_POST['confirm_ref'] ?? '')) !== $imp['ref']) throw new Exception('Type the import reference exactly to delete it.');
+            $r = imp_purge_test($id, (string)($_POST['reason'] ?? ''));
+            if (!$r['ok']) throw new Exception($r['error']);
+            $_SESSION['flash'] = $r['msg'];
+            redirect('imp_register.php');
+        }
         if ($action === 'delete') {
             imp_require('imp', 'd');
             if (trim((string)($_POST['confirm_ref'] ?? '')) !== $imp['ref']) throw new Exception('Type the import reference exactly to delete it.');
@@ -277,6 +285,21 @@ imp_tab_strip($imp, 'overview');
       <label class="xlabel">Type <b><?= e($imp['ref']) ?></b> to confirm<input class="xin" name="confirm_ref" autocomplete="off"></label>
       <button class="xbtn red">Delete permanently</button>
       <span class="imp-small imp-muted">Only when no payments, costs or documents are on it.</span>
+    </form></details>
+  <?php endif; ?>
+  <?php if (is_admin()): ?>
+  <details style="margin-top:8px"><summary class="imp-small" style="cursor:pointer;color:#b8283f">Delete a test import completely… (admin)</summary>
+    <div class="imp-small" style="margin:8px 0;max-width:720px;line-height:1.5">
+      For an import made while testing. It removes <b>everything</b> on it — payments and costs (no void kept), documents and their files,
+      customs lines, receipts and EFS records — and cannot be undone. The history log is kept.
+      It refuses if a <b>posted Gate Inward</b> put its goods into stock, or a <b>live EFS allocation</b> uses it: reverse those first.
+      For a real import, void or remove its money and documents and use Delete above instead.</div>
+    <form method="post" style="display:flex;gap:9px;flex-wrap:wrap;align-items:flex-end"
+          onsubmit="return confirm('Delete <?= e($imp['ref']) ?> and EVERYTHING on it permanently? This cannot be undone.')">
+      <?= csrf_field() ?><input type="hidden" name="action" value="purge_test"><input type="hidden" name="import_id" value="<?= $id ?>">
+      <label class="xlabel">Type <b><?= e($imp['ref']) ?></b> to confirm<input class="xin" name="confirm_ref" autocomplete="off"></label>
+      <label class="xlabel" style="min-width:260px">Why<input class="xin" name="reason" placeholder="e.g. test entry while learning" autocomplete="off"></label>
+      <button class="xbtn red">Delete completely</button>
     </form></details>
   <?php endif; ?>
 </div>
