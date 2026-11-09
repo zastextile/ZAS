@@ -8,6 +8,11 @@ public_html/config/
 public_html/config.php
 public_html/.env
 
+# Zipped copies of the site. A whole-site zip carries config.php, .env and
+# uploaded customer files inside it, past every rule above — that is how they
+# reached GitHub on 9 Nov 2026 (public_html.zip, since removed from history).
+*.zip
+
 # Real uploaded spreadsheets from live imports — customer data, not code.
 public_html/storage/uploads/*.xlsx
 public_html/storage/uploads/*.xls
