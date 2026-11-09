@@ -88,7 +88,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $action = $_POST['action'] ?? '';
 
-    if ($action === 'save_part') {
+    /* The operations grid as posted, one row per line. Shared by the single
+       Save below and the older save_ops action. */
+    $postedOps = function (): array {
+        $rows = [];
+        $ids    = $_POST['op_id']       ?? [];
+        $stages = $_POST['op_stage_id']  ?? [];
+        $names  = $_POST['op_name']      ?? [];
+        $rates  = $_POST['op_rate']      ?? [];
+        foreach ($names as $i => $n) {
+            $rows[] = ['id' => (int)($ids[$i] ?? 0), 'stage_id' => (int)($stages[$i] ?? 0),
+                       'name' => (string)$n, 'rate' => (string)($rates[$i] ?? '0')];
+        }
+        return $rows;
+    };
+
+    if ($action === 'save_all') {
+        /* ONE SAVE FOR THE WHOLE PANEL.
+           There used to be two buttons, Save Part Details and Save Operations,
+           each saving only its own half. Rename a part, edit a rate, press
+           Save Operations — and the new name was quietly thrown away.
+           Now the details are saved first (a new part needs its id before it
+           can have operations), then the operations. If either is refused,
+           what was typed is put back on the screen rather than lost. */
+        $pid = (int)($_POST['part_id'] ?? 0);
+        $r = zp_save_part(
+            $pid,
+            (string)($_POST['part_name'] ?? ''),
+            (string)($_POST['uom'] ?? 'Pc'),
+            (string)($_POST['style'] ?? ''),
+            isset($_POST['is_active']) ? 1 : 0,
+            $userId
+        );
+        if (!$r['ok']) {
+            $err = $r['error'];
+            $editId = $pid;
+            $keepPart = true;
+            if (isset($_POST['op_name'])) $keepOps = $postedOps();
+        } elseif (!isset($_POST['op_name'])) {
+            /* a brand-new part: no grid yet, it appears once the part exists */
+            $_SESSION['zp_msg'] = $pid ? 'Saved.' : 'Part created. Now add its operations below.';
+            redirect('part_library.php?part=' . $r['id']);
+        } else {
+            $pid = (int)$r['id'];
+            $rows = $postedOps();
+            $r2 = zp_save_part_ops($pid, $rows, (string)($_POST['rate_reason'] ?? ''), $userId);
+            if ($r2['ok']) {
+                /* same re-feed to Costing as save_ops below, for the same reason */
+                $b = zp_bridge_sync_part($pid);
+                $_SESSION['zp_msg'] = 'Saved.'
+                    . ($b['products'] ? ' Costing updated on ' . $b['products'] . ' product'
+                                        . ($b['products'] == 1 ? '' : 's') . ' using this part.'
+                                      : ' No product uses this part yet, so no costing changed.');
+                redirect('part_library.php?part=' . $pid);
+            }
+            $err = 'The part details were saved, but the operations were not: ' . $r2['error'];
+            $editId = $pid;
+            $keepOps = $rows;
+        }
+
+    } elseif ($action === 'save_part') {
         $r = zp_save_part(
             (int)($_POST['part_id'] ?? 0),
             (string)($_POST['part_name'] ?? ''),
@@ -274,6 +333,16 @@ $opCount  = zp_part_op_count_map();
 $part     = $editId ? zp_part($editId) : null;
 if ($editId && !$part) { $editId = 0; }
 $ops      = $editId ? zp_part_ops($editId) : [];
+/* A refused Save puts back what was typed, not what is stored. */
+if (!empty($keepPart)) {
+    $part = array_merge($part ?: ['id' => 0], [
+        'part_name' => (string)($_POST['part_name'] ?? ''), 'uom' => (string)($_POST['uom'] ?? 'Pc'),
+        'style' => (string)($_POST['style'] ?? ''), 'is_active' => isset($_POST['is_active']) ? 1 : 0]);
+}
+if (isset($keepOps)) {
+    $ops = array_map(fn($r) => ['id' => $r['id'], 'stage_id' => $r['stage_id'], 'stage' => '',
+                                'operation_name' => $r['name'], 'rate' => (float)str_replace(',', '', $r['rate'])], $keepOps);
+}
 $styles   = [];
 foreach ($parts as $p) if (trim((string)$p['style']) !== '' && !in_array($p['style'], $styles, true)) $styles[] = $p['style'];
 sort($styles);
@@ -305,14 +374,32 @@ page_header('Part Library');
 .zp-b[disabled]{opacity:.45;cursor:not-allowed;border-color:#e3e8ef;color:#98a5b8;background:#f7f9fc}
 
 .zp-split{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;align-items:start}
-@media(min-width:1180px){.zp-split{grid-template-columns:minmax(440px,1fr) minmax(520px,1.15fr)}}
+/* List 40%, editor 60%. The list scrolls inside its own box with its headings
+   held, and the editor stays in view beside it, so a long library no longer
+   pushes the part you are editing off the screen. */
+@media(min-width:1180px){.zp-split{grid-template-columns:minmax(0,2fr) minmax(0,3fr)}}
+@media(min-width:1180px){#partform{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
+.pl-scroll{max-height:calc(100vh - 250px);overflow:auto;border:1px solid #eef1f6;border-radius:10px}
+.pl-scroll thead th{position:sticky;top:0;background:#fff;z-index:1}
+#partsTable tbody tr{cursor:pointer}
+#partsTable tbody tr:focus{outline:2px solid #0ea8c9;outline-offset:-2px}
+.pl-find{display:flex;gap:8px;align-items:center;margin:0 0 9px}.pl-find .zin{max-width:320px}.pl-find span{font-size:11.5px;color:#8a97ab}
+.ed-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between;margin:0 0 4px;padding-bottom:10px;border-bottom:1px solid #eef1f6}
+.ed-head .t{font-size:16px;font-weight:800;color:#152033}.ed-head .t .code{font-size:13px;margin-right:6px}
+.ed-head .acts{display:flex;gap:7px;flex-wrap:wrap}
+.ed-sec{font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:800;color:#8a97ab;margin:14px 0 8px}
+.ed-bar{position:sticky;bottom:-16px;background:#fff;border-top:1px solid #e6ebf2;margin:16px -17px -16px;padding:11px 17px;
+        display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-radius:0 0 13px 13px;z-index:2}
+.ed-bar .dirty{font-size:12px;font-weight:700;color:#b45309;display:none}
+.ed-bar.is-dirty .dirty{display:inline}
+.howto{margin-top:14px}.howto summary{cursor:pointer;font-size:12.5px;font-weight:700;color:#0b7fa3}
 
 .zp-card{background:#fff;border:1px solid #e6ebf2;border-radius:13px;padding:16px 17px;box-shadow:0 1px 2px rgba(20,35,60,.04)}
 .zp-card h2{margin:0 0 3px;font-size:15.5px;color:#152033;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .zp-card h2 .lite{font-weight:500;font-size:12px;color:#8a97ab}
 .zp-bar{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0 13px}
 
-table.zp-t{width:100%;border-collapse:collapse;font-size:12.5px}
+table.zp-t{width:100%;min-width:0;border-collapse:collapse;font-size:12.5px}  /* app.css gives every table min-width:980px; this panel is narrower */
 table.zp-t th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#8a97ab;
               font-weight:800;padding:7px 8px;border-bottom:1px solid #e6ebf2;white-space:nowrap}
 table.zp-t td{padding:6px 8px;border-bottom:1px solid #f1f4f9;vertical-align:middle}
@@ -431,16 +518,18 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
           Press <b>+ Add New Part</b> to define your first one.
         </div>
       <?php else: ?>
-      <div style="overflow-x:auto">
+      <div class="pl-find"><input class="zin" id="plFind" placeholder="Find a part — name or ID" autocomplete="off"><span id="plCount"></span></div>
+      <div class="pl-scroll">
       <table class="zp-t" id="partsTable">
         <thead><tr>
           <th style="width:34px">#</th><th style="width:66px">Part ID</th><th>Part Name</th>
-          <th style="width:76px">Default UOM</th><th style="width:54px" class="num">Ops</th>
-          <th style="width:84px" class="num">Cost / Pc</th><th style="width:190px">Action</th>
+          <th style="width:46px" title="Default unit of measure">UOM</th><th style="width:54px" class="num">Ops</th>
+          <th style="width:84px" class="num">Cost / Pc</th>
         </tr></thead>
         <tbody>
         <?php foreach ($parts as $i => $p): $pid = (int)$p['id']; ?>
-          <tr class="<?= $pid === $editId ? 'on' : '' ?>">
+          <tr class="<?= $pid === $editId ? 'on' : '' ?>" tabindex="0" data-href="part_library.php?part=<?= $pid ?>#partform"
+              title="Open <?= e($p['part_name']) ?>">
             <td class="code"><?= $i + 1 ?></td>
             <td class="code"><b><?= e(zp_part_code($pid)) ?></b></td>
             <td>
@@ -452,20 +541,6 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
             <td class="code"><?= e($p['uom']) ?></td>
             <td class="num"><?= (int)($opCount[$pid] ?? 0) ?></td>
             <td class="num"><?= number_format((float)($costMap[$pid] ?? 0), 2) ?></td>
-            <td style="white-space:nowrap">
-              <a class="zp-b sm" href="part_library.php?part=<?= $pid ?>#partform">Edit</a>
-              <form method="post" style="display:inline">
-                <?= csrf_field() ?><input type="hidden" name="action" value="duplicate_part">
-                <input type="hidden" name="part_id" value="<?= $pid ?>">
-                <button class="zp-b sm" title="Make a copy of this part with all of its operations">Duplicate</button>
-              </form>
-              <form method="post" style="display:inline"
-                    onsubmit="return confirm('Delete <?= e(addslashes($p['part_name'])) ?>?\n\nIf any product uses it, it will be deactivated instead of deleted, so nothing breaks.')">
-                <?= csrf_field() ?><input type="hidden" name="action" value="delete_part">
-                <input type="hidden" name="part_id" value="<?= $pid ?>">
-                <button class="zp-b sm red">Delete</button>
-              </form>
-            </td>
           </tr>
         <?php endforeach; ?>
         </tbody>
@@ -487,31 +562,54 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
         </form>
       </details>
 
+      <details class="howto"><summary>How this page works</summary>
       <div class="note good">
         <b>Everything about a part is entered here.</b>
         <ul>
           <li>CSV export and import — the file it writes is the file it reads.</li>
           <li>Copy puts the table on your clipboard; Paste takes a block straight from Excel.</li>
-          <li>Edit, Duplicate, Delete.</li>
+          <li>Click a part to open it. Duplicate and Delete are at the top of the part.</li>
           <li><b>One part can be used by any number of products.</b> Fix a rate here and every product that uses it is fixed.</li>
         </ul>
       </div>
+      </details>
     </div>
 
     <!-- ================= RIGHT: operations and cost ================= -->
     <div class="zp-card" id="partform">
+      <?php if ($editId): ?>
+      <div class="ed-head">
+        <div class="t"><span class="code"><?= e(zp_part_code($editId)) ?></span><?= e($part['part_name']) ?></div>
+        <div class="acts">
+          <form method="post" style="display:inline">
+            <?= csrf_field() ?><input type="hidden" name="action" value="duplicate_part">
+            <input type="hidden" name="part_id" value="<?= (int)$editId ?>">
+            <button class="zp-b sm" title="Make a copy of this part with all of its operations">Duplicate</button>
+          </form>
+          <form method="post" style="display:inline"
+                onsubmit="return confirm('Delete <?= e(addslashes((string)$part['part_name'])) ?>?\n\nIf any product uses it, it will be deactivated instead of deleted, so nothing breaks.')">
+            <?= csrf_field() ?><input type="hidden" name="action" value="delete_part">
+            <input type="hidden" name="part_id" value="<?= (int)$editId ?>">
+            <button class="zp-b sm red">Delete</button>
+          </form>
+          <a class="zp-b sm" href="part_library.php">Close</a>
+        </div>
+      </div>
+      <?php else: ?>
       <h2>Part Operations &amp; Cost <span class="lite">— no finishing cost, no rate at the top</span></h2>
+      <?php endif; ?>
 
-      <?php if (!$editId && !isset($_GET['part'])): ?>
+      <?php if (!$editId && !isset($_GET['part']) && empty($keepPart)): ?>
         <div class="empty">
           Choose a part on the left to see its operations,<br>or press <b>+ Add New Part</b>.
         </div>
       <?php else: ?>
 
-      <!-- the part's own details -->
-      <form method="post" id="partDetails">
-        <?= csrf_field() ?><input type="hidden" name="action" value="save_part">
+      <!-- ONE FORM for the whole panel: details, operations, one Save (action save_all) -->
+      <form method="post" id="partForm">
+        <?= csrf_field() ?><input type="hidden" name="action" value="save_all">
         <input type="hidden" name="part_id" value="<?= (int)$editId ?>">
+        <div class="ed-sec">Part details</div>
         <div class="f3">
           <div>
             <span class="lab">Part ID</span>
@@ -539,7 +637,6 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
           </div>
         </div>
         <div style="display:flex;gap:11px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
-          <button class="zp-b pri"><?= $editId ? 'Save Part Details' : 'Create Part' ?></button>
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:#5a6b82;cursor:pointer">
             <input type="checkbox" name="is_active" value="1" <?= ($editId ? (int)$part['is_active'] : 1) ? 'checked' : '' ?>>
             Active</label>
@@ -547,15 +644,11 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
             <span style="font-size:11.5px;color:#8a97ab">Save the name first — then its operations appear below.</span>
           <?php endif; ?>
         </div>
-      </form>
 
       <?php if ($editId): ?>
       <!-- ---------------- the operations grid ---------------- -->
-      <form method="post" id="opsForm" style="margin-top:18px">
-        <?= csrf_field() ?><input type="hidden" name="action" value="save_ops">
-        <input type="hidden" name="part_id" value="<?= (int)$editId ?>">
-
-        <div style="font-size:12.5px;font-weight:800;color:#152033;margin-bottom:7px">Operations (stage by stage)</div>
+      <div id="opsBlock" style="margin-top:6px">
+        <div class="ed-sec">Operations, stage by stage</div>
 
         <div style="overflow-x:auto">
         <table class="zp-t" id="opTable" style="min-width:470px">
@@ -583,23 +676,14 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
                  placeholder="Why a rate changed — only needed if you moved one (e.g. revised after the March wage review)">
         </div>
 
-        <div style="margin-top:12px">
-          <button class="zp-b pri">Save Operations</button>
-        </div>
-
+        <details class="howto"><summary>How stages and operations work</summary>
         <div class="note info">
           <b>A stage can hold as many operations as you like.</b>
           Put Overlock and Singer both at <b><?= e($stageNextName) ?></b> and each is paid its own rate on
           every piece — one never eats the other's allowance. Need a stage that is not in the box?
           <a href="production_stages.php">Add it on the Stages screen</a> and it appears here straight away.
         </div>
-      </form>
-      <?php endif; ?>
-      <?php endif; ?>
-    </div>
-  </div>
-
-  <div class="hintbox" style="margin-top:16px">
+        <div class="hintbox" style="margin-top:10px">
     <ul>
       <li><b>The first line is always <?= e($stageFirstName) ?></b> and cannot be deleted — it is the stage that makes the pieces, and every stage after it is limited by it.</li>
       <li><b>From the second line on, the stage is <?= e($stageNextName) ?></b> by default and the cursor starts in the Operation box, because that is the part you actually have to type.</li>
@@ -608,6 +692,24 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
       <li><b>No finishing cost and no rate at the top.</b> The cost of a part is simply its operations added up — shown above, live, as you type.</li>
     </ul>
   </div>
+        </details>
+      </div>
+      <?php endif; ?>
+
+        <div class="ed-bar" id="edBar">
+          <button class="zp-b pri" id="saveBtn"><?= $editId ? 'Save' : 'Create part' ?></button>
+          <?php /* no #partform here: a link that differs from the page only by
+                   its # does not reload, and Cancel has to reload the saved part */ ?>
+          <a class="zp-b" id="cancelBtn" href="<?= $editId ? 'part_library.php?part=' . (int)$editId : 'part_library.php' ?>"
+             title="Throw away what you changed and show the part as saved">Cancel</a>
+          <span class="dirty">Unsaved changes</span>
+          <span style="font-size:11px;color:#8a97ab;font-family:ui-monospace,monospace;margin-left:auto">Ctrl+S saves</span>
+        </div>
+      </form>
+      <?php endif; ?>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -763,9 +865,48 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
   /* Ctrl+S saves, because this is a data-entry screen and that is the reflex */
   document.addEventListener('keydown', function(ev){
     if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === 's') {
-      var f = document.getElementById('opsForm');
-      if (f) { ev.preventDefault(); f.submit(); }
+      var f = document.getElementById('partForm');
+      if (f) { ev.preventDefault(); if (f.requestSubmit) f.requestSubmit(); else f.submit(); }
     }
+  });
+})();
+
+/* ---- The list: a row opens its part; the box above finds one ---- */
+(function(){
+  var t = document.getElementById('partsTable'); if (!t) return;
+  function open(tr){ if (tr) location.href = tr.getAttribute('data-href'); }
+  t.addEventListener('click', function(e){ open(e.target.closest('tr[data-href]')); });
+  t.addEventListener('keydown', function(e){ if (e.key === 'Enter') open(e.target.closest('tr[data-href]')); });
+  var f = document.getElementById('plFind'), c = document.getElementById('plCount');
+  var rows = [].slice.call(t.tBodies[0].rows);
+  function find(){
+    var q = f.value.trim().toLowerCase(), n = 0;
+    rows.forEach(function(r){ var m = !q || r.textContent.toLowerCase().indexOf(q) > -1; r.style.display = m ? '' : 'none'; if (m) n++; });
+    c.textContent = n + ' of ' + rows.length + ' parts';
+  }
+  f.addEventListener('input', find); find();
+  /* the part being edited is scrolled into view in the list */
+  var on = t.querySelector('tr.on'); if (on) on.scrollIntoView({block: 'nearest'});
+})();
+
+/* ---- Unsaved changes: say so on the Save bar, and ask before leaving ---- */
+(function(){
+  var form = document.getElementById('partForm'), bar = document.getElementById('edBar');
+  if (!form || !bar) return;
+  var dirty = false;
+  function mark(){ if (!dirty) { dirty = true; bar.classList.add('is-dirty'); } }
+  form.addEventListener('input', mark);
+  form.addEventListener('change', mark);
+  /* removing a line is a change too, though no box was typed in */
+  var drop = window.zpDropRow;
+  if (drop) window.zpDropRow = function(b){ drop(b); mark(); };
+  form.addEventListener('submit', function(){ dirty = false; });
+  /* Cancel means "throw it away", so it does not ask whether to */
+  var cancel = document.getElementById('cancelBtn');
+  if (cancel) cancel.addEventListener('click', function(){ dirty = false; });
+  window.addEventListener('beforeunload', function(e){
+    if (!dirty) return;
+    e.preventDefault(); e.returnValue = '';
   });
 })();
 
