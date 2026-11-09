@@ -92,7 +92,31 @@ t('the old save_part and save_ops still work for anything that posts them',
   str_contains($pl, "=== 'save_part'") && str_contains($pl, "=== 'save_ops'"));
 t('writes are still guarded', str_contains($pl, 'verify_csrf()') && str_contains($pl, 'require_login()'));
 
-head('4. The help text folds away');
+head('4. Paste from Excel, copy to Excel, and a typo is not a rate');
+/* "allow copy and paste from excel just only Operations, stage by stage area".
+   Driven in a browser: a 3-column block with a header, a 2-column block running
+   into new lines, a column of "Rs 1,250.00" rates, an unknown stage reported,
+   a real Ctrl+V, a single value left to the browser, Copy round-trips. */
+t('Ctrl+V in the grid is caught', str_contains($pl, "body.addEventListener('paste', function(ev){"));
+t('  a single value is left to the browser', str_contains($pl, "if (text.indexOf('\\t') < 0 && text.indexOf('\\n') < 0) return;"));
+t('  a header row is skipped', str_contains($pl, "/^(stage|operation|rate)/i.test(String(grid[0][0]).trim())"));
+t('  a Stage · Operation · Rate block starts at Stage wherever you clicked',
+  str_contains($pl, "if (first.length >= 3 && (stageIdByName(first[0]) || isNum(first[2]))) start = 0;"));
+t('  stages are matched by YOUR names, and an unknown one is reported, not guessed',
+  str_contains($pl, 'function stageIdByName(v){') && str_contains($pl, "' Stage not found, left as it was: '"));
+t('  line 1 keeps the first stage', str_contains($pl, "' Line 1 stays at ' + stageName(FIRST_STAGE)"));
+t('  money formatting is cleaned off a pasted rate', str_contains($pl, "box.value = v.replace(/[^\\d.,\\-]/g, '').replace(/,/g, '');"));
+t('  lines run on into new rows', str_contains($pl, 'if (!tr) tr = window.zpAddRow();'));
+t('  the Save bar learns there are unsaved changes', str_contains($pl, "el.dispatchEvent(new Event('input', { bubbles: true }));"));
+t('Copy operations gives Excel cells with a header', str_contains($pl, 'id="opCopy"') && str_contains($pl, "var lines = ['Stage\\tOperation\\tRate'];"));
+t('a rate that is not a number is marked red and left out of the total',
+  str_contains($pl, 'function badRate(s){') && str_contains($pl, "if (!bad && !isNaN(v)) t += v;"));
+$zp = nocomments((string)file_get_contents($B . 'includes/zprod.php'));
+t('the server refuses it too, by line, with what was typed ("4..5" used to save as 4)',
+  str_contains($zp, "if (\$rawRate !== '' && !is_numeric(\$rawRate))")
+  && str_contains($zp, "'\") has the rate \"' . \$rawRate . '\", which is not a number.'"));
+
+head('5. The help text folds away');
 t('"How this page works" on the left', str_contains($pl, '<summary>How this page works</summary>'));
 t('"How stages and operations work" in the editor, with the long list inside it',
   str_contains($pl, '<summary>How stages and operations work</summary>')

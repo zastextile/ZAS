@@ -703,9 +703,15 @@ function zp_save_part_ops(int $partId, array $rows, string $reason = '', ?int $u
            that has not been converted to send ids yet */
         $sid  = (int)($r['stage_id'] ?? 0);
         if ($sid <= 0) $sid = zp_stage_id_for((string)($r['stage'] ?? ''));
-        $rate = (float)str_replace(',', '', (string)($r['rate'] ?? 0));
+        $rawRate = trim(str_replace(',', '', (string)($r['rate'] ?? '')));
+        $rate = (float)$rawRate;
         $rid  = (int)($r['id'] ?? 0);
         if ($name === '' && $rate <= 0) continue;                 // an untouched blank row
+        /* A TYPO IS NOT A RATE. (float)"4..5" is 4, so a slipped key saved a
+           different wage with nothing said. Anything that is not a plain
+           number is refused by line, with what was typed. */
+        if ($rawRate !== '' && !is_numeric($rawRate))
+            return ['ok' => false, 'error' => 'Line ' . ($i + 1) . ' ("' . $name . '") has the rate "' . $rawRate . '", which is not a number.'];
         if ($name === '')  return ['ok' => false, 'error' => 'Line ' . ($i + 1) . ' has a rate but no operation name.'];
         if ($rate <= 0)    return ['ok' => false, 'error' => 'Line ' . ($i + 1) . ' ("' . $name . '") needs a rate above 0.'];
         if ($sid <= 0 || !zp_stage_by_id($sid))

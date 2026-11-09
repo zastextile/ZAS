@@ -662,9 +662,15 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
 
         <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:11px">
           <button type="button" class="zp-b" onclick="zpAddRow()">+ Add Operation</button>
+          <button type="button" class="zp-b" id="opCopy" title="Copy these lines as Stage · Operation · Rate, ready to paste into Excel">Copy operations</button>
           <span style="font-size:11px;color:#8a97ab;font-family:ui-monospace,monospace">
             Enter or Tab &rarr; next box &middot; Enter on the rate &rarr; new line &middot; Ctrl+S saves</span>
         </div>
+        <div style="font-size:11px;color:#8a97ab;margin-top:6px">
+          <b>Paste from Excel:</b> copy the cells in Excel, click a line here, press <b>Ctrl+V</b>.
+          Stage · Operation · Rate, or Operation · Rate, or one column. It fills from the line you clicked
+          and adds lines as needed — to add at the end, press + Add Operation first and paste into the new line.
+          <span id="opMsg" style="font-weight:700;margin-left:4px"></span></div>
 
         <div class="totline">
           <span>Cost of making one <b style="font-size:13px;font-weight:800"><?= e($part['part_name']) ?></b></span>
@@ -784,11 +790,19 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
     total();
   }
 
+  /* A rate box holding something that is not a plain number ("4..5") is
+     marked red here, and refused by the server on Save — it used to be read
+     as 4 by both, without a word. */
+  function badRate(s){ s = String(s).replace(/,/g, '').trim(); return s !== '' && !/^-?(\d+\.?\d*|\.\d+)$/.test(s); }
   function total(){
     var t = 0;
     [].slice.call(body.querySelectorAll('[data-c="rate"]')).forEach(function(inp){
+      var bad = badRate(inp.value);
+      inp.style.borderColor = bad ? '#e0435d' : '';
+      inp.style.background  = bad ? '#fdeef1' : '';
+      inp.title = bad ? 'Not a number — fix it before saving' : '';
       var v = parseFloat(String(inp.value).replace(/,/g, ''));
-      if (!isNaN(v)) t += v;
+      if (!bad && !isNaN(v)) t += v;
     });
     var el = document.getElementById('opTotal');
     if (el) el.textContent = t.toFixed(2);
@@ -860,6 +874,100 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
 
   body.addEventListener('input', function(ev){
     if (ev.target.getAttribute && ev.target.getAttribute('data-c') === 'rate') total();
+  });
+
+  /* ---- PASTE FROM EXCEL ----------------------------------------------
+     Cells copied in Excel arrive as lines of tab-separated text. They are
+     laid into the grid from the box the cursor is in, rightwards and down,
+     the way Excel itself pastes: start in Stage for Stage · Operation · Rate,
+     in Operation for Operation · Rate, in Rate for a column of rates. Lines
+     run on into new rows as needed. A single value with no tab or line
+     break is left to the browser's own paste. */
+  var COLS = ['stage', 'name', 'rate'];
+  function stageIdByName(v){
+    v = String(v).trim().toLowerCase();
+    for (var k = 0; k < STAGES.length; k++) if (STAGES[k].name.toLowerCase() === v) return STAGES[k].id;
+    return 0;
+  }
+  function say(msg, bad){
+    var m = document.getElementById('opMsg'); if (!m) return;
+    m.textContent = msg; m.style.color = bad ? '#b45309' : '#15803d';
+  }
+  body.addEventListener('paste', function(ev){
+    var el = ev.target, c = el.getAttribute && el.getAttribute('data-c');
+    if (!c) return;
+    var text = ((ev.clipboardData || window.clipboardData) || { getData: function(){ return ''; } }).getData('text');
+    text = String(text).replace(/\r/g, '').replace(/\n+$/, '');
+    if (text.indexOf('\t') < 0 && text.indexOf('\n') < 0) return;      // one value: normal paste
+    ev.preventDefault();
+    var grid = text.split('\n').map(function(l){ return l.split('\t'); });
+    /* a header row copied along with the data is skipped */
+    if (grid.length && /^(stage|operation|rate)/i.test(String(grid[0][0]).trim())
+        && !grid[0].some(function(v){ return /^\s*[\d.,]+\s*$/.test(v); })) grid.shift();
+    if (!grid.length) return;
+    /* WHERE THE BLOCK STARTS. Like Excel, from the box you are in — except a
+       block that is plainly Stage · Operation · Rate (its first cell is a
+       stage, or three columns ending in a number) always starts at Stage.
+       Otherwise copying a whole Excel row while the cursor sat in Operation
+       put the stage name in the Operation box and lost the rate. */
+    var isNum = function(v){ return /^\s*[^\d\-.]*-?[\d,]*\.?\d+\s*$/.test(String(v)); };
+    var first = grid[0], start = COLS.indexOf(c);
+    if (first.length >= 3 && (stageIdByName(first[0]) || isNum(first[2]))) start = 0;
+    else if (first.length === 2 && stageIdByName(first[0]) && !isNum(first[1])) start = 0;
+    else if (first.length === 2 && isNum(first[1])) start = 1;
+    var tr = el.closest('tr'), n = 0, unknown = [], locked = 0;
+    grid.forEach(function(cells){
+      if (cells.every(function(v){ return String(v).trim() === ''; })) return;   // blank Excel line
+      if (!tr) tr = window.zpAddRow();
+      cells.forEach(function(v, k){
+        var col = COLS[start + k]; if (!col) return;                           // more columns than the grid has
+        v = String(v).trim();
+        var box = tr.querySelector('[data-c="' + col + '"]'); if (!box) return;
+        if (col === 'stage') {
+          if (v === '') return;
+          var id = stageIdByName(v);
+          var offered = id && [].some.call(box.options, function(o){ return +o.value === id; });
+          if (offered) box.value = String(id);
+          else if (id) locked++;                                               // line 1 stays at the first stage
+          else if (unknown.indexOf(v) < 0) unknown.push(v);
+        } else if (col === 'rate') {
+          box.value = v.replace(/[^\d.,\-]/g, '').replace(/,/g, '');           // "Rs 1,250.00" -> 1250.00
+        } else {
+          box.value = v;
+        }
+      });
+      n++;
+      tr = tr.nextElementSibling;
+    });
+    total();
+    /* tells the Save bar there are unsaved changes */
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    var msg = n + ' line' + (n === 1 ? '' : 's') + ' pasted.';
+    if (unknown.length) msg += ' Stage not found, left as it was: ' + unknown.join(', ') + '.';
+    if (locked) msg += ' Line 1 stays at ' + stageName(FIRST_STAGE) + '.';
+    say(msg, unknown.length > 0);
+  });
+
+  /* ---- COPY, the other way: the grid as Excel cells ---- */
+  var copyOps = document.getElementById('opCopy');
+  if (copyOps) copyOps.addEventListener('click', function(){
+    var lines = ['Stage\tOperation\tRate'];
+    [].slice.call(body.children).forEach(function(tr){
+      var s = tr.querySelector('[data-c="stage"]'), nm = tr.querySelector('[data-c="name"]'), rt = tr.querySelector('[data-c="rate"]');
+      if (!nm || (nm.value.trim() === '' && rt.value.trim() === '')) return;
+      lines.push([s ? s.options[s.selectedIndex].text : '', nm.value.trim(), rt.value.trim()].join('\t'));
+    });
+    var text = lines.join('\n');
+    function done(){ say((lines.length - 1) + ' line' + (lines.length === 2 ? '' : 's') + ' copied — paste them into Excel.', false); }
+    function legacy(){
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { say('Could not copy — your browser blocked it.', true); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, legacy);
+    else legacy();
   });
 
   /* Ctrl+S saves, because this is a data-entry screen and that is the reflex */
