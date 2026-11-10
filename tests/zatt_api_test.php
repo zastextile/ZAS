@@ -221,6 +221,60 @@ $forbidden = call('GET', '/shifts');
 ok($forbidden['status'] === 403, 'a HOD gets 403 on an admin endpoint');
 ok(($forbidden['body']['reason_code'] ?? '') === 'FORBIDDEN', '  reason_code FORBIDDEN');
 
+echo "8b. Gate events over HTTP\n";
+call('POST', '/auth/logout', [], ['X-CSRF-Token' => $hodCsrf]);
+$adminLogin = call('POST', '/auth/login', ['email' => 'admin@zas.test', 'password' => 'CorrectHorse9']);
+$csrf = (string) ($adminLogin['body']['csrf_token'] ?? '');
+
+$pdo->exec("INSERT INTO att_devices (device_uuid,label,role_scope)
+            VALUES ('99999999-9999-4999-8999-999999999999','Gate HTTP','gate')");
+$devId = (int) $pdo->query("SELECT id FROM att_devices WHERE label='Gate HTTP'")->fetch()['id'];
+$shiftId = \Att\Shifts::create(['name' => 'HTTP Day', 'start_time' => '00:00', 'end_time' => '23:59']);
+\Att\Policy::set('default_shift_id', (string) $shiftId, null, 'string');
+
+$noTok = call('POST', '/attendance/in', ['employee_code' => 'E001', 'device_id' => $devId]);
+ok($noTok['status'] === 419, 'a gate event without a CSRF token is refused');
+
+$uuid = 'abababab-abab-4bab-8bab-abababababab';
+$in = call('POST', '/attendance/in', [
+    'employee_code' => 'E001', 'device_id' => $devId,
+    'event_uuid' => $uuid, 'device_sequence' => 1,
+    'operator_id' => 999999,          // a lie the server must ignore
+], ['X-CSRF-Token' => $csrf]);
+ok($in['status'] === 200, 'a valid gate IN returns 200');
+ok(($in['body']['receipt_status'] ?? '') === 'ACCEPTED', '  receipt_status ACCEPTED');
+ok(($in['body']['hod_confirmation_due'] ?? false) === true, '  and the cycle owes a HOD confirmation');
+
+$ev = $pdo->query("SELECT operator_id FROM att_events WHERE event_uuid='$uuid'")->fetch();
+ok((int) $ev['operator_id'] === $adminId,
+   'THE OPERATOR IS THE SIGNED-IN USER, NOT THE operator_id THE CLIENT SENT');
+
+$replay = call('POST', '/attendance/in', [
+    'employee_code' => 'E001', 'device_id' => $devId,
+    'event_uuid' => $uuid, 'device_sequence' => 1,
+], ['X-CSRF-Token' => $csrf]);
+ok(($replay['body']['receipt_status'] ?? '') === 'ALREADY_RECEIVED', 'a replay over HTTP is ALREADY_RECEIVED');
+
+/* A refusal is still HTTP 200 with a receipt. A 4xx would make the phone's
+   outbox treat a settled decision as a transport failure and retry forever. */
+$dbl = call('POST', '/attendance/in', [
+    'employee_code' => 'E001', 'device_id' => $devId,
+    'event_uuid' => 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd', 'device_sequence' => 2,
+], ['X-CSRF-Token' => $csrf]);
+ok($dbl['status'] === 200, 'A REJECTED EVENT IS STILL HTTP 200 — a settled decision, not a transport failure');
+ok(($dbl['body']['receipt_status'] ?? '') === 'REJECTED', '  with receipt_status REJECTED');
+/* Seconds after the first scan, so the 60-second rule catches it BEFORE the
+   already-inside check — the checks run in that order deliberately, and this
+   pins the order down. Over HTTP there is no injected timestamp, so this is
+   what a real double-tap at the gate produces. */
+ok(($dbl['body']['reason_code'] ?? '') === 'DUPLICATE_WITHIN_WINDOW',
+   '  a rapid double-tap is caught by the 60-second rule first (got: ' . ($dbl['body']['reason_code'] ?? '-') . ')');
+
+$mv = call('GET', '/attendance/movements');
+ok($mv['status'] === 200 && count($mv['body']['movements'] ?? []) >= 1, 'movements are readable');
+$cy = call('GET', '/attendance/entry-cycles');
+ok($cy['status'] === 200 && count($cy['body']['entry_cycles'] ?? []) >= 1, 'entry cycles are readable');
+
 echo "9. Later milestones answer 501, unknown routes 404\n";
 $later = call('GET', '/sync/status');
 ok($later['status'] === 501, '/sync/status is 501 (declared, not built)');
@@ -236,7 +290,10 @@ ok(!str_contains($nowhere['raw'], 'Stack trace') && !str_contains($nowhere['raw'
    'no stack trace and no HTML leaks to a handset');
 
 echo "11. Logging out really ends the session\n";
-$out = call('POST', '/auth/logout', [], ['X-CSRF-Token' => $hodCsrf]);
+/* $csrf, not $hodCsrf: step 8b signed out the HOD and signed the admin in, so
+   the HOD's token belongs to a session that no longer exists. Using it here
+   gave a 419 that looked like a logout bug and was not one. */
+$out = call('POST', '/auth/logout', [], ['X-CSRF-Token' => $csrf]);
 ok($out['status'] === 200, 'logout succeeds');
 ok(call('GET', '/auth/me')['status'] === 401, '  and /auth/me is 401 again afterwards');
 

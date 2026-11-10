@@ -1,0 +1,549 @@
+<?php
+declare(strict_types=1);
+
+namespace Att;
+
+use DateTimeImmutable;
+use PDO;
+use Throwable;
+
+/**
+ * Gate IN and OUT, and the entry cycles they open and close.
+ *
+ * The rules it keeps, verbatim from the approved baseline:
+ *
+ *   Invariant 1  Each Gate IN opens exactly one entry cycle; every cycle
+ *                requires its own HOD confirmation, including all returns.
+ *   Invariant 2  Multiple IN/OUT cycles within a shift are allowed; no double
+ *                IN and no OUT without IN.
+ *   Invariant 3  60-second duplicate suppression, server-side.
+ *   Invariant 4  Offline writes replay idempotently by UUID.
+ *   §2           Invalid transitions are rejected, subject to authorised
+ *                correction (corrections arrive in M4).
+ *
+ * WHERE EACH RULE IS ACTUALLY ENFORCED. Three of them are not enforced by the
+ * PHP below but by the database, and that is deliberate — two handsets can
+ * scan the same person in the same millisecond, and an offline queue replays
+ * in a burst:
+ *
+ *   one open cycle per employee  →  UNIQUE on the generated open_employee_id
+ *   an event cannot land twice   →  UNIQUE on event_uuid
+ *   a device cannot reuse a seq  →  UNIQUE on (device_id, device_sequence)
+ *
+ * The PHP checks exist to produce a clear reason_code in the ordinary case.
+ * When the engine wins a race instead, the duplicate-key error is caught and
+ * turned into the same answer, so the handset cannot tell the difference and
+ * the data is right either way.
+ */
+final class AttendanceService
+{
+    public const ACCEPTED         = 'ACCEPTED';
+    public const ALREADY_RECEIVED = 'ALREADY_RECEIVED';
+    public const REJECTED         = 'REJECTED';
+    public const NEEDS_REVIEW     = 'NEEDS_REVIEW';
+
+    /**
+     * Record a Gate IN.
+     *
+     * @param array{employee_id:int,device_id:int,operator_id:int,event_uuid:string,
+     *              device_sequence:int,occurred_at?:?DateTimeImmutable,device_time?:?string,
+     *              timezone?:?string,source?:string} $in
+     * @return array<string,mixed> the receipt, exactly as the contract shapes it
+     */
+    public static function gateIn(array $in): array
+    {
+        return self::record($in, 'GATE_IN');
+    }
+
+    /** Record a Gate OUT. */
+    public static function gateOut(array $in): array
+    {
+        return self::record($in, 'GATE_OUT');
+    }
+
+    // ------------------------------------------------------------------ core
+
+    private static function record(array $in, string $type): array
+    {
+        $uuid = trim((string) ($in['event_uuid'] ?? ''));
+        if ($uuid === '' || !preg_match('/^[0-9a-fA-F-]{36}$/', $uuid)) {
+            return self::reject($uuid, $type, 'BAD_EVENT_UUID',
+                'Every event needs a stable UUID so a replay can be recognised.');
+        }
+
+        /* 1. IDEMPOTENCY FIRST, BEFORE ANY VALIDATION.
+           A replay must get its original answer back even if the world has
+           moved on since — the employee may now be inside, which would make a
+           fresh evaluation of the same event say REJECTED and tell the phone
+           a successful entry had failed. */
+        $existing = self::receiptFor($uuid);
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        $employeeId = (int) ($in['employee_id'] ?? 0);
+        $deviceId   = (int) ($in['device_id'] ?? 0);
+        $operatorId = (int) ($in['operator_id'] ?? 0);
+        $sequence   = (int) ($in['device_sequence'] ?? 0);
+
+        if ($employeeId <= 0 || $deviceId <= 0 || $operatorId <= 0) {
+            return self::reject($uuid, $type, 'VALIDATION',
+                'employee, device and operator are all required.', $deviceId ?: null);
+        }
+
+        $device = Db::one('SELECT id, revoked_at FROM att_devices WHERE id = ?', [$deviceId]);
+        if ($device === null) {
+            return self::reject($uuid, $type, 'UNKNOWN_DEVICE', 'This device is not registered.', null);
+        }
+        /* Checked on every event, not only at sign-in: a handset reported lost
+           at 10am must stop being able to post events at 10:01, without
+           waiting for its session to expire. */
+        if ($device['revoked_at'] !== null) {
+            return self::reject($uuid, $type, 'DEVICE_REVOKED', 'This device has been withdrawn from service.', $deviceId);
+        }
+
+        $employee = Db::one('SELECT id, active, department_id FROM att_employees WHERE id = ?', [$employeeId]);
+        if ($employee === null) {
+            return self::reject($uuid, $type, 'EMPLOYEE_NOT_FOUND', 'No such employee.', $deviceId);
+        }
+        if ((int) $employee['active'] !== 1) {
+            return self::reject($uuid, $type, 'EMPLOYEE_INACTIVE', 'This employee is not active.', $deviceId);
+        }
+
+        // Canonical time. A device time that cannot be parsed does not become
+        // "now" — it is held for review, because a silent "now" is
+        // indistinguishable from a real scan.
+        $deviceTime = Time::parse((string) ($in['device_time'] ?? ''), $in['timezone'] ?? null);
+        $occurred   = $in['occurred_at'] ?? $deviceTime ?? Time::nowUtc();
+        $skew       = $deviceTime !== null ? Time::skewMs($deviceTime) : null;
+
+        if (($in['device_time'] ?? '') !== '' && $deviceTime === null) {
+            return self::needsReview($uuid, $type, 'UNREADABLE_DEVICE_TIME',
+                'The device sent a time that could not be read.', $deviceId);
+        }
+
+        $source      = ($in['source'] ?? 'online') === 'offline_replay' ? 'offline_replay' : 'online';
+        $provisional = $source === 'offline_replay' ? 1 : 0;
+
+        /* 2. 60-SECOND DUPLICATE SUPPRESSION (invariant 3).
+           Measured on occurred_at, not received_at. Two handsets at the same
+           door produce two events a second apart but may reach the server
+           minutes apart; judging by arrival time would let the second one
+           through. Scoped to employee + action, which is what the blueprint
+           says, so an IN followed immediately by an OUT is still allowed. */
+        $window = Policy::int('duplicate_window_seconds', 60);
+        if ($window > 0) {
+            $recent = Db::one(
+                'SELECT id, event_uuid, occurred_at FROM att_events
+                  WHERE employee_id = ? AND event_type = ?
+                    AND reconciliation_status = \'accepted\'
+                    AND ABS(TIMESTAMPDIFF(SECOND, occurred_at, ?)) < ?
+                  ORDER BY occurred_at DESC LIMIT 1',
+                [$employeeId, $type, Time::sql($occurred), $window]
+            );
+            if ($recent !== null) {
+                return self::reject($uuid, $type, 'DUPLICATE_WITHIN_WINDOW',
+                    sprintf('The same action was already recorded for this employee within %d seconds.', $window),
+                    $deviceId, ['duplicate_of_event_uuid' => $recent['event_uuid']]);
+            }
+        }
+
+        return $type === 'GATE_IN'
+            ? self::openCycle($uuid, $in, $employeeId, $deviceId, $operatorId, $sequence, $occurred, $deviceTime, $skew, $source, $provisional)
+            : self::closeCycle($uuid, $employeeId, $deviceId, $operatorId, $sequence, $occurred, $deviceTime, $skew, $source, $provisional);
+    }
+
+    // -------------------------------------------------------------- GATE IN
+
+    private static function openCycle(
+        string $uuid, array $in, int $employeeId, int $deviceId, int $operatorId,
+        int $sequence, DateTimeImmutable $occurred, ?DateTimeImmutable $deviceTime,
+        ?int $skew, string $source, int $provisional
+    ): array {
+        // Already inside? (invariant 2 — no double IN)
+        $open = self::openCycleFor($employeeId);
+        if ($open !== null) {
+            return self::reject($uuid, 'GATE_IN', 'ALREADY_INSIDE',
+                'This employee is already inside. Record an exit first.',
+                $deviceId, ['open_entry_cycle_id' => (int) $open['id']]);
+        }
+
+        // D4: admit, attaching the default shift if none is assigned.
+        [$instance, ] = Shifts::instanceForOrDefault($employeeId, $occurred, $operatorId);
+        if ($instance === null) {
+            /* Not a refusal of entry: the person is through the gate either
+               way. The event is held for HR because there is nothing to file
+               it against — no shift assigned and no default configured. */
+            return self::needsReview($uuid, 'GATE_IN', 'NO_SHIFT_INSTANCE',
+                'No shift is assigned for this employee and no default shift is configured.',
+                $deviceId);
+        }
+        $instanceId = (int) $instance['id'];
+
+        try {
+            return Db::tx(static function (PDO $pdo) use (
+                $uuid, $employeeId, $deviceId, $operatorId, $sequence, $occurred,
+                $deviceTime, $skew, $source, $provisional, $instanceId
+            ) {
+                /* Lock the shift instance, not the cycle table. entry_sequence
+                   is MAX+1 within this instance, and two concurrent INs for
+                   the same person on the same day would otherwise compute the
+                   same number and collide on uniq_att_shift_sequence. Locking
+                   the parent row serialises exactly that pair and nothing
+                   wider — other employees are untouched. */
+                Db::run('SELECT id FROM att_shift_instances WHERE id = ? FOR UPDATE', [$instanceId]);
+
+                Db::run(
+                    'INSERT INTO att_events
+                       (event_uuid, employee_id, device_id, operator_id, event_type,
+                        occurred_at, device_time, timezone, clock_skew_ms,
+                        device_sequence, source, provisional)
+                     VALUES (?, ?, ?, ?, \'GATE_IN\', ?, ?, ?, ?, ?, ?, ?)',
+                    [
+                        $uuid, $employeeId, $deviceId, $operatorId,
+                        Time::sql($occurred),
+                        $deviceTime ? Time::sql($deviceTime) : null,
+                        null, $skew, $sequence, $source, $provisional,
+                    ]
+                );
+                $eventId = Db::lastId();
+
+                $next = (int) Db::value(
+                    'SELECT COALESCE(MAX(entry_sequence), 0) + 1 FROM att_entry_cycles WHERE shift_instance_id = ?',
+                    [$instanceId]
+                );
+
+                Db::run(
+                    'INSERT INTO att_entry_cycles
+                       (employee_id, shift_instance_id, entry_sequence, gate_in_event_id, opened_at)
+                     VALUES (?, ?, ?, ?, ?)',
+                    [$employeeId, $instanceId, $next, $eventId, Time::sql($occurred)]
+                );
+                $cycleId = Db::lastId();
+
+                Audit::record('gate.in', 'att_entry_cycle', $cycleId, null, [
+                    'employee_id'    => $employeeId,
+                    'entry_sequence' => $next,
+                    'event_uuid'     => $uuid,
+                    'occurred_at'    => Time::sql($occurred),
+                ], $operatorId);
+
+                /* Invariant 1: this cycle now owes a HOD confirmation. The
+                   requirement is the open cycle itself — M3 reads unconfirmed
+                   cycles rather than keeping a second list that could drift
+                   out of step with this one. */
+                return self::accept($uuid, 'GATE_IN', $eventId, $deviceId, [
+                    'entry_cycle_id'       => $cycleId,
+                    'entry_sequence'       => $next,
+                    'shift_instance_id'    => $instanceId,
+                    'hod_confirmation_due' => true,
+                ]);
+            });
+        } catch (Throwable $e) {
+            return self::fromRace($e, $uuid, 'GATE_IN', $employeeId, $deviceId, $sequence);
+        }
+    }
+
+    // ------------------------------------------------------------- GATE OUT
+
+    private static function closeCycle(
+        string $uuid, int $employeeId, int $deviceId, int $operatorId,
+        int $sequence, DateTimeImmutable $occurred, ?DateTimeImmutable $deviceTime,
+        ?int $skew, string $source, int $provisional
+    ): array {
+        try {
+            return Db::tx(static function (PDO $pdo) use (
+                $uuid, $employeeId, $deviceId, $operatorId, $sequence, $occurred,
+                $deviceTime, $skew, $source, $provisional
+            ) {
+                /* Lock the open cycle before reading it. Without FOR UPDATE two
+                   simultaneous OUTs both see it open and both try to close it;
+                   the second would overwrite the first's closing event and the
+                   presence minutes with it. */
+                $open = Db::one(
+                    'SELECT id, opened_at, shift_instance_id FROM att_entry_cycles
+                      WHERE employee_id = ? AND closed_at IS NULL FOR UPDATE',
+                    [$employeeId]
+                );
+                if ($open === null) {
+                    // invariant 2 — no OUT without IN
+                    return self::reject($uuid, 'GATE_OUT', 'NOT_INSIDE',
+                        'This employee is not currently inside.', $deviceId);
+                }
+
+                Db::run(
+                    'INSERT INTO att_events
+                       (event_uuid, employee_id, device_id, operator_id, event_type,
+                        occurred_at, device_time, timezone, clock_skew_ms,
+                        device_sequence, source, provisional)
+                     VALUES (?, ?, ?, ?, \'GATE_OUT\', ?, ?, ?, ?, ?, ?, ?)',
+                    [
+                        $uuid, $employeeId, $deviceId, $operatorId,
+                        Time::sql($occurred),
+                        $deviceTime ? Time::sql($deviceTime) : null,
+                        null, $skew, $sequence, $source, $provisional,
+                    ]
+                );
+                $eventId = Db::lastId();
+
+                $openedAt = Time::fromDb((string) $open['opened_at']);
+                $minutes  = null;
+                if ($openedAt !== null) {
+                    $seconds = $occurred->getTimestamp() - $openedAt->getTimestamp();
+                    /* An exit timed before its own entry is a clock problem,
+                       not a negative shift. Store nothing and let HR see it
+                       rather than writing a negative that would quietly
+                       subtract from somebody's hours. */
+                    $minutes = $seconds >= 0 ? intdiv($seconds, 60) : null;
+                }
+
+                Db::run(
+                    'UPDATE att_entry_cycles
+                        SET gate_out_event_id = ?, closed_at = ?, present_minutes = ?
+                      WHERE id = ? AND closed_at IS NULL',
+                    [$eventId, Time::sql($occurred), $minutes, (int) $open['id']]
+                );
+
+                Audit::record('gate.out', 'att_entry_cycle', (int) $open['id'], null, [
+                    'employee_id'     => $employeeId,
+                    'event_uuid'      => $uuid,
+                    'occurred_at'     => Time::sql($occurred),
+                    'present_minutes' => $minutes,
+                ], $operatorId);
+
+                return self::accept($uuid, 'GATE_OUT', $eventId, $deviceId, [
+                    'entry_cycle_id'  => (int) $open['id'],
+                    'present_minutes' => $minutes,
+                ]);
+            });
+        } catch (Throwable $e) {
+            return self::fromRace($e, $uuid, 'GATE_OUT', $employeeId, $deviceId, $sequence);
+        }
+    }
+
+    // ----------------------------------------------------------- race rescue
+
+    /**
+     * Turn a lost race into the right answer.
+     *
+     * Three different unique keys can fire here, and each means something
+     * specific. Guessing one answer for all of them would tell a handset its
+     * entry failed when in fact it succeeded a millisecond earlier.
+     */
+    private static function fromRace(Throwable $e, string $uuid, string $type, int $employeeId, int $deviceId, int $sequence): array
+    {
+        if (!Db::isDuplicate($e)) {
+            throw $e;
+        }
+        $msg = $e->getMessage();
+
+        // The same event arrived twice at once: answer as a replay.
+        if (str_contains($msg, 'uniq_att_event_uuid')) {
+            return self::receiptFor($uuid) ?? self::alreadyReceived($uuid, $type, null, $deviceId);
+        }
+
+        // Two handsets, same person, same instant: one opened the cycle first.
+        if (str_contains($msg, 'uniq_att_open_employee')) {
+            $open = self::openCycleFor($employeeId);
+            return self::reject($uuid, $type, 'ALREADY_INSIDE',
+                'This employee is already inside. Record an exit first.',
+                $deviceId, $open ? ['open_entry_cycle_id' => (int) $open['id']] : []);
+        }
+
+        // A device reused a sequence number — a reinstalled app replaying an
+        // old queue. Held for review rather than rejected: the event may be
+        // real, and a person's attendance should not vanish over it.
+        if (str_contains($msg, 'uniq_att_device_sequence')) {
+            return self::needsReview($uuid, $type, 'DEVICE_SEQUENCE_REUSED',
+                'This device has already used that sequence number.', $deviceId,
+                ['device_sequence' => $sequence]);
+        }
+
+        if (str_contains($msg, 'uniq_att_shift_sequence')) {
+            return self::needsReview($uuid, $type, 'SEQUENCE_COLLISION',
+                'Two entries were opened for the same shift at once.', $deviceId);
+        }
+
+        throw $e;
+    }
+
+    // ------------------------------------------------------------- receipts
+
+    /** @return array<string,mixed>|null */
+    public static function receiptFor(string $uuid): ?array
+    {
+        $row = Db::one('SELECT response_json, receipt_status FROM att_sync_receipts WHERE event_uuid = ?', [$uuid]);
+        if ($row === null) {
+            return null;
+        }
+        $decoded = json_decode((string) $row['response_json'], true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+        /* The ORIGINAL answer, with its status changed to say this is a
+           replay. The handset needs the entry_cycle_id it was given the first
+           time, not a bare acknowledgement. */
+        $decoded['receipt_status'] = self::ALREADY_RECEIVED;
+        return $decoded;
+    }
+
+    private static function store(array $receipt, ?int $deviceId): array
+    {
+        try {
+            Db::run(
+                'INSERT INTO att_sync_receipts
+                   (event_uuid, device_id, event_kind, receipt_status, reason_code, server_event_id, response_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE event_uuid = event_uuid',
+                [
+                    $receipt['event_uuid'],
+                    $deviceId ?: null,
+                    $receipt['event_kind'] ?? '',
+                    $receipt['receipt_status'],
+                    $receipt['reason_code'] ?? null,
+                    $receipt['server_event_id'] ?? null,
+                    json_encode($receipt, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ]
+            );
+        } catch (Throwable $e) {
+            error_log('[att-receipt] ' . $e->getMessage());
+        }
+        return $receipt;
+    }
+
+    private static function accept(string $uuid, string $kind, int $eventId, int $deviceId, array $extra = []): array
+    {
+        return self::store(array_merge([
+            'ok'              => true,
+            'event_uuid'      => $uuid,
+            'event_kind'      => $kind,
+            'receipt_status'  => self::ACCEPTED,
+            'server_event_id' => $eventId,
+            'reason_code'     => null,
+        ], $extra), $deviceId);
+    }
+
+    private static function reject(string $uuid, string $kind, string $reason, string $message, ?int $deviceId = null, array $extra = []): array
+    {
+        return self::store(array_merge([
+            'ok'              => false,
+            'event_uuid'      => $uuid,
+            'event_kind'      => $kind,
+            'receipt_status'  => self::REJECTED,
+            'server_event_id' => null,
+            'reason_code'     => $reason,
+            'message'         => $message,
+        ], $extra), $deviceId);
+    }
+
+    private static function needsReview(string $uuid, string $kind, string $reason, string $message, ?int $deviceId = null, array $extra = []): array
+    {
+        return self::store(array_merge([
+            'ok'              => true,
+            'event_uuid'      => $uuid,
+            'event_kind'      => $kind,
+            'receipt_status'  => self::NEEDS_REVIEW,
+            'server_event_id' => null,
+            'reason_code'     => $reason,
+            'message'         => $message,
+        ], $extra), $deviceId);
+    }
+
+    private static function alreadyReceived(string $uuid, string $kind, ?int $eventId, ?int $deviceId): array
+    {
+        return [
+            'ok'              => true,
+            'event_uuid'      => $uuid,
+            'event_kind'      => $kind,
+            'receipt_status'  => self::ALREADY_RECEIVED,
+            'server_event_id' => $eventId,
+            'reason_code'     => null,
+        ];
+    }
+
+    // --------------------------------------------------------------- queries
+
+    /** @return array<string,mixed>|null */
+    public static function openCycleFor(int $employeeId): ?array
+    {
+        return Db::one(
+            'SELECT id, entry_sequence, opened_at, shift_instance_id
+               FROM att_entry_cycles WHERE employee_id = ? AND closed_at IS NULL',
+            [$employeeId]
+        );
+    }
+
+    public static function isInside(int $employeeId): bool
+    {
+        return self::openCycleFor($employeeId) !== null;
+    }
+
+    /**
+     * Movement history. $departmentIds is the caller's scope; null = all.
+     * Applied in SQL so a scoped user cannot read past it.
+     *
+     * @param list<int>|null $departmentIds
+     * @return list<array<string,mixed>>
+     */
+    public static function movements(?array $departmentIds, ?int $employeeId = null, ?string $date = null, int $limit = 200): array
+    {
+        $sql = 'SELECT ev.id, ev.event_uuid, ev.event_type, ev.occurred_at, ev.received_at,
+                       ev.reconciliation_status, ev.reason_code, ev.provisional, ev.clock_skew_ms,
+                       e.code AS employee_code, e.full_name, e.department_id, d.name AS department_name
+                  FROM att_events ev
+                  JOIN att_employees e  ON e.id = ev.employee_id
+                  JOIN att_departments d ON d.id = e.department_id
+                 WHERE 1 = 1';
+        $params = [];
+
+        if ($departmentIds !== null) {
+            if ($departmentIds === []) {
+                return [];
+            }
+            $sql .= ' AND e.department_id IN (' . implode(',', array_fill(0, count($departmentIds), '?')) . ')';
+            foreach ($departmentIds as $d) { $params[] = (int) $d; }
+        }
+        if ($employeeId !== null) { $sql .= ' AND ev.employee_id = ?'; $params[] = $employeeId; }
+        if ($date !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            $sql .= ' AND DATE(ev.occurred_at) = ?'; $params[] = $date;
+        }
+
+        $sql .= ' ORDER BY ev.occurred_at DESC, ev.id DESC LIMIT ' . max(1, min(1000, $limit));
+        return Db::all($sql, $params);
+    }
+
+    /**
+     * Entry cycles, with whether each still owes its HOD confirmation.
+     *
+     * @param list<int>|null $departmentIds
+     * @return list<array<string,mixed>>
+     */
+    public static function entryCycles(?array $departmentIds, ?int $employeeId = null, ?string $date = null, int $limit = 200): array
+    {
+        $sql = 'SELECT c.id, c.employee_id, c.entry_sequence, c.opened_at, c.closed_at,
+                       c.present_minutes, c.shift_instance_id,
+                       e.code AS employee_code, e.full_name, e.department_id,
+                       d.name AS department_name, si.work_date
+                  FROM att_entry_cycles c
+                  JOIN att_employees e   ON e.id = c.employee_id
+                  JOIN att_departments d ON d.id = e.department_id
+                  JOIN att_shift_instances si ON si.id = c.shift_instance_id
+                 WHERE 1 = 1';
+        $params = [];
+
+        if ($departmentIds !== null) {
+            if ($departmentIds === []) {
+                return [];
+            }
+            $sql .= ' AND e.department_id IN (' . implode(',', array_fill(0, count($departmentIds), '?')) . ')';
+            foreach ($departmentIds as $d) { $params[] = (int) $d; }
+        }
+        if ($employeeId !== null) { $sql .= ' AND c.employee_id = ?'; $params[] = $employeeId; }
+        if ($date !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            $sql .= ' AND si.work_date = ?'; $params[] = $date;
+        }
+
+        $sql .= ' ORDER BY c.opened_at DESC, c.id DESC LIMIT ' . max(1, min(1000, $limit));
+        return Db::all($sql, $params);
+    }
+}

@@ -22,8 +22,10 @@ require_once dirname(__DIR__, 2) . '/includes/att/Audit.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Roles.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Employees.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Shifts.php';
+require_once dirname(__DIR__, 2) . '/includes/att/AttendanceService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
+use Att\AttendanceService;
 use Att\Audit;
 use Att\Db;
 use Att\Employees;
@@ -151,10 +153,43 @@ try {
             Http::json(['ok' => true, 'shift_instance_id' => $id], 201);
             break;
 
+        // ------------------------------------------------------- attendance
+
+        case $method === 'POST' && ($route === '/attendance/in' || $route === '/attendance/out'):
+            Http::requireCsrf();
+            $u = Http::requirePermission('attgate', 'c');
+            handle_gate_event($route === '/attendance/in' ? 'in' : 'out', (int) $u['id']);
+            break;
+
+        case $method === 'GET' && $route === '/attendance/movements':
+            $u = Http::requirePermission('attgate', 'v');
+            Http::json([
+                'ok' => true,
+                'movements' => AttendanceService::movements(
+                    employee_scope_for((int) $u['id']),
+                    ((int) Http::input('employee_id', 0)) ?: null,
+                    Http::input('date') ? (string) Http::input('date') : null,
+                    (int) Http::input('limit', 200)
+                ),
+            ]);
+            break;
+
+        case $method === 'GET' && $route === '/attendance/entry-cycles':
+            $u = Http::requirePermission('attgate', 'v');
+            Http::json([
+                'ok' => true,
+                'entry_cycles' => AttendanceService::entryCycles(
+                    employee_scope_for((int) $u['id']),
+                    ((int) Http::input('employee_id', 0)) ?: null,
+                    Http::input('date') ? (string) Http::input('date') : null,
+                    (int) Http::input('limit', 200)
+                ),
+            ]);
+            break;
+
         // ------------------------------------------- declared, not yet built
 
         case in_array($route, [
-            '/attendance/in', '/attendance/out', '/attendance/movements', '/attendance/entry-cycles',
             '/hod/pending', '/hod/confirm', '/hod/confirm-bulk', '/hod/movements',
             '/sync/events', '/sync/status', '/sync/changes',
             '/overtime/requests', '/overtime/verification',
@@ -177,6 +212,46 @@ try {
 }
 
 /* -------------------------------------------------------------- handlers */
+
+/**
+ * POST /attendance/in and /attendance/out.
+ *
+ * The operator is ALWAYS the signed-in user — API_CONTRACT's closing line,
+ * "Never trust client operator/role IDs". A handset that sends operator_id
+ * is ignored, not obeyed.
+ *
+ * The receipt comes back with HTTP 200 even when it says REJECTED. That is
+ * deliberate: the request was understood and answered, and the phone must
+ * store the receipt and stop retrying. A 4xx would make its outbox treat a
+ * settled decision as a transport failure and queue it forever.
+ */
+function handle_gate_event(string $direction, int $operatorId): void
+{
+    $employeeCode = trim((string) Http::input('employee_code', ''));
+    $employeeId   = (int) Http::input('employee_id', 0);
+
+    if ($employeeId <= 0 && $employeeCode !== '') {
+        $emp = Employees::findByCodeOrQr($employeeCode);
+        $employeeId = (int) ($emp['id'] ?? 0);
+    }
+
+    $payload = [
+        'employee_id'     => $employeeId,
+        'device_id'       => (int) Http::input('device_id', 0),
+        'operator_id'     => $operatorId,
+        'event_uuid'      => (string) Http::input('event_uuid', ''),
+        'device_sequence' => (int) Http::input('device_sequence', 0),
+        'device_time'     => (string) Http::input('occurred_at', ''),
+        'timezone'        => (string) Http::input('timezone', ''),
+        'source'          => (string) Http::input('source', 'online'),
+    ];
+
+    $receipt = $direction === 'in'
+        ? AttendanceService::gateIn($payload)
+        : AttendanceService::gateOut($payload);
+
+    Http::json($receipt, 200);
+}
 
 function handle_login(): void
 {

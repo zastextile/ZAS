@@ -523,6 +523,45 @@ Existing suite re-run: **67 clean, 0 regressions** (`zgateskin_test.php` fails
 
 **Rollback:** `php att_migrate.php down --to=0`.
 
-### Next: M2 — gate IN/OUT, entry cycles, 60-second rule, invalid transitions
-Blocked on nothing. Decision #1 in §10 (real shift times and break policy) is
-wanted before M2 is finished, but the default shift makes M2 testable now.
+## 13. M2 — delivered 2026-11-10
+
+**162 assertions green** across the three suites (M1 64, M2 51, API 47).
+Existing ERP suites: 65 clean, 0 regressions.
+
+| Delivered | Where |
+|---|---|
+| `att_events` (immutable), `att_entry_cycles`, `att_sync_receipts` + rollbacks | `sql/att/0007–0009` |
+| Gate IN/OUT, 60-second rule, transitions, receipts, race rescue | `includes/att/AttendanceService.php` |
+| `POST /attendance/in\|out`, `GET /attendance/movements\|entry-cycles` | `api/v1/index.php` |
+| Tests | `tests/zatt_m2_test.php`, `zatt_api_test.php` §8b |
+
+**Acceptance:**
+- **AT01** ✅ three IN/OUT pairs → three cycles, each owing its own HOD
+  confirmation, sequences 1-2-3, exactly one open.
+- **AT02** ✅ same person on a second gate seconds later is rejected
+  `DUPLICATE_WITHIN_WINDOW`; judged on `occurred_at`, so a late-arriving offline
+  scan an hour apart is still accepted.
+- **Race** ✅ two real PHP processes opening a cycle for one employee at the
+  same instant: one `ACCEPTED`, one `REJECTED` (not a 500), exactly one open
+  cycle. Enforced by the unique key, not by PHP.
+
+**Behaviour worth knowing:**
+- A replay returns the **original** receipt, including a rejection — never a
+  fresh evaluation that could now say the opposite.
+- A `REJECTED` event is HTTP **200** with a receipt: a settled decision, so the
+  phone's outbox stops retrying it.
+- The operator is always the signed-in user; a client-sent `operator_id` is
+  ignored (tested).
+- A revoked handset is stopped on its **next event**, not at session expiry.
+- Device clock skew is stored, never corrected; an unreadable device time goes
+  to `NEEDS_REVIEW` rather than becoming "now".
+
+**Bugs found and fixed while building it:**
+1. D4 auto-shift created a shift instance *before* checking it covered the
+   scan, leaving an orphan "scheduled day" for out-of-hours scans. Now checks
+   first; an out-of-hours scan goes to review and writes nothing.
+2. The migration runner silently let two files share a version number (one
+   overwrote the other, the next FK failed on an unrelated table). It now
+   refuses duplicate versions outright.
+
+### Next: M3 — HOD per-cycle confirmation + bulk, department-scoped (AT06)

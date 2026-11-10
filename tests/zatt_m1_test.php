@@ -84,8 +84,12 @@ $workersBefore = $pdo->query('SHOW CREATE TABLE zp_workers')->fetch()['Create Ta
 $m = new Migrations($B . 'sql/att');
 
 echo "1. Migrations apply in order\n";
+$expected = count($m->available());
 $log = $m->up();
-ok(count($log) === 6, 'all six migrations applied (got ' . count($log) . ')');
+/* Counted from what is on disk, not hard-coded. An earlier version asserted
+   "six", which was true until M2 added three more and then failed for a
+   reason that had nothing to do with what it was testing. */
+ok(count($log) === $expected, "every available migration applied ($expected)");
 ok(Db::tableExists('att_employees'), 'att_employees exists');
 ok(Db::tableExists('att_policies'), 'att_policies exists');
 ok(Db::tableExists('att_audit_logs'), 'att_audit_logs exists');
@@ -105,17 +109,33 @@ ok(Db::columnExists('zp_workers', 'att_employee_id'), 'zp_workers gained the add
 echo "3. Re-running is a no-op, and editing an applied migration is refused\n";
 $again = $m->up();
 ok($again === ['nothing to apply — database is up to date'], 'second up() changes nothing');
-$tmp = $B . 'sql/att/0007_scratch.sql';
+/* Numbered 9999 so it can never collide with a real migration. It was 0007
+   once; M2 then added a real 0007 and the two silently fought over the same
+   slot, which is why the runner now refuses duplicate version numbers. */
+$tmp = $B . 'sql/att/9999_scratch.sql';
 file_put_contents($tmp, "CREATE TABLE att_scratch (id INT PRIMARY KEY);\n");
-$m->up();
-ok(Db::tableExists('att_scratch'), 'a new migration is picked up');
-file_put_contents($tmp, "CREATE TABLE att_scratch (id INT PRIMARY KEY, extra INT);\n");
-$refused = false;
-try { $m->up(); } catch (Throwable $e) { $refused = str_contains($e->getMessage(), 'edited after it was applied'); }
-ok($refused, 'EDITING AN APPLIED MIGRATION IS REFUSED, not silently ignored');
-@unlink($tmp);
-$pdo->exec('DROP TABLE IF EXISTS att_scratch');
-$pdo->exec("DELETE FROM att_migrations WHERE version = 7");
+try {
+    $m->up();
+    ok(Db::tableExists('att_scratch'), 'a new migration is picked up');
+    file_put_contents($tmp, "CREATE TABLE att_scratch (id INT PRIMARY KEY, extra INT);\n");
+    $refused = false;
+    try { $m->up(); } catch (Throwable $e) { $refused = str_contains($e->getMessage(), 'edited after it was applied'); }
+    ok($refused, 'EDITING AN APPLIED MIGRATION IS REFUSED, not silently ignored');
+
+    // Two files, one number: the runner must say so rather than guess.
+    $dupe = $B . 'sql/att/9999_also_scratch.sql';
+    file_put_contents($dupe, "SELECT 1;\n");
+    $clash = false;
+    try { $m->available(); } catch (Throwable $e) { $clash = str_contains($e->getMessage(), 'share version'); }
+    ok($clash, 'TWO MIGRATIONS WITH THE SAME NUMBER ARE REFUSED, not silently merged');
+    @unlink($dupe);
+} finally {
+    /* Always clean up, even if an assertion above threw: a stray scratch
+       migration left in sql/att would break every later run of this suite. */
+    @unlink($tmp);
+    $pdo->exec('DROP TABLE IF EXISTS att_scratch');
+    $pdo->exec("DELETE FROM att_migrations WHERE version = 9999");
+}
 
 echo "4. Rollback leaves the existing tables exactly as they were\n";
 $m->down(0);

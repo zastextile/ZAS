@@ -64,7 +64,25 @@ final class Migrations
             if (!preg_match('/^(\d{4})_/', $base, $m)) {
                 continue;
             }
-            $out[(int) $m[1]] = ['version' => (int) $m[1], 'filename' => $base, 'path' => $path];
+            $version = (int) $m[1];
+
+            /* TWO FILES WITH THE SAME NUMBER IS A HARD STOP.
+               This map is keyed by version, so a duplicate silently replaced
+               the other one — and since only one of the pair then ran while
+               BOTH numbers counted as applied, the second file's tables were
+               never created and the next migration's foreign key failed with
+               a message pointing at an unrelated table. That is a miserable
+               hour to debug, and it happened here. Say it plainly instead. */
+            if (isset($out[$version])) {
+                throw new RuntimeException(sprintf(
+                    'Two migrations share version %04d: %s and %s. Renumber one of them.',
+                    $version,
+                    $out[$version]['filename'],
+                    $base
+                ));
+            }
+
+            $out[$version] = ['version' => $version, 'filename' => $base, 'path' => $path];
         }
         ksort($out);
         return $out;

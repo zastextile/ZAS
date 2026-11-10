@@ -237,6 +237,24 @@ final class Shifts
             }
         }
 
+        /* Check the default shift actually COVERS this moment before writing
+           anything. A scan at 19:00 against a 09:00–17:00 default is somebody
+           working out of hours: the right answer is to hold the event for HR,
+           not to file it under a shift that had already ended. An earlier
+           draft assigned first and re-checked afterwards, which left an
+           orphan "default_auto" instance on the employee's record for a day
+           they were never scheduled — invisible, and wrong in any report that
+           counts scheduled days. */
+        $window = self::resolveWindow($shift, $workDate);
+        $graceIn  = (int) $shift['grace_in_minutes'];
+        $graceOut = (int) $shift['grace_out_minutes'];
+        $from = $window['starts_at']->modify("-{$graceIn} minutes");
+        $to   = $window['ends_at']->modify("+{$graceOut} minutes");
+
+        if ($at < $from || $at > $to) {
+            return [null, false];
+        }
+
         self::assign($employeeId, $defaultId, $workDate, 'default_auto', $actorId);
         $created = self::instanceFor($employeeId, $at);
 
