@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#10243e">
+<title>ZAS Attendance</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="../assets/icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ZAS Attendance">
+<link rel="stylesheet" href="app.css?v=1">
+</head>
+<body>
+<!-- A static page on purpose. It has to open with no connection at all, so it
+     cannot be a .php page that needs the server to render it: the service
+     worker keeps this file, the stylesheet and the two scripts, and everything
+     else is drawn by app.js from what is stored on the phone. -->
+<div id="app"><p class="center muted">Starting…</p></div>
+<noscript><p class="center">This app needs JavaScript switched on.</p></noscript>
+<script src="db.js?v=1"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>

@@ -336,8 +336,10 @@ $hodGate = call('POST', '/attendance/in', [
 ok($hodGate['status'] === 403, 'A HOD CANNOT RECORD GATE EVENTS — view permission is not create permission');
 
 echo "9. Later milestones answer 501, unknown routes 404\n";
-$later = call('GET', '/sync/status');
-ok($later['status'] === 501, '/sync/status is 501 (declared, not built)');
+/* A route from a milestone that has not been built. This used to probe
+   /sync/status, which M4 then built — so the probe moves on with it. */
+$later = call('GET', '/reports/overtime');
+ok($later['status'] === 501, '/reports/overtime is 501 (declared, not built)');
 ok(($later['body']['reason_code'] ?? '') === 'NOT_IMPLEMENTED', '  reason_code NOT_IMPLEMENTED');
 $nowhere = call('GET', '/does/not/exist');
 ok($nowhere['status'] === 404 && ($nowhere['body']['reason_code'] ?? '') === 'NO_ROUTE', 'an unknown route is 404 NO_ROUTE');

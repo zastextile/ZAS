@@ -30,6 +30,9 @@ final class Policy
         'photo_max_bytes'           => '5242880',
         'gatekeeper_may_verify_ot'  => '0',
         'clock_skew_warn_ms'        => '120000',
+        'device_self_register'      => '1',
+        'stale_open_cycle_hours'    => '16',
+        'sync_batch_max'            => '200',
     ];
 
     /** @var array<string,string>|null */

@@ -86,7 +86,12 @@ final class AttendanceService
         $operatorId = (int) ($in['operator_id'] ?? 0);
         $sequence   = (int) ($in['device_sequence'] ?? 0);
 
-        if ($employeeId <= 0 || $deviceId <= 0 || $operatorId <= 0) {
+        if ($employeeId <= 0) {
+            // Said plainly: a mistyped code is the commonest refusal at a gate,
+            // and "validation error" tells the gatekeeper nothing.
+            return self::reject($uuid, $type, 'EMPLOYEE_NOT_FOUND', 'No employee with that code.', $deviceId ?: null);
+        }
+        if ($deviceId <= 0 || $operatorId <= 0) {
             return self::reject($uuid, $type, 'VALIDATION',
                 'employee, device and operator are all required.', $deviceId ?: null);
         }
@@ -112,7 +117,14 @@ final class AttendanceService
         // indistinguishable from a real scan.
         $deviceTime = Time::parse((string) ($in['device_time'] ?? ''), $in['timezone'] ?? null);
         $occurred   = $in['occurred_at'] ?? $deviceTime ?? Time::nowUtc();
-        $skew       = $deviceTime !== null ? Time::skewMs($deviceTime) : null;
+        /* Skew is what the caller measured when it could measure it properly
+           (SyncService, from the phone's clock at upload time). Only a direct
+           caller with nothing better falls back to device time minus now —
+           which for an event replayed hours later is queue delay, not clock
+           error, so SyncService never lets that through. */
+        $skew = array_key_exists('clock_skew_ms', $in)
+            ? Time::clampSkew($in['clock_skew_ms'] === null ? null : (int) $in['clock_skew_ms'])
+            : ($deviceTime !== null ? Time::skewMs($deviceTime) : null);
 
         if (($in['device_time'] ?? '') !== '' && $deviceTime === null) {
             return self::needsReview($uuid, $type, 'UNREADABLE_DEVICE_TIME',

@@ -98,6 +98,16 @@ final class Time
     public static function skewMs(DateTimeImmutable $deviceTime, ?DateTimeImmutable $serverTime = null): int
     {
         $server = $serverTime ?? self::nowUtc();
-        return (int) round(((float) $deviceTime->format('U.u') - (float) $server->format('U.u')) * 1000);
+        return self::clampSkew((int) round(((float) $deviceTime->format('U.u') - (float) $server->format('U.u')) * 1000));
+    }
+
+    /**
+     * Keep a skew inside what the INT column holds (about 23 days either way).
+     * A phone whose clock is set to the wrong year is "wildly wrong" whichever
+     * large number is stored; the upload must not fail over the arithmetic.
+     */
+    public static function clampSkew(?int $ms): ?int
+    {
+        return $ms === null ? null : max(-2000000000, min(2000000000, $ms));
     }
 }

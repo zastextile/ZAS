@@ -88,7 +88,14 @@ final class HodService
                 'The device sent a time that could not be read.', $deviceId);
         }
         $occurred = $in['occurred_at'] ?? $deviceTime ?? Time::nowUtc();
-        $skew     = $deviceTime !== null ? Time::skewMs($deviceTime) : null;
+        /* Skew is what the caller measured when it could measure it properly
+           (SyncService, from the phone's clock at upload time). Only a direct
+           caller with nothing better falls back to device time minus now —
+           which for an event replayed hours later is queue delay, not clock
+           error, so SyncService never lets that through. */
+        $skew = array_key_exists('clock_skew_ms', $in)
+            ? Time::clampSkew($in['clock_skew_ms'] === null ? null : (int) $in['clock_skew_ms'])
+            : ($deviceTime !== null ? Time::skewMs($deviceTime) : null);
 
         $scope = Roles::departmentScope($hodUserId, Roles::HOD);   // null = all (admin)
 
