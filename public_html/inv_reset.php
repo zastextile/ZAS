@@ -24,6 +24,14 @@ if (!is_admin()) { http_response_code(403); exit('Only an administrator can clea
 
 const IV_PHRASE = 'RESET INVENTORY';
 
+/* EXPORT AND IMPORTS have their own resets on this page (includes/reset.php):
+   same rules, plus the admin's login password — asked for "with reason and
+   passwords". The inventory reset below asks for the password too now. */
+require_once __DIR__ . '/includes/imports.php';
+require_once __DIR__ . '/includes/reset.php';
+$mod = in_array($_GET['m'] ?? '', ['export', 'imports'], true) ? (string)$_GET['m'] : 'inventory';
+$zrDone = null;
+
 /* Groups, in the order they must be deleted — children before parents,
    so nothing is orphaned even for the instant the transaction is open. */
 $GROUPS = [
@@ -62,7 +70,13 @@ foreach ($GROUPS as $k => $g) { foreach ($g['tables'] as $t) $counts[$t] = iv_co
 
 $err = ''; $done = null;
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mod !== 'inventory') {
+    verify_csrf();
+    $picked = [];
+    foreach (array_keys(zr_plan($mod)) as $k) if (!empty($_POST['g_' . $k])) $picked[] = $k;
+    $r = zr_run($mod, $picked, (string)($_POST['reason'] ?? ''), (string)($_POST['phrase'] ?? ''), (string)($_POST['password'] ?? ''));
+    if ($r['ok']) $zrDone = $r; else $err = $r['error'];
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $phrase = trim((string)($_POST['phrase'] ?? ''));
     $reason = trim((string)($_POST['reason'] ?? ''));
@@ -73,6 +87,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $err = 'The phrase did not match. Type ' . IV_PHRASE . ' exactly — capitals and the space included — and nothing else.';
     } elseif (mb_strlen($reason) < 5) {
         $err = 'Write a reason of at least 5 characters. It is written to the audit log and it is the only thing that survives this.';
+    } elseif (!($pw = zr_password_ok((string)($_POST['password'] ?? '')))[0]) {
+        $err = $pw[1];
     } else {
         // The record goes in FIRST. If the deletion succeeds, the reason is
         // already safe; if it fails, an attempt is still on file.
@@ -131,6 +147,12 @@ flash();
     <p class="lead">Clear inventory data and begin from an empty ledger. Admin only, phrase-confirmed, and written to the audit log before anything is deleted.</p></div>
   <div><a class="ir-btn" href="inv_verify.php">Back to Stock Health</a></div>
 </div>
+<?php /* one page, three resets — each clears only its own module */ ?>
+<div class="ir-tabs">
+  <?php foreach (['inventory' => 'Inventory (stock)', 'export' => 'Export (shipments)', 'imports' => 'Imports'] as $mk => $ml): ?>
+    <a class="ir-tab<?= $mod === $mk ? ' on' : '' ?>" href="inv_reset.php<?= $mk === 'inventory' ? '' : '?m=' . $mk ?>"><?= e($ml) ?></a>
+  <?php endforeach; ?>
+</div>
 
 <style>
 .ir-card{background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:20px 22px;margin-bottom:16px;box-shadow:0 10px 30px rgba(15,35,65,.06)}
@@ -149,6 +171,11 @@ flash();
 .ir-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .ir-tbl td{padding:3px 8px 3px 0;font-family:monospace;color:#5a6b82}
 .ir-tbl td.n{text-align:right;font-weight:700;font-family:inherit;font-variant-numeric:tabular-nums;color:#152033;width:90px}
+.ir-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.ir-tab{padding:8px 15px;border-radius:999px;border:1px solid #cbd5e3;background:#fff;color:#152033;font-weight:700;font-size:12.5px;text-decoration:none}
+.ir-tab.on{background:#152033;border-color:#152033;color:#fff}
+.ir-grp.blocked{border-color:#e0a106;background:#fffbeb}
+.ir-block{margin:8px 0 0;font-size:12.5px;color:#8a5a10;font-weight:700}
 </style>
 
 <?php /* OPTING IN TO THE SKIN. Every rule in assets/css/zskin.css is
@@ -157,6 +184,7 @@ flash();
          else to undo. It wraps the markup and never the <style>. */ ?>
 <div class="zskin">
 
+<?php if ($mod !== 'inventory'): include __DIR__ . '/includes/reset_view.php'; else: ?>
 <?php if ($done): ?>
   <div class="ir-card"><div class="ir-note ok">
     <b>Done.</b> The inventory ledger is empty and document numbering starts again at 0001.
@@ -206,7 +234,7 @@ flash();
     <b>Not touched by any option above:</b> production entries and wages, proformas and orders, product costings, users and permissions, and your inventory settings such as GST %, tolerances and document prefixes. Those all stay exactly as they are.
   </div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:820px">
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;max-width:1040px">
     <div>
       <label class="ir-lbl">Type <?= e(IV_PHRASE) ?> to confirm</label>
       <input class="ir-inp" name="phrase" autocomplete="off" spellcheck="false" placeholder="<?= e(IV_PHRASE) ?>">
@@ -214,6 +242,10 @@ flash();
     <div>
       <label class="ir-lbl">Reason — goes to the audit log</label>
       <input class="ir-inp" name="reason" autocomplete="off" placeholder="e.g. trial data entered before the outward stock check existed">
+    </div>
+    <div>
+      <label class="ir-lbl">Your login password</label>
+      <input class="ir-inp" type="password" name="password" autocomplete="current-password">
     </div>
   </div>
 
@@ -224,5 +256,6 @@ flash();
   </div>
 </form>
 <?php endif; ?>
+<?php endif; /* inventory tab */ ?>
 </div><?php /* closes .zskin */ ?>
 <?php page_footer(); ?>

@@ -232,7 +232,7 @@ function zas_menu(): array {
                 ['label' => 'Settings',         'href' => 'settings.php',  'show' => $admin],
                 ['label' => 'Inventory Setup',  'href' => 'inv_setup.php', 'show' => $admin],
                 ['label' => 'Export Masters',   'href' => 'exp_settings.php', 'show' => $admin],
-                ['label' => 'Start Again (clear stock)', 'href' => 'inv_reset.php', 'show' => $admin],
+                ['label' => 'Start Again (clear trial data)', 'href' => 'inv_reset.php', 'show' => $admin],
             ],
         ],
     ];
