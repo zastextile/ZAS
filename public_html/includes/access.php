@@ -74,7 +74,27 @@ function zu_modules(): array {
         ['g' => 'Store & Inventory', 'k' => 'jobwork',  'n' => 'Job Work Billing',      'a' => 'vcudpr'],
         ['g' => 'Store & Inventory', 'k' => 'invmast',  'n' => 'Item & Party Masters',  'a' => 'vcud'],
         ['g' => 'Store & Inventory', 'k' => 'stockrep', 'n' => 'Stock Reports & Health','a' => 'v'],
-        ['g' => 'Administration',    'k' => 'admin',    'n' => 'Users & Setup',         'a' => 'vcud'],
+        /* ATTENDANCE & OVERTIME (includes/att/, api/v1/). Added with the
+           attendance module. Like the export and import rows above, every one
+           of these starts with NO rows for anybody: zu_seed_user() has already
+           run for existing users, so installing the module gives nobody access
+           to gate events, overtime approval or payroll until an admin ticks
+           the boxes. Admin is unaffected — zu_can() returns true for admin.
+
+           'attgate' is employee attendance at the factory gate. It is NOT the
+           'gate' row above, which is the materials gate pass (inv_gate.php).
+           Two different gates, two different modules, deliberately named apart
+           so a permission ticked for one can never quietly grant the other. */
+        ['g' => 'Attendance',        'k' => 'attgate',  'n' => 'Attendance — Gate IN/OUT',               'a' => 'vc'],
+        ['g' => 'Attendance',        'k' => 'atthod',   'n' => 'Attendance — HOD Confirmation',          'a' => 'vc'],
+        ['g' => 'Attendance',        'k' => 'attflag',  'n' => 'Attendance — Flag & Photo',              'a' => 'vc'],
+        ['g' => 'Attendance',        'k' => 'attot',    'n' => 'Overtime — Request',                     'a' => 'vcu'],
+        ['g' => 'Attendance',        'k' => 'attotap',  'n' => 'Overtime — Approve / Reject',            'a' => 'vu'],
+        ['g' => 'Attendance',        'k' => 'attotvf',  'n' => 'Overtime — Verify Actual Hours',         'a' => 'vu'],
+        ['g' => 'Attendance',        'k' => 'attpay',   'n' => 'Overtime — Rate & Payroll',              'a' => 'vu'],
+        ['g' => 'Attendance',        'k' => 'atthr',    'n' => 'Attendance — Reconciliation',            'a' => 'vud'],
+        ['g' => 'Attendance',        'k' => 'attrep',   'n' => 'Attendance — Reports',                   'a' => 'v'],
+        ['g' => 'Attendance',        'k' => 'attadm',   'n' => 'Attendance — Employees, Shifts, Devices','a' => 'vcud'],
     ];
 }
 
