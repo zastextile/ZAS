@@ -22,13 +22,16 @@ require_once dirname(__DIR__, 2) . '/includes/att/Audit.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Roles.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Employees.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Shifts.php';
+require_once dirname(__DIR__, 2) . '/includes/att/Receipts.php';
 require_once dirname(__DIR__, 2) . '/includes/att/AttendanceService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/HodService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AttendanceService;
 use Att\Audit;
 use Att\Db;
 use Att\Employees;
+use Att\HodService;
 use Att\Http;
 use Att\Policy;
 use Att\Roles;
@@ -187,10 +190,73 @@ try {
             ]);
             break;
 
+        // -------------------------------------------------------------- HOD
+
+        case $method === 'GET' && $route === '/hod/pending':
+            $u = Http::requirePermission('atthod', 'v');
+            Http::json([
+                'ok' => true,
+                // Scope comes from att_user_roles, never from the request: a
+                // department_id sent by the client is not even read.
+                'pending' => HodService::pending(
+                    Roles::departmentScope((int) $u['id'], Roles::HOD),
+                    Http::input('date') ? (string) Http::input('date') : null
+                ),
+            ]);
+            break;
+
+        case $method === 'POST' && $route === '/hod/confirm':
+            Http::requireCsrf();
+            $u = Http::requirePermission('atthod', 'c');
+            $employeeId = (int) Http::input('employee_id', 0);
+            $code = trim((string) Http::input('employee_code', ''));
+            if ($employeeId <= 0 && $code !== '') {
+                $employeeId = (int) (Employees::findByCodeOrQr($code)['id'] ?? 0);
+            }
+            Http::json(HodService::confirm([
+                'event_uuid'      => (string) Http::input('event_uuid', ''),
+                'hod_user_id'     => (int) $u['id'],          // session, never the body
+                'entry_cycle_id'  => (int) Http::input('entry_cycle_id', 0),
+                'employee_id'     => $employeeId,
+                'gate_event_uuid' => (string) Http::input('gate_event_uuid', ''),
+                'device_id'       => (int) Http::input('device_id', 0),
+                'device_sequence' => Http::input('device_sequence'),
+                'device_time'     => (string) Http::input('occurred_at', ''),
+                'timezone'        => (string) Http::input('timezone', ''),
+                'source'          => (string) Http::input('source', 'online'),
+            ]));
+            break;
+
+        case $method === 'POST' && $route === '/hod/confirm-bulk':
+            Http::requireCsrf();
+            $u = Http::requirePermission('atthod', 'c');
+            $ids   = Http::input('entry_cycle_ids', []);
+            $uuids = Http::input('event_uuids', []);
+            if (!is_array($ids) || !is_array($uuids)) {
+                Http::fail('VALIDATION', 'entry_cycle_ids and event_uuids must be lists.', 422);
+            }
+            $out = HodService::confirmBulk($ids, $uuids, (int) $u['id'], [
+                'device_id'   => (int) Http::input('device_id', 0),
+                'device_time' => (string) Http::input('confirmed_at', ''),
+                'timezone'    => (string) Http::input('timezone', ''),
+            ]);
+            Http::json($out, ($out['ok'] ?? false) ? 200 : 422);
+            break;
+
+        case $method === 'GET' && $route === '/hod/movements':
+            $u = Http::requirePermission('atthod', 'v');
+            $scope = Roles::departmentScope((int) $u['id'], Roles::HOD);
+            $date  = Http::input('date') ? (string) Http::input('date') : null;
+            Http::json([
+                'ok'        => true,
+                'movements' => AttendanceService::movements($scope, null, $date),
+                'arrivals'  => HodService::arrivals($scope, $date),
+            ]);
+            break;
+
         // ------------------------------------------- declared, not yet built
 
         case in_array($route, [
-            '/hod/pending', '/hod/confirm', '/hod/confirm-bulk', '/hod/movements',
             '/sync/events', '/sync/status', '/sync/changes',
             '/overtime/requests', '/overtime/verification',
             '/overtime/payroll/rate', '/overtime/payroll/finalize',

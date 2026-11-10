@@ -66,7 +66,7 @@ final class AttendanceService
     private static function record(array $in, string $type): array
     {
         $uuid = trim((string) ($in['event_uuid'] ?? ''));
-        if ($uuid === '' || !preg_match('/^[0-9a-fA-F-]{36}$/', $uuid)) {
+        if (!Receipts::validUuid($uuid)) {
             return self::reject($uuid, $type, 'BAD_EVENT_UUID',
                 'Every event needs a stable UUID so a replay can be recognised.');
         }
@@ -76,7 +76,7 @@ final class AttendanceService
            moved on since — the employee may now be inside, which would make a
            fresh evaluation of the same event say REJECTED and tell the phone
            a successful entry had failed. */
-        $existing = self::receiptFor($uuid);
+        $existing = Receipts::find($uuid);
         if ($existing !== null) {
             return $existing;
         }
@@ -91,15 +91,12 @@ final class AttendanceService
                 'employee, device and operator are all required.', $deviceId ?: null);
         }
 
-        $device = Db::one('SELECT id, revoked_at FROM att_devices WHERE id = ?', [$deviceId]);
-        if ($device === null) {
-            return self::reject($uuid, $type, 'UNKNOWN_DEVICE', 'This device is not registered.', null);
-        }
-        /* Checked on every event, not only at sign-in: a handset reported lost
-           at 10am must stop being able to post events at 10:01, without
-           waiting for its session to expire. */
-        if ($device['revoked_at'] !== null) {
-            return self::reject($uuid, $type, 'DEVICE_REVOKED', 'This device has been withdrawn from service.', $deviceId);
+        /* Registered, not revoked, and registered FOR THE GATE: a HOD handset
+           cannot record gate movements. Shared with HodService so the two
+           cannot drift apart on what a usable device is. */
+        $deviceProblem = Receipts::checkDevice($deviceId, 'gate', $uuid, $type, true);
+        if ($deviceProblem !== null) {
+            return $deviceProblem;
         }
 
         $employee = Db::one('SELECT id, active, department_id FROM att_employees WHERE id = ?', [$employeeId]);
@@ -368,97 +365,33 @@ final class AttendanceService
     }
 
     // ------------------------------------------------------------- receipts
+    // Thin delegates: the real implementation is Att\Receipts, shared with
+    // HodService so gate events and HOD confirmations answer identically.
 
     /** @return array<string,mixed>|null */
     public static function receiptFor(string $uuid): ?array
     {
-        $row = Db::one('SELECT response_json, receipt_status FROM att_sync_receipts WHERE event_uuid = ?', [$uuid]);
-        if ($row === null) {
-            return null;
-        }
-        $decoded = json_decode((string) $row['response_json'], true);
-        if (!is_array($decoded)) {
-            return null;
-        }
-        /* The ORIGINAL answer, with its status changed to say this is a
-           replay. The handset needs the entry_cycle_id it was given the first
-           time, not a bare acknowledgement. */
-        $decoded['receipt_status'] = self::ALREADY_RECEIVED;
-        return $decoded;
-    }
-
-    private static function store(array $receipt, ?int $deviceId): array
-    {
-        try {
-            Db::run(
-                'INSERT INTO att_sync_receipts
-                   (event_uuid, device_id, event_kind, receipt_status, reason_code, server_event_id, response_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE event_uuid = event_uuid',
-                [
-                    $receipt['event_uuid'],
-                    $deviceId ?: null,
-                    $receipt['event_kind'] ?? '',
-                    $receipt['receipt_status'],
-                    $receipt['reason_code'] ?? null,
-                    $receipt['server_event_id'] ?? null,
-                    json_encode($receipt, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                ]
-            );
-        } catch (Throwable $e) {
-            error_log('[att-receipt] ' . $e->getMessage());
-        }
-        return $receipt;
+        return Receipts::find($uuid);
     }
 
     private static function accept(string $uuid, string $kind, int $eventId, int $deviceId, array $extra = []): array
     {
-        return self::store(array_merge([
-            'ok'              => true,
-            'event_uuid'      => $uuid,
-            'event_kind'      => $kind,
-            'receipt_status'  => self::ACCEPTED,
-            'server_event_id' => $eventId,
-            'reason_code'     => null,
-        ], $extra), $deviceId);
+        return Receipts::accept($uuid, $kind, $eventId, $deviceId, $extra);
     }
 
     private static function reject(string $uuid, string $kind, string $reason, string $message, ?int $deviceId = null, array $extra = []): array
     {
-        return self::store(array_merge([
-            'ok'              => false,
-            'event_uuid'      => $uuid,
-            'event_kind'      => $kind,
-            'receipt_status'  => self::REJECTED,
-            'server_event_id' => null,
-            'reason_code'     => $reason,
-            'message'         => $message,
-        ], $extra), $deviceId);
+        return Receipts::reject($uuid, $kind, $reason, $message, $deviceId, $extra);
     }
 
     private static function needsReview(string $uuid, string $kind, string $reason, string $message, ?int $deviceId = null, array $extra = []): array
     {
-        return self::store(array_merge([
-            'ok'              => true,
-            'event_uuid'      => $uuid,
-            'event_kind'      => $kind,
-            'receipt_status'  => self::NEEDS_REVIEW,
-            'server_event_id' => null,
-            'reason_code'     => $reason,
-            'message'         => $message,
-        ], $extra), $deviceId);
+        return Receipts::review($uuid, $kind, $reason, $message, $deviceId, $extra);
     }
 
     private static function alreadyReceived(string $uuid, string $kind, ?int $eventId, ?int $deviceId): array
     {
-        return [
-            'ok'              => true,
-            'event_uuid'      => $uuid,
-            'event_kind'      => $kind,
-            'receipt_status'  => self::ALREADY_RECEIVED,
-            'server_event_id' => $eventId,
-            'reason_code'     => null,
-        ];
+        return Receipts::alreadyReceived($uuid, $kind);
     }
 
     // --------------------------------------------------------------- queries
@@ -523,8 +456,11 @@ final class AttendanceService
         $sql = 'SELECT c.id, c.employee_id, c.entry_sequence, c.opened_at, c.closed_at,
                        c.present_minutes, c.shift_instance_id,
                        e.code AS employee_code, e.full_name, e.department_id,
-                       d.name AS department_name, si.work_date
+                       d.name AS department_name, si.work_date,
+                       h.id AS hod_arrival_id, h.occurred_at AS hod_confirmed_at,
+                       (h.id IS NULL) AS hod_confirmation_due
                   FROM att_entry_cycles c
+                  LEFT JOIN att_hod_arrivals h ON h.entry_cycle_id = c.id
                   JOIN att_employees e   ON e.id = c.employee_id
                   JOIN att_departments d ON d.id = e.department_id
                   JOIN att_shift_instances si ON si.id = c.shift_instance_id

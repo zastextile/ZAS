@@ -89,7 +89,7 @@ cd "$ROOT/tests"
 RC=0
 SUITES=("${@:-}")
 if [ -z "${SUITES[0]:-}" ]; then
-  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_api_test.php)
+  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_m3_test.php zatt_api_test.php)
 fi
 
 for t in "${SUITES[@]}"; do

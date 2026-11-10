@@ -564,4 +564,47 @@ Existing ERP suites: 65 clean, 0 regressions.
    overwrote the other, the next FK failed on an unrelated table). It now
    refuses duplicate versions outright.
 
-### Next: M3 — HOD per-cycle confirmation + bulk, department-scoped (AT06)
+## 14. M3 — delivered 2026-11-10
+
+**235 assertions green** (M1 64, M2 51, M3 62, API 58). Existing ERP suites:
+65 clean, 0 regressions.
+
+| Delivered | Where |
+|---|---|
+| `att_hod_arrivals` + rollback | `sql/att/0010` |
+| Confirm, bulk confirm, pending list, history, cycle matching | `includes/att/HodService.php` |
+| Shared receipts + device gate (used by gate and HOD) | `includes/att/Receipts.php` |
+| `GET /hod/pending\|movements`, `POST /hod/confirm\|confirm-bulk` | `api/v1/index.php` |
+| Tests | `tests/zatt_m3_test.php`, `zatt_api_test.php` §8c |
+
+**Acceptance:**
+- **AT06** ✅ bulk confirms each cycle once, each with its own receipt; another
+  department's cycle inside a bulk request is refused; a replayed bulk request
+  writes nothing new. Department scope comes from `att_user_roles` on the
+  server — a `department_id` or `hod_user_id` sent by the client is ignored.
+- **Race** ✅ two real processes confirming one cycle: one `ACCEPTED`, one
+  `REJECTED ALREADY_CONFIRMED`, exactly one row (unique key on `entry_cycle_id`).
+- **AT05 groundwork** ✅ when only the employee is known: one candidate cycle
+  inside `hod_match_window_minutes` → confirmed (`match_method=sequence`);
+  none → `PENDING_MATCH`; two or more → `NEEDS_REVIEW / AMBIGUOUS_MATCH`,
+  nothing linked. The HR screen that resolves these is M4.
+
+**Behaviour worth knowing:**
+- Cycles that already closed still appear as owing a confirmation.
+- A confirmation writes no gate event and never changes presence minutes.
+- A HOD outside the cycle's department gets `CYCLE_NOT_FOUND`, the same answer
+  as for a cycle that does not exist.
+- Device role is enforced both ways: a gate handset cannot post confirmations
+  and a HOD handset cannot record gate movements.
+- A confirmation naming a gate event the server has not seen yet waits for
+  that event; it does not settle for another entry that happens to be there.
+- A device is optional on HOD confirmation (an admin may confirm from a
+  desktop); when named, it must be registered, live and HOD-scoped.
+
+**Test flaw found and fixed:** M2's clock-skew step used the real clock with a
+09:00–17:00 default shift, so it passed or failed by time of day. It now uses a
+round-the-clock shift for that step.
+
+### Next: M4 — IndexedDB offline queue, `/sync/*`, reconciliation of waiting
+confirmations when gate events arrive, HR queue (AT03, AT04, AT05, AT12).
+This is the first milestone with screens: the gate and HOD phone app.

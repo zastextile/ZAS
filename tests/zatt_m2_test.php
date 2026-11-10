@@ -29,6 +29,7 @@ require_once $B . 'includes/att/Audit.php';
 require_once $B . 'includes/att/Roles.php';
 require_once $B . 'includes/att/Employees.php';
 require_once $B . 'includes/att/Shifts.php';
+require_once $B . 'includes/att/Receipts.php';
 require_once $B . 'includes/att/AttendanceService.php';
 
 use Att\AttendanceService as A;
@@ -181,6 +182,12 @@ ok(($revoked['reason_code'] ?? '') === 'DEVICE_REVOKED',
    'A REVOKED HANDSET IS STOPPED ON THE NEXT EVENT, not when its session expires');
 
 echo "7. Clock skew is recorded, never silently corrected\n";
+/* Skew is measured against the server's real clock, so this step cannot use
+   the fixed test day — and with the 09:00–17:00 default shift it then passed
+   or failed depending on what time of day the suite was run (it failed the
+   first evening it was run). A round-the-clock default for this step only. */
+$allDay = Shifts::create(['name' => 'All day (test)', 'start_time' => '00:00', 'end_time' => '23:59', 'grace_out_minutes' => 2]);
+Policy::set('default_shift_id', (string) $allDay, null, 'string'); Policy::flush();
 $su = '66666666-6666-4666-8666-666666666666';
 A::gateIn([
     'employee_id' => $e3, 'device_id' => $gateA, 'operator_id' => $op,
@@ -199,6 +206,8 @@ $bad = A::gateIn([
 ]);
 ok($bad['receipt_status'] === 'NEEDS_REVIEW' && ($bad['reason_code'] ?? '') === 'UNREADABLE_DEVICE_TIME',
    'an unreadable device time goes to review and does NOT silently become "now"');
+
+Policy::set('default_shift_id', (string) $shift, null, 'string'); Policy::flush();
 
 echo "8. Offline replays are marked provisional\n";
 /* A fresh employee on purpose. E003 is still inside from step 7's skew scan,
@@ -238,7 +247,7 @@ file_put_contents($runner, <<<'PHP'
 <?php
 $B = $argv[1]; $emp = (int)$argv[2]; $dev = (int)$argv[3]; $op = (int)$argv[4]; $uuid = $argv[5]; $seq = (int)$argv[6];
 $dsn = $argv[7]; $u = $argv[8]; $p = $argv[9]; $start = (float)$argv[10];
-foreach (['Db','Time','Policy','Audit','Roles','Employees','Shifts','AttendanceService'] as $c) require_once "$B/includes/att/$c.php";
+foreach (['Db','Time','Policy','Audit','Roles','Employees','Shifts','Receipts','AttendanceService'] as $c) require_once "$B/includes/att/$c.php";
 $pdo = new PDO($dsn, $u, $p, [PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES=>false]);
 Att\Db::bind($pdo);
 // Both processes wake at the same wall-clock instant.

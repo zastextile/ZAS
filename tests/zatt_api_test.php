@@ -103,6 +103,8 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS zu_perm (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 $pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?,?,?)")
     ->execute([$hodId, 'attgate', 'v']);
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?,?,?)")
+    ->execute([$hodId, 'atthod', 'vc']);
 
 /* ---------------------------------------------------------- the server --- */
 $port = 8719;
@@ -274,6 +276,64 @@ $mv = call('GET', '/attendance/movements');
 ok($mv['status'] === 200 && count($mv['body']['movements'] ?? []) >= 1, 'movements are readable');
 $cy = call('GET', '/attendance/entry-cycles');
 ok($cy['status'] === 200 && count($cy['body']['entry_cycles'] ?? []) >= 1, 'entry cycles are readable');
+
+echo "8c. HOD confirmation over HTTP — scope and identity come from the session\n";
+/* Still signed in as admin from 8b. E001 (Stitching) is inside; put E002
+   (Packing) inside too, so there is one cycle in each department. */
+$in2 = call('POST', '/attendance/in', [
+    'employee_code' => 'E002', 'device_id' => $devId,
+    'event_uuid' => 'efefefef-efef-4fef-8fef-efefefefefef', 'device_sequence' => 3,
+], ['X-CSRF-Token' => $csrf]);
+$cycStitch = (int) ($in['body']['entry_cycle_id'] ?? 0);
+$cycPack   = (int) ($in2['body']['entry_cycle_id'] ?? 0);
+ok($cycStitch > 0 && $cycPack > 0, 'one open cycle in each department');
+$adminPending = call('GET', '/hod/pending');
+ok(count($adminPending['body']['pending'] ?? []) === 2, 'an admin sees both as owing confirmation');
+
+call('POST', '/auth/logout', [], ['X-CSRF-Token' => $csrf]);
+$hl = call('POST', '/auth/login', ['email' => 'hod@zas.test', 'password' => 'CorrectHorse9']);
+$csrf = (string) ($hl['body']['csrf_token'] ?? '');     // the current session's token from here on
+
+$hp = call('GET', '/hod/pending', ['department_id' => $dPack]);   // a hint the server must ignore
+$hpIds = array_map('intval', array_column($hp['body']['pending'] ?? [], 'entry_cycle_id'));
+ok($hp['status'] === 200 && $hpIds === [$cycStitch],
+   'THE HOD\'S PENDING LIST IS THEIR OWN DEPARTMENT ONLY, whatever department_id the request asks for');
+
+ok(call('POST', '/hod/confirm', ['entry_cycle_id' => $cycStitch, 'event_uuid' => '10101010-1010-4010-8010-101010101010'])['status'] === 419,
+   'a confirmation without a CSRF token is refused');
+
+$cross = call('POST', '/hod/confirm', [
+    'entry_cycle_id' => $cycPack, 'event_uuid' => '20202020-2020-4020-8020-202020202020',
+], ['X-CSRF-Token' => $csrf]);
+ok($cross['status'] === 200 && ($cross['body']['reason_code'] ?? '') === 'CYCLE_NOT_FOUND',
+   'confirming another department\'s cycle over HTTP → CYCLE_NOT_FOUND');
+
+$bulk = call('POST', '/hod/confirm-bulk', [
+    'entry_cycle_ids' => [$cycStitch, $cycPack],
+    'event_uuids'     => ['30303030-3030-4030-8030-303030303030', '40404040-4040-4040-8040-404040404040'],
+    'hod_user_id'     => $adminId,        // a lie the server must ignore
+], ['X-CSRF-Token' => $csrf]);
+$bs = array_column($bulk['body']['results'] ?? [], 'receipt_status');
+ok($bulk['status'] === 200 && $bs === ['ACCEPTED', 'REJECTED'], 'bulk: own cycle ACCEPTED, the other department\'s REJECTED');
+$who = $pdo->query("SELECT hod_user_id FROM att_hod_arrivals WHERE entry_cycle_id=$cycStitch")->fetch();
+ok((int) ($who['hod_user_id'] ?? 0) === $hodId, 'THE CONFIRMING HOD IS THE SIGNED-IN USER, not the hod_user_id the client sent');
+ok((int) $pdo->query("SELECT COUNT(*) c FROM att_hod_arrivals WHERE entry_cycle_id=$cycPack")->fetch()['c'] === 0,
+   'and the Packing cycle is still unconfirmed');
+
+$badBulk = call('POST', '/hod/confirm-bulk', ['entry_cycle_ids' => [$cycStitch], 'event_uuids' => []], ['X-CSRF-Token' => $csrf]);
+ok($badBulk['status'] === 422, 'a malformed bulk request is 422');
+
+$hm = call('GET', '/hod/movements');
+$hmDepts = array_values(array_unique(array_map('intval', array_column($hm['body']['movements'] ?? [], 'department_id'))));
+ok($hm['status'] === 200 && $hmDepts === [$dStitch], 'HOD movements show only the HOD\'s department');
+
+/* The HOD holds 'v' on attgate but not 'c': may look at the gate, may not
+   record at it. */
+$hodGate = call('POST', '/attendance/in', [
+    'employee_code' => 'E001', 'device_id' => $devId,
+    'event_uuid' => '50505050-5050-4050-8050-505050505050', 'device_sequence' => 9,
+], ['X-CSRF-Token' => $csrf]);
+ok($hodGate['status'] === 403, 'A HOD CANNOT RECORD GATE EVENTS — view permission is not create permission');
 
 echo "9. Later milestones answer 501, unknown routes 404\n";
 $later = call('GET', '/sync/status');
