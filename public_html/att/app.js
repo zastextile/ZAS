@@ -28,12 +28,12 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.2.0';
+  var APP_VERSION = '1.2.1';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
   var S = {
-    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false, ot: false }, csrf: '', flagReasons: {}, otUuid: null,
+    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false, ot: false }, csrf: '', flagReasons: {}, otUuid: null, hodDepts: [],
     deviceUuid: null, deviceId: null, revoked: false, online: navigator.onLine, needLogin: false,
     syncing: false, lastSync: null, lastError: '', persisted: null, pin: null, pinFails: 0,
     policies: { dup: 60, warnMin: 120 }, waitingForGate: 0, hiddenAt: 0, message: null, selected: {}
@@ -119,6 +119,7 @@
       if (r.status === 200) {
         S.user = r.body.user; S.can = r.body.can || { gate: false, hod: false }; S.csrf = r.body.csrf_token || '';
         if (r.body.flag_reasons) { S.flagReasons = r.body.flag_reasons; AttDB.setMeta('flag_reasons', S.flagReasons); }
+        if ('hod_departments' in r.body) { S.hodDepts = r.body.hod_departments; AttDB.setMeta('hod_departments', S.hodDepts); }
         S.needLogin = false;
         if (r.body.policies) {
           S.policies.dup = r.body.policies.duplicate_window_seconds || 60;
@@ -577,6 +578,25 @@
     });
   }
 
+  /* Is this employee one the HOD confirms? null = every department. */
+  function inHodDepartments(emp) {
+    if (!emp || S.hodDepts === null) return true;
+    return (S.hodDepts || []).some(function (d) { return String(d.id) === String(emp.department_id); });
+  }
+  function hodDeptNames() {
+    return S.hodDepts === null ? 'all departments' : ((S.hodDepts || []).map(function (d) { return d.name; }).join(', ') || 'no department');
+  }
+
+  /* The HOD tab's lookup: the same list, narrowed to the HOD's own
+     departments. Someone from another department is "not yours" here even
+     when this phone knows them for the gate. */
+  function findForHod(value) {
+    return findEmployee(value).then(function (v) {
+      if (v.hit && !inHodDepartments(v.hit)) return { hit: null, known: v.known, outside: v.hit };
+      return v;
+    });
+  }
+
   function saveEvent(type, code, name, payload) {
     var event = {
       event_uuid: uuid(), event_type: type, employee_code: code, employee_name: name || '',
@@ -631,7 +651,8 @@
     var input = document.getElementById('hodcode');
     var value = (input.value || '').trim();
     if (!value) { say('bad', 'Enter or scan an employee code first.'); return; }
-    findEmployee(value).then(function (v) {
+    findForHod(value).then(function (v) {
+      if (v.outside) { say('bad', v.outside.full_name + ' is not in your department (' + hodDeptNames() + '). Only their own HOD confirms them. Nothing was saved.'); return; }
       if (!v.hit && v.known > 0) { say('bad', '"' + value + '" is not in your department\'s list on this phone. Nothing was saved.'); return; }
       var code = v.hit ? v.hit.code : value;
       return saveEvent('HOD_CONFIRM', code, v.hit ? v.hit.full_name : '', {}).then(function () {
@@ -807,6 +828,7 @@
         el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'hodphoto', hidden: '' }), el('p', { id: 'hodname', class: 'empname' })]),
         el('button', { class: 'btn primary', id: 'btn-hodcode', text: 'Confirm arrival', on: { click: hodByCode } })
       ]));
+      body.appendChild(el('p', { class: 'muted small', id: 'hod-scope', text: 'You confirm arrivals for: ' + hodDeptNames() + '.' }));
       body.appendChild(el('h2', { text: 'Entries waiting for your confirmation' }));
       body.appendChild(el('div', { id: 'pendinglist' }));
       body.appendChild(el('div', { class: 'row' }, [
@@ -840,8 +862,8 @@
     var p = document.getElementById(nameId);
     if (!p) return;
     if (!value) { p.textContent = ''; paintPhoto(photoId, null); return; }
-    findEmployee(value).then(function (v) {
-      p.textContent = v.hit ? v.hit.full_name : (v.known ? 'Not in this phone\'s list' : '');
+    (nameId === 'hodname' ? findForHod(value) : findEmployee(value)).then(function (v) {
+      p.textContent = v.hit ? v.hit.full_name : (v.outside ? v.outside.full_name + ' — not in your department' : (v.known ? 'Not in this phone\'s list' : ''));
       p.className = 'empname' + (v.hit ? '' : ' bad');
       // The face goes with the name: shown as soon as the code is recognised,
       // before IN, OUT or Confirm is pressed.
@@ -983,10 +1005,10 @@
       navigator.serviceWorker.addEventListener('message', function (e) { if (e.data === 'att-sync') syncNow(); });
     }
     AttDB.open().then(function () {
-      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies', 'flag_reasons'].map(AttDB.getMeta));
+      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies', 'flag_reasons', 'hod_departments'].map(AttDB.getMeta));
     }).then(function (m) {
       S.deviceUuid = m[0]; S.deviceId = m[1] || null; S.user = m[2] || null; S.can = m[3] || S.can;
-      S.pin = m[4] || null; S.lastSync = m[5] || null; if (m[6]) S.policies = m[6]; if (m[7]) S.flagReasons = m[7];
+      S.pin = m[4] || null; S.lastSync = m[5] || null; if (m[6]) S.policies = m[6]; if (m[7]) S.flagReasons = m[7]; if (m[8] !== undefined) S.hodDepts = m[8];
       var jobs = [];
       if (!S.deviceUuid) { S.deviceUuid = uuid(); jobs.push(AttDB.setMeta('device_uuid', S.deviceUuid)); }
       // Ask the browser not to evict this app's storage. It may say no.

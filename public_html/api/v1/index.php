@@ -118,6 +118,20 @@ try {
                     'ot'   => Roles::can('attot', 'c'),
                 ],
                 'flag_reasons' => PhotoService::REASONS,
+                /* The departments whose arrivals this person confirms. The
+                   phone's employee list can be wider than this — a HOD who is
+                   also a gatekeeper sees everyone at the gate — so the HOD
+                   tab narrows to these. null = every department (an
+                   administrator). The server checks it again on every
+                   confirmation, whatever the phone does. */
+                'hod_departments' => (function () use ($uid): ?array {
+                    $scope = Roles::departmentScope($uid, Roles::HOD);
+                    if ($scope === null) {
+                        return null;
+                    }
+                    return array_values(array_map(fn($d) => ['id' => (int) $d['id'], 'name' => (string) $d['name']],
+                        array_filter(Employees::departments(false), fn($d) => in_array((int) $d['id'], $scope, true))));
+                })(),
                 'csrf_token' => function_exists('csrf_token') ? csrf_token() : ($_SESSION['_csrf'] ?? ''),
                 'server_time' => Time::iso(Time::nowUtc()),
                 'server_epoch_ms' => (int) round(microtime(true) * 1000),

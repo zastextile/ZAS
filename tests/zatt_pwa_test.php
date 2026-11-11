@@ -67,11 +67,18 @@ $perm = $pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?,
 $perm->execute([$gk, 'attgate', 'vc']);
 $perm->execute([$hod, 'atthod', 'vc']);
 $perm->execute([$hod, 'attgate', 'v']);
+/* Somebody with two jobs: gatekeeper for the whole gate, HOD of Stitching
+   only. Their phone knows everybody, for the gate; the HOD tab must not. */
+$combo = $mk('Kamran Both', 'both@zas.test');
+$perm->execute([$combo, 'attgate', 'vc']);
+$perm->execute([$combo, 'atthod', 'vc']);
 
 $dS = Employees::createDepartment('Stitching');
 $dP = Employees::createDepartment('Packing');
 Roles::grant($gk, Roles::GATEKEEPER);
 Roles::grant($hod, Roles::HOD, $dS);
+Roles::grant($combo, Roles::GATEKEEPER);
+Roles::grant($combo, Roles::HOD, $dS);
 Employees::create(['code' => 'E001', 'full_name' => 'Imran Ali',  'department_id' => $dS]);
 Employees::create(['code' => 'E002', 'full_name' => 'Sara Khan',  'department_id' => $dS]);
 Employees::create(['code' => 'E003', 'full_name' => 'Bilal Toor', 'department_id' => $dS]);
@@ -220,6 +227,33 @@ async function gate(page, code, btn) {
     await hp.waitForFunction(() => document.getElementById('waiting').getAttribute('data-count') === '0', null, { timeout: 30000 });
     check('HOD BACK ONLINE: both confirmations are sent', true);
     await hctx.close();
+
+    // ------------------------------------------- gatekeeper AND HOD of Stitching
+    const bctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+    const bp = await bctx.newPage();
+    bp.on('dialog', d => d.accept());
+    await signIn(bp, 'both@zas.test');
+    await bp.waitForFunction(() => AttDB.getAll('employees').then(r => r.length), null, { timeout: 20000 });
+    for (let i = 0; i < 50 && (await bp.evaluate(() => AttDB.getAll('employees').then(r => r.length))) < 4; i++) await bp.waitForTimeout(200);
+    await bp.click('#tab-gate');
+    await bp.fill('#code', 'P001');
+    await bp.waitForFunction(() => /Packing Person/.test(document.getElementById('empname').textContent), null, { timeout: 10000 });
+    check('with two jobs, the GATE tab still knows the Packing employee — the gate serves everyone', true);
+    await bp.click('#tab-hod');
+    await bp.waitForSelector('#hod-scope');
+    check('the HOD tab says whose arrivals this person confirms: Stitching', /for: Stitching\./.test(await text(bp, '#hod-scope')), await text(bp, '#hod-scope'));
+    await bp.waitForTimeout(1500);
+    check('THE HOD LIST HOLDS NO PACKING ENTRY, even for a login that also works the gate', !/Packing Person/.test(await text(bp, '#pendinglist')), await text(bp, '#pendinglist'));
+    await bp.fill('#hodcode', 'P001');
+    await bp.waitForFunction(() => /not in your department/.test(document.getElementById('hodname').textContent), null, { timeout: 10000 });
+    check('TYPING A PACKING CODE ON THE HOD TAB SAYS "not in your department"', true);
+    check('  and shows no photo for them', await bp.evaluate(() => document.getElementById('hodphoto').hidden));
+    const before = await bp.getAttribute('#waiting', 'data-count');
+    await bp.click('#btn-hodcode');
+    await bp.waitForFunction(() => /Only their own HOD confirms them\. Nothing was saved/.test((document.getElementById('msg') || {}).textContent || ''), null, { timeout: 10000 });
+    check('  and pressing Confirm saves nothing', (await bp.getAttribute('#waiting', 'data-count')) === before
+      && (await bp.evaluate(() => AttDB.allOutbox().then(r => r.filter(x => x.event_type === 'HOD_CONFIRM').length))) === 0);
+    await bctx.close();
   } catch (e) {
     check('the browser run completed', false, e && e.message);
   } finally {
@@ -248,7 +282,13 @@ ok($n("SELECT COUNT(*) FROM att_hod_arrivals WHERE status='confirmed' AND hod_us
    'two HOD confirmations, each naming its entry, under the signed-in HOD');
 ok($n("SELECT COUNT(*) FROM att_hod_arrivals h JOIN att_employees e ON e.id=h.employee_id WHERE e.code='P001'") === 0,
    'the Packing entry is still unconfirmed');
-ok($n("SELECT COUNT(*) FROM att_devices WHERE revoked_at IS NULL") === 2, 'two phones registered themselves: one gate, one HOD');
+/* And if a phone were changed to send it anyway, the server says no. */
+require_once $B . 'includes/att/HodService.php';
+$forced = Att\HodService::confirm(['event_uuid' => 'dddddddd-0000-4000-8000-00000000dddd', 'hod_user_id' => $combo,
+    'employee_id' => (int) Db::value("SELECT id FROM att_employees WHERE code='P001'"), 'device_time' => gmdate('Y-m-d\TH:i:s\Z'), 'timezone' => 'UTC']);
+ok(($forced['receipt_status'] ?? '') === 'REJECTED' && $n("SELECT COUNT(*) FROM att_hod_arrivals h JOIN att_employees e ON e.id=h.employee_id WHERE e.code='P001'") === 0,
+   'A CONFIRMATION FOR PACKING SENT STRAIGHT TO THE SERVER BY THE STITCHING HOD IS REFUSED (' . ($forced['reason_code'] ?? '?') . ')');
+ok($n("SELECT COUNT(*) FROM att_devices WHERE revoked_at IS NULL") === 3, 'three phones registered themselves: gate, HOD, and the one with both jobs');
 ok(Db::value("SELECT role_scope FROM att_devices WHERE registered_by=?", [$gk]) === 'gate'
    && Db::value("SELECT role_scope FROM att_devices WHERE registered_by=?", [$hod]) === 'hod',
    'each with the scope the SERVER derived from the user\'s permissions');
