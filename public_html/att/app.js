@@ -28,12 +28,12 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.2.1';
+  var APP_VERSION = '1.3.0';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
   var S = {
-    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false, ot: false }, csrf: '', flagReasons: {}, otUuid: null, hodDepts: [],
+    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false, ot: false }, csrf: '', flagReasons: {}, otUuid: null, hodDepts: [], mode: null, fx: { sound: true, vibe: true }, kbd: 'num',
     deviceUuid: null, deviceId: null, revoked: false, online: navigator.onLine, needLogin: false,
     syncing: false, lastSync: null, lastError: '', persisted: null, pin: null, pinFails: 0,
     policies: { dup: 60, warnMin: 120 }, waitingForGate: 0, hiddenAt: 0, message: null, selected: {}
@@ -209,6 +209,16 @@
           }
           S.lastError = '';
           hadRetry = res.body.receipts.some(function (x) { return x.receipt_status === 'RETRY'; });
+          // A refusal for something saved in the last few minutes is news the
+          // person at the gate needs now, not on the Queue tab later.
+          var fresh = {};
+          batch.forEach(function (b) { fresh[b.event_uuid] = b; });
+          var refused = res.body.receipts.filter(function (x) { return x.receipt_status === 'REJECTED' && fresh[x.event_uuid] && Date.now() - fresh[x.event_uuid].created_at < 300000; });
+          if (refused.length) {
+            var b0 = fresh[refused[refused.length - 1].event_uuid];
+            toast('bad', 'Server refused ' + (b0.event_type === 'GATE_IN' ? 'IN' : b0.event_type === 'GATE_OUT' ? 'OUT' : 'confirmation') + ' for ' + (b0.employee_name || b0.employee_code) + ': ' + (refused[refused.length - 1].message || refused[refused.length - 1].reason_code || ''));
+            feedback('bad');
+          }
           return AttDB.applyReceipts(res.body.receipts).then(function () {
             // A RETRY means "not now": stop, or this loop would resend the
             // same event for ever.
@@ -406,6 +416,109 @@
     ])]);
     document.body.appendChild(sheet);
     reason.focus();
+  }
+
+  // ---------------------------------------------------------- feedback
+  /* Every action answers in three ways at once, because a gate is noisy and
+     a gatekeeper is looking at the person, not the screen: a sound, a buzz,
+     and a burst on the button. Sound and buzz can be switched off on the
+     Queue tab; the burst is skipped for anyone whose phone asks for less
+     motion. None of it says more than the words on screen do — a green
+     burst still means "saved on this phone", not "recorded by the server". */
+  var audio = null;
+  function tone(seq) {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === 'suspended') audio.resume();
+      var t = audio.currentTime;
+      seq.forEach(function (n) {
+        var o = audio.createOscillator(), g = audio.createGain();
+        o.type = n.type || 'sine'; o.frequency.value = n.f;
+        g.gain.setValueAtTime(0.0001, t + n.at);
+        g.gain.exponentialRampToValueAtTime(n.vol || 0.18, t + n.at + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + n.at + n.d);
+        o.connect(g); g.connect(audio.destination);
+        o.start(t + n.at); o.stop(t + n.at + n.d + 0.02);
+      });
+    } catch (e) { /* no sound on this phone: the words and the buzz still show */ }
+  }
+  var SOUNDS = {
+    ok:   [{ f: 784, at: 0, d: 0.09 }, { f: 1175, at: 0.09, d: 0.14 }],
+    bad:  [{ f: 196, at: 0, d: 0.22, type: 'square', vol: 0.12 }, { f: 165, at: 0.24, d: 0.26, type: 'square', vol: 0.12 }],
+    warn: [{ f: 523, at: 0, d: 0.1 }, { f: 523, at: 0.16, d: 0.1 }],
+    tap:  [{ f: 880, at: 0, d: 0.04, vol: 0.06 }]
+  };
+  var BUZZ = { ok: [35], bad: [120, 70, 120], warn: [50, 50, 50], tap: [10] };
+  var lessMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function feedback(kind, anchor) {
+    if (S.fx.vibe && navigator.vibrate) { try { navigator.vibrate(BUZZ[kind] || 20); } catch (e) {} }
+    if (S.fx.sound) tone(SOUNDS[kind] || SOUNDS.tap);
+    var card = document.getElementById('scan-card');
+    if (card && kind !== 'tap') { card.classList.remove('flash-ok', 'flash-bad'); void card.offsetWidth; card.classList.add(kind === 'ok' ? 'flash-ok' : 'flash-bad'); }
+    if (kind === 'ok' && anchor && !lessMotion) sparkle(anchor);
+  }
+  function sparkle(anchor) {
+    var r = anchor.getBoundingClientRect(), burst = el('div', { class: 'burst', 'aria-hidden': 'true' });
+    burst.style.left = (r.left + r.width / 2) + 'px'; burst.style.top = (r.top + r.height / 2) + 'px';
+    for (var i = 0; i < 14; i++) {
+      var a = (Math.PI * 2 * i) / 14, dist = 46 + Math.random() * 38, p = el('i');
+      p.style.setProperty('--dx', Math.round(Math.cos(a) * dist) + 'px');
+      p.style.setProperty('--dy', Math.round(Math.sin(a) * dist) + 'px');
+      p.style.animationDelay = Math.round(Math.random() * 60) + 'ms';
+      burst.appendChild(p);
+    }
+    document.body.appendChild(burst);
+    setTimeout(function () { burst.remove(); }, 900);
+  }
+  /* A message that comes back later, from the server — shown over whatever
+     tab is open, so a refusal is not missed because the gatekeeper moved on. */
+  function toast(kind, text) {
+    var old = document.getElementById('toast'); if (old) old.remove();
+    var t = el('div', { class: 'toast ' + kind, id: 'toast', role: 'status', text: text, on: { click: function () { t.remove(); } } });
+    document.body.appendChild(t);
+    setTimeout(function () { if (t.parentNode) t.remove(); }, 7000);
+  }
+
+  // ----------------------------------------------------------- keypad
+  /* Employee codes here are numbers, so the phone shows its number pad, not
+     the full keyboard. "ABC" beside the box switches to letters for a code
+     that has them; the choice is remembered on this phone. The keypad's
+     bottom-right key reads "Next": it closes the pad and points at what to
+     press, it never records anything by itself. */
+  function codeInput(id, onType, onNext) {
+    var num = S.kbd !== 'text';
+    var inp = el('input', { id: id, type: 'text', placeholder: 'Employee code', autocomplete: 'off', autocorrect: 'off', spellcheck: 'false',
+      inputmode: num ? 'numeric' : 'text', pattern: num ? '[0-9]*' : null, enterkeyhint: 'next', autocapitalize: num ? 'off' : 'characters',
+      'aria-label': 'Employee code', on: { input: function () { onType(inp.value.trim()); } } });
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); onNext(); } });
+    var toggle = el('button', { class: 'btn kbd', id: id + '-kbd', type: 'button', 'aria-label': num ? 'Type letters' : 'Type numbers', text: num ? 'ABC' : '123', on: { click: function () {
+      S.kbd = S.kbd === 'text' ? 'num' : 'text'; AttDB.setMeta('kbd', S.kbd);
+      var n = S.kbd !== 'text';
+      inp.setAttribute('inputmode', n ? 'numeric' : 'text');
+      if (n) inp.setAttribute('pattern', '[0-9]*'); else inp.removeAttribute('pattern');
+      inp.setAttribute('autocapitalize', n ? 'off' : 'characters');
+      toggle.textContent = n ? 'ABC' : '123';
+      inp.blur(); setTimeout(function () { inp.focus(); }, 30);
+    } } });
+    return { input: inp, toggle: toggle };
+  }
+
+  /* Which button is likely next for this person, from THIS phone's own
+     record only: after an IN, OUT; otherwise IN. A ring around the button,
+     never a press — another gate may have recorded something since. */
+  function suggestFor(code) {
+    var bi = document.getElementById('btn-in'), bo = document.getElementById('btn-out'), hint = document.getElementById('emphint');
+    if (!bi || !bo) return Promise.resolve();
+    bi.classList.remove('suggest'); bo.classList.remove('suggest');
+    if (hint) hint.textContent = '';
+    if (!code) return Promise.resolve();
+    return AttDB.allOutbox().then(function (rows) {
+      var mine = rows.filter(function (r) { return r.employee_code === code && (r.event_type === 'GATE_IN' || r.event_type === 'GATE_OUT') && r.state !== 'rejected'; });
+      var last = mine[mine.length - 1];
+      var next = last && last.event_type === 'GATE_IN' ? bo : bi;
+      next.classList.add('suggest');
+      if (hint) hint.textContent = last ? ('Last on this phone: ' + (last.event_type === 'GATE_IN' ? 'IN' : 'OUT') + ' at ' + timeOf(Date.parse(last.occurred_at))) : 'Nothing for this person on this phone yet';
+    });
   }
 
   // --------------------------------------------------------------- overtime
@@ -615,6 +728,7 @@
       var emp = v[0].hit, known = v[0].known, rows = v[1];
       if (!emp && known > 0) {
         say('bad', '"' + value + '" is not in this phone\'s employee list. Check the code. Nothing was saved.');
+        feedback('bad');
         return;
       }
       var code = emp ? emp.code : value;
@@ -626,6 +740,7 @@
       var dup = mineForCode.filter(function (r) { return r.event_type === type && (Date.now() - Date.parse(r.occurred_at)) < S.policies.dup * 1000; });
       if (dup.length) {
         say('bad', 'Already scanned ' + (type === 'GATE_IN' ? 'IN' : 'OUT') + ' for ' + (emp ? emp.full_name : code) + ' less than ' + S.policies.dup + ' seconds ago. Nothing was saved.');
+        feedback('warn');
         return;
       }
       if (last && last.event_type === type) {
@@ -635,7 +750,8 @@
       }
 
       return saveEvent(type, code, emp ? emp.full_name : '', {}).then(function () {
-        input.value = ''; paintEmployee('');
+        feedback('ok', document.getElementById(type === 'GATE_IN' ? 'btn-in' : 'btn-out'));
+        input.value = ''; paintEmployee(''); suggestFor('');
         say('ok', (type === 'GATE_IN' ? 'IN' : 'OUT') + ' for ' + (emp ? emp.full_name + ' (' + code + ')' : code) + ' — saved on this phone. Sending…');
         refreshLists(); paintStatus();
         return syncNow();
@@ -644,6 +760,7 @@
       /* The one message that must never be soft. If storage refused the
          write, the scan does not exist anywhere. */
       say('bad', 'COULD NOT SAVE. Nothing was recorded. ' + (e && e.message ? e.message : '') + ' Try again, and tell a supervisor if it repeats.');
+      feedback('bad');
     });
   }
 
@@ -652,10 +769,11 @@
     var value = (input.value || '').trim();
     if (!value) { say('bad', 'Enter or scan an employee code first.'); return; }
     findForHod(value).then(function (v) {
-      if (v.outside) { say('bad', v.outside.full_name + ' is not in your department (' + hodDeptNames() + '). Only their own HOD confirms them. Nothing was saved.'); return; }
-      if (!v.hit && v.known > 0) { say('bad', '"' + value + '" is not in your department\'s list on this phone. Nothing was saved.'); return; }
+      if (v.outside) { say('bad', v.outside.full_name + ' is not in your department (' + hodDeptNames() + '). Only their own HOD confirms them. Nothing was saved.'); feedback('bad'); return; }
+      if (!v.hit && v.known > 0) { say('bad', '"' + value + '" is not in your department\'s list on this phone. Nothing was saved.'); feedback('bad'); return; }
       var code = v.hit ? v.hit.code : value;
       return saveEvent('HOD_CONFIRM', code, v.hit ? v.hit.full_name : '', {}).then(function () {
+        feedback('ok', document.getElementById('btn-hodcode'));
         input.value = ''; paintEmployee('', 'hodname', 'hodphoto');
         say('ok', 'Arrival of ' + (v.hit ? v.hit.full_name : code) + ' — saved on this phone. Sending…');
         refreshLists(); paintStatus();
@@ -666,7 +784,7 @@
 
   function hodConfirmSelected() {
     var ids = Object.keys(S.selected).filter(function (k) { return S.selected[k]; });
-    if (!ids.length) { say('bad', 'Tick at least one entry.'); return; }
+    if (!ids.length) { say('bad', 'Tick at least one entry.'); feedback('warn'); return; }
     AttDB.getAll('cycles').then(function (cycles) {
       var chosen = cycles.filter(function (c) { return S.selected[c.entry_cycle_id]; });
       var chain = Promise.resolve(), done = 0;
@@ -680,6 +798,7 @@
       });
       return chain.then(function () {
         S.selected = {};
+        feedback('ok', document.getElementById('btn-confirm'));
         say('ok', done + ' confirmation(s) saved on this phone. Sending…');
         refreshLists(); paintStatus();
         return syncNow();
@@ -786,18 +905,45 @@
     pin.focus();
   }
 
+  /* What this login can do on a phone, as "modes". Somebody with one job
+     sees one set of tabs and nothing else. Somebody with both — usually an
+     administrator — gets a switch at the top, and the phone remembers which
+     side it was last used for, so a phone kept at the gate stays a gate phone. */
+  function modes() {
+    var m = [];
+    if (S.can.gate) m.push('gate');
+    if (S.can.hod || S.can.ot) m.push('hod');
+    return m;
+  }
+  function tabsFor(mode) {
+    var t = [];
+    if (mode === 'gate') { if (S.can.gate) t.push(['gate', 'IN / OUT']); }
+    else { if (S.can.hod) t.push(['hod', 'Arrivals']); if (S.can.ot) t.push(['ot', 'Overtime']); }
+    t.push(['queue', 'Queue']);
+    return t;
+  }
+
   function renderMain() {
-    var tabs = [];
-    if (S.can.gate) tabs.push(['gate', 'Gate']);
-    if (S.can.hod) tabs.push(['hod', 'HOD']);
-    if (S.can.ot) tabs.push(['ot', 'Overtime']);
-    tabs.push(['queue', 'Queue']);
+    var ms = modes();
+    if (ms.indexOf(S.mode) < 0) S.mode = ms[0] || 'gate';
+    var tabs = tabsFor(S.mode);
     if (!tabs.some(function (t) { return t[0] === S.tab; })) S.tab = tabs[0][0];
+    var roleLabel = S.mode === 'gate' ? 'Security gate' : ('HOD · ' + hodDeptNames());
 
     root.appendChild(el('header', {}, [
-      el('div', {}, [el('strong', { text: 'ZAS Attendance' }), el('span', { class: 'muted', id: 'who', text: ' · ' + (S.user ? S.user.name : '') })]),
+      el('div', { class: 'brand' }, [
+        el('div', { class: 'logo', 'aria-hidden': 'true', text: 'Z' }),
+        el('div', {}, [el('strong', { text: 'ZAS Attendance' }), el('div', { class: 'muted role', id: 'who', text: (S.user ? S.user.name : '') + ' · ' + roleLabel })])
+      ]),
       el('div', { id: 'status', class: 'status' })
     ]));
+    if (ms.length > 1) {
+      root.appendChild(el('div', { class: 'modes', role: 'tablist', 'aria-label': 'Use this phone as' }, ms.map(function (m) {
+        return el('button', { class: 'mode' + (S.mode === m ? ' on' : ''), id: 'mode-' + m, type: 'button', role: 'tab', 'aria-selected': S.mode === m ? 'true' : 'false',
+          on: { click: function () { if (S.mode === m) return; S.mode = m; AttDB.setMeta('mode', m); S.tab = tabsFor(m)[0][0]; S.message = null; feedback('tap'); render(); } } },
+          [el('span', { class: 'mode-ico', 'aria-hidden': 'true', text: m === 'gate' ? '⛨' : '✓' }), m === 'gate' ? 'Security gate' : 'HOD']);
+      })));
+    }
     root.appendChild(el('div', { id: 'banners' }));
     root.appendChild(el('nav', {}, tabs.map(function (t) {
       return el('button', { class: 'tab' + (S.tab === t[0] ? ' on' : ''), id: 'tab-' + t[0], text: t[1], on: { click: function () { S.tab = t[0]; S.message = null; render(); } } });
@@ -807,35 +953,41 @@
     root.appendChild(el('div', { id: 'message' }));
 
     if (S.tab === 'gate') {
-      var code = el('input', { id: 'code', placeholder: 'Employee code', autocomplete: 'off', autocapitalize: 'characters', on: { input: function () { paintEmployee(code.value.trim()); } } });
-      body.appendChild(el('div', { class: 'card' }, [
-        el('div', { class: 'row' }, [code, ('BarcodeDetector' in window) ? el('button', { class: 'btn', id: 'scan', text: 'Scan', on: { click: function () { scanInto('code'); } } }) : null]),
-        el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'empphoto', hidden: '' }), el('p', { id: 'empname', class: 'empname' })]),
+      var ci = codeInput('code', function (v) { paintEmployee(v); suggestFor(v); }, function () { suggestFor((document.getElementById('code').value || '').trim()); });
+      body.appendChild(el('div', { class: 'card scan-card', id: 'scan-card' }, [
+        el('label', { class: 'step', for: 'code' }, [el('b', { text: '1' }), 'Type or scan the employee code']),
+        el('div', { class: 'row' }, [ci.input, ci.toggle, ('BarcodeDetector' in window) ? el('button', { class: 'btn', id: 'scan', type: 'button', text: 'Scan', on: { click: function () { scanInto('code'); } } }) : null]),
+        el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'empphoto', hidden: '' }), el('div', { class: 'whotext' }, [el('p', { id: 'empname', class: 'empname' }), el('p', { id: 'emphint', class: 'hint' })])]),
+        el('div', { class: 'step' }, [el('b', { text: '2' }), 'Check the face, then press']),
         el('div', { class: 'row' }, [
-          el('button', { class: 'btn big in', id: 'btn-in', text: 'IN', on: { click: function () { gateAction('GATE_IN'); } } }),
-          el('button', { class: 'btn big out', id: 'btn-out', text: 'OUT', on: { click: function () { gateAction('GATE_OUT'); } } })
+          el('button', { class: 'btn big in', id: 'btn-in', type: 'button', on: { click: function () { gateAction('GATE_IN'); } } }, [el('span', { class: 'arrow', 'aria-hidden': 'true', text: '↘' }), 'IN']),
+          el('button', { class: 'btn big out', id: 'btn-out', type: 'button', on: { click: function () { gateAction('GATE_OUT'); } } }, [el('span', { class: 'arrow', 'aria-hidden': 'true', text: '↗' }), 'OUT'])
         ])
       ]));
       body.appendChild(el('h2', { text: 'Recent on this phone' }));
       body.appendChild(el('div', { id: 'recent' }));
     }
     if (S.tab === 'hod') {
-      body.appendChild(el('div', { class: 'card' }, [
-        el('div', { class: 'row' }, [
-          el('input', { id: 'hodcode', placeholder: 'Employee code', autocomplete: 'off', on: { input: function (e) { paintEmployee(e.target.value.trim(), 'hodname', 'hodphoto'); } } }),
-          ('BarcodeDetector' in window) ? el('button', { class: 'btn', text: 'Scan', on: { click: function () { scanInto('hodcode'); } } }) : null
-        ]),
-        el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'hodphoto', hidden: '' }), el('p', { id: 'hodname', class: 'empname' })]),
-        el('button', { class: 'btn primary', id: 'btn-hodcode', text: 'Confirm arrival', on: { click: hodByCode } })
-      ]));
-      body.appendChild(el('p', { class: 'muted small', id: 'hod-scope', text: 'You confirm arrivals for: ' + hodDeptNames() + '.' }));
-      body.appendChild(el('h2', { text: 'Entries waiting for your confirmation' }));
+      var hi = codeInput('hodcode', function (v) { paintEmployee(v, 'hodname', 'hodphoto'); }, function () {
+        var b = document.getElementById('btn-hodcode'); if (b) { b.classList.remove('suggest'); void b.offsetWidth; b.classList.add('suggest'); b.focus(); }
+      });
+      body.appendChild(el('p', { class: 'scope', id: 'hod-scope', text: 'You confirm arrivals for: ' + hodDeptNames() + '.' }));
+      body.appendChild(el('h2', { text: 'Waiting for your confirmation' }));
       body.appendChild(el('div', { id: 'pendinglist' }));
-      body.appendChild(el('div', { class: 'row' }, [
-        el('button', { class: 'btn', id: 'btn-all', text: 'Select all', on: { click: function () {
+      body.appendChild(el('div', { class: 'row sticky' }, [
+        el('button', { class: 'btn', id: 'btn-all', type: 'button', text: 'Select all', on: { click: function () {
+          feedback('tap');
           AttDB.getAll('cycles').then(function (c) { c.forEach(function (x) { S.selected[x.entry_cycle_id] = true; }); refreshLists(); });
         } } }),
-        el('button', { class: 'btn primary', id: 'btn-confirm', text: 'Confirm selected', on: { click: hodConfirmSelected } })
+        el('button', { class: 'btn primary', id: 'btn-confirm', type: 'button', text: 'Confirm selected', on: { click: hodConfirmSelected } })
+      ]));
+      body.appendChild(el('h2', { text: 'Or confirm one person by code' }));
+      body.appendChild(el('div', { class: 'card scan-card', id: 'scan-card' }, [
+        el('div', { class: 'row' }, [hi.input, hi.toggle,
+          ('BarcodeDetector' in window) ? el('button', { class: 'btn', type: 'button', text: 'Scan', on: { click: function () { scanInto('hodcode'); } } }) : null
+        ]),
+        el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'hodphoto', hidden: '' }), el('div', { class: 'whotext' }, [el('p', { id: 'hodname', class: 'empname' })])]),
+        el('button', { class: 'btn primary', id: 'btn-hodcode', type: 'button', text: 'Confirm arrival', on: { click: hodByCode } })
       ]));
     }
     if (S.tab === 'ot') renderOvertime(body);
@@ -846,6 +998,13 @@
         el('button', { class: 'btn', id: 'btn-lock', text: 'Lock', on: { click: function () { S.screen = 'locked'; render(); } } }),
         el('button', { class: 'btn', id: 'btn-out2', text: 'Sign out', on: { click: signOut } })
       ]));
+      function sw(id, label, key) {
+        var c = el('input', { type: 'checkbox', id: id, role: 'switch' });
+        c.checked = !!S.fx[key];
+        c.addEventListener('change', function () { S.fx[key] = c.checked; AttDB.setMeta('fx', S.fx); if (c.checked) feedback('ok', c); });
+        return el('label', { class: 'switch' }, [c, el('span', { class: 'track', 'aria-hidden': 'true' }), el('span', { text: label })]);
+      }
+      body.appendChild(el('div', { class: 'card prefs' }, [el('strong', { text: 'On this phone' }), sw('fx-sound', 'Sound', 'sound'), sw('fx-vibe', 'Vibrate', 'vibe')]));
       body.appendChild(el('h2', { text: 'Everything on this phone' }));
       body.appendChild(el('div', { id: 'queuelist' }));
     }
@@ -1005,10 +1164,11 @@
       navigator.serviceWorker.addEventListener('message', function (e) { if (e.data === 'att-sync') syncNow(); });
     }
     AttDB.open().then(function () {
-      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies', 'flag_reasons', 'hod_departments'].map(AttDB.getMeta));
+      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies', 'flag_reasons', 'hod_departments', 'mode', 'fx', 'kbd'].map(AttDB.getMeta));
     }).then(function (m) {
       S.deviceUuid = m[0]; S.deviceId = m[1] || null; S.user = m[2] || null; S.can = m[3] || S.can;
       S.pin = m[4] || null; S.lastSync = m[5] || null; if (m[6]) S.policies = m[6]; if (m[7]) S.flagReasons = m[7]; if (m[8] !== undefined) S.hodDepts = m[8];
+      if (m[9]) S.mode = m[9]; if (m[10]) S.fx = m[10]; if (m[11]) S.kbd = m[11];
       var jobs = [];
       if (!S.deviceUuid) { S.deviceUuid = uuid(); jobs.push(AttDB.setMeta('device_uuid', S.deviceUuid)); }
       // Ask the browser not to evict this app's storage. It may say no.

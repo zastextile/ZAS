@@ -129,6 +129,13 @@ async function gate(page, code, btn) {
 
     check('after sign-in and PIN the Gate tab is shown', await page.isVisible('#btn-in'));
     check('a gatekeeper is NOT shown the HOD tab', !(await page.isVisible('#tab-hod')));
+    check('a login with one job gets no switch', !(await page.isVisible('#mode-gate')) && !(await page.isVisible('#mode-hod')));
+    check('the header says "Security gate"', /Security gate/.test(await text(page, '#who')));
+    const kb = await page.evaluate(() => { const c = document.getElementById('code'); return [c.getAttribute('inputmode'), c.getAttribute('enterkeyhint'), c.getAttribute('pattern')].join('|'); });
+    check('THE CODE BOX ASKS THE PHONE FOR ITS NUMBER PAD, with a "Next" key', kb === 'numeric|next|[0-9]*', kb);
+    await page.click('#code-kbd');
+    check('"ABC" switches the box to letters for a code that has them', (await page.getAttribute('#code', 'inputmode')) === 'text' && (await page.textContent('#code-kbd')) === '123');
+    await page.click('#code-kbd');
     const honest = await text(page, '#honest');
     check('AT12: the app says unsent scans are lost with the phone', /unsent scans are lost/i.test(honest), honest);
     const whole = (await text(page, 'body')).toLowerCase();
@@ -138,9 +145,21 @@ async function gate(page, code, btn) {
     await page.fill('#code', 'E001');
     await page.waitForFunction(() => document.getElementById('empname').textContent.includes('Imran'), null, { timeout: 10000 });
     check('typing a code shows the name from the phone\'s own list', true);
+    await page.waitForSelector('#btn-in.suggest');
+    check('with nothing on this phone for E001 yet, IN gets the ring', !(await page.evaluate(() => document.getElementById('btn-out').classList.contains('suggest'))));
 
+    await page.evaluate(() => { window.__vib = []; navigator.vibrate = (p) => { window.__vib.push(p); return true; }; });
     await page.click('#btn-in');
+    await page.waitForSelector('.burst', { state: 'attached', timeout: 3000 }).catch(() => {});
     await page.waitForSelector('#msg');
+    check('A SAVED SCAN BUZZES THE PHONE and bursts on the button', (await page.evaluate(() => window.__vib.length)) >= 1);
+    await page.fill('#code', 'E001');
+    await page.waitForSelector('#btn-out.suggest', { timeout: 10000 });
+    check('typing E001 again: after an IN on this phone, OUT gets the ring, with the time of the IN', /Last on this phone: IN at/.test(await text(page, '#emphint')));
+    await page.press('#code', 'Enter');
+    check('the "Next" key closes the keypad and records nothing', (await page.evaluate(() => document.activeElement && document.activeElement.id)) !== 'code'
+      && (await page.evaluate(() => AttDB.allOutbox().then(r => r.length))) === 1);
+    await page.fill('#code', '');
     check('the first message says saved ON THIS PHONE', /saved on this phone/i.test(await text(page, '#msg')), await text(page, '#msg'));
     await page.waitForFunction(() => [...document.querySelectorAll('#recent .item')].some(i => /Recorded by the server/.test(i.textContent)), null, { timeout: 20000 });
     check('once the receipt arrives the row says Recorded by the server', true);
@@ -235,15 +254,20 @@ async function gate(page, code, btn) {
     await signIn(bp, 'both@zas.test');
     await bp.waitForFunction(() => AttDB.getAll('employees').then(r => r.length), null, { timeout: 20000 });
     for (let i = 0; i < 50 && (await bp.evaluate(() => AttDB.getAll('employees').then(r => r.length))) < 4; i++) await bp.waitForTimeout(200);
+    check('a login with BOTH jobs gets a switch: Security gate / HOD', (await bp.isVisible('#mode-gate')) && (await bp.isVisible('#mode-hod')));
+    check('  and in gate mode sees only the gate tabs — no HOD, no Overtime', (await bp.isVisible('#tab-gate')) && !(await bp.isVisible('#tab-hod')) && !(await bp.isVisible('#tab-ot')));
     await bp.click('#tab-gate');
     await bp.fill('#code', 'P001');
     await bp.waitForFunction(() => /Packing Person/.test(document.getElementById('empname').textContent), null, { timeout: 10000 });
     check('with two jobs, the GATE tab still knows the Packing employee — the gate serves everyone', true);
-    await bp.click('#tab-hod');
+    await bp.click('#mode-hod');
     await bp.waitForSelector('#hod-scope');
+    check('switched to HOD: the HOD tab shows and the gate buttons are gone', (await bp.isVisible('#tab-hod')) && !(await bp.isVisible('#btn-in')));
+    check('  and the header says which job the phone is doing', /HOD · Stitching/.test(await text(bp, '#who')), await text(bp, '#who'));
     check('the HOD tab says whose arrivals this person confirms: Stitching', /for: Stitching\./.test(await text(bp, '#hod-scope')), await text(bp, '#hod-scope'));
     await bp.waitForTimeout(1500);
     check('THE HOD LIST HOLDS NO PACKING ENTRY, even for a login that also works the gate', !/Packing Person/.test(await text(bp, '#pendinglist')), await text(bp, '#pendinglist'));
+    await bp.evaluate(() => { window.__vib = []; navigator.vibrate = (p) => { window.__vib.push(p); return true; }; });
     await bp.fill('#hodcode', 'P001');
     await bp.waitForFunction(() => /not in your department/.test(document.getElementById('hodname').textContent), null, { timeout: 10000 });
     check('TYPING A PACKING CODE ON THE HOD TAB SAYS "not in your department"', true);
@@ -251,6 +275,7 @@ async function gate(page, code, btn) {
     const before = await bp.getAttribute('#waiting', 'data-count');
     await bp.click('#btn-hodcode');
     await bp.waitForFunction(() => /Only their own HOD confirms them\. Nothing was saved/.test((document.getElementById('msg') || {}).textContent || ''), null, { timeout: 10000 });
+    check('  the refusal buzzes the long double buzz', (await bp.evaluate(() => JSON.stringify(window.__vib))) === '[[120,70,120]]', await bp.evaluate(() => JSON.stringify(window.__vib)));
     check('  and pressing Confirm saves nothing', (await bp.getAttribute('#waiting', 'data-count')) === before
       && (await bp.evaluate(() => AttDB.allOutbox().then(r => r.filter(x => x.event_type === 'HOD_CONFIRM').length))) === 0);
     await bctx.close();
