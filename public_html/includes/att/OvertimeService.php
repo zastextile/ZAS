@@ -444,7 +444,7 @@ final class OvertimeService
     /**
      * @param list<string>|mixed $evidence
      */
-    public static function verify(int $requestId, int $lineId, mixed $actual, string $note, mixed $evidence, int $actorId, bool $allowed): array
+    public static function verify(int $requestId, int $lineId, mixed $actual, string $note, mixed $evidence, int $actorId, bool $allowed = true): array
     {
         if (!$allowed) {
             return self::no('FORBIDDEN', 'Entering actual overtime minutes is not switched on for gatekeepers.');
