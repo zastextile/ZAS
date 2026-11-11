@@ -360,6 +360,24 @@ function signIn(string $email): string
 }
 $perm = fn(int $uid, string $mod) => Db::value('SELECT actions FROM zu_perm WHERE user_id = ? AND module = ?', [$uid, $mod]);
 
+echo "9b. Installing attendance took nothing away from User Access\n";
+/* The first attendance commit added its ten rows to zu_modules() and, in the
+   same edit, lost the last existing one — 'Users & Setup'. A permission whose
+   row is missing from that list cannot be ticked, and is silently deleted the
+   next time that user's grid is saved. Every row the ERP had before must
+   still be there, with the same letters. */
+$src = (string) file_get_contents($B . 'includes/access.php');
+$mods = [];
+if (preg_match_all("/\['g' => '([^']+)',\s*'k' => '([^']+)',\s*'n' => '([^']+)',\s*'a' => '([^']+)'\]/", $src, $mm, PREG_SET_ORDER)) {
+    foreach ($mm as $x) { $mods[$x[2]] = [$x[1], $x[3], $x[4]]; }
+}
+$erp = ['ship','proforma','packing','shiplog','shippay','shipcost','shipdoc','imp','imppay','impcost','impdoc','impefs','costing','fcost',
+        'pmaster','prod','prodrate','prodrep','gate','store','consume','opening','contract','jobwork','invmast','stockrep','admin'];
+$missing = array_values(array_diff($erp, array_keys($mods)));
+ok($missing === [], 'all 27 permission rows the ERP had before are still listed' . ($missing ? ' — missing: ' . implode(', ', $missing) : ''));
+ok(($mods['admin'] ?? null) === ['Administration', 'Users & Setup', 'vcud'], 'THE "Users & Setup" ROW IS THERE, with view / create / update / delete');
+ok(count(array_filter(array_keys($mods), fn($k) => str_starts_with($k, 'att'))) === 10 && count($mods) === 37, 'plus the ten attendance rows: 37 in all');
+
 echo "10. Over HTTP: who may do what\n";
 ok(call('GET', '/admin/overview')['status'] === 401, 'signed out: 401');
 $pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?,?,?)")->execute([$clerk, 'attadm', 'v']);
@@ -393,11 +411,13 @@ ok(call('GET', '/admin/settings')['status'] === 200, 'the clerk may read the set
 echo "11. Over HTTP: a job and its permission move together\n";
 $as = signIn('admin@zas.test');
 $pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?,?,?)")->execute([$gk, 'gate', 'vc']);
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?,?,?)")->execute([$gk, 'admin', 'v']);
 $g = call('POST', '/admin/jobs/grant', ['user_id' => $gk, 'role' => 'gatekeeper'], $as);
 ok($g['status'] === 200 && ($g['body']['permission_synced'] ?? false) === true, 'the admin makes Gul a gatekeeper' . ($g['status'] === 200 ? '' : ' — ' . $g['raw']));
 ok(Roles::has($gk, Roles::GATEKEEPER), '  the job is recorded');
 ok(str_contains((string) $perm($gk, 'attgate'), 'v') && str_contains((string) $perm($gk, 'attgate'), 'c'), '  AND "Attendance — Gate IN/OUT" IS TICKED FOR THEM IN USER ACCESS');
 ok($perm($gk, 'gate') === 'vc', '  the inventory permission they already had is untouched');
+ok($perm($gk, 'admin') === 'v', '  AND SO IS THEIR "Users & Setup" PERMISSION — the row the attendance module once dropped from the list');
 $us = call('GET', '/admin/users')['body'];
 $gul = array_values(array_filter($us['users'] ?? [], fn($u) => $u['id'] === $gk))[0] ?? ['jobs' => []];
 ok(($gul['jobs'][0]['working'] ?? false) === true, 'the People list now shows the job as working');

@@ -95,6 +95,7 @@ function zu_modules(): array {
         ['g' => 'Attendance',        'k' => 'atthr',    'n' => 'Attendance — Reconciliation',            'a' => 'vud'],
         ['g' => 'Attendance',        'k' => 'attrep',   'n' => 'Attendance — Reports',                   'a' => 'v'],
         ['g' => 'Attendance',        'k' => 'attadm',   'n' => 'Attendance — Employees, Shifts, Devices','a' => 'vcud'],
+        ['g' => 'Administration',    'k' => 'admin',    'n' => 'Users & Setup',         'a' => 'vcud'],
     ];
 }
 
