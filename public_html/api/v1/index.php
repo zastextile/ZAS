@@ -34,6 +34,7 @@ require_once dirname(__DIR__, 2) . '/includes/storage.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Storage.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Images.php';
 require_once dirname(__DIR__, 2) . '/includes/att/PhotoService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/OvertimeService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
@@ -45,6 +46,7 @@ use Att\HodService;
 use Att\HrService;
 use Att\Http;
 use Att\Images;
+use Att\OvertimeService as OT;
 use Att\PhotoService;
 use Att\Policy;
 use Att\Roles;
@@ -395,6 +397,128 @@ try {
             Http::json($out, ($out['ok'] ?? false) ? 200 : 422);
             break;
 
+        // -------------------------------------------------------- overtime
+        /* Blueprint §4. Who does what, by permission letter:
+             attot   c   HOD: request, for their own departments only
+             attotap u   HR / Accounts / Admin: approve, reject, amend
+             attotvf u   HR / Accounts / Admin (a gatekeeper only if Settings
+                         allows it): enter next-day actual minutes
+             attpay  u   Accounts / Admin: rate, finalize, correct
+           The department a HOD may ask for comes from att_user_roles on the
+           server; a department_id sent by a phone is checked against it. */
+
+        case $method === 'POST' && $route === '/overtime/requests':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attot', 'c');
+            admin_answer(OT::createRequest(Http::body(), ot_request_scope((int) $u['id']), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/overtime/requests':
+            $u = Http::requireUser();
+            Http::json(OT::requests([
+                'status' => Http::input('status', 'all'), 'from' => Http::input('from', ''), 'to' => Http::input('to', ''),
+                'department_id' => Http::input('department_id', 0),
+            ], ot_view_scope((int) $u['id'])));
+            break;
+
+        case $method === 'GET' && preg_match('#^/overtime/requests/(\d+)$#', $route, $m) === 1:
+            $u = Http::requireUser();
+            admin_answer(OT::request((int) $m[1], ot_view_scope((int) $u['id'])));
+            break;
+
+        case $method === 'POST' && preg_match('#^/overtime/requests/(\d+)/decisions$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u  = Http::requirePermission('attotap', 'u');
+            $ed = Http::input('employee_decisions', []);
+            admin_answer(OT::decide((int) $m[1], (string) Http::input('request_uuid', ''), is_array($ed) ? array_values($ed) : [], (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/overtime/verification':
+            Http::requirePermission('attotvf', 'v');
+            Http::json(OT::verification((string) Http::input('date', ''), null));
+            break;
+
+        case $method === 'POST' && preg_match('#^/overtime/requests/(\d+)/verify-hours$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u = Http::requirePermission('attotvf', 'u');
+            admin_answer(OT::verify((int) $m[1], (int) Http::input('request_employee_id', 0), Http::input('actual_minutes', null),
+                (string) Http::input('verification_note', ''), Http::input('evidence_refs', null), (int) $u['id'], ot_may_verify((int) $u['id'])));
+            break;
+
+        case $method === 'POST' && preg_match('#^/overtime/requests/(\d+)/dispute$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u = Http::requirePermission('attotvf', 'u');
+            admin_answer(OT::dispute((int) $m[1], (int) Http::input('request_employee_id', 0), (string) Http::input('verification_note', ''),
+                (int) $u['id'], ot_may_verify((int) $u['id'])));
+            break;
+
+        case $method === 'POST' && preg_match('#^/overtime/requests/(\d+)/amend$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $change = (string) Http::input('change', '');
+            if ($change === 'actual_minutes') {
+                $u = Http::requirePermission('attotvf', 'u');
+                if (!ot_is_officer((int) $u['id'])) {
+                    Http::fail('FORBIDDEN', 'Only HR, Accounts or Admin can amend verified minutes.', 403);
+                }
+            } else {
+                $u = Http::requirePermission('attotap', 'u');
+            }
+            admin_answer(OT::amend((int) $m[1], (int) Http::input('request_employee_id', 0), $change, Http::input('value', null),
+                (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && preg_match('#^/overtime/lines/(\d+)/history$#', $route, $m) === 1:
+            $u = Http::requireUser();
+            if (!Roles::can('attotap', 'v') && !Roles::can('attotvf', 'v') && !Roles::can('attpay', 'v')) {
+                Http::fail('FORBIDDEN', 'You do not have permission for this action.', 403);
+            }
+            Http::json(OT::history((int) $m[1]));
+            break;
+
+        case $method === 'GET' && $route === '/overtime/payroll':
+            Http::requirePermission('attpay', 'v');
+            admin_answer(OT::payroll((string) Http::input('from', ''), (string) Http::input('to', '')));
+            break;
+
+        case $method === 'POST' && $route === '/overtime/payroll/rate':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attpay', 'u');
+            admin_answer(OT::setRate((int) Http::input('request_employee_id', 0), (string) Http::input('rate_type', ''),
+                (string) Http::input('manual_rate', ''), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/overtime/payroll/finalize':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attpay', 'u');
+            admin_answer(OT::finalize((string) Http::input('run_uuid', ''), (string) Http::input('from', ''), (string) Http::input('to', ''),
+                (string) Http::input('expected_total', ''), (string) Http::input('note', ''), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/overtime/payroll/correct':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attpay', 'u');
+            admin_answer(OT::correct((int) Http::input('request_employee_id', 0), Http::input('minutes', null), (string) Http::input('rate_type', ''),
+                (string) Http::input('manual_rate', ''), (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/overtime/payroll/runs':
+            Http::requirePermission('attpay', 'v');
+            Http::json(OT::runs());
+            break;
+
+        case $method === 'GET' && preg_match('#^/overtime/payroll/runs/(\d+)/export$#', $route, $m) === 1:
+            $u = Http::requirePermission('attpay', 'v');
+            $r = OT::runLines((int) $m[1]);
+            if (!$r['ok']) {
+                Http::fail('NOT_FOUND', $r['error'], 404);
+            }
+            Audit::record('ot.payroll_export', 'att_ot_payroll_run', (int) $m[1], null, ['lines' => count($r['lines'])], (int) $u['id']);
+            send_csv('overtime-' . $r['run']['period_from'] . '-to-' . $r['run']['period_to'] . '.csv',
+                ['Work date', 'Department', 'Code', 'Name', 'Approved min', 'Actual min', 'Rate type', 'Rate', 'Payable min', 'Amount (finalized)', 'Amount now (after corrections)'],
+                array_map(fn($l) => [$l['work_date'], $l['department_name'], $l['employee_code'], $l['full_name'], $l['approved_minutes'], $l['actual_minutes'],
+                                     $l['rate_type'], $l['manual_rate'], $l['payable_minutes'], $l['payable_amount'], $l['effective_amount'] ?? $l['payable_amount']], $r['lines']));
+            break;
+
         // ----------------------------------------------------- capture & flag
         /* A flag is the ONLY thing a still can be attached to, and nothing in
            /attendance/in, /attendance/out or /sync/events can make one.
@@ -661,8 +785,6 @@ try {
         // ------------------------------------------- declared, not yet built
 
         case in_array($route, [
-            '/overtime/requests', '/overtime/verification',
-            '/overtime/payroll/rate', '/overtime/payroll/finalize',
             '/reports/attendance', '/reports/movements', '/reports/overtime',
         ], true):
             Http::fail('NOT_IMPLEMENTED', 'This endpoint arrives in a later milestone.', 501, [
@@ -750,13 +872,86 @@ function flag_answer(array $out): never
     Http::json($out, $status);
 }
 
+/** Departments this user may request overtime for. null = any (an admin). */
+function ot_request_scope(int $userId): ?array
+{
+    return Roles::isAdmin($userId) ? null : (Roles::departmentScope($userId, Roles::HOD) ?? []);
+}
+
+/** Which requests this user may see: officers see all, a HOD their own departments. */
+function ot_view_scope(int $userId): ?array
+{
+    if (Roles::can('attotap', 'v') || Roles::can('attotvf', 'v') || Roles::can('attpay', 'v')) {
+        return null;
+    }
+    if (Roles::can('attot', 'v')) {
+        return ot_request_scope($userId);
+    }
+    Http::fail('FORBIDDEN', 'You do not have permission for this action.', 403);
+}
+
+/** HR, Accounts or Admin — the officers blueprint §4 names. */
+function ot_is_officer(int $userId): bool
+{
+    return Roles::isAdmin($userId) || Roles::has($userId, Roles::HR) || Roles::has($userId, Roles::ACCOUNTS);
+}
+
+/**
+ * Blueprint §4: next-day minutes are entered by HR/Admin/Accounts "or
+ * explicitly permitted gatekeeper". Explicitly = the verify permission in
+ * User Access AND the setting switched on; a gatekeeper with only one of the
+ * two cannot.
+ */
+function ot_may_verify(int $userId): bool
+{
+    if (ot_is_officer($userId) || !Roles::has($userId, Roles::GATEKEEPER)) {
+        return true;
+    }
+    return Policy::bool('gatekeeper_may_verify_ot', false);
+}
+
+/**
+ * A spreadsheet download. A cell that begins with = + - @ is read by Excel as
+ * a formula, which is how a name typed as "=HYPERLINK(...)" becomes a link
+ * on the accountant's machine; such text cells get a leading apostrophe.
+ * Numbers are left alone.
+ *
+ * @param list<string> $head
+ * @param list<list<mixed>> $rows
+ */
+function send_csv(string $name, array $head, array $rows): never
+{
+    $safe = static function ($v): string {
+        if ($v === null) {
+            return '';
+        }
+        $v = (string) $v;
+        if (!is_numeric($v) && preg_match('/^[=+\-@\t\r]/', $v)) {
+            $v = "'" . $v;
+        }
+        return '"' . str_replace('"', '""', $v) . '"';
+    };
+    $out = "\xEF\xBB\xBF" . implode(',', array_map($safe, $head)) . "\r\n";
+    foreach ($rows as $r) {
+        $out .= implode(',', array_map($safe, $r)) . "\r\n";
+    }
+    http_response_code(200);
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . preg_replace('/[^A-Za-z0-9._-]/', '', $name) . '"');
+    header('Cache-Control: private, no-store');
+    header('X-Content-Type-Options: nosniff');
+    echo $out;
+    exit;
+}
+
 /** A service answer, with a status code a caller can branch on. */
 function admin_answer(array $out): never
 {
     if ($out['ok'] ?? false) {
         Http::json($out, 200);
     }
-    Http::json($out, ($out['reason_code'] ?? '') === 'NOT_FOUND' ? 404 : 422);
+    $code = (string) ($out['reason_code'] ?? '');
+    Http::json($out, match ($code) { 'NOT_FOUND' => 404, 'FORBIDDEN' => 403, 'PAYROLL_LOCKED', 'ALREADY_DECIDED', 'TOTAL_CHANGED' => 409, default => 422 });
 }
 
 /**

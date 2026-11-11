@@ -33,6 +33,11 @@ final class Policy
         'device_self_register'      => '1',
         'stale_open_cycle_hours'    => '16',
         'sync_batch_max'            => '200',
+        'ot_request_days_ahead'     => '14',
+        'ot_request_days_back'      => '1',
+        'ot_max_minutes'            => '720',
+        'ot_decision_window_days'   => '0',
+        'ot_verify_from_next_day'   => '1',
     ];
 
     /** @var array<string,string>|null */

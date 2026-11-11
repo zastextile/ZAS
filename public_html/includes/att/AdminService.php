@@ -48,9 +48,15 @@ final class AdminService
         Roles::GATEKEEPER => ['label' => 'Gatekeeper', 'module' => 'attgate', 'actions' => 'vc',  'needs' => 'vc', 'needs_department' => false,
                               // A gatekeeper can also Capture & Flag an entry.
                               'also' => ['attflag' => 'vc']],
-        Roles::HOD        => ['label' => 'HOD',        'module' => 'atthod',  'actions' => 'vc',  'needs' => 'vc', 'needs_department' => true],
-        Roles::HR         => ['label' => 'HR',         'module' => 'atthr',   'actions' => 'vud', 'needs' => 'vu', 'needs_department' => false],
-        Roles::ACCOUNTS   => ['label' => 'Accounts',   'module' => 'attpay',  'actions' => 'vu',  'needs' => 'v',  'needs_department' => false],
+        Roles::HOD        => ['label' => 'HOD',        'module' => 'atthod',  'actions' => 'vc',  'needs' => 'vc', 'needs_department' => true,
+                              // A HOD asks for overtime for their department.
+                              'also' => ['attot' => 'vc']],
+        Roles::HR         => ['label' => 'HR',         'module' => 'atthr',   'actions' => 'vud', 'needs' => 'vu', 'needs_department' => false,
+                              // Blueprint §4: one of HR / Admin / Accounts approves, and verifies the next day.
+                              'also' => ['attotap' => 'vu', 'attotvf' => 'vu']],
+        Roles::ACCOUNTS   => ['label' => 'Accounts',   'module' => 'attpay',  'actions' => 'vu',  'needs' => 'v',  'needs_department' => false,
+                              // Accounts approves and verifies too, and enters the rate and finalizes payroll.
+                              'also' => ['attotap' => 'vu', 'attotvf' => 'vu']],
     ];
     /* 'actions' is what granting the job ticks; 'needs' is the least the job
        must hold to count as working on the People tab. */
@@ -75,6 +81,18 @@ final class AdminService
             'help' => 'Phones over this are listed for HR. The system never corrects a time by itself.'],
         'photo_retention_days'      => ['type' => 'int', 'min' => 7, 'max' => 3650, 'label' => 'Keep the photo taken with a flagged entry for (days)',
             'help' => 'After this the picture is deleted from storage. The flag, its reason and its review are kept.'],
+        'ot_request_days_ahead'     => ['type' => 'int', 'min' => 0, 'max' => 60, 'label' => 'Overtime: how many days ahead a HOD may request',
+            'help' => 'A request for a date further ahead than this is refused.'],
+        'ot_request_days_back'      => ['type' => 'int', 'min' => 0, 'max' => 7, 'label' => 'Overtime: how many days back a HOD may still request',
+            'help' => '0 means today or later only. 1 allows yesterday, for overtime that was agreed by word of mouth.'],
+        'ot_max_minutes'            => ['type' => 'int', 'min' => 30, 'max' => 1440, 'label' => 'Overtime: most minutes for one employee in one day',
+            'help' => 'The limit for estimated, approved and actual minutes.'],
+        'ot_decision_window_days'   => ['type' => 'int', 'min' => 0, 'max' => 60, 'label' => 'Overtime: days after the work date that a request can still be approved or rejected',
+            'help' => '0 means no limit. After the limit, only an amendment can change it.'],
+        'ot_verify_from_next_day'   => ['type' => 'bool', 'label' => 'Overtime: actual minutes only from the next day',
+            'help' => 'Blueprint §4 says the actual minutes are entered on the next day, once the evening\'s gate record is complete.'],
+        'gatekeeper_may_verify_ot'  => ['type' => 'bool', 'label' => 'Overtime: a gatekeeper may enter actual minutes',
+            'help' => 'Off: only HR, Accounts and Admin. On: a gatekeeper who is also given "Overtime — Verify Actual Hours" in User Access may too.'],
         'device_self_register'      => ['type' => 'bool', 'label' => 'A gatekeeper or HOD may register their own phone',
             'help' => 'Off: no new phone can be added until this is switched on again. Phones already registered keep working.'],
     ];
