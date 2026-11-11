@@ -8,14 +8,15 @@
  * keeps the other, and neither file was changed to make room.
  *
  * WHAT IS CACHED: the app shell — the five files below. Nothing else.
- * WHAT IS NEVER CACHED: anything under /api/. An attendance answer served
+ * WHAT IS NEVER CACHED: anything under /api/ — which includes every employee
+ * photo, since photos are served by the API and by nothing else. An attendance answer served
  * from a cache would be a lie with a timestamp on it. API calls are not even
  * intercepted; they go to the network or they fail, and the app queues.
  *
  * RAISE THE VERSION when any shell file changes, or phones keep the old one.
  */
-var VERSION = 'zas-att-shell-v1';
-var SHELL = ['./', 'index.html', 'app.css?v=1', 'db.js?v=1', 'app.js?v=1', 'manifest.webmanifest'];
+var VERSION = 'zas-att-shell-v2';
+var SHELL = ['./', 'index.html', 'app.css?v=2', 'db.js?v=2', 'app.js?v=2', 'manifest.webmanifest'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(VERSION).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));

@@ -30,3 +30,13 @@ nav{display:flex;gap:6px;margin:6px 0}.tab{flex:1;padding:11px 0;border:1px soli
 footer{margin:22px 2px 6px;font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:10px}
 .scan{position:fixed;inset:0;background:#000d;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;z-index:9}
 .scan video{width:100%;max-width:420px;border-radius:12px;background:#000}.scan p{color:#fff;text-align:center;margin:0}
+.who{display:flex;gap:12px;align-items:center;min-height:22px;margin:4px 0 8px}.who .empname{margin:0;flex:1}
+.photo{flex:0 0 112px;width:112px;height:140px;border-radius:10px;overflow:hidden;background:#e9eef5;border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.photo[hidden]{display:none}.photo img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in}
+.photo.none{border-style:dashed;color:var(--muted);font-size:12.5px;text-align:center;padding:6px;font-weight:600}.photo.none img{opacity:0;width:0;height:0}
+.sheet{position:fixed;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px;z-index:8;overflow:auto}
+.sheet .card{width:100%;max-width:440px;margin:0;max-height:96vh;overflow:auto}
+.sheet select,.sheet textarea{width:100%;padding:12px;font:inherit;font-size:16px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);margin:6px 0}
+.bigphoto{width:100%;max-width:360px;aspect-ratio:4/5;object-fit:cover;border-radius:12px;background:#e9eef5}
+.small{font-size:12.5px;margin:6px 0 0}.item .sub.flag{margin-top:4px;font-weight:600}.item .sub.flag.ok{color:var(--ok)}.item .sub.flag.bad{color:var(--bad)}.item .sub.flag.wait{color:var(--wait)}
+.item .btn.small{margin-right:6px}

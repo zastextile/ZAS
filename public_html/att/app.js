@@ -12,6 +12,14 @@
  * shortened to "Saved" or "Recorded": until the server has answered, the scan
  * exists in one place only, and the gatekeeper is entitled to know that.
  *
+ * PICTURES. Two things, kept apart.
+ *   - The employee's photo is SHOWN when a code is typed or scanned. It is
+ *     fetched from the server each time, needs a connection, and is never
+ *     stored on this phone.
+ *   - The camera TAKES a picture in one place only: openFlag(), when the
+ *     gatekeeper marks an entry as needing a second look. Recording IN, OUT
+ *     or a HOD confirmation never opens the camera for a picture.
+ *
  * Nothing secret is in this file. It holds no keys; it identifies itself with
  * a random device id and the signed-in session, and the server re-checks
  * permission on every request whatever this file chooses to show.
@@ -20,12 +28,12 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '1.1.0';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
   var S = {
-    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false }, csrf: '',
+    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false }, csrf: '', flagReasons: {},
     deviceUuid: null, deviceId: null, revoked: false, online: navigator.onLine, needLogin: false,
     syncing: false, lastSync: null, lastError: '', persisted: null, pin: null, pinFails: 0,
     policies: { dup: 60, warnMin: 120 }, waitingForGate: 0, hiddenAt: 0, message: null, selected: {}
@@ -110,6 +118,7 @@
       S.online = true;
       if (r.status === 200) {
         S.user = r.body.user; S.can = r.body.can || { gate: false, hod: false }; S.csrf = r.body.csrf_token || '';
+        if (r.body.flag_reasons) { S.flagReasons = r.body.flag_reasons; AttDB.setMeta('flag_reasons', S.flagReasons); }
         S.needLogin = false;
         if (r.body.policies) {
           S.policies.dup = r.body.policies.duplicate_window_seconds || 60;
@@ -150,9 +159,10 @@
   }
 
   function signOut() {
-    return AttDB.pending().then(function (p) {
-      var warn = p.length
-        ? p.length + ' scan(s) on this phone have NOT been sent yet. They stay on this phone and are sent after the next sign-in. Sign out anyway?'
+    return Promise.all([AttDB.pending(), waitingFlags()]).then(function (v) {
+      var n = v[0].length + v[1].length;
+      var warn = n
+        ? n + ' item(s) on this phone have NOT been sent yet. They stay on this phone and are sent after the next sign-in. Sign out anyway?'
         : 'Sign out?';
       if (!confirm(warn)) return;
       return api('POST', '/auth/logout', {}).catch(function () {}).then(function () {
@@ -208,8 +218,12 @@
     }
 
     return step().then(function (how) {
+      // Flags go after the scans they are about, never before.
+      if (how !== 'done') return how;
+      return syncFlags().then(function () { return how; });
+    }).then(function (how) {
       if (how === 'done' && !hadRetry) { S.lastSync = Date.now(); AttDB.setMeta('last_sync', S.lastSync); }
-      return AttDB.prune(3);
+      return AttDB.prune(3).then(function () { return AttDB.pruneFlags(3); });
     }).catch(function () {
       S.online = false;                                // could not reach the server: everything stays queued
       // Where the browser has Background Sync, ask it to nudge us when the
@@ -222,6 +236,211 @@
       S.syncing = false;
       if (S.screen === 'main') { refreshLists(); paintStatus(); }
     });
+  }
+
+  // ----------------------------------------------------- flags and stills
+  /* Flags that still have something to send: the flag itself, or its still. */
+  function waitingFlags() {
+    return AttDB.getAll('flags').then(function (all) {
+      return all.filter(function (f) { return f.state === 'pending' || (f.state === 'acked' && f.photo_state === 'pending'); });
+    });
+  }
+
+  /* Send a still. Multipart, so no Content-Type is set by hand; the server
+     decides what the file is by reading it. */
+  function upload(route, blob, retried) {
+    var form = new FormData();
+    form.append('photo', blob, 'still');
+    return fetch(API + encodeURIComponent(route), {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: { 'Accept': 'application/json', 'X-CSRF-Token': S.csrf || '' }, body: form
+    }).then(function (res) {
+      return res.text().then(function (t) {
+        var j = {};
+        try { j = JSON.parse(t); } catch (e) { j = { ok: false, error: 'The server sent something this app could not read.' }; }
+        if (res.status === 419 && !retried) {
+          return api('GET', '/auth/me').then(function (me) {
+            if (me.status === 200 && me.body.csrf_token) { S.csrf = me.body.csrf_token; return upload(route, blob, true); }
+            return { status: res.status, body: j };
+          });
+        }
+        return { status: res.status, body: j };
+      });
+    });
+  }
+
+  /* "Keep it and try again" — the server is busy, down, or has not seen the
+     scan yet. Anything else below 500 is a decision. */
+  function keepForLater(status) { return status === 409 || status === 429 || status >= 500; }
+
+  function syncFlags() {
+    return Promise.all([AttDB.getAll('flags'), AttDB.allOutbox()]).then(function (v) {
+      var events = {};
+      v[1].forEach(function (o) { events[o.event_uuid] = o; });
+      var chain = Promise.resolve(true);
+      v[0].forEach(function (f) { chain = chain.then(function (go) { return go ? sendFlag(f, events[f.gate_event_uuid]) : false; }); });
+      return chain;
+    });
+  }
+
+  /* Resolves true to carry on with the next flag, false to stop this run. */
+  function sendFlag(f, scan) {
+    var first = Promise.resolve(true);
+    if (f.state === 'pending') {
+      if (scan && scan.state === 'pending') return Promise.resolve(true);   // its scan has not gone up yet
+      first = api('POST', '/flags', {
+        flag_uuid: f.flag_uuid, gate_event_uuid: f.gate_event_uuid, reason_code: f.reason_code, note: f.note || '',
+        occurred_at: f.occurred_at, timezone: f.timezone, device_id: S.deviceUuid
+      }).then(function (res) {
+        if (res.status === 401) { S.needLogin = true; return false; }
+        if (res.status === 200 && res.body.ok) { f.state = 'acked'; f.answered_at = Date.now(); f.error = ''; }
+        else if (keepForLater(res.status) && res.body.reason_code !== 'PHOTO_EXISTS') { f.attempts = (f.attempts || 0) + 1; f.error = res.body.error || ''; }
+        else { f.state = 'rejected'; f.answered_at = Date.now(); f.error = res.body.error || ('The server answered ' + res.status + '.'); }
+        return AttDB.put('flags', f).then(function () { return true; });
+      });
+    }
+    return first.then(function (go) {
+      if (!go || f.state !== 'acked' || f.photo_state !== 'pending' || !f.photo) return go;
+      return upload('/flags/' + f.flag_uuid + '/photo', f.photo).then(function (res) {
+        if (res.status === 401) { S.needLogin = true; return false; }
+        if (res.status === 200 && res.body.ok) {
+          // Sent: the still leaves this phone. Only the fact of it stays.
+          f.photo = null; f.photo_state = 'sent'; f.photo_error = '';
+        } else if (keepForLater(res.status) && res.body.reason_code !== 'PHOTO_EXISTS') {
+          f.photo_error = res.body.error || '';
+        } else {
+          f.photo = null; f.photo_state = 'rejected'; f.photo_error = res.body.error || ('The server answered ' + res.status + '.');
+        }
+        return AttDB.put('flags', f).then(function () { return true; });
+      });
+    });
+  }
+
+  /* Make the still small before it is kept or sent: at most 1600 on the long
+     side, WebP where this browser can write it and JPEG where it cannot. The
+     server re-makes it again whatever arrives. */
+  function shrink(file) {
+    function draw(source, w, h) {
+      var scale = Math.min(1, 1600 / Math.max(w, h));
+      var c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * scale)); c.height = Math.max(1, Math.round(h * scale));
+      c.getContext('2d').drawImage(source, 0, 0, c.width, c.height);
+      return new Promise(function (resolve, reject) {
+        c.toBlob(function (webp) {
+          if (webp && webp.type === 'image/webp') return resolve(webp);
+          c.toBlob(function (jpeg) { jpeg ? resolve(jpeg) : reject(new Error('This phone could not prepare the photo.')); }, 'image/jpeg', 0.82);
+        }, 'image/webp', 0.8);
+      });
+    }
+    if (window.createImageBitmap) {
+      return createImageBitmap(file, { imageOrientation: 'from-image' }).then(function (bmp) { return draw(bmp, bmp.width, bmp.height); })
+        .catch(function () { return viaImage(); });
+    }
+    return viaImage();
+    function viaImage() {
+      return new Promise(function (resolve, reject) {
+        var url = URL.createObjectURL(file), img = new Image();
+        img.onload = function () { draw(img, img.naturalWidth, img.naturalHeight).then(resolve, reject).then(function () { URL.revokeObjectURL(url); }); };
+        img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('That file is not a picture.')); };
+        img.src = url;
+      });
+    }
+  }
+
+  /* CAPTURE & FLAG — the one place this app takes a picture. */
+  function openFlag(row) {
+    var reasons = Object.keys(S.flagReasons || {});
+    if (!reasons.length) { say('bad', 'Flagging needs one connection first, to load the list of reasons.'); return; }
+    var still = null, busy = false;
+    var who = (row.employee_name ? row.employee_name + ' · ' : '') + row.employee_code;
+    var reason = el('select', { id: 'flag-reason' }, [el('option', { value: '', text: 'Why is this being flagged?' })].concat(
+      reasons.map(function (k) { return el('option', { value: k, text: S.flagReasons[k] }); })));
+    var note = el('textarea', { id: 'flag-note', rows: '2', placeholder: 'Note (needed for "Other")', maxlength: '500' });
+    var preview = el('div', { class: 'photo none', id: 'flag-preview' }, [el('span', { text: 'No photo taken' })]);
+    var err = el('p', { class: 'msg bad', id: 'flag-err' });
+    var file = el('input', { type: 'file', id: 'flag-file', accept: 'image/*', capture: 'environment', hidden: '' });
+    file.addEventListener('change', function () {
+      var f = file.files && file.files[0];
+      if (!f) return;
+      err.textContent = ''; busy = true;
+      shrink(f).then(function (blob) {
+        still = blob; busy = false;
+        preview.textContent = ''; preview.className = 'photo';
+        var img = el('img', { alt: 'The photo just taken' });
+        img.src = URL.createObjectURL(blob);
+        img.onload = function () { URL.revokeObjectURL(img.src); };
+        preview.appendChild(img);
+      }).catch(function (e) { busy = false; still = null; err.textContent = (e && e.message) || 'The photo could not be used.'; });
+    });
+    function close() { sheet.remove(); }
+    var sheet = el('div', { class: 'sheet', id: 'flag-sheet', role: 'dialog', 'aria-label': 'Flag this entry' }, [el('div', { class: 'card' }, [
+      el('h1', { text: 'Flag this entry' }),
+      el('p', { class: 'muted', text: (row.event_type === 'GATE_IN' ? 'IN' : 'OUT') + ' · ' + who + ' · ' + timeOf(Date.parse(row.occurred_at)) }),
+      reason, note,
+      el('div', { class: 'row' }, [preview, el('div', {}, [
+        el('button', { class: 'btn', id: 'flag-cam', type: 'button', text: 'Take photo', on: { click: function () { file.click(); } } }),
+        el('p', { class: 'muted small', text: 'Optional. Kept on this phone only until it has been sent, then removed from it.' })
+      ])]),
+      file, err,
+      el('div', { class: 'row' }, [
+        el('button', { class: 'btn', id: 'flag-cancel', type: 'button', text: 'Cancel', on: { click: close } }),
+        el('button', { class: 'btn primary', id: 'flag-save', type: 'button', text: 'Save flag', on: { click: function () {
+          if (busy) { err.textContent = 'The photo is still being prepared. Try again in a moment.'; return; }
+          if (!reason.value) { err.textContent = 'Choose why this is being flagged.'; return; }
+          if (reason.value === 'OTHER' && !note.value.trim()) { err.textContent = 'Write a short note saying what was wrong.'; return; }
+          var flag = {
+            flag_uuid: uuid(), gate_event_uuid: row.event_uuid, employee_code: row.employee_code, employee_name: row.employee_name || '',
+            event_type: row.event_type, reason_code: reason.value, reason: S.flagReasons[reason.value], note: note.value.trim(),
+            occurred_at: new Date().toISOString(), timezone: tz(), actor_user_id: S.user ? S.user.id : null,
+            state: 'pending', photo: still, photo_state: still ? 'pending' : 'none', created_at: Date.now(), attempts: 0
+          };
+          AttDB.put('flags', flag).then(function () {
+            close();
+            say('ok', 'Flag for ' + who + (still ? ' with photo' : '') + ' — saved on this phone. Sending…');
+            refreshLists(); paintStatus();
+            return syncNow();
+          }).catch(function (e) { err.textContent = 'COULD NOT SAVE the flag. ' + (e && e.message ? e.message : ''); });
+        } } })
+      ])
+    ])]);
+    document.body.appendChild(sheet);
+    reason.focus();
+  }
+
+  // ------------------------------------------------------ employee's photo
+  /* Shown from the server, every time; never kept on the phone. The address
+     is this app's own API — the phone is not told where pictures are stored. */
+  function photoUrl(code) { return API + encodeURIComponent('/employees/' + code + '/photo'); }
+
+  function paintPhoto(boxId, emp) {
+    var box = document.getElementById(boxId);
+    if (!box) return;
+    var key = emp ? emp.code + (navigator.onLine ? '' : ':offline') : '';
+    if (box.getAttribute('data-code') === key) return;          // already showing this one
+    box.setAttribute('data-code', key);
+    box.textContent = ''; box.className = 'photo none'; box.hidden = !emp;
+    if (!emp) return;
+    function note(text, state) { box.textContent = ''; box.className = 'photo none'; box.setAttribute('data-state', state); box.appendChild(el('span', { text: text })); }
+    if (!parseInt(emp.has_photo, 10)) return note('No photo on file', 'none');
+    if (!navigator.onLine) return note('Photo needs a connection', 'offline');
+    var img = el('img', { alt: 'Photo of ' + emp.full_name });
+    img.addEventListener('load', function () { if (box.getAttribute('data-code') === key) { box.className = 'photo'; box.setAttribute('data-state', 'shown'); } });
+    img.addEventListener('error', function () { if (box.getAttribute('data-code') === key) note(navigator.onLine ? 'Photo could not be loaded' : 'Photo needs a connection', 'failed'); });
+    img.addEventListener('click', function () { enlarge(emp); });
+    box.setAttribute('data-state', 'loading');
+    box.appendChild(img);
+    img.src = photoUrl(emp.code);
+  }
+
+  function enlarge(emp) {
+    var over = el('div', { class: 'sheet', id: 'photo-sheet', on: { click: function () { over.remove(); } } }, [
+      el('div', { class: 'card center' }, [
+        el('img', { class: 'bigphoto', alt: 'Photo of ' + emp.full_name, src: photoUrl(emp.code) }),
+        el('p', { text: emp.full_name + ' · ' + emp.code }),
+        el('button', { class: 'btn', type: 'button', text: 'Close' })
+      ])
+    ]);
+    document.body.appendChild(over);
   }
 
   function refreshLookups() {
@@ -328,7 +547,7 @@
       if (!v.hit && v.known > 0) { say('bad', '"' + value + '" is not in your department\'s list on this phone. Nothing was saved.'); return; }
       var code = v.hit ? v.hit.code : value;
       return saveEvent('HOD_CONFIRM', code, v.hit ? v.hit.full_name : '', {}).then(function () {
-        input.value = '';
+        input.value = ''; paintEmployee('', 'hodname', 'hodphoto');
         say('ok', 'Arrival of ' + (v.hit ? v.hit.full_name : code) + ' — saved on this phone. Sending…');
         refreshLists(); paintStatus();
         return syncNow();
@@ -481,7 +700,7 @@
       var code = el('input', { id: 'code', placeholder: 'Employee code', autocomplete: 'off', autocapitalize: 'characters', on: { input: function () { paintEmployee(code.value.trim()); } } });
       body.appendChild(el('div', { class: 'card' }, [
         el('div', { class: 'row' }, [code, ('BarcodeDetector' in window) ? el('button', { class: 'btn', id: 'scan', text: 'Scan', on: { click: function () { scanInto('code'); } } }) : null]),
-        el('p', { id: 'empname', class: 'empname' }),
+        el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'empphoto', hidden: '' }), el('p', { id: 'empname', class: 'empname' })]),
         el('div', { class: 'row' }, [
           el('button', { class: 'btn big in', id: 'btn-in', text: 'IN', on: { click: function () { gateAction('GATE_IN'); } } }),
           el('button', { class: 'btn big out', id: 'btn-out', text: 'OUT', on: { click: function () { gateAction('GATE_OUT'); } } })
@@ -493,9 +712,10 @@
     if (S.tab === 'hod') {
       body.appendChild(el('div', { class: 'card' }, [
         el('div', { class: 'row' }, [
-          el('input', { id: 'hodcode', placeholder: 'Employee code', autocomplete: 'off' }),
+          el('input', { id: 'hodcode', placeholder: 'Employee code', autocomplete: 'off', on: { input: function (e) { paintEmployee(e.target.value.trim(), 'hodname', 'hodphoto'); } } }),
           ('BarcodeDetector' in window) ? el('button', { class: 'btn', text: 'Scan', on: { click: function () { scanInto('hodcode'); } } }) : null
         ]),
+        el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'hodphoto', hidden: '' }), el('p', { id: 'hodname', class: 'empname' })]),
         el('button', { class: 'btn primary', id: 'btn-hodcode', text: 'Confirm arrival', on: { click: hodByCode } })
       ]));
       body.appendChild(el('h2', { text: 'Entries waiting for your confirmation' }));
@@ -521,17 +741,21 @@
     root.appendChild(el('footer', { id: 'honest', text:
       'Scans are saved on this phone first and sent to the server when there is a connection. ' +
       'If this phone is lost, reset, or its browser data is cleared before they are sent, unsent scans are lost. ' +
-      'Keep the waiting count at zero.' }));
+      'Keep the waiting count at zero. Employee photos are shown from the server and are not kept on this phone.' }));
     paintStatus(); paintMessage(); refreshLists();
   }
 
-  function paintEmployee(value) {
-    var p = document.getElementById('empname');
+  function paintEmployee(value, nameId, photoId) {
+    nameId = nameId || 'empname'; photoId = photoId || 'empphoto';
+    var p = document.getElementById(nameId);
     if (!p) return;
-    if (!value) { p.textContent = ''; return; }
+    if (!value) { p.textContent = ''; paintPhoto(photoId, null); return; }
     findEmployee(value).then(function (v) {
       p.textContent = v.hit ? v.hit.full_name : (v.known ? 'Not in this phone\'s list' : '');
       p.className = 'empname' + (v.hit ? '' : ' bad');
+      // The face goes with the name: shown as soon as the code is recognised,
+      // before IN, OUT or Confirm is pressed.
+      paintPhoto(photoId, v.hit || null);
     });
   }
 
@@ -555,25 +779,42 @@
     return ['ok', 'Recorded by the server'];
   }
 
-  function rowFor(r, withClear) {
+  /* What has happened to a flag, in the same honest words as a scan. */
+  function flagText(f) {
+    var what = 'Flagged: ' + (f.reason || f.reason_code);
+    if (f.state === 'rejected') return ['bad', what + ' — refused by the server: ' + (f.error || '')];
+    if (f.state === 'pending') return ['wait', what + ' — on this phone, not sent yet'];
+    if (f.photo_state === 'pending') return ['wait', what + ' — recorded by the server. Its photo is on this phone, not sent yet'];
+    if (f.photo_state === 'rejected') return ['bad', what + ' — recorded by the server. Its photo was refused: ' + (f.photo_error || '')];
+    return ['ok', what + ' — recorded by the server' + (f.photo_state === 'sent' ? ', with its photo' : '')];
+  }
+
+  function rowFor(r, withClear, flag) {
     var st = stateText(r);
     var label = r.event_type === 'GATE_IN' ? 'IN' : (r.event_type === 'GATE_OUT' ? 'OUT' : 'HOD');
+    var ft = flag ? flagText(flag) : null;
+    var gate = r.event_type === 'GATE_IN' || r.event_type === 'GATE_OUT';
     return el('div', { class: 'item ' + st[0], 'data-state': r.state, 'data-uuid': r.event_uuid }, [
       el('div', {}, [el('b', { text: label + '  ' }), el('span', { text: (r.employee_name ? r.employee_name + ' · ' : '') + r.employee_code }), el('span', { class: 'muted', text: '  ' + timeOf(Date.parse(r.occurred_at)) })]),
       el('div', { class: 'sub', text: st[1] }),
-      (withClear && r.state === 'rejected') ? el('button', { class: 'btn small', text: 'Clear', on: { click: function () { AttDB.dismiss(r.event_uuid).then(refreshLists); } } }) : null
+      ft ? el('div', { class: 'sub flag ' + ft[0], 'data-flag': flag.state, 'data-photo': flag.photo_state, text: ft[1] }) : null,
+      (withClear && r.state === 'rejected') ? el('button', { class: 'btn small', text: 'Clear', on: { click: function () { AttDB.dismiss(r.event_uuid).then(refreshLists); } } }) : null,
+      (flag && flag.state === 'rejected') ? el('button', { class: 'btn small', text: 'Clear flag', on: { click: function () { AttDB.removeOne('flags', flag.flag_uuid).then(refreshLists); } } }) : null,
+      (gate && S.can.flag && !flag) ? el('button', { class: 'btn small flagbtn', text: 'Flag…', on: { click: function () { openFlag(r); } } }) : null
     ]);
   }
 
   function refreshLists() {
-    return Promise.all([AttDB.allOutbox(), AttDB.getAll('cycles')]).then(function (v) {
-      var rows = v[0].filter(function (r) { return !r.dismissed; }), cycles = v[1];
+    return Promise.all([AttDB.allOutbox(), AttDB.getAll('cycles'), AttDB.getAll('flags'), AttDB.getAll('employees')]).then(function (v) {
+      var rows = v[0].filter(function (r) { return !r.dismissed; }), cycles = v[1], flags = {}, emps = {};
+      v[2].forEach(function (f) { flags[f.gate_event_uuid] = f; });
+      v[3].forEach(function (e) { emps[e.code] = e; });
       var recent = document.getElementById('recent');
       if (recent) {
         recent.textContent = '';
         var g = rows.filter(function (r) { return r.event_type !== 'HOD_CONFIRM'; }).slice(-15).reverse();
         if (!g.length) recent.appendChild(el('p', { class: 'muted', text: 'Nothing yet.' }));
-        g.forEach(function (r) { recent.appendChild(rowFor(r, true)); });
+        g.forEach(function (r) { recent.appendChild(rowFor(r, true, flags[r.event_uuid])); });
       }
       var pl = document.getElementById('pendinglist');
       if (pl) {
@@ -584,21 +825,29 @@
           box.checked = !!S.selected[c.entry_cycle_id];
           box.addEventListener('change', function () { S.selected[c.entry_cycle_id] = box.checked; });
           pl.appendChild(el('label', { class: 'item pick' }, [box, el('span', { text: ' ' + c.full_name + ' · ' + c.employee_code }),
-            el('span', { class: 'muted', text: '  entry ' + c.entry_sequence + ', in at ' + timeOf(Date.parse(String(c.opened_at).replace(' ', 'T') + 'Z')) })]));
+            el('span', { class: 'muted', text: '  entry ' + c.entry_sequence + ', in at ' + timeOf(Date.parse(String(c.opened_at).replace(' ', 'T') + 'Z')) }),
+            // The HOD can look at the face before ticking the box.
+            parseInt(c.has_photo, 10) ? el('button', { class: 'btn small seephoto', type: 'button', text: 'Photo', on: { click: function (e) {
+              e.preventDefault();
+              if (!navigator.onLine) { say('bad', 'The photo needs a connection.'); return; }
+              enlarge({ code: c.employee_code, full_name: c.full_name });
+            } } }) : null]));
         });
         if (S.waitingForGate) pl.appendChild(el('p', { class: 'muted', text: S.waitingForGate + ' of your confirmations are waiting for the gate\'s record to reach the server.' }));
       }
       var ql = document.getElementById('queuelist');
       if (ql) {
         ql.textContent = '';
-        rows.slice(-60).reverse().forEach(function (r) { ql.appendChild(rowFor(r, true)); });
+        rows.slice(-60).reverse().forEach(function (r) { ql.appendChild(rowFor(r, true, flags[r.event_uuid])); });
         if (!rows.length) ql.appendChild(el('p', { class: 'muted', text: 'Nothing yet.' }));
       }
       var qi = document.getElementById('queueinfo');
       if (qi) {
         var pend = rows.filter(function (r) { return r.state === 'pending'; });
+        var fwait = v[2].filter(function (f) { return f.state === 'pending' || (f.state === 'acked' && f.photo_state === 'pending'); });
         qi.textContent = '';
-        qi.appendChild(el('p', { id: 'qcount', text: pend.length + ' waiting to send' + (pend.length ? ' — oldest ' + ago(pend[0].created_at) : '') }));
+        qi.appendChild(el('p', { id: 'qcount', text: (pend.length + fwait.length) + ' waiting to send' + (pend.length ? ' — oldest ' + ago(pend[0].created_at) : '') }));
+        if (fwait.length) qi.appendChild(el('p', { class: 'muted', id: 'qflags', text: 'Of those, ' + fwait.length + ' flag(s) or flag photo(s).' }));
         qi.appendChild(el('p', { class: 'muted', text: 'Last complete send: ' + (S.lastSync ? ago(S.lastSync) : 'never on this phone') }));
         qi.appendChild(el('p', { class: 'muted', text: 'Storage protected from automatic clearing: ' + (S.persisted === true ? 'yes' : (S.persisted === false ? 'NO — the browser may clear it if the phone runs low on space' : 'unknown')) }));
         qi.appendChild(el('p', { class: 'muted', text: 'App ' + APP_VERSION + ' · device ' + (S.deviceId || 'not registered yet') }));
@@ -607,13 +856,14 @@
   }
 
   function paintStatus() {
-    return AttDB.pending().then(function (pend) {
+    return Promise.all([AttDB.pending(), waitingFlags()]).then(function (both) {
+      var pend = both[0], waiting = pend.length + both[1].length;
       var st = document.getElementById('status');
       if (st) {
         st.textContent = '';
         st.appendChild(el('span', { class: 'pill ' + (S.online ? 'ok' : 'bad'), id: 'net', text: S.online ? 'Online' : 'Offline' }));
-        st.appendChild(el('span', { class: 'pill ' + (pend.length ? 'wait' : 'ok'), id: 'waiting', 'data-count': String(pend.length),
-          text: S.syncing ? 'Sending…' : (pend.length + ' waiting') }));
+        st.appendChild(el('span', { class: 'pill ' + (waiting ? 'wait' : 'ok'), id: 'waiting', 'data-count': String(waiting),
+          text: S.syncing ? 'Sending…' : (waiting + ' waiting') }));
       }
       var b = document.getElementById('banners');
       if (!b) return;
@@ -643,10 +893,10 @@
       navigator.serviceWorker.addEventListener('message', function (e) { if (e.data === 'att-sync') syncNow(); });
     }
     AttDB.open().then(function () {
-      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies'].map(AttDB.getMeta));
+      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies', 'flag_reasons'].map(AttDB.getMeta));
     }).then(function (m) {
       S.deviceUuid = m[0]; S.deviceId = m[1] || null; S.user = m[2] || null; S.can = m[3] || S.can;
-      S.pin = m[4] || null; S.lastSync = m[5] || null; if (m[6]) S.policies = m[6];
+      S.pin = m[4] || null; S.lastSync = m[5] || null; if (m[6]) S.policies = m[6]; if (m[7]) S.flagReasons = m[7];
       var jobs = [];
       if (!S.deviceUuid) { S.deviceUuid = uuid(); jobs.push(AttDB.setMeta('device_uuid', S.deviceUuid)); }
       // Ask the browser not to evict this app's storage. It may say no.
@@ -684,7 +934,7 @@
   }
 
   // For the automated tests, and for a supervisor with the console open.
-  window.AttApp = { state: S, syncNow: syncNow, refreshLookups: refreshLookups, version: APP_VERSION };
+  window.AttApp = { state: S, syncNow: syncNow, refreshLookups: refreshLookups, refreshLists: refreshLists, version: APP_VERSION };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

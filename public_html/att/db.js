@@ -19,7 +19,7 @@
   'use strict';
 
   var DB_NAME = 'zas-attendance';
-  var DB_VERSION = 1;
+  var DB_VERSION = 2;      // 2: adds 'flags' (Capture & Flag, with its still)
   var dbPromise = null;
 
   function open() {
@@ -36,6 +36,10 @@
         }
         if (!db.objectStoreNames.contains('employees')) db.createObjectStore('employees', { keyPath: 'code' });
         if (!db.objectStoreNames.contains('cycles')) db.createObjectStore('cycles', { keyPath: 'entry_cycle_id' });
+        /* A flag and, until it has been sent, its still. The ONLY place a
+           picture is ever kept on this phone: employee photos are shown from
+           the server and never stored here. */
+        if (!db.objectStoreNames.contains('flags')) db.createObjectStore('flags', { keyPath: 'flag_uuid' });
       };
       req.onsuccess = function () { resolve(req.result); };
       req.onerror = function () { dbPromise = null; reject(req.error); };
@@ -190,6 +194,23 @@
       t.objectStore(storeName).get(key).onsuccess = function (e) { row = e.target.result; };
     }).then(function () { return row; });
   }
+  function put(storeName, row) {
+    return tx([storeName], 'readwrite', function (t) { t.objectStore(storeName).put(row); }).then(function () { return row; });
+  }
+  /* Drop flags that are completely finished and older than `days`. A flag
+     still waiting to send, or with a still waiting to send, is never touched. */
+  function pruneFlags(days) {
+    var cutoff = Date.now() - days * 86400000;
+    return tx(['flags'], 'readwrite', function (t) {
+      t.objectStore('flags').openCursor().onsuccess = function (e) {
+        var c = e.target.result;
+        if (!c) return;
+        var v = c.value;
+        if (v.state !== 'pending' && v.photo_state !== 'pending' && (v.answered_at || v.created_at) < cutoff) c.delete();
+        c.continue();
+      };
+    });
+  }
   function removeOne(storeName, key) {
     return tx([storeName], 'readwrite', function (t) { t.objectStore(storeName).delete(key); });
   }
@@ -198,6 +219,6 @@
     open: open, getMeta: getMeta, setMeta: setMeta,
     enqueue: enqueue, allOutbox: allOutbox, pending: pending,
     applyReceipts: applyReceipts, prune: prune, dismiss: dismiss,
-    replaceAll: replaceAll, getAll: getAll, getOne: getOne, removeOne: removeOne
+    replaceAll: replaceAll, getAll: getAll, getOne: getOne, removeOne: removeOne, put: put, pruneFlags: pruneFlags
   };
 })(self);
