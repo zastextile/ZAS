@@ -213,7 +213,11 @@ final class Employees
     public static function syncSnapshot(?array $departmentIds = null): array
     {
         $params = [];
-        $sql = 'SELECT e.id, e.code, e.full_name, e.department_id, e.qr_payload
+        /* has_photo is a yes/no for the phone to know whether asking for the
+           picture is worth a request. The picture's whereabouts never leave
+           the server. */
+        $sql = 'SELECT e.id, e.code, e.full_name, e.department_id, e.qr_payload,
+                       (e.reference_photo_key IS NOT NULL) AS has_photo
                   FROM att_employees e
                  WHERE e.active = 1';
         if ($departmentIds !== null) {

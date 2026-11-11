@@ -80,6 +80,12 @@ return [
     'timezone'     => 'Asia/Karachi',
     'session_name' => 'ZAS_ATT_TEST_SESSION',
     'app_name'     => 'ZAS (test)',
+    /* Photo storage for the tests: tests/fake_r2.php, started by the suites
+       that need it. Not a real bucket and not a real key. */
+    'r2_endpoint'   => 'http://127.0.0.1:8750',
+    'r2_bucket'     => 'zas-test',
+    'r2_access_key' => 'TESTKEY',
+    'r2_secret'     => 'test-secret-not-a-real-one',
 ];
 PHP
   WROTE_CFG=1
@@ -90,7 +96,7 @@ cd "$ROOT/tests"
 RC=0
 SUITES=("${@:-}")
 if [ -z "${SUITES[0]:-}" ]; then
-  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_m3_test.php zatt_m4_test.php zatt_api_test.php zatt_pwa_test.php zatt_admin_test.php)
+  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_m3_test.php zatt_m4_test.php zatt_api_test.php zatt_pwa_test.php zatt_admin_test.php zatt_m5_test.php)
 fi
 
 for t in "${SUITES[@]}"; do

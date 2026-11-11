@@ -248,6 +248,7 @@ final class HodService
         }
         $sql = 'SELECT c.id AS entry_cycle_id, c.entry_sequence, c.opened_at, c.closed_at,
                        e.id AS employee_id, e.code AS employee_code, e.full_name,
+                       (e.reference_photo_key IS NOT NULL) AS has_photo,
                        e.department_id, d.name AS department_name, si.work_date,
                        ev.event_uuid AS gate_event_uuid
                   FROM att_entry_cycles c

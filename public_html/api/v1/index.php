@@ -29,6 +29,11 @@ require_once dirname(__DIR__, 2) . '/includes/att/Reconciler.php';
 require_once dirname(__DIR__, 2) . '/includes/att/SyncService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/HrService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/AdminService.php';
+/* The ERP's own R2 client. Functions only; loading it changes nothing. */
+require_once dirname(__DIR__, 2) . '/includes/storage.php';
+require_once dirname(__DIR__, 2) . '/includes/att/Storage.php';
+require_once dirname(__DIR__, 2) . '/includes/att/Images.php';
+require_once dirname(__DIR__, 2) . '/includes/att/PhotoService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
@@ -39,6 +44,8 @@ use Att\Employees;
 use Att\HodService;
 use Att\HrService;
 use Att\Http;
+use Att\Images;
+use Att\PhotoService;
 use Att\Policy;
 use Att\Roles;
 use Att\Shifts;
@@ -105,7 +112,9 @@ try {
                 'can' => [
                     'gate' => Roles::can('attgate', 'c'),
                     'hod'  => Roles::can('atthod', 'c'),
+                    'flag' => Roles::can('attflag', 'c'),
                 ],
+                'flag_reasons' => PhotoService::REASONS,
                 'csrf_token' => function_exists('csrf_token') ? csrf_token() : ($_SESSION['_csrf'] ?? ''),
                 'server_time' => Time::iso(Time::nowUtc()),
                 'server_epoch_ms' => (int) round(microtime(true) * 1000),
@@ -133,6 +142,25 @@ try {
             Http::json(array_merge(['ok' => true], Employees::syncSnapshot($scope)));
             break;
 
+        /* The employee's reference photo, for the gatekeeper or HOD who has
+           just typed or scanned the code. The picture itself comes back —
+           not a link to it — after the same department check as the lookup
+           below, and each view is one line in the audit log. */
+        case $method === 'GET' && preg_match('#^/employees/([^/]+)/photo$#', $route, $m) === 1:
+            $u = Http::requireUser();
+            if (!Roles::can('attgate', 'v') && !Roles::can('atthod', 'v')) {
+                Http::fail('FORBIDDEN', 'You do not have permission for this action.', 403);
+            }
+            // Enough for a busy gate; not enough to walk off with the album.
+            Http::rateLimit('photo:user:' . (int) $u['id'], 900, 600);
+            $emp   = Employees::findByCodeOrQr(urldecode($m[1]));
+            $scope = employee_scope_for((int) $u['id']);
+            if ($emp === null || ($scope !== null && !in_array((int) $emp['department_id'], $scope, true))) {
+                Http::fail('EMPLOYEE_NOT_FOUND', 'No employee with that code.', 404);
+            }
+            send_image(PhotoService::reference((int) $emp['id'], (int) $u['id'], 'code entered on a phone'));
+            break;
+
         case $method === 'GET' && preg_match('#^/employees/([^/]+)$#', $route, $m) === 1:
             $u    = Http::requirePermission('attgate', 'v');
             $emp  = Employees::findByCodeOrQr(urldecode($m[1]));
@@ -145,6 +173,9 @@ try {
                 // able to probe for people outside their department.
                 Http::fail('EMPLOYEE_NOT_FOUND', 'No employee with that code.', 404);
             }
+            // Where the picture is kept is the server's business only.
+            $emp['has_photo'] = $emp['reference_photo_key'] !== null;
+            unset($emp['reference_photo_key'], $emp['reference_photo_etag'], $emp['reference_photo_at']);
             Http::json(['ok' => true, 'employee' => $emp]);
             break;
 
@@ -367,6 +398,145 @@ try {
             Http::json($out, ($out['ok'] ?? false) ? 200 : 422);
             break;
 
+        // ----------------------------------------------------- capture & flag
+        /* A flag is the ONLY thing a still can be attached to, and nothing in
+           /attendance/in, /attendance/out or /sync/events can make one.
+           Phones name the scan a flag is about by that scan's own id
+           (POST /flags), because offline they cannot know the entry number.
+           The three /attendance/{cycle_id}/... routes are the ones
+           API_CONTRACT.md lists, for a caller that does know it. */
+
+        case $method === 'POST' && $route === '/flags':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attflag', 'c');
+            flag_answer(PhotoService::createFlag(Http::body(), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/flags/([0-9a-fA-F-]{36})/photo$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u = Http::requirePermission('attflag', 'c');
+            Http::rateLimit('flagphoto:user:' . (int) $u['id'], 120, 600);
+            flag_answer(PhotoService::storeFlagPhoto($m[1], uploaded_image(max(65536, Policy::int('photo_max_bytes', 5242880))), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/attendance/(\d+)/flag$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u  = Http::requirePermission('attflag', 'c');
+            $in = Http::body();
+            $in['entry_cycle_id'] = (int) $m[1];
+            unset($in['gate_event_uuid']);
+            if (trim((string) ($in['flag_uuid'] ?? '')) === '') {
+                $b = random_bytes(16);
+                $b[6] = chr((ord($b[6]) & 0x0f) | 0x40);
+                $b[8] = chr((ord($b[8]) & 0x3f) | 0x80);
+                $in['flag_uuid'] = vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($b), 4));
+            }
+            flag_answer(PhotoService::createFlag($in, (int) $u['id']));
+            break;
+
+        /* Where to send the still. The contract's name says "URL" and the
+           answer is one — on this server. The bytes are checked and re-made
+           here before anything is stored, so no phone is ever handed a way
+           to write into the bucket directly. */
+        case $method === 'POST' && preg_match('#^/attendance/(\d+)/photo-upload-url$#', $route, $m) === 1:
+            Http::requireCsrf();
+            Http::requirePermission('attflag', 'c');
+            $flag = Db::one('SELECT flag_uuid, photo_key, photo_purged_at FROM att_flags WHERE flag_uuid = ? AND entry_cycle_id = ?',
+                [strtolower(trim((string) Http::input('flag_uuid', ''))), (int) $m[1]]);
+            if ($flag === null) {
+                Http::fail('FLAG_NOT_FOUND', 'Flag the entry first; a photo belongs to a flag.', 404);
+            }
+            if ($flag['photo_key'] !== null || $flag['photo_purged_at'] !== null) {
+                Http::fail('PHOTO_EXISTS', 'This flag already has a photo.', 409);
+            }
+            Http::json(['ok' => true, 'upload' => [
+                'method'    => 'POST',
+                'url'       => 'api/v1/index.php?route=' . rawurlencode('/flags/' . $flag['flag_uuid'] . '/photo'),
+                'field'     => 'photo',
+                'max_bytes' => max(65536, Policy::int('photo_max_bytes', 5242880)),
+                'accepts'   => Images::ALLOWED,
+            ]]);
+            break;
+
+        case $method === 'POST' && preg_match('#^/attendance/(\d+)/photo-confirm$#', $route, $m) === 1:
+            Http::requireCsrf();
+            Http::requirePermission('attflag', 'c');
+            $flag = Db::one('SELECT id, photo_key, photo_sha256, photo_bytes, photo_stored_at FROM att_flags WHERE flag_uuid = ? AND entry_cycle_id = ?',
+                [strtolower(trim((string) Http::input('flag_uuid', ''))), (int) $m[1]]);
+            if ($flag === null) {
+                Http::fail('FLAG_NOT_FOUND', 'That flag does not exist.', 404);
+            }
+            if ($flag['photo_key'] === null) {
+                Http::fail('PHOTO_NOT_STORED', 'No photo has been stored for this flag.', 409);
+            }
+            $sha = strtolower(trim((string) Http::input('sha256', '')));
+            if ($sha !== '' && !hash_equals((string) $flag['photo_sha256'], $sha)) {
+                Http::fail('PHOTO_MISMATCH', 'The stored photo is not the one this phone sent.', 409);
+            }
+            Http::json(['ok' => true, 'flag_id' => (int) $flag['id'], 'stored' => true,
+                        'bytes' => (int) $flag['photo_bytes'], 'stored_at' => Http::iso((string) $flag['photo_stored_at'])]);
+            break;
+
+        case $method === 'GET' && $route === '/hr/flags':
+            Http::requirePermission('atthr', 'v');
+            try { PhotoService::purgeIfDue(); } catch (Throwable $e) { error_log('[att-api] retention purge: ' . $e->getMessage()); }
+            Http::json(PhotoService::flags());
+            break;
+
+        case $method === 'GET' && preg_match('#^/hr/flags/(\d+)/photo$#', $route, $m) === 1:
+            $u = Http::requirePermission('atthr', 'v');
+            Http::rateLimit('photo:user:' . (int) $u['id'], 900, 600);
+            send_image(PhotoService::flagPhoto((int) $m[1], Http::input('which', 'flag') === 'reference' ? 'reference' : 'flag', (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/hr/flags/(\d+)/review$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u = Http::requirePermission('atthr', 'u');
+            admin_answer(PhotoService::reviewFlag((int) $m[1], (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        // ------------------------------------------------- reference photos
+
+        case $method === 'GET' && $route === '/admin/photos/status':
+            Http::requirePermission('attadm', 'v');
+            Http::json(PhotoService::status());
+            break;
+
+        case $method === 'POST' && $route === '/admin/photos/test':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attadm', 'u');
+            admin_answer(PhotoService::selfTest((int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/admin/photos/import':
+            Http::requireCsrf();
+            $u    = Http::requirePermission('attadm', 'u');
+            $skip = Http::input('skip', []);
+            @set_time_limit(120);
+            admin_answer(PhotoService::importBatch((int) Http::input('limit', 10),
+                is_array($skip) ? array_values(array_filter($skip, 'is_string')) : [],
+                (bool) Http::input('notice_given', false), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/admin/employees/photo':
+            $u = Http::requirePermission('attadm', 'v');
+            Http::rateLimit('photo:user:' . (int) $u['id'], 900, 600);
+            send_image(PhotoService::reference((int) Http::input('id', 0), (int) $u['id'], 'setup screen'));
+            break;
+
+        case $method === 'POST' && $route === '/admin/employees/photo':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attadm', 'u');
+            admin_answer(PhotoService::setReference((int) ($_POST['id'] ?? 0), uploaded_image(Images::MAX_SOURCE),
+                in_array((string) ($_POST['notice_given'] ?? ''), ['1', 'true', 'on'], true), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/admin/employees/photo/remove':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attadm', 'u');
+            admin_answer(PhotoService::removeReference((int) Http::input('id', 0), (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
         // ------------------------------------------------------------ setup
         /* The Attendance Setup screen. Not in API_CONTRACT.md — the contract
            lists what the phones and reports need and leaves the masters to
@@ -514,6 +684,74 @@ try {
 }
 
 /* -------------------------------------------------------------- handlers */
+
+/**
+ * The bytes of the one uploaded picture, or a refusal.
+ * What the file IS gets decided later, by reading it (Att\Images) — its name
+ * and the type the browser claimed are not looked at here or anywhere.
+ */
+function uploaded_image(int $maxBytes): string
+{
+    $f   = $_FILES['photo'] ?? null;
+    $err = is_array($f) ? (int) ($f['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+    if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+        Http::fail('IMAGE_TOO_LARGE', 'That picture is too large to upload.', 413);
+    }
+    if ($err !== UPLOAD_ERR_OK || !is_uploaded_file((string) $f['tmp_name'])) {
+        Http::fail('VALIDATION', 'No picture was received.', 422);
+    }
+    if ((int) filesize((string) $f['tmp_name']) > $maxBytes) {
+        Http::fail('IMAGE_TOO_LARGE', 'That picture is larger than ' . round($maxBytes / 1048576, 1) . ' MB.', 413);
+    }
+    $bytes = file_get_contents((string) $f['tmp_name']);
+    if ($bytes === false || $bytes === '') {
+        Http::fail('VALIDATION', 'The picture could not be read.', 422);
+    }
+    return $bytes;
+}
+
+/**
+ * Send a picture to a caller who has already been authorised.
+ * no-store, because a private picture must not be left in a phone's cache
+ * (blueprint §6: "minimal local cache"); nosniff, so a browser shows it as the
+ * image the server says it is and nothing else.
+ */
+function send_image(array $r): never
+{
+    if (!($r['ok'] ?? false)) {
+        $code = (string) ($r['reason_code'] ?? '');
+        Http::fail($code, (string) ($r['error'] ?? ''), in_array($code, ['NO_PHOTO', 'NOT_FOUND'], true) ? 404 : 503);
+    }
+    http_response_code(200);
+    header('Content-Type: ' . $r['mime']);
+    header('Content-Length: ' . strlen($r['bytes']));
+    header('Cache-Control: private, no-store');
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Disposition: inline');
+    echo $r['bytes'];
+    exit;
+}
+
+/**
+ * An answer about a flag or its photo. 409/503 mean "keep it and try again";
+ * 4xx otherwise means the server has decided and the phone should stop.
+ */
+function flag_answer(array $out): never
+{
+    if ($out['ok'] ?? false) {
+        Http::json($out, 200);
+    }
+    $code = (string) ($out['reason_code'] ?? '');
+    $status = match (true) {
+        $code === 'GATE_EVENT_NOT_RECEIVED'                              => 409,
+        (bool) ($out['retry'] ?? false)                                  => 503,
+        in_array($code, ['FLAG_NOT_FOUND', 'CYCLE_NOT_FOUND'], true)     => 404,
+        $code === 'IMAGE_TOO_LARGE'                                      => 413,
+        $code === 'PHOTO_EXISTS'                                         => 409,
+        default                                                          => 422,
+    };
+    Http::json($out, $status);
+}
 
 /** A service answer, with a status code a caller can branch on. */
 function admin_answer(array $out): never

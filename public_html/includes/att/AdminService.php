@@ -45,7 +45,9 @@ final class AdminService
      * and the ERP's own admin accounts already have it.
      */
     public const JOBS = [
-        Roles::GATEKEEPER => ['label' => 'Gatekeeper', 'module' => 'attgate', 'actions' => 'vc',  'needs' => 'vc', 'needs_department' => false],
+        Roles::GATEKEEPER => ['label' => 'Gatekeeper', 'module' => 'attgate', 'actions' => 'vc',  'needs' => 'vc', 'needs_department' => false,
+                              // A gatekeeper can also Capture & Flag an entry.
+                              'also' => ['attflag' => 'vc']],
         Roles::HOD        => ['label' => 'HOD',        'module' => 'atthod',  'actions' => 'vc',  'needs' => 'vc', 'needs_department' => true],
         Roles::HR         => ['label' => 'HR',         'module' => 'atthr',   'actions' => 'vud', 'needs' => 'vu', 'needs_department' => false],
         Roles::ACCOUNTS   => ['label' => 'Accounts',   'module' => 'attpay',  'actions' => 'vu',  'needs' => 'v',  'needs_department' => false],
@@ -71,6 +73,8 @@ final class AdminService
             'help' => 'The phone app shows a warning once its oldest unsent scan is older than this.'],
         'clock_skew_warn_ms'        => ['type' => 'int', 'min' => 30000, 'max' => 3600000, 'unit_ms' => true, 'label' => 'Report a phone whose clock is wrong by more than (seconds)',
             'help' => 'Phones over this are listed for HR. The system never corrects a time by itself.'],
+        'photo_retention_days'      => ['type' => 'int', 'min' => 7, 'max' => 3650, 'label' => 'Keep the photo taken with a flagged entry for (days)',
+            'help' => 'After this the picture is deleted from storage. The flag, its reason and its review are kept.'],
         'device_self_register'      => ['type' => 'bool', 'label' => 'A gatekeeper or HOD may register their own phone',
             'help' => 'Off: no new phone can be added until this is switched on again. Phones already registered keep working.'],
     ];
@@ -114,6 +118,8 @@ final class AdminService
             'shifts'                   => (int) Db::value('SELECT COUNT(*) FROM att_shifts WHERE active = 1'),
             'default_shift'            => ($default !== null && (int) $default['active'] === 1) ? (string) $default['name'] : null,
             'employees'                => (int) Db::value('SELECT COUNT(*) FROM att_employees WHERE active = 1'),
+            'employees_with_photo'     => Db::columnExists('att_employees', 'reference_photo_key')
+                ? (int) Db::value('SELECT COUNT(*) FROM att_employees WHERE active = 1 AND reference_photo_key IS NOT NULL') : 0,
             'gatekeepers_ready'        => $gateReady,
             'departments_without_hod'  => $noHod,
         ];
@@ -204,6 +210,7 @@ final class AdminService
         $rows = Db::all(
             'SELECT e.id, e.code, e.full_name, e.department_id, d.name AS department_name,
                     e.worker_code, e.qr_payload, e.active,
+                    (e.reference_photo_key IS NOT NULL) AS has_photo, (e.notice_ack_at IS NOT NULL) AS notice_given,
                     (c.id IS NOT NULL) AS inside
                FROM att_employees e
                JOIN att_departments d ON d.id = e.department_id
@@ -845,20 +852,25 @@ final class AdminService
         }
         $job = self::JOBS[$role];
         try {
-            $map  = \zu_perm_map($userId, true);
-            $have = (string) ($map[$job['module']] ?? '');
-            if ($grant) {
-                $want = $have;
-                foreach (str_split($job['actions']) as $a) {
-                    if (strpos($want, $a) === false) { $want .= $a; }
-                }
-            } else {
+            $map     = \zu_perm_map($userId, true);
+            $changed = false;
+            foreach ([$job['module'] => $job['actions']] + ($job['also'] ?? []) as $module => $actions) {
+                $have = (string) ($map[$module] ?? '');
                 $want = '';
+                if ($grant) {
+                    $want = $have;
+                    foreach (str_split($actions) as $a) {
+                        if (strpos($want, $a) === false) { $want .= $a; }
+                    }
+                }
+                if ($want !== $have) {
+                    $map[$module] = $want;
+                    $changed = true;
+                }
             }
-            if ($want === $have) {
+            if (!$changed) {
                 return true;
             }
-            $map[$job['module']] = $want;
             $res = \zu_save_perms($userId, $map, $actorId);
             return (bool) ($res['ok'] ?? false);
         } catch (\Throwable $e) {
