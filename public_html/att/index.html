@@ -4,12 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#10243e">
+<!-- Only this server: no script, style, picture or connection from anywhere
+     else can run in the gate app, even if something were injected into it.
+     Pictures may also come from the camera (blob:) for the flag preview. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
 <title>ZAS Attendance</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="../assets/icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="ZAS Attendance">
-<link rel="stylesheet" href="app.css?v=5">
+<link rel="stylesheet" href="app.css?v=6">
 </head>
 <body>
 <!-- A static page on purpose. It has to open with no connection at all, so it
@@ -18,7 +22,7 @@
      else is drawn by app.js from what is stored on the phone. -->
 <div id="app"><p class="center muted">Starting…</p></div>
 <noscript><p class="center">This app needs JavaScript switched on.</p></noscript>
-<script src="db.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="db.js?v=6"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

@@ -41,6 +41,9 @@ final class Http
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
         header('X-Content-Type-Options: nosniff');
+        // An API answer is never a page to be framed or a link to be followed.
+        header('X-Frame-Options: DENY');
+        header('Referrer-Policy: same-origin');
         echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;
     }

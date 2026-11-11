@@ -229,7 +229,8 @@ page_header('Attendance — Setup');
     { id: 'photo',  label: 'Photos',      draw: drawPhotos },
     { id: 'phones', label: 'Phones',      draw: drawPhones },
     { id: 'people', label: 'People',      draw: drawPeople },
-    { id: 'set',    label: 'Settings',    draw: drawSettings }
+    { id: 'set',    label: 'Settings',    draw: drawSettings },
+    { id: 'sys',    label: 'System',      draw: drawSystem }
   ];
   var current = 'start';
   function go(id){
@@ -618,6 +619,59 @@ page_header('Attendance — Setup');
         el('div', { class: 'bar' }, [go]),
         importOut
       ]);
+    });
+  }
+
+  // --------------------------------------------------------------- system
+  /* Is this server ready? The same list as `php att_check.php`, plus one
+     thing only a browser can test: that the database files and the code
+     cannot be downloaded from the web. */
+  function drawSystem(){
+    if (!CAN.admin) return show([el('p', { class: 'muted', text: 'Only an administrator can run the system check.' })]);
+    call('GET', '/admin/system-check').then(function(r){
+      if (!r.ok) return fail(r);
+      var probes = el('div', { id: 'sys-probes' }, [el('p', { class: 'muted', text: 'Checking what can be downloaded from the web…' })]);
+      var mark = { ok: '✓', warn: '!', fail: '✗' };
+      var groups = {};
+      r.checks.forEach(function(c){ (groups[c.group] = groups[c.group] || []).push(c); });
+      var nodes = [
+        el('div', { class: 'facts', id: 'sys-summary' }, [
+          el('div', { class: 'fact' }, [el('b', { class: r.ready ? 'okmsg' : 'err', text: r.ready ? 'Ready' : 'Not ready' }), el('span', { text: r.ready ? 'nothing is blocking' : 'fix the red lines first' })]),
+          el('div', { class: 'fact' }, [el('b', { text: String(r.counts.ok) }), el('span', { text: 'checks passed' })]),
+          el('div', { class: 'fact' }, [el('b', { text: String(r.counts.warn) }), el('span', { text: 'worth a look' })]),
+          el('div', { class: 'fact' }, [el('b', { class: r.counts.fail ? 'err' : '', text: String(r.counts.fail) }), el('span', { text: 'must be fixed' })])
+        ])
+      ];
+      Object.keys(groups).forEach(function(g){
+        nodes.push(el('h2', { style: 'font-size:15px;margin:16px 0 6px', text: g }));
+        nodes.push(el('ul', { class: 'check' }, groups[g].map(function(c){
+          return el('li', { 'data-check': c.id, 'data-state': c.state }, [
+            el('div', { class: 'mark ' + (c.state === 'ok' ? 'done' : (c.state === 'warn' ? 'opt' : '')), text: mark[c.state] }),
+            el('div', { style: 'flex:1;min-width:0;overflow-wrap:anywhere' }, [el('b', { text: c.label }), el('span', { class: 't', text: c.detail }), c.state !== 'ok' && c.fix ? el('span', { class: 't', style: 'display:block;color:#33475f;margin-top:2px', text: '→ ' + c.fix }) : null])
+          ]);
+        })));
+      });
+      nodes.push(el('h2', { style: 'font-size:15px;margin:16px 0 6px', text: 'From the web' }));
+      nodes.push(probes);
+      nodes.push(el('p', { class: 'note', style: 'margin-top:14px;overflow-wrap:anywhere', text: 'Run the same check on the server with: php att_check.php — and prove the attendance backup restores with: php att_backup.php verify <file>' }));
+      show(nodes);
+      Promise.all(r.web_probes.map(function(u){
+        return fetch(u + '?probe=' + Date.now(), { credentials: 'omit', cache: 'no-store' }).then(function(x){ return x.text().then(function(t){ return { url: u, status: x.status, size: t.length }; }); })
+          .catch(function(){ return { url: u, status: 0, size: 0 }; });
+      })).then(function(res){
+        probes.textContent = '';
+        probes.appendChild(el('ul', { class: 'check' }, res.map(function(p){
+          var sql = /\.sql$/.test(p.url), readable = p.status === 200 && p.size > 0;
+          var state = !readable ? 'ok' : (sql ? 'warn' : 'fail');
+          return el('li', { 'data-probe': p.url, 'data-state': state }, [
+            el('div', { class: 'mark ' + (state === 'ok' ? 'done' : (state === 'warn' ? 'opt' : '')), text: mark[state] }),
+            el('div', { style: 'flex:1;min-width:0;overflow-wrap:anywhere' }, [el('b', { text: p.url }), el('span', { class: 't', text: !readable
+              ? 'Cannot be downloaded (answer ' + p.status + '). Good.'
+              : (sql ? 'Can be downloaded. It shows the table layout only — no data, no passwords — but it is better hidden. Ask Cloudways support to block .sql files, or move on: nothing else depends on it.'
+                     : 'The code can be READ from the web. Tell your developer before going live.') })])
+          ]);
+        })));
+      });
     });
   }
 

@@ -873,5 +873,49 @@ their departments and no system monitoring. Every CSV download is audited.
 **Not here:** backup monitoring — Cloudways takes the backups; the panel says
 so. All API_CONTRACT.md routes are now built (no 501s left).
 
-### Next: M8 — integration tests, UAT with real users, backup/restore test,
-security hardening and deployment checklist.
+## 20. M8 — delivered 2026-11-11
+
+**All attendance suites green, incl. `tests/zatt_m8_test.php` (61).** Existing
+ERP suites unchanged.
+
+| Delivered | Where |
+|---|---|
+| Readiness check: server, database, files, security, setup, day-to-day; each failure says how to fix it; recognises a test config | `includes/att/SystemCheck.php`, `att_check.php`, Setup › System, `/admin/system-check` |
+| Attendance backup: consistent snapshot, per-table fingerprints, optional AES-256-GCM (`att_backup_key`), keeps 14 | `includes/att/AttBackup.php`, `att_backup.php create\|list` |
+| Restore test into scratch tables (live untouched); real restore behind a long flag, after a safety backup | `att_backup.php verify\|restore` |
+| Hardening: X-Frame-Options, Referrer-Policy on the API; CSP on the phone app; `sql/att/.htaccess`; CLI tools 404 over the web | `Http.php`, `att/index.html`, `sql/att/.htaccess` |
+| Go-live and UAT documents | `GO_LIVE.md`, `UAT_CHECKLIST.md` |
+
+**What M8 tests prove:**
+- Every route except login/logout checks the user; every POST except login
+  checks CSRF *before* permissions — read from the router source, so a new
+  route without them fails the build.
+- No attendance page or phone script builds HTML from strings; no key or
+  password in any browser file; services never read `$_GET/$_POST` directly.
+- Backup → verify passes; a backup with rows missing, or cut short, fails;
+  encrypted backup needs the right key; restore after damage gives back the
+  exact rows and the one-open-entry key.
+- Blueprint §7: 240 gate scans, 8 at a time over two gates, p95 under 1 s.
+- AT02 across devices: the same person IN at two gates at the same instant,
+  20 times — always exactly one accepted.
+
+**AT traceability**
+
+| Test | Automated in | UAT step |
+|---|---|---|
+| AT01 | `zatt_m2_test.php` | UAT AT01 |
+| AT02 | `zatt_m2_test.php`, `zatt_m8_test.php` (two gates, HTTP) | AT02a, AT02b |
+| AT03 | `zatt_m4_test.php` | AT03 |
+| AT04 | `zatt_m4_test.php` | AT04 |
+| AT05 | `zatt_m3_test.php`, `zatt_m4_test.php` | AT05 |
+| AT06 | `zatt_m1_test.php`, `zatt_m3_test.php`, `zatt_api_test.php` | AT06 |
+| AT07 | `zatt_m5_test.php` | AT07 |
+| AT08 | `zatt_m6_test.php`, `zatt_m7_test.php` | AT08 |
+| AT09 | `zatt_m6_test.php` (two processes) | AT09 |
+| AT10 | `zatt_m6_test.php` | AT10 |
+| AT11 | `zatt_m6_test.php` | AT11 |
+| AT12 | `zatt_pwa_test.php` | AT12 |
+
+**Left for people, not code:** the UAT with real staff and phones
+(`UAT_CHECKLIST.md`), the PHP-FPM cookie settings, choosing an
+`att_backup_key`, and the two cron lines (`GO_LIVE.md` §3–5).

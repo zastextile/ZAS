@@ -36,6 +36,8 @@ require_once dirname(__DIR__, 2) . '/includes/att/Images.php';
 require_once dirname(__DIR__, 2) . '/includes/att/PhotoService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/OvertimeService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/ReportService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/AttBackup.php';
+require_once dirname(__DIR__, 2) . '/includes/att/SystemCheck.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
@@ -855,6 +857,12 @@ try {
                         $x['approved_minutes'], $x['verification_status'], $x['actual_minutes'], $x['rate_type'], $x['manual_rate'], $x['amount'], $x['payroll_status'],
                         $x['requested_by'], $x['decided_by'], $x['verified_by']], $r['rows']));
             }
+            break;
+
+        /* Is the server ready? Admin only: it names settings and versions. */
+        case $method === 'GET' && $route === '/admin/system-check':
+            require_erp_admin();
+            Http::json(Att\SystemCheck::run(true));
             break;
 
         case $method === 'POST' && preg_match('#^/admin/devices/(\d+)/label$#', $route, $m) === 1:
