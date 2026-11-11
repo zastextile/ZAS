@@ -468,6 +468,11 @@ ok(!str_contains($snap['raw'] . $one['raw'], 'attendance/') && !str_contains($sn
 signIn('hod@zas.test');
 ok(call('GET', '/employees/E001/photo')['status'] === 200, 'the HOD of Stitching sees a Stitching employee\'s photo');
 ok(call('GET', '/employees/E002/photo')['status'] === 404, 'THE HOD CANNOT SEE THE PHOTO OF SOMEBODY IN ANOTHER DEPARTMENT — same answer as "no such employee"');
+$hsnap = call('GET', '/employees/sync-snapshot');
+$hcodes = array_column($hsnap['body']['employees'] ?? [], 'code'); sort($hcodes);
+ok($hsnap['status'] === 200 && $hcodes === ['E001', 'E003', 'E004', 'E005'],
+   'A HOD WITH ONLY THE HOD PERMISSION GETS THEIR OWN DEPARTMENT\'S LIST for the phone — and nobody else\'s (' . implode(',', $hcodes) . ')');
+ok(call('GET', '/employees/E002')['status'] === 404 && call('GET', '/employees/E001')['status'] === 200, '  the same for a single lookup');
 $pend = call('GET', '/sync/changes');
 ok($pend['status'] === 200 && !str_contains($pend['raw'], 'attendance/') && str_contains($pend['raw'], 'has_photo'), 'the HOD\'s pending list carries has_photo and no key');
 signIn('nobody@zas.test');
@@ -561,7 +566,297 @@ $sett = call('GET', '/admin/settings')['body'];
 ok(in_array('photo_retention_days', array_column($sett['settings'] ?? [], 'key'), true), 'the retention period is on the Settings tab');
 ok(call('POST', '/admin/settings', ['values' => ['photo_retention_days' => 3]], $as)['status'] === 422, 'and cannot be set below a week');
 
-echo "16. Rolling back\n";
+/* ===================================================================== */
+echo "16. In a browser: the phone, the Setup screen, the HR screen\n";
+/* A shift that covers any time of day, so this part does not depend on when
+   the tests happen to run. */
+$allDay = Shifts::create(['name' => 'All day', 'start_time' => '00:00', 'end_time' => '23:59', 'grace_in_minutes' => 30, 'grace_out_minutes' => 30]);
+Policy::set('default_shift_id', (string) $allDay, null, 'string'); Policy::flush();
+$drop('employee-photos/E005.jpg', picture(1200, 1500));
+$work = __DIR__ . '/.zattm5';
+@mkdir($work, 0777, true);
+file_put_contents($work . '/still.jpg', picture(2400, 3200));
+file_put_contents($work . '/face.png', picture(900, 1300, 'png'));
+file_put_contents($work . '/notes.txt', 'not a picture');
+$shot = getenv('ATT_SHOT_DIR') ?: '';
+file_put_contents($work . '/run.js', <<<'JS'
+const { chromium } = require('playwright');
+const BASE = process.argv[2], SHOT = process.argv[3] || '', DIR = __dirname;
+const out = [];
+const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra === undefined ? '' : String(extra) });
+async function phone(page, email) {
+  await page.goto(BASE + '/att/');
+  await page.waitForSelector('#email', { timeout: 20000 });
+  await page.fill('#email', email);
+  await page.fill('#password', 'CorrectHorse9');
+  await page.click('#signin');
+  await page.waitForSelector('#pin', { timeout: 20000 });
+  await page.fill('#pin', '1234');
+  await page.click('#pingo');
+  await page.waitForSelector('#status', { timeout: 20000 });
+  // Poll for a plain value: a promise handed back from the page counts as
+  // "true" at once, which is how this once passed with an empty list.
+  for (let i = 0; i < 100; i++) {
+    if ((await page.evaluate(() => AttDB.getAll('employees').then(r => r.length))) > 0) return;
+    await page.waitForTimeout(200);
+  }
+  throw new Error('the phone never loaded its employee list for ' + email);
+}
+async function desk(page, email) {
+  await page.goto(BASE + '/att/manifest.webmanifest');
+  return page.evaluate(async (email) => (await fetch('../api/v1/index.php?route=%2Fauth%2Flogin', { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: 'CorrectHorse9' }) })).status, email);
+}
+const state = (page, id) => page.getAttribute('#' + id, 'data-state');
+const waiting = (page) => page.getAttribute('#waiting', 'data-count');
+(async () => {
+  const browser = await chromium.launch();
+  try {
+    // ============================================================ gate phone
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+    const page = await ctx.newPage();
+    const errors = [], urls = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('request', r => urls.push(r.url()));
+    page.on('dialog', d => d.accept());
+    await phone(page, 'gate@zas.test');
+
+    await page.fill('#code', 'E001');
+    await page.waitForSelector('#empphoto[data-state="shown"]', { timeout: 20000 });
+    const nat = await page.evaluate(() => { const i = document.querySelector('#empphoto img'); return [i.naturalWidth, i.naturalHeight]; });
+    check('TYPING A CODE SHOWS THE EMPLOYEE\'S PHOTO beside the name, before IN or OUT is pressed', nat[0] === 480 && nat[1] === 600, nat.join('x'));
+    check('  with the name', /Imran Ali/.test(await page.textContent('#empname')));
+    const photoUrls = urls.filter(u => /photo/.test(decodeURIComponent(u)));
+    check('  fetched from this app\'s own API — the phone never contacts the storage', photoUrls.length >= 1 && photoUrls.every(u => u.startsWith(BASE + '/api/v1/')) && !urls.some(u => /:8750|r2\.cloudflarestorage|X-Amz/i.test(u)), photoUrls.join(' '));
+    if (SHOT) await page.screenshot({ path: SHOT + '/att-m5-gate-photo.png' });
+
+    await page.fill('#code', 'E003');
+    await page.waitForSelector('#empphoto[data-state="none"]');
+    check('an employee with no photo shows "No photo on file", and the name still shows', /No photo on file/.test(await page.textContent('#empphoto')) && /Bilal/.test(await page.textContent('#empname')));
+    await page.fill('#code', 'ZZZ');
+    await page.waitForFunction(() => document.getElementById('empphoto').hidden);
+    check('an unknown code shows no photo box at all', true);
+
+    // an ordinary IN: no camera, no picture
+    await page.fill('#code', 'E004');
+    await page.waitForSelector('#empphoto[data-state="shown"]');
+    await page.click('#btn-in');
+    await page.waitForSelector('#recent .item[data-state="acked"]', { timeout: 20000 });
+    check('after IN is pressed the photo is cleared for the next person', await page.evaluate(() => document.getElementById('empphoto').hidden));
+    check('AT07: an ordinary IN created no file input and asked for no camera', (await page.locator('input[type=file]').count()) === 0);
+
+    // Capture & Flag
+    await page.locator('#recent .item', { hasText: 'E004' }).first().locator('.flagbtn').click();
+    await page.waitForSelector('#flag-sheet');
+    await page.click('#flag-save');
+    check('a flag with no reason chosen is refused on the phone', /Choose why/.test(await page.textContent('#flag-err')) && await page.isVisible('#flag-sheet'));
+    await page.selectOption('#flag-reason', 'OTHER');
+    await page.click('#flag-save');
+    check('"Other" needs a note', /note/i.test(await page.textContent('#flag-err')));
+    await page.selectOption('#flag-reason', 'FACE_MISMATCH');
+    check('the camera input exists only inside the flag sheet, and asks for the back camera', (await page.locator('#flag-sheet input[type=file][capture=environment]').count()) === 1);
+    await page.setInputFiles('#flag-file', DIR + '/still.jpg');
+    await page.waitForSelector('#flag-preview img');
+    if (SHOT) await page.screenshot({ path: SHOT + '/att-m5-flag.png' });
+    await page.click('#flag-save');
+    await page.waitForSelector('#recent .sub.flag[data-flag="acked"][data-photo="sent"]', { timeout: 30000 });
+    check('a flag with a photo goes up, and says so in plain words', /recorded by the server, with its photo/.test(await page.textContent('#recent .sub.flag')));
+    const kept = await page.evaluate(() => AttDB.getAll('flags').then(f => f.map(x => ({ state: x.state, ps: x.photo_state, has: !!x.photo }))));
+    check('ONCE SENT, THE STILL IS REMOVED FROM THE PHONE', kept.length === 1 && kept[0].ps === 'sent' && kept[0].has === false, JSON.stringify(kept));
+    check('a flagged entry no longer offers "Flag…" a second time', (await page.locator('#recent .item', { hasText: 'E004' }).first().locator('.flagbtn').count()) === 0);
+
+    // offline
+    await ctx.setOffline(true);
+    await page.fill('#code', 'E001');
+    await page.waitForSelector('#empphoto[data-state="offline"]');
+    check('OFFLINE: the name still shows and the photo box says it needs a connection', /needs a connection/.test(await page.textContent('#empphoto')) && /Imran/.test(await page.textContent('#empname')));
+    await page.fill('#code', 'E004');
+    await page.click('#btn-out');
+    await page.waitForSelector('#recent .item[data-state="pending"]');
+    await page.locator('#recent .item[data-state="pending"]').locator('.flagbtn').click();
+    await page.selectOption('#flag-reason', 'NO_CARD');
+    await page.setInputFiles('#flag-file', DIR + '/still.jpg');
+    await page.waitForSelector('#flag-preview img');
+    await page.click('#flag-save');
+    await page.waitForSelector('#recent .sub.flag[data-flag="pending"]');
+    check('offline, the scan and its flag are both counted as waiting', (await waiting(page)) === '2', await waiting(page));
+    check('  and the flag says it is on this phone, not sent', /on this phone, not sent yet/.test(await page.textContent('#recent .sub.flag[data-flag="pending"]')));
+    await page.reload();
+    await page.waitForSelector('#pin');
+    await page.fill('#pin', '1234');
+    await page.click('#pingo');
+    await page.waitForSelector('#status');
+    const held = await page.evaluate(() => AttDB.getAll('flags').then(f => f.filter(x => x.state === 'pending').map(x => x.photo ? x.photo.size : 0)));
+    check('after closing and reopening the app offline, the flag and its still are both still there', held.length === 1 && held[0] > 1000, JSON.stringify(held));
+    check('  and the still was made small on the phone before being kept', held[0] < 600000, held[0]);
+    await ctx.setOffline(false);
+    await page.evaluate(() => AttApp.syncNow());
+    await page.waitForFunction(() => document.getElementById('waiting').getAttribute('data-count') === '0', null, { timeout: 30000 });
+    await page.evaluate(() => AttApp.refreshLists());
+    await page.waitForSelector('#recent .sub.flag[data-flag="acked"][data-photo="sent"]');
+    check('back online, the scan goes first, then its flag, then the still — and nothing is left waiting', true);
+
+    const stored = await page.evaluate(async () => {
+      const keys = await caches.keys(); const cached = [];
+      for (const k of keys) { for (const r of await (await caches.open(k)).keys()) cached.push(r.url); }
+      const emps = await AttDB.getAll('employees');
+      return { cached, fields: Object.keys(emps[0] || {}), blobs: emps.filter(e => Object.values(e).some(v => v instanceof Blob)).length };
+    });
+    check('NO EMPLOYEE PHOTO IS KEPT ON THE PHONE: none in the app cache', !stored.cached.some(u => /photo|\/api\//.test(decodeURIComponent(u))), stored.cached.join(' '));
+    check('  and none in its employee list, which holds a yes/no only', stored.blobs === 0 && stored.fields.includes('has_photo') && !stored.fields.some(f => /key|url|etag/.test(f)), stored.fields.join(','));
+    check('no script error on the gate phone', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+
+    // ============================================================= HOD phone
+    const hctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+    const hp = await hctx.newPage();
+    hp.on('dialog', d => d.accept());
+    await phone(hp, 'hod@zas.test');
+    check('the HOD has no gate tab and so nothing to flag from', !(await hp.isVisible('#tab-gate')) && (await hp.locator('.flagbtn').count()) === 0);
+    await hp.fill('#hodcode', 'E001');
+    await hp.waitForSelector('#hodphoto[data-state="shown"]', { timeout: 20000 });
+    check('THE HOD SEES THE PHOTO TOO when a code is typed, with the name', /Imran/.test(await hp.textContent('#hodname')));
+    await hp.waitForSelector('#pendinglist .seephoto', { timeout: 20000 });
+    await hp.locator('#pendinglist .seephoto').first().click();
+    await hp.waitForSelector('#photo-sheet img');
+    await hp.waitForFunction(() => { const i = document.querySelector('#photo-sheet img'); return i.complete && i.naturalWidth === 480; }, null, { timeout: 20000 });
+    check('  and from the waiting list, before ticking an entry', true);
+    if (SHOT) await hp.screenshot({ path: SHOT + '/att-m5-hod-photo.png' });
+    await hctx.close();
+
+    // ========================================================== Setup screen
+    const dctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const dp = await dctx.newPage();
+    const derr = [];
+    dp.on('pageerror', e => derr.push(e.message));
+    dp.on('dialog', d => d.accept('retaking it'));
+    await desk(dp, 'admin@zas.test');
+    await dp.goto(BASE + '/att_setup.php#emp');
+    await dp.waitForSelector('#atts-body table');
+    const row = () => dp.locator('#atts-body tr', { hasText: 'E003' });
+    check('the employee list shows who has a photo', /None/.test(await row().textContent()) && /On file/.test(await dp.locator('#atts-body tr', { hasText: 'E001' }).textContent()));
+    await row().locator('button:has-text("Photo")').click();
+    await dp.waitForSelector('#attsdlg[open]');
+    await dp.click('#attsdlg-ok');
+    check('saving with no picture chosen is refused', /Choose a picture/.test(await dp.textContent('#attsdlg-err')));
+    await dp.setInputFiles('#ph-file', DIR + '/notes.txt');
+    await dp.check('#ph-notice');
+    await dp.click('#attsdlg-ok');
+    await dp.waitForFunction(() => /not a JPG/.test(document.getElementById('attsdlg-err').textContent));
+    check('a text file chosen as the photo is refused, with the reason', true);
+    await dp.setInputFiles('#ph-file', DIR + '/face.png');
+    await dp.uncheck('#ph-notice');
+    await dp.click('#attsdlg-ok');
+    await dp.waitForFunction(() => /told/.test(document.getElementById('attsdlg-err').textContent));
+    check('a real picture without the notice ticked is refused', true);
+    await dp.check('#ph-notice');
+    await dp.click('#attsdlg-ok');
+    await dp.waitForSelector('#ph-done:not(:empty)', { timeout: 20000 });
+    const saved = await dp.textContent('#ph-done');
+    check('with the notice ticked it saves, and says the size it was stored at', /480 × 600, \d+ KB/.test(saved), saved);
+    await dp.waitForFunction(() => { const i = document.querySelector('img#ph-current'); return i && i.complete && i.naturalWidth === 480 && i.naturalHeight === 600; }, null, { timeout: 20000 });
+    check('  and shows the stored picture back: 480 × 600 from a 900 × 1300 upload', true);
+    if (SHOT) await dp.screenshot({ path: SHOT + '/att-m5-setup-photo.png' });
+    await dp.click('#attsdlg-cancel');
+    await dp.waitForFunction(() => /On file/.test([...document.querySelectorAll('#atts-body tr')].find(r => /E003/.test(r.textContent)).textContent));
+    check('the list now shows E003 with a photo on file', true);
+
+    await dp.click('#atts-tabs button:has-text("Photos")');
+    await dp.waitForSelector('#atts-body .facts');
+    const facts = await dp.textContent('#atts-body .facts');
+    check('the Photos tab says how many have a photo and that storage is connected', /4 of 5/.test(facts) && /Connected/.test(facts) && /Ready/.test(facts), facts);
+    await dp.click('button:has-text("Test the connection")');
+    await dp.waitForSelector('#test-steps li');
+    check('the connection test shows four steps, all passing', (await dp.locator('#test-steps li.okmsg').count()) === 4);
+    await dp.click('button:has-text("Bring in photos")');
+    await dp.waitForSelector('#atts-body .err:has-text("Tick the box")');
+    check('bringing photos in without the notice ticked is refused', true);
+    await dp.check('#imp-notice');
+    await dp.click('button:has-text("Bring in photos")');
+    await dp.waitForSelector('#imp-result', { timeout: 60000 });
+    const res = await dp.textContent('#atts-body');
+    check('bringing in from the bucket folder adds the one new photo and leaves the rest', /1 photo brought in\. 3 were already up to date/.test(res), (await dp.textContent('#imp-result')));
+    check('  it names the file that was not a picture and the ones matching nobody', /E003\.jpg/.test(res) && /X999\.jpg/.test(res));
+    if (SHOT) await dp.screenshot({ path: SHOT + '/att-m5-setup-photos.png', fullPage: true });
+    const pageText = await dp.content();
+    check('nowhere on the Setup screen is a storage key, an access key or a secret', !/attendance\/ref|TESTKEY|test-secret/.test(pageText));
+    check('no script error on the Setup screen', derr.length === 0, derr.join(' | '));
+
+    // ============================================================= HR screen
+    const rctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const rp = await rctx.newPage();
+    const rerr = [];
+    rp.on('pageerror', e => rerr.push(e.message));
+    await desk(rp, 'hr@zas.test');
+    await rp.goto(BASE + '/att_hr_reconciliation.php');
+    await rp.waitForSelector('#attq h2');
+    check('HR sees "Flagged entries" first on the reconciliation screen', /^Flagged entries/.test((await rp.textContent('#attq h2')).trim()));
+    const frow = rp.locator('#attq tr', { hasText: 'Nadia Noor' }).filter({ hasText: 'Face does not match' });
+    await frow.locator('button:has-text("See photos")').click();
+    await rp.waitForSelector('#attphoto[open]');
+    await rp.waitForFunction(() => { const im = [...document.querySelectorAll('#attphoto img')]; return im.length === 2 && im.every(i => i.complete && i.naturalWidth > 0); }, null, { timeout: 20000 });
+    const sizes = await rp.evaluate(() => [...document.querySelectorAll('#attphoto img')].map(i => i.naturalWidth + 'x' + i.naturalHeight));
+    check('"See photos" puts the photo on file beside the one taken at the gate', sizes[0] === '480x600' && sizes[1] === '960x1280', sizes.join(' '));
+    if (SHOT) await rp.screenshot({ path: SHOT + '/att-m5-hr-flag.png' });
+    await rp.click('#ph-close');
+    await frow.locator('button:has-text("Mark reviewed")').click();
+    await rp.waitForSelector('#attdlg[open]');
+    await rp.click('#dlg-ok');
+    check('marking reviewed without a finding is refused', await rp.isVisible('#attdlg[open]'));
+    await rp.fill('#dlg-reason', 'Supervisor confirmed identity. Photo on file is old; retake arranged.');
+    await rp.click('#dlg-ok');
+    await rp.waitForFunction(() => !document.querySelector('#attdlg[open]') && /reviewed in the last 7 days/.test(document.getElementById('attq').textContent), null, { timeout: 20000 });
+    check('with a finding it moves to the reviewed list', true);
+    check('no script error on the HR screen', rerr.length === 0, rerr.join(' | '));
+    await rctx.close();
+    await dctx.close();
+  } catch (e) { check('the browser run completed', false, e && e.message); }
+  finally { await browser.close(); }
+  console.log('RESULT' + JSON.stringify(out));
+})();
+JS);
+$views0 = $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view'");
+$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 400 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg($shot) . ' 2>&1');
+$results = [];
+if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
+ok(count($results) >= 40, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
+
+echo "17. What the browser run left behind\n";
+$e4 = Db::all('SELECT f.reason_code, f.photo_key, f.photo_bytes, f.entry_cycle_id, f.status FROM att_flags f WHERE f.employee_id = ? ORDER BY f.id', [$emp['E004']]);
+ok(count($e4) === 2 && $e4[0]['reason_code'] === 'FACE_MISMATCH' && $e4[1]['reason_code'] === 'NO_CARD', 'two flags for E004 on the server: one made online, one made offline');
+ok($e4[0]['photo_key'] !== null && $e4[1]['photo_key'] !== null && is_file("$r2dir/objects/{$e4[1]['photo_key']}"), 'each with its still in the bucket');
+ok(dims(file_get_contents("$r2dir/objects/{$e4[1]['photo_key']}")) === [960, 1280, 'image/webp'] && (int) $e4[1]['photo_bytes'] < 400000, 'stored as 960 × 1280 WebP');
+ok((int) $e4[0]['entry_cycle_id'] > 0 && (int) $e4[0]['entry_cycle_id'] === (int) $e4[1]['entry_cycle_id'], 'both tied to the same entry: the IN that opened it and the OUT that closed it');
+ok($e4[0]['status'] === 'reviewed' && $e4[1]['status'] === 'open', 'the one HR reviewed is reviewed; the other is still open');
+ok(Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$emp['E003']]) !== null
+   && Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$emp['E005']]) !== null, 'E003 (from the Setup dialog) and E005 (from the bucket folder) now have photos');
+$shown = $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view'") - $views0;
+/* Gate phone 2+, HOD phone 2, Setup 1, HR 2. */
+ok($shown >= 7, "every picture shown on any of the three screens added a line to the audit log ($shown)");
+$gateViews = $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view' AND actor_id = ? AND JSON_EXTRACT(new_data, '$.purpose') = 'code entered on a phone'", [$gk]);
+ok($gateViews >= 3, "including each time the gatekeeper's phone showed one ($gateViews)");
+
+/* AT07, read off the app's own source: the camera can TAKE a picture in one
+   function only. */
+$app = (string) file_get_contents($B . 'att/app.js');
+$fn = function (string $name) use ($app): string {
+    $start = strpos($app, "function $name(");
+    if ($start === false) { return ''; }
+    $next = strpos($app, "\n  function ", $start + 10);
+    return substr($app, $start, ($next === false ? strlen($app) : $next) - $start);
+};
+ok(substr_count($app, "type: 'file'") === 1 && str_contains($fn('openFlag'), "type: 'file'") && substr_count($app, 'capture:') === 1 && str_contains($fn('openFlag'), 'capture:'),
+   'AT07: the app has ONE picture input, and it is inside openFlag()');
+$ordinary = $fn('gateAction') . $fn('saveEvent') . $fn('hodByCode') . $fn('hodConfirmSelected');
+ok(strlen($ordinary) > 1500 && !preg_match('/openFlag|shrink\(|upload\(|toBlob|capture|type: \'file\'|FormData/', $ordinary),
+   'AT07: recording IN, OUT or a HOD confirmation reaches none of the picture code');
+$scanFn = $fn('scanInto');
+ok(str_contains($scanFn, 'getUserMedia') && !preg_match('/toBlob|canvas|upload\(|AttDB\.put|FormData/', $scanFn), 'the code scanner uses the camera to read, and has no way to keep or send a frame');
+$sw = (string) file_get_contents($B . 'att/sw.js');
+ok(str_contains($sw, "indexOf('/api/') !== -1) return") && str_contains($sw, 'zas-att-shell-v2'), 'the service worker still never touches /api/ (so never a photo), and its version was raised for the new app files');
+
+echo "18. Rolling back\n";
 $mig->down(12);
 ok(!Db::tableExists('att_flags') && !Db::columnExists('att_employees', 'reference_photo_etag') && Db::columnExists('att_employees', 'reference_photo_key'),
    'down to 12 removes the flag table and the two bookkeeping columns, and nothing older');

@@ -128,7 +128,7 @@ try {
         // -------------------------------------------------------- employees
 
         case $method === 'GET' && $route === '/employees':
-            $u     = Http::requirePermission('attgate', 'v');
+            $u     = require_gate_or_hod();
             $scope = employee_scope_for((int) $u['id']);
             Http::json([
                 'ok'        => true,
@@ -137,7 +137,7 @@ try {
             break;
 
         case $method === 'GET' && $route === '/employees/sync-snapshot':
-            $u     = Http::requirePermission('attgate', 'v');
+            $u     = require_gate_or_hod();
             $scope = employee_scope_for((int) $u['id']);
             Http::json(array_merge(['ok' => true], Employees::syncSnapshot($scope)));
             break;
@@ -147,10 +147,7 @@ try {
            not a link to it — after the same department check as the lookup
            below, and each view is one line in the audit log. */
         case $method === 'GET' && preg_match('#^/employees/([^/]+)/photo$#', $route, $m) === 1:
-            $u = Http::requireUser();
-            if (!Roles::can('attgate', 'v') && !Roles::can('atthod', 'v')) {
-                Http::fail('FORBIDDEN', 'You do not have permission for this action.', 403);
-            }
+            $u = require_gate_or_hod();
             // Enough for a busy gate; not enough to walk off with the album.
             Http::rateLimit('photo:user:' . (int) $u['id'], 900, 600);
             $emp   = Employees::findByCodeOrQr(urldecode($m[1]));
@@ -162,7 +159,7 @@ try {
             break;
 
         case $method === 'GET' && preg_match('#^/employees/([^/]+)$#', $route, $m) === 1:
-            $u    = Http::requirePermission('attgate', 'v');
+            $u    = require_gate_or_hod();
             $emp  = Employees::findByCodeOrQr(urldecode($m[1]));
             if ($emp === null) {
                 Http::fail('EMPLOYEE_NOT_FOUND', 'No employee with that code.', 404);
@@ -760,6 +757,26 @@ function admin_answer(array $out): never
         Http::json($out, 200);
     }
     Http::json($out, ($out['reason_code'] ?? '') === 'NOT_FOUND' ? 404 : 422);
+}
+
+/**
+ * The employee list, lookup and photo are for the two people who face the
+ * employee: the gatekeeper and the HOD. Either permission opens them; WHO
+ * each may see is then decided by employee_scope_for() — a HOD gets their own
+ * department and nobody else.
+ *
+ * These routes used to ask for the gate permission alone. A HOD given the job
+ * from the People tab holds only the HOD permission, so their phone could not
+ * load its employee list at all: codes typed on it showed no name. Found when
+ * the photo was added, because there was then no face either.
+ */
+function require_gate_or_hod(): array
+{
+    $u = Http::requireUser();
+    if (!Roles::can('attgate', 'v') && !Roles::can('atthod', 'v')) {
+        Http::fail('FORBIDDEN', 'You do not have permission for this action.', 403);
+    }
+    return $u;
 }
 
 /**

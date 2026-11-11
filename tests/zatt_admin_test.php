@@ -474,7 +474,7 @@ const closed = (page) => page.waitForFunction(() => !document.querySelector('#at
     const html = await page.textContent('body');
     check('the page renders inside the ERP layout with no PHP warning', !/Warning:|Notice:|Fatal error|Deprecated:/.test(html), html.slice(0, 300));
     check('the menu shows Attendance › Setup', /Setup/.test(await page.textContent('.nav')));
-    check('it opens on a six-line checklist', (await page.locator('#atts-body .check li').count()) === 6);
+    check('it opens on a seven-line checklist', (await page.locator('#atts-body .check li').count()) === 7);
     check('the checklist names the department that has no HOD', /No HOD yet for:[^.]*Finishing/.test(await page.textContent('#atts-body')), await page.textContent('#atts-body'));
 
     // Departments

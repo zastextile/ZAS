@@ -70,6 +70,13 @@ page_header('Attendance — Setup');
 .atts .check li{display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-bottom:1px solid #edf1f6}
 .atts .check .mark{flex:0 0 26px;height:26px;border-radius:99px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;background:#fbe6e4;color:#a1241c}
 .atts .check .mark.done{background:#e2f3e8;color:#17683a}
+.atts .check .mark.opt{background:#eef0f3;color:#6b7480}
+.atts .steps{list-style:none;margin:8px 0;padding:0;font-size:13.5px}.atts .steps li{padding:3px 0}
+.atts .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:0 0 14px}
+.atts .fact{border:1px solid #dfe6ef;border-radius:10px;padding:10px 12px}.atts .fact b{display:block;font-size:18px}.atts .fact span{font-size:12.5px;color:#5a6b82}
+#attsdlg .portrait{width:144px;height:180px;border-radius:10px;background:#e9eef5;border:1px solid #cfd9e6;object-fit:cover;display:block}
+#attsdlg .portrait.none{display:flex;align-items:center;justify-content:center;color:#5a6b82;font-size:12.5px;border-style:dashed;text-align:center;padding:8px;box-sizing:border-box}
+#attsdlg .pair{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;margin-top:10px}
 .atts .check b{display:block}.atts .check span.t{font-size:13px;color:#5a6b82}
 .atts .note{font-size:13px;color:#5a6b82;margin:0 0 12px}
 .atts .pager{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:13px}
@@ -161,9 +168,10 @@ page_header('Attendance — Setup');
     return el('button', { class: 'act' + (primary ? ' primary' : ''), type: 'button', text: text, click: onClick, disabled: disabled });
   }
   function field(label, input){
-    var id = 'f' + Math.random().toString(36).slice(2, 9);
-    input.id = id;
-    return el('div', {}, [el('label', { for: id, text: label }), input]);
+    // An input that was given an id keeps it; the others get one so the
+    // label can point at them.
+    if (!input.id) input.id = 'f' + Math.random().toString(36).slice(2, 9);
+    return el('div', {}, [el('label', { for: input.id, text: label }), input]);
   }
   function options(list, valueKey, textKey, selected, blank){
     var out = [];
@@ -218,6 +226,7 @@ page_header('Attendance — Setup');
     { id: 'emp',    label: 'Employees',   draw: drawEmployees },
     { id: 'dept',   label: 'Departments', draw: drawDepartments },
     { id: 'shift',  label: 'Shifts',      draw: drawShifts },
+    { id: 'photo',  label: 'Photos',      draw: drawPhotos },
     { id: 'people', label: 'People',      draw: drawPeople },
     { id: 'set',    label: 'Settings',    draw: drawSettings }
   ];
@@ -239,9 +248,9 @@ page_header('Attendance — Setup');
   function drawStart(){
     call('GET', '/admin/overview').then(function(o){
       if (!o.ok) return fail(o);
-      function step(done, title, text, tab, action){
+      function step(done, title, text, tab, action, optional){
         return el('li', {}, [
-          el('div', { class: 'mark' + (done ? ' done' : ''), text: done ? '✓' : '!' }),
+          el('div', { class: 'mark' + (done ? ' done' : (optional ? ' opt' : '')), text: done ? '✓' : (optional ? '–' : '!') }),
           el('div', { style: 'flex:1' }, [el('b', { text: title }), el('span', { class: 't', text: text })]),
           tab ? btn(action, function(){ go(tab); }) : null
         ]);
@@ -255,7 +264,9 @@ page_header('Attendance — Setup');
           step(!!o.default_shift, 'Default shift', o.default_shift ? '"' + o.default_shift + '" is used for anyone who arrives without a shift for the day.' : 'Not chosen. Without it, an employee with no shift for the day cannot be filed and goes to HR.', CAN.admin ? 'set' : null, 'Settings'),
           step(o.employees > 0, 'Employees', o.employees > 0 ? o.employees + ' on the roll.' : 'Nobody yet. Add them one by one, paste a list from Excel, or bring in the production workers.', 'emp', 'Employees'),
           step(o.gatekeepers_ready > 0, 'A gatekeeper', o.gatekeepers_ready > 0 ? o.gatekeepers_ready + ' login' + (o.gatekeepers_ready === 1 ? '' : 's') + ' can scan at the gate.' : 'No login can scan at the gate yet.', CAN.admin ? 'people' : null, 'People'),
-          step(o.employees > 0 && noHod.length === 0, 'A HOD for every department', o.employees === 0 ? 'Comes after the employees.' : (noHod.length === 0 ? 'Every department with employees has a HOD.' : 'No HOD yet for: ' + noHod.join(', ') + '. Arrivals there will wait unconfirmed.'), CAN.admin ? 'people' : null, 'People')
+          step(o.employees > 0 && noHod.length === 0, 'A HOD for every department', o.employees === 0 ? 'Comes after the employees.' : (noHod.length === 0 ? 'Every department with employees has a HOD.' : 'No HOD yet for: ' + noHod.join(', ') + '. Arrivals there will wait unconfirmed.'), CAN.admin ? 'people' : null, 'People'),
+          step(o.employees > 0 && o.employees_with_photo >= o.employees, 'Employee photos (not needed to start)',
+            o.employees_with_photo + ' of ' + o.employees + ' employees have a photo. The gatekeeper and the HOD see it when the code is typed or scanned; without one they see the name only.', 'photo', 'Photos', true)
         ]),
         el('p', { class: 'note', style: 'margin-top:14px' }, [
           'Gatekeepers and HODs then open the ', el('a', { href: 'att/', text: 'phone app' }),
@@ -296,15 +307,18 @@ page_header('Attendance — Setup');
               : 'Nobody matches.' }));
             return;
           }
-          holder.appendChild(table(['Code', 'Name', 'Department', 'State', ''], r.employees, function(e){
+          holder.appendChild(table(['Code', 'Name', 'Department', 'Photo', 'State', ''], r.employees, function(e){
+            var hasPhoto = parseInt(e.has_photo, 10) === 1;
             var active = parseInt(e.active, 10) === 1, inside = parseInt(e.inside, 10) === 1;
             var state = el('span', {}, [el('span', { class: 'pill ' + (active ? 'good' : 'off'), text: active ? 'Active' : 'Inactive' }), inside ? el('span', { class: 'pill', text: 'Inside now' }) : null]);
             var acts = el('span', {}, [
               CAN.u ? btn('Edit', function(){ editEmployee(e); }) : null, ' ',
+              CAN.u ? btn('Photo…', function(){ photoDialog(e); }) : null, ' ',
               active ? (CAN.d ? btn('Make inactive', function(){ deactivate(e); }) : null)
                      : (CAN.u ? btn('Make active', function(){ call('POST', '/admin/employees/active', { id: e.id, active: true }).then(function(x){ if (!x.ok) alert(x.error); list(); }); }) : null)
             ]);
-            return [el('strong', { text: e.code }), e.full_name, e.department_name, state, acts];
+            return [el('strong', { text: e.code }), e.full_name, e.department_name,
+              el('span', { class: 'pill ' + (hasPhoto ? 'good' : 'off'), text: hasPhoto ? 'On file' : 'None' }), state, acts];
           }));
           var from = (r.page - 1) * r.per_page + 1, to = Math.min(r.total, r.page * r.per_page);
           holder.appendChild(el('div', { class: 'pager' }, [
@@ -422,6 +436,125 @@ page_header('Attendance — Setup');
       text: 'Copy three columns from Excel — Code, Name, Department — and paste them here, one employee per line. Nothing is saved until you have seen the check.',
       fields: [box, el('label', { class: 'inline' }, [mk, 'Create departments that do not exist yet']), el('div', { style: 'margin-top:8px' }, [workersBtn]), result],
       submit: function(){ return send(checked); }
+    });
+  }
+
+  // --------------------------------------------------------------- photos
+  /* Multipart, for a picture. No Content-Type by hand; the server decides
+     what the file is by reading it. */
+  function sendFile(route, fields, file){
+    var form = new FormData();
+    Object.keys(fields).forEach(function(k){ form.append(k, fields[k]); });
+    form.append('photo', file, 'photo');
+    return fetch(API + encodeURIComponent(route), { method: 'POST', credentials: 'same-origin', headers: { 'Accept': 'application/json', 'X-CSRF-Token': CSRF }, body: form })
+      .then(function(r){ return r.json().catch(function(){ return { ok: false, error: r.status === 413 ? 'That picture is too large to upload.' : 'The server sent something unreadable.' }; }); })
+      .catch(function(){ return { ok: false, error: 'The server could not be reached.' }; });
+  }
+  function photoSrc(id){ return API + encodeURIComponent('/admin/employees/photo') + '&id=' + encodeURIComponent(id) + '&t=' + Date.now(); }
+
+  function photoDialog(e){
+    var has = parseInt(e.has_photo, 10) === 1, told = parseInt(e.notice_given, 10) === 1;
+    var current = has ? el('img', { class: 'portrait', id: 'ph-current', alt: 'Photo on file for ' + e.full_name, src: photoSrc(e.id) })
+                      : el('div', { class: 'portrait none', id: 'ph-current', text: 'No photo on file' });
+    var file = el('input', { type: 'file', id: 'ph-file', accept: 'image/jpeg,image/png,image/webp' });
+    var notice = el('input', { type: 'checkbox', id: 'ph-notice' });
+    var done = el('p', { class: 'okmsg', id: 'ph-done' });
+    var holder = el('div', {}, [current]);
+    dialog({
+      title: 'Photo — ' + e.full_name + ' (' + e.code + ')', okText: 'Save photo',
+      text: 'Shown to the gatekeeper and the HOD when this code is typed or scanned. Choose a clear, front-facing picture.',
+      fields: [
+        el('div', { class: 'pair' }, [holder, el('div', { style: 'flex:1;min-width:200px' }, [
+          field('New picture (JPG, PNG or WebP, up to 10 MB)', file),
+          el('p', { class: 'muted', style: 'font-size:12.5px;margin:8px 0 0', text: 'Whatever is chosen is cropped to an upright 4:5 portrait and stored small (480 × 600, WebP). The original file is not kept.' }),
+          told ? el('p', { class: 'muted', style: 'font-size:12.5px', text: 'This employee has already been told their photo is kept.' })
+               : el('label', { class: 'inline' }, [notice, 'This employee has been told their photo will be kept for attendance']),
+          (has && CAN.u) ? el('div', { style: 'margin-top:10px' }, [btn('Remove photo…', function(){
+            var why = prompt('Why is the photo being removed? (kept on the record)');
+            if (why === null) return;
+            call('POST', '/admin/employees/photo/remove', { id: e.id, reason: why }).then(function(r){
+              if (!r.ok) { dlgError(r.error); return; }
+              dlg.close(); if (drawEmployees.refresh) drawEmployees.refresh();
+            });
+          })]) : null
+        ])]), done
+      ],
+      submit: function(){
+        if (!file.files || !file.files[0]) { dlgError('Choose a picture first.'); return null; }
+        return sendFile('/admin/employees/photo', { id: e.id, notice_given: (told || notice.checked) ? '1' : '0' }, file.files[0]).then(function(r){
+          if (!r.ok) return r;
+          holder.textContent = '';
+          holder.appendChild(el('img', { class: 'portrait', id: 'ph-current', alt: 'Photo on file for ' + e.full_name, src: photoSrc(e.id) }));
+          done.textContent = 'Saved as ' + r.width + ' × ' + r.height + ', ' + Math.max(1, Math.round(r.bytes / 1024)) + ' KB. This is what the gate will see.';
+          document.getElementById('attsdlg-ok').hidden = true;
+          document.getElementById('attsdlg-cancel').textContent = 'Close';
+          if (drawEmployees.refresh) drawEmployees.refresh();
+          return { keepOpen: true };
+        });
+      }
+    });
+  }
+
+  function drawPhotos(){
+    call('GET', '/admin/photos/status').then(function(st){
+      if (!st.ok) return fail(st);
+      function fact(big, small){ return el('div', { class: 'fact' }, [el('b', { text: big }), el('span', { text: small })]); }
+      var testOut = el('div'), importOut = el('div');
+      var notice = el('input', { type: 'checkbox', id: 'imp-notice' });
+      var go = btn('Bring in photos', function(){
+        if (!notice.checked) { importOut.textContent = ''; importOut.appendChild(el('p', { class: 'err', text: 'Tick the box first: employees must be told before their photo is kept.' })); return; }
+        go.disabled = true;
+        var skip = [], done = [], failed = [], last = null;
+        function round(){
+          return call('POST', '/admin/photos/import', { limit: 8, skip: skip, notice_given: true }).then(function(r){
+            if (!r.ok) { importOut.textContent = ''; importOut.appendChild(el('p', { class: 'err', text: r.error || 'That did not work.' })); return; }
+            last = r;
+            r.done.forEach(function(x){ done.push(x); });
+            r.failed.forEach(function(x){ if (!failed.some(function(f){ return f.file === x.file; })) failed.push(x); if (x.key) skip.push(x.key); });
+            importOut.textContent = '';
+            importOut.appendChild(el('p', { class: 'muted', text: 'Working… ' + done.length + ' brought in, ' + r.remaining + ' to go.' }));
+            if (r.remaining > 0 && (r.done.length > 0 || r.failed.length > 0)) return round();
+            finish();
+          });
+        }
+        function finish(){
+          importOut.textContent = '';
+          importOut.appendChild(el('p', { class: 'okmsg', id: 'imp-result', text: done.length + ' photo' + (done.length === 1 ? '' : 's') + ' brought in. '
+            + last.already + ' were already up to date. ' + last.files + ' file' + (last.files === 1 ? '' : 's') + ' in the folder.' }));
+          if (failed.length) importOut.appendChild(table(['File', 'Not brought in because'], failed, function(x){ return [x.file, el('span', { class: 'err', text: x.error })]; }));
+          if (last.unmatched.length) importOut.appendChild(el('p', { class: 'muted', id: 'imp-unmatched', text: 'No employee has these codes: ' + last.unmatched.join(', ') + '. Rename the file to the employee code and run this again.' }));
+        }
+        round().then(function(){ go.disabled = false; });
+      }, true, !CAN.u || !st.storage_connected || !st.image_tools);
+
+      show([
+        el('div', { class: 'facts' }, [
+          fact(st.with_photo + ' of ' + st.employees, 'active employees have a photo'),
+          fact(st.storage_connected ? 'Connected' : 'Not connected', 'photo storage (Cloudflare R2, private)'),
+          fact(st.image_tools ? 'Ready' : 'Missing', 'picture processing on this server'),
+          fact(String(st.failures_7_days), 'failed uploads in the last 7 days' + (st.last_failure ? ' — last: ' + st.last_failure.why : ''))
+        ]),
+        st.storage_connected ? null : el('p', { class: 'err', text: 'Photos cannot be saved yet. The server\'s config.php needs its four r2_ lines (endpoint, bucket, access key, secret) — the same ones the document storage uses. They are set on the server only, never on this screen.' }),
+        st.image_tools ? null : el('p', { class: 'err', text: 'This server is missing the PHP GD extension, so pictures cannot be checked or resized. Ask the host to enable it.' }),
+        el('p', { class: 'note', text: 'Every photo is checked, cropped to an upright 4:5 portrait and stored at 480 × 600 as WebP — about 30 KB. Originals are never kept. Photos are private: only a signed-in gatekeeper, HOD of that department, HR or setup user can see one, and every view is logged. The picture taken with a flagged entry is deleted after ' + st.retention_days + ' days.' }),
+        CAN.u ? el('div', { class: 'bar' }, [btn('Test the connection', function(){
+          testOut.textContent = '';
+          call('POST', '/admin/photos/test', {}).then(function(t){
+            if (!t.ok) { testOut.appendChild(el('p', { class: 'err', text: t.error })); return; }
+            testOut.appendChild(el('ul', { class: 'steps', id: 'test-steps' }, t.steps.map(function(x){
+              return el('li', { class: x.ok ? 'okmsg' : 'err', text: (x.ok ? '✓ ' : '✗ ') + x.step + (x.ok ? '' : ' — ' + x.error) });
+            })));
+          });
+        }, false, !st.storage_connected)]) : null,
+        testOut,
+        el('h2', { style: 'font-size:15px;margin:18px 0 4px', text: 'Bring in many photos at once' }),
+        el('p', { class: 'note' }, ['In the Cloudflare bucket, put the pictures in the folder ', el('strong', { text: st.import_prefix }),
+          ' and name each one by its employee code — for example ', el('strong', { text: 'E001.jpg' }),
+          '. Then press the button. Each picture is matched by its name, checked, cropped and stored; the files you put there are left as they are. One photo at a time can also be added from the Employees tab.']),
+        el('label', { style: 'display:block;font-size:13.5px;margin:0 0 10px' }, [notice, ' These employees have been told their photo will be kept for attendance']),
+        el('div', { class: 'bar' }, [go]),
+        importOut
+      ]);
     });
   }
 

@@ -52,6 +52,13 @@ page_header('Attendance — Reconciliation');
 #attdlg label{display:block;font-size:12.5px;font-weight:600;color:#33475f;margin:10px 0 4px}
 #attdlg textarea,#attdlg select,#attdlg input{width:100%;font:inherit;padding:8px;border:1px solid #cfd9e6;border-radius:8px;box-sizing:border-box}
 #attdlg .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+#attphoto{border:1px solid #cfd9e6;border-radius:12px;padding:18px;max-width:640px;width:94vw}
+#attphoto::backdrop{background:rgba(16,36,62,.35)}
+#attphoto .pair{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0}
+#attphoto figure{margin:0;flex:1 1 240px}#attphoto figcaption{font-size:12.5px;font-weight:600;color:#33475f;margin-bottom:6px}
+#attphoto img,#attphoto .nopic{width:100%;border-radius:10px;background:#e9eef5;border:1px solid #cfd9e6;display:block;box-sizing:border-box}
+#attphoto img{max-height:60vh;object-fit:contain}
+#attphoto .nopic{aspect-ratio:4/5;display:flex;align-items:center;justify-content:center;color:#5a6b82;font-size:13px;text-align:center;padding:12px;border-style:dashed}
 </style>
 
 <div class="topbar">
@@ -77,6 +84,13 @@ page_header('Attendance — Reconciliation');
       <button type="submit" class="act primary" id="dlg-ok">Save decision</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="attphoto">
+  <strong id="ph-title"></strong>
+  <p class="muted" id="ph-text" style="font-size:13px;margin:6px 0 0"></p>
+  <div class="pair" id="ph-pair"></div>
+  <div style="text-align:right"><button type="button" class="act" id="ph-close">Close</button></div>
 </dialog>
 
 <script>
@@ -172,9 +186,55 @@ page_header('Attendance — Reconciliation');
     return actions(out);
   }
 
-  function draw(q){
+  // ------------------------------------------------------- flagged entries
+  var pdlg = document.getElementById('attphoto');
+  document.getElementById('ph-close').addEventListener('click', function(){ pdlg.close(); });
+  /* Each picture is fetched from this server after the permission check, and
+     each opening is one line in the audit log — which is why they load when
+     HR asks to see them, not for every row of the list. */
+  function seePhotos(f){
+    function figure(caption, has, which, missing){
+      var inner = has ? el('img', { alt: caption + ' — ' + (f.full_name || ''), src: API + encodeURIComponent('/hr/flags/' + f.id + '/photo') + '&which=' + which + '&t=' + Date.now() })
+                      : el('div', { class: 'nopic', text: missing });
+      return el('figure', {}, [el('figcaption', { text: caption }), inner]);
+    }
+    document.getElementById('ph-title').textContent = (f.full_name || '') + ' (' + (f.employee_code || '') + ')';
+    document.getElementById('ph-text').textContent = f.reason + (f.note ? ' — ' + f.note : '') + ' · flagged ' + when(f.occurred_at) + (f.flagged_by_name ? ' by ' + f.flagged_by_name : '');
+    var pair = document.getElementById('ph-pair'); pair.textContent = '';
+    pair.appendChild(figure('Photo on file', parseInt(f.has_reference, 10) === 1, 'reference', 'No photo on file for this employee'));
+    pair.appendChild(figure('Taken at the gate', parseInt(f.has_photo, 10) === 1, 'flag',
+      parseInt(f.photo_purged, 10) === 1 ? 'Removed after the retention period' : 'No photo was taken with this flag'));
+    pdlg.showModal();
+  }
+  function drawFlags(fl){
+    section('Flagged entries', 'A gatekeeper marked these as needing a second look. Compare the photo taken at the gate with the one on file, then record what was found. The gate photo is deleted after ' + fl.retention_days + ' days; the flag and your finding are kept.',
+      fl.open, ['Employee', 'Flagged', 'Why', ''], function(f){
+        return [who(f), el('span', {}, [when(f.occurred_at), el('span', { class: 'muted', text: f.flagged_by_name ? '  by ' + f.flagged_by_name : '' })]),
+          el('span', {}, [el('strong', { text: f.reason }), el('span', { class: 'muted', text: f.note ? '  ' + f.note : '' }),
+            el('span', { class: 'muted', text: parseInt(f.has_photo, 10) === 1 ? '  · photo' : (f.entry_cycle_id ? '' : '  · the scan itself was refused') })]),
+          el('span', {}, [
+            el('button', { class: 'act', type: 'button', text: 'See photos', click: function(){ seePhotos(f); } }),
+            CAN_ACT ? el('button', { class: 'act primary', type: 'button', text: 'Mark reviewed…', click: function(){
+              ask('What was found?', (f.full_name || '') + ' — ' + f.reason + '.', [], function(reason){ return { reason: reason }; }, '/hr/flags/' + f.id + '/review');
+            } }) : null
+          ])];
+      });
+    if (fl.reviewed && fl.reviewed.length) {
+      var d = el('details', { style: 'margin:6px 0 0' }, [el('summary', { class: 'muted', style: 'cursor:pointer;font-size:13px', text: fl.reviewed.length + ' reviewed in the last 7 days' })]);
+      var t = el('table', {}, [el('tbody', {}, fl.reviewed.map(function(f){
+        return el('tr', {}, [el('td', {}, [who(f)]), el('td', { text: f.reason }), el('td', { class: 'muted', text: f.review_note || '' }),
+          el('td', {}, [el('button', { class: 'act', type: 'button', text: 'See photos', click: function(){ seePhotos(f); } })])]);
+      }))]);
+      d.appendChild(el('div', { class: 'scroll' }, [t]));
+      box.appendChild(d);
+    }
+  }
+
+  function draw(q, fl){
     box.textContent = '';
     box.appendChild(el('p', { class: 'muted', text: 'As of ' + when(q.generated_at) + ' (factory time). ' + q.unconfirmed_entries + ' entr' + (q.unconfirmed_entries === 1 ? 'y is' : 'ies are') + ' still owed a HOD confirmation in total.' }));
+
+    if (fl && fl.ok) drawFlags(fl);
 
     section('Confirmation fits more than one entry', 'The HOD confirmed an arrival and the employee has two or more unconfirmed entries it could be. The system never chooses between them.',
       q.ambiguous, ['Employee', 'HOD confirmed at', 'Could be', ''], function(r){
@@ -242,9 +302,10 @@ page_header('Attendance — Reconciliation');
   }
 
   function load(){
-    call('GET', '/hr/reconciliation').then(function(q){
+    Promise.all([call('GET', '/hr/reconciliation'), call('GET', '/hr/flags').catch(function(){ return { ok: false }; })]).then(function(v){
+      var q = v[0];
       if (!q.ok) { box.textContent = ''; box.appendChild(el('p', { class: 'err', text: q.error || 'The queue could not be loaded.' })); return; }
-      draw(q);
+      draw(q, v[1]);
     }).catch(function(){ box.textContent = ''; box.appendChild(el('p', { class: 'err', text: 'The server could not be reached.' })); });
   }
   document.getElementById('att-refresh').addEventListener('click', load);
