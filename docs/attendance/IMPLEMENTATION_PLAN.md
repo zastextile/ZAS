@@ -605,6 +605,58 @@ Existing ERP suites: 65 clean, 0 regressions.
 09:00–17:00 default shift, so it passed or failed by time of day. It now uses a
 round-the-clock shift for that step.
 
-### Next: M4 — IndexedDB offline queue, `/sync/*`, reconciliation of waiting
-confirmations when gate events arrive, HR queue (AT03, AT04, AT05, AT12).
-This is the first milestone with screens: the gate and HOD phone app.
+## 15. M4 — delivered 2026-11-11
+
+**372 assertions green** (M1 64, M2 51, M3 62, M4 74, API 58, browser 63).
+Existing ERP suites: no regressions (`zgateskin_test.php` fails 2 of 80 on a
+1px CSS check with or without this work — it predates the module).
+
+| Delivered | Where |
+|---|---|
+| Review columns, `att_corrections`, device revoke columns, 3 policies + rollback | `sql/att/0011` |
+| Upload batches, device registration/revocation, status, changes feed | `includes/att/SyncService.php` |
+| Matching waiting HOD confirmations to gate entries | `includes/att/Reconciler.php` |
+| HR queue and decisions (each needs a reason, each is audited) | `includes/att/HrService.php` |
+| `/devices/*`, `/sync/events\|status\|changes`, `/hr/reconciliation[/resolve]` | `api/v1/index.php` |
+| Gate / HOD phone app (installable, works offline) | `public_html/att/` |
+| HR Reconciliation screen | `public_html/att_hr_reconciliation.php` |
+| "Attendance" menu group | `includes/menu.php` |
+| Tests | `tests/zatt_m4_test.php`, `tests/zatt_pwa_test.php` (real Chromium) |
+
+**Acceptance:**
+- **AT03** ✅ scans made offline are kept on the phone across a reload, upload
+  when the network returns, and each gets exactly one server record; the
+  screen says "saved on this phone" until the server's receipt arrives and
+  only then "Recorded by the server".
+- **AT04** ✅ an upload replayed after a lost response returns the original
+  receipts and writes nothing new (`event_uuid` and `(device, sequence)` are
+  unique in MySQL, receipts are stored verbatim).
+- **AT05** ✅ a HOD confirmation that arrives before its gate entry waits and
+  is linked when the entry arrives; with two or more possible entries nothing
+  is linked — it goes to HR, who choose one or set it aside, with a reason.
+- **AT12** ✅ the app never claims the data is safe before a receipt; the
+  footer states what is still only on the phone and that clearing the browser
+  or losing the phone before upload loses it.
+
+**Behaviour worth knowing:**
+- Matching never runs in the middle of an upload (`more=true`), so a
+  half-uploaded phone cannot cause a wrong link.
+- Device clock drift is measured from the phone's clock at upload time, stored,
+  and shown to HR above `clock_skew_warn_ms`; times are never silently
+  corrected.
+- Withdrawing a phone stops it on its next event; what it already uploaded
+  stays.
+- Every database connection the module uses is pinned to UTC
+  (`Db::useUtc()`), so column defaults are UTC even if the server's MySQL is
+  set to Karachi time.
+
+**Known limit (decision 3 in §10):** two different offline gate phones holding
+entries for the same employee, uploading at different times, are only kept
+apart by the match window. Keep one gate phone per gate where possible.
+
+**Not built yet:** screens to manage employees, departments, shifts, roles and
+policies (M7). Until then they are set through the API or directly in the
+database.
+
+### Next: M5 — flagged entries with photo (private R2 storage, signed URLs,
+retention). Normal attendance still never takes a photo.

@@ -276,5 +276,18 @@ ok(count($st5) === 1 && $st5[0]['status'] === 'confirmed', 'changes tell the HOD
 ok(isset($ch['cursor']) && is_array($ch['pending']), 'with a cursor and the current pending list');
 ok(S::changes($ch['cursor'], $uid['hodS'])['confirmations'] === [], 'nothing new since the cursor → nothing returned');
 
+echo "16. Stored times are UTC whatever the database server is set to\n";
+/* Simulate a MySQL whose clock is on Karachi time, as a hosted server may be. */
+$pdo->exec("SET time_zone = '+05:00'");
+$local = $pdo->query("SELECT TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), CURRENT_TIMESTAMP()) AS d")->fetch()['d'];
+ok((int) $local === 300, 'on such a server CURRENT_TIMESTAMP runs five hours ahead of UTC');
+Db::useUtc();
+$fixed = $pdo->query("SELECT TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), CURRENT_TIMESTAMP()) AS d, @@session.time_zone AS tz")->fetch();
+ok((int) $fixed['d'] === 0 && $fixed['tz'] === '+00:00', 'Db::useUtc() pins the connection, so column defaults are UTC too');
+$api = file_get_contents($B . 'api/v1/index.php');
+ok(strpos($api, 'Db::useUtc()') !== false && strpos($api, 'Db::useUtc()') < strpos($api, 'switch (true)'),
+   'the API calls it before any route runs');
+ok(str_contains(file_get_contents($B . 'att_migrate.php'), 'Db::useUtc()'), 'and so does the migration runner');
+
 echo "\n$P passed, $F failed\n";
 exit($F === 0 ? 0 : 1);

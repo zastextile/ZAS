@@ -213,6 +213,20 @@ function zas_menu(): array {
                 ],
             ],
         ],
+        /* ATTENDANCE & OVERTIME. Shown only to somebody holding one of the
+           Attendance permissions (User Access); nobody has them until an
+           admin ticks the boxes, so on the day this is uploaded the menu is
+           unchanged for everyone but admins. The phone app is a separate
+           installable app under att/ — the link is here so a gatekeeper or
+           HOD can find it once and add it to their home screen. */
+        [
+            'label' => 'Attendance', 'icon' => 'shield',
+            'show'  => $zu('atthr') || $zu('attgate', 'c') || $zu('atthod', 'c'),
+            'items' => [
+                ['label' => 'Reconciliation (HR)',  'href' => 'att_hr_reconciliation.php', 'show' => $zu('atthr')],
+                ['label' => 'Gate / HOD phone app', 'href' => 'att/',                      'show' => $zu('attgate', 'c') || $zu('atthod', 'c')],
+            ],
+        ],
         [
             'label' => 'Tools', 'icon' => 'search',
             'show'  => $office,

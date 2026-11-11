@@ -126,7 +126,11 @@
   function ensureDevice() {
     if (!S.user || (!S.can.gate && !S.can.hod)) return Promise.resolve();
     return api('POST', '/devices/register', {
-      device_uuid: S.deviceUuid, label: 'Phone — ' + (S.user.name || 'user'), app_version: APP_VERSION
+      device_uuid: S.deviceUuid, app_version: APP_VERSION,
+      // The last four characters of the device id: two phones signed in by
+      // the same person must be tellable apart on the HR screen before one
+      // of them is withdrawn.
+      label: 'Phone — ' + (S.user.name || 'user') + ' · ' + String(S.deviceUuid).slice(-4)
     }).then(function (r) {
       if (r.status === 200 && r.body.ok) {
         S.deviceId = r.body.device_id; S.revoked = false;

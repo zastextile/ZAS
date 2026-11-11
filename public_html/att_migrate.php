@@ -40,6 +40,8 @@ if ($dsn !== false && $dsn !== '') {
     require_once __DIR__ . '/includes/bootstrap.php';
 }
 
+Db::useUtc();   // seeded rows and the migration log are stamped in UTC like everything else
+
 $argvLocal = $argv ?? [];
 $command   = $argvLocal[1] ?? 'status';
 $to        = null;

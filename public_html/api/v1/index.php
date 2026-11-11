@@ -43,6 +43,9 @@ use Att\Shifts;
 use Att\SyncService;
 use Att\Time;
 
+/* UTC for everything the attendance code stores — see Att\Db::useUtc(). */
+try { Db::useUtc(); } catch (Throwable $e) { error_log('[att-api] could not set UTC: ' . $e->getMessage()); }
+
 /* ---------------------------------------------------------------- routing */
 
 $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));

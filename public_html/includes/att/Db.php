@@ -51,6 +51,23 @@ final class Db
         throw new RuntimeException('Attendance module has no database connection.');
     }
 
+    /**
+     * Pin this connection's clock to UTC.
+     *
+     * Several attendance columns default to CURRENT_TIMESTAMP, and MySQL
+     * evaluates that in the SESSION time zone. On a server whose MySQL is set
+     * to Karachi time those columns would silently hold local time in a
+     * schema that everywhere else holds UTC — five hours out, in exactly the
+     * comparisons (how long has this been waiting?) that drive the HR queue.
+     * The test database happens to run in UTC, so no test would ever have
+     * shown it. Called once at the top of every API request and by the
+     * migration runner; it changes this connection only, not the server.
+     */
+    public static function useUtc(): void
+    {
+        self::conn()->exec("SET time_zone = '+00:00'");
+    }
+
     /** @param array<int|string,mixed> $params */
     public static function run(string $sql, array $params = []): \PDOStatement
     {

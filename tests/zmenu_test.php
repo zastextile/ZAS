@@ -106,6 +106,12 @@ function page_opens(string $href): bool {
         'inv_jobwork.php' => $zu('jobwork'), 'inv_exceptions.php' => $zu('stockrep'), 'search.php' => $office,
         'users.php' => $admin, 'user_access.php' => $admin, 'settings.php' => $admin, 'inv_setup.php' => $admin,
         'exp_settings.php' => $admin, 'inv_reset.php' => $admin,
+        /* Attendance. The HR screen guards itself with zu_require('atthr').
+           att/ is the static phone-app shell: the file itself loads for
+           anyone, but it is only any use to someone the API will let record a
+           gate movement or a HOD confirmation — that is the rule here. */
+        'att_hr_reconciliation.php' => $zu('atthr'),
+        'att/' => $zu('attgate', 'c') || $zu('atthod', 'c'),
     ];
     if (!array_key_exists($f, $map)) { t("the page table knows $f", false); return false; }
     return $map[$f];

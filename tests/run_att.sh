@@ -79,6 +79,7 @@ return [
     'db_charset'   => 'utf8mb4',
     'timezone'     => 'Asia/Karachi',
     'session_name' => 'ZAS_ATT_TEST_SESSION',
+    'app_name'     => 'ZAS (test)',
 ];
 PHP
   WROTE_CFG=1
@@ -89,7 +90,7 @@ cd "$ROOT/tests"
 RC=0
 SUITES=("${@:-}")
 if [ -z "${SUITES[0]:-}" ]; then
-  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_m3_test.php zatt_m4_test.php zatt_api_test.php)
+  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_m3_test.php zatt_m4_test.php zatt_api_test.php zatt_pwa_test.php)
 fi
 
 for t in "${SUITES[@]}"; do
