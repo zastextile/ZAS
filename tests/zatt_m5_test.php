@@ -761,10 +761,26 @@ const waiting = (page) => page.getAttribute('#waiting', 'data-count');
     await dp.waitForFunction(() => /On file/.test([...document.querySelectorAll('#atts-body tr')].find(r => /E003/.test(r.textContent)).textContent));
     check('the list now shows E003 with a photo on file', true);
 
+    // Adding a new employee WITH their photo, in one dialog.
+    await dp.click('button:has-text("Add employee")');
+    await dp.waitForSelector('#attsdlg[open] #emp-photo');
+    await dp.fill('#emp-code', 'E007');
+    await dp.fill('#emp-name', 'Zainab New');
+    await dp.selectOption('#emp-dept', { label: 'Stitching' });
+    await dp.setInputFiles('#emp-photo', DIR + '/face.png');
+    await dp.click('#attsdlg-ok');
+    await dp.waitForFunction(() => /Tick that the employee has been told/.test(document.getElementById('attsdlg-err').textContent));
+    check('adding an employee with a photo but without the notice ticked is refused BEFORE anything is saved', true);
+    await dp.check('#emp-notice');
+    await dp.click('#attsdlg-ok');
+    await dp.waitForFunction(() => !document.querySelector('#attsdlg[open]'), null, { timeout: 20000 });
+    await dp.waitForFunction(() => { const r = [...document.querySelectorAll('#atts-body tr')].find(x => /E007/.test(x.textContent)); return r && /On file/.test(r.textContent); }, null, { timeout: 20000 });
+    check('A NEW EMPLOYEE AND THEIR PHOTO ARE SAVED FROM ONE "Add employee" DIALOG', true);
+
     await dp.click('#atts-tabs button:has-text("Photos")');
     await dp.waitForSelector('#atts-body .facts');
     const facts = await dp.textContent('#atts-body .facts');
-    check('the Photos tab says how many have a photo and that storage is connected', /4 of 5/.test(facts) && /Connected/.test(facts) && /Ready/.test(facts), facts);
+    check('the Photos tab says how many have a photo and that storage is connected', /5 of 6/.test(facts) && /Connected/.test(facts) && /Ready/.test(facts), facts);
     await dp.click('button:has-text("Test the connection")');
     await dp.waitForSelector('#test-steps li');
     check('the connection test shows four steps, all passing', (await dp.locator('#test-steps li.okmsg').count()) === 4);
@@ -829,6 +845,9 @@ ok($e4[0]['photo_key'] !== null && $e4[1]['photo_key'] !== null && is_file("$r2d
 ok(dims(file_get_contents("$r2dir/objects/{$e4[1]['photo_key']}")) === [960, 1280, 'image/webp'] && (int) $e4[1]['photo_bytes'] < 400000, 'stored as 960 × 1280 WebP');
 ok((int) $e4[0]['entry_cycle_id'] > 0 && (int) $e4[0]['entry_cycle_id'] === (int) $e4[1]['entry_cycle_id'], 'both tied to the same entry: the IN that opened it and the OUT that closed it');
 ok($e4[0]['status'] === 'reviewed' && $e4[1]['status'] === 'open', 'the one HR reviewed is reviewed; the other is still open');
+$e7 = Db::one("SELECT reference_photo_key, notice_ack_at FROM att_employees WHERE code = 'E007'");
+ok($n("SELECT COUNT(*) FROM att_employees WHERE code = 'E007'") === 1 && $e7['reference_photo_key'] !== null && $e7['notice_ack_at'] !== null,
+   'E007 exists once, with a photo and the notice date — the refused first attempt did not create a half-made employee');
 ok(Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$emp['E003']]) !== null
    && Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$emp['E005']]) !== null, 'E003 (from the Setup dialog) and E005 (from the bucket folder) now have photos');
 $shown = $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view'") - $views0;

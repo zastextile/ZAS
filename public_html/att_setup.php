@@ -334,26 +334,69 @@ page_header('Attendance — Setup');
   }
 
   function editEmployee(e){
-    var code = el('input', { type: 'text', class: 'full', maxlength: 40, value: e ? e.code : '', autocomplete: 'off' });
-    var name = el('input', { type: 'text', class: 'full', maxlength: 160, value: e ? e.full_name : '', autocomplete: 'off' });
+    var code = el('input', { type: 'text', class: 'full', maxlength: 40, value: e ? e.code : '', autocomplete: 'off', id: 'emp-code' });
+    var name = el('input', { type: 'text', class: 'full', maxlength: 160, value: e ? e.full_name : '', autocomplete: 'off', id: 'emp-name' });
     var depts = activeDepts();
     if (e && !depts.some(function(d){ return String(d.id) === String(e.department_id); })) depts = depts.concat([{ id: e.department_id, name: e.department_name + ' (switched off)' }]);
-    var dept = el('select', { class: 'full' }, options(depts, 'id', 'name', e ? e.department_id : '', 'Choose…'));
+    var dept = el('select', { class: 'full', id: 'emp-dept' }, options(depts, 'id', 'name', e ? e.department_id : '', 'Choose…'));
     var worker = el('input', { type: 'text', class: 'full', maxlength: 40, value: e && e.worker_code ? e.worker_code : '', autocomplete: 'off' });
     var qr = el('input', { type: 'text', class: 'full', maxlength: 190, value: e && e.qr_payload ? e.qr_payload : '', autocomplete: 'off' });
+
+    /* The photo, in the same dialog. Saving it needs "update" as well as
+       "create", so a clerk who may only add people does not see the box. */
+    var savedId = e ? e.id : null;                  // set once the employee row exists, so a retry never adds them twice
+    var told = !!(e && parseInt(e.notice_given, 10) === 1);
+    var has = !!(e && parseInt(e.has_photo, 10) === 1);
+    var file = el('input', { type: 'file', id: 'emp-photo', accept: 'image/jpeg,image/png,image/webp' });
+    var notice = el('input', { type: 'checkbox', id: 'emp-notice' });
+    var preview = has ? el('img', { class: 'portrait', alt: 'Photo on file', src: photoSrc(e.id) }) : el('div', { class: 'portrait none', text: 'No photo yet' });
+    var holder = el('div', {}, [preview]);
+    file.addEventListener('change', function(){
+      var f = file.files && file.files[0];
+      if (!f) return;
+      var img = el('img', { class: 'portrait', alt: 'The picture chosen' });
+      img.src = URL.createObjectURL(f);
+      img.onload = function(){ URL.revokeObjectURL(img.src); };
+      holder.textContent = ''; holder.appendChild(img);
+    });
+    var photoBlock = CAN.u ? el('div', { class: 'pair' }, [holder, el('div', { style: 'flex:1;min-width:200px' }, [
+      field(has ? 'Replace the photo (optional)' : 'Photo (optional) — JPG, PNG or WebP, up to 10 MB', file),
+      el('p', { class: 'muted', style: 'font-size:12.5px;margin:6px 0 0', text: 'Shown to the gatekeeper and HOD when this code is typed or scanned. Cropped to an upright portrait and stored small; the original is not kept.' }),
+      told ? null : el('label', { class: 'inline' }, [notice, 'This employee has been told their photo will be kept for attendance'])
+    ])]) : null;
+
     dialog({
       title: e ? 'Edit ' + e.full_name : 'Add employee',
       text: 'The code is what the gatekeeper types or scans. It cannot be changed once the employee has attendance recorded.',
       fields: [
         el('div', { class: 'two' }, [field('Employee code', code), field('Department', dept)]),
         field('Full name', name),
+        photoBlock,
         el('details', {}, [el('summary', { text: 'More (optional)' }),
           field('Production worker code — links this person to the production module', worker),
           field('Card text — only if their card scans as something other than the code', qr)])
       ],
       submit: function(){
-        return call('POST', '/admin/employees', { id: e ? e.id : null, code: code.value, full_name: name.value, department_id: parseInt(dept.value, 10) || 0, worker_code: worker.value, qr_payload: qr.value })
-          .then(function(r){ if (r.ok && drawEmployees.refresh) drawEmployees.refresh(); return r; });
+        var pic = CAN.u && file.files && file.files[0] ? file.files[0] : null;
+        if (pic && !told && !notice.checked) { dlgError('Tick that the employee has been told their photo will be kept, or remove the photo.'); return null; }
+        return call('POST', '/admin/employees', { id: savedId, code: code.value, full_name: name.value, department_id: parseInt(dept.value, 10) || 0, worker_code: worker.value, qr_payload: qr.value })
+          .then(function(r){
+            if (!r.ok) return r;
+            savedId = r.employee_id;
+            if (drawEmployees.refresh) drawEmployees.refresh();
+            if (!pic) return r;
+            return shrink(pic).then(function(small){
+              return sendFile('/admin/employees/photo', { id: savedId, notice_given: (told || notice.checked) ? '1' : '0' }, small);
+            }).then(function(p){
+              if (drawEmployees.refresh) drawEmployees.refresh();
+              if (p.ok) return r;
+              // The person is saved; only the picture is not. Say exactly that,
+              // and leave the dialog open so another picture can be chosen.
+              document.getElementById('attsdlg-title').textContent = 'Edit ' + name.value;
+              dlgError('The employee is saved, but the photo was not: ' + (p.error || 'unknown reason') + ' Choose another picture and save again, or close.');
+              return { keepOpen: true };
+            });
+          });
       }
     });
     code.focus();
