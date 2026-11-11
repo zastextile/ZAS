@@ -714,5 +714,75 @@ phone uses depends on them.
 **Still to come in M7:** attendance and movement reports, dashboards, device
 list on the setup screen (withdrawing a phone is on the HR screen today).
 
-### Next: M5 — flagged entries with photo (private R2 storage, signed URLs,
-retention). Normal attendance still never takes a photo.
+## 17. M5 — delivered 2026-11-11
+
+**758 assertions green** (M1 64, M2 51, M3 62, M4 74, API 58, phone app 63,
+setup 173, M5 213). Existing ERP suites unchanged.
+
+| Delivered | Where |
+|---|---|
+| `att_flags`, reference-photo bookkeeping columns, 2 policies + rollback | `sql/att/0013` |
+| Private storage through the ERP's existing R2 client; folder listing | `includes/att/Storage.php` |
+| Inspect by content, then re-make: fixed size, WebP | `includes/att/Images.php` |
+| Reference photos, bring-in from a bucket folder, flags, stills, review, retention | `includes/att/PhotoService.php` |
+| `/employees/{code}/photo`, `/flags*`, `/attendance/{cycle}/flag\|photo-upload-url\|photo-confirm`, `/hr/flags*`, `/admin/photos/*`, `/admin/employees/photo*` | `api/v1/index.php` |
+| Phone: photo on code/scan (gate and HOD), Capture & Flag with offline queue | `public_html/att/` (app 1.1.0, shell v2) |
+| Setup: Photo… per employee, Photos tab, retention setting | `att_setup.php` |
+| HR: Flagged entries, photo on file beside photo taken at the gate | `att_hr_reconciliation.php` |
+| Timed clean-up (CLI only) | `att_cron.php` |
+| Tests + stand-in bucket | `tests/zatt_m5_test.php`, `tests/fake_r2.php` |
+
+**Acceptance — AT07 ✅**
+- *No photo for a normal entry.* Five scans and a HOD confirmation leave the
+  bucket empty; the gate-event, entry and HOD tables have no column a picture
+  could go in; a still without a flag is refused; the app has one picture
+  input and it is inside `openFlag()`.
+- *Flagged photo private.* Random object key that never leaves the server; no
+  link is ever produced; HR-only over HTTP; every view audited.
+
+**Owner's requirements (2026-11-11):**
+- *The employee's photo shows when a gatekeeper or HOD types or scans a
+  code.* Shown beside the name before IN / OUT / Confirm is pressed, and from
+  the HOD's waiting list. Tested in Chromium on both phones.
+- *Strict uploads: cropped, fixed size, modern format, no large files.* Every
+  reference photo is stored at exactly 480 × 600 WebP (about 30 KB) whatever
+  was uploaded; a flagged still is fitted inside 1280 and not cropped. No
+  original is kept anywhere. Limits: 10 MB in, 40 megapixels, 160 × 200
+  minimum. JPEG is written only where the server's GD cannot write WebP.
+- *Online-only on the phone.* Photos are fetched each time (`no-store`), never
+  in the service-worker cache or IndexedDB; offline the box says so and the
+  name still shows.
+
+**Decisions taken while building, each stricter than the blueprint text:**
+1. **No signed URL is handed to a phone.** The blueprint says "signed
+   short-lived access". The ERP's own storage layer already refuses to give a
+   browser a signed link (it is a forwardable bearer token), so pictures are
+   read by the server after the permission and department checks and sent on.
+2. **`photo-upload-url` answers with an address on this server**, not a
+   pre-signed bucket URL. The bytes are inspected and re-made before anything
+   is stored, and no bucket CORS setup is needed.
+3. **Phones flag by the scan's own id** (`POST /flags`), because offline they
+   cannot know the entry number; the three contract routes exist for callers
+   that do. A scan the server refused can still be flagged (no entry, known
+   employee).
+4. **Storage reused, not duplicated:** the four `r2_` lines already in
+   `config.php` for documents. Attendance writes only under `attendance/`;
+   the hand-over folder is `employee-photos/` and is only ever read.
+
+**Found and fixed while building:**
+- A HOD given the job from the People tab held only the HOD permission, and
+  the employee list/lookup routes asked for the gate permission — so a HOD's
+  phone could not load its list and showed no name for a typed code. Those
+  routes now accept either permission; the department scope still applies.
+- The test helper that waited for the phone's employee list was satisfied by
+  an unresolved promise, which is how the above went unseen in M4.
+
+**Not in M5 (and why):**
+- Flagging from the HOD screen — the blueprint puts Capture & Flag at the gate.
+- Face matching — the crop is a fixed rule (centre, favouring the top), shown
+  back on the Setup screen so a bad one is seen at once.
+- Retention for reference photos of leavers — only flagged stills have a
+  retention period today. Open decision for the owner.
+
+### Next: M6 — overtime request, approval, next-day verification, rate and
+payroll lock (AT08–AT11).

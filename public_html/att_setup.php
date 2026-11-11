@@ -450,6 +450,23 @@ page_header('Attendance — Setup');
       .then(function(r){ return r.json().catch(function(){ return { ok: false, error: r.status === 413 ? 'That picture is too large to upload.' : 'The server sent something unreadable.' }; }); })
       .catch(function(){ return { ok: false, error: 'The server could not be reached.' }; });
   }
+  /* Make a big camera file small in the browser before it travels: servers
+     commonly refuse an upload over 2 MB long before this app sees it. The
+     server crops and re-makes the picture again whatever arrives; anything
+     this cannot read is sent as it is, for the server to refuse by name. */
+  function shrink(file){
+    return new Promise(function(resolve){
+      if (!window.createImageBitmap) return resolve(file);
+      createImageBitmap(file, { imageOrientation: 'from-image' }).then(function(bmp){
+        var scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+        if (scale === 1 && file.size < 1500000) return resolve(file);
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(bmp.width * scale)); c.height = Math.max(1, Math.round(bmp.height * scale));
+        c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+        c.toBlob(function(b){ resolve(b && b.size < file.size ? b : file); }, 'image/jpeg', 0.88);
+      }).catch(function(){ resolve(file); });
+    });
+  }
   function photoSrc(id){ return API + encodeURIComponent('/admin/employees/photo') + '&id=' + encodeURIComponent(id) + '&t=' + Date.now(); }
 
   function photoDialog(e){
@@ -481,7 +498,9 @@ page_header('Attendance — Setup');
       ],
       submit: function(){
         if (!file.files || !file.files[0]) { dlgError('Choose a picture first.'); return null; }
-        return sendFile('/admin/employees/photo', { id: e.id, notice_given: (told || notice.checked) ? '1' : '0' }, file.files[0]).then(function(r){
+        return shrink(file.files[0]).then(function(small){
+          return sendFile('/admin/employees/photo', { id: e.id, notice_given: (told || notice.checked) ? '1' : '0' }, small);
+        }).then(function(r){
           if (!r.ok) return r;
           holder.textContent = '';
           holder.appendChild(el('img', { class: 'portrait', id: 'ph-current', alt: 'Photo on file for ' + e.full_name, src: photoSrc(e.id) }));

@@ -44,8 +44,8 @@ page_header('Attendance — Reconciliation');
 .attq .none{color:#5a6b82;font-size:13.5px;padding:6px 0}
 .attq .count{display:inline-block;min-width:22px;text-align:center;border-radius:99px;padding:1px 7px;font-size:12px;font-weight:700;background:#e8eef6;color:#33475f;margin-left:6px}
 .attq .count.hot{background:#fbe6e4;color:#a1241c}
-.attq button.act{font:inherit;font-size:12.5px;font-weight:600;padding:5px 9px;border-radius:7px;border:1px solid #cfd9e6;background:#fff;cursor:pointer;margin:0 4px 4px 0}
-.attq button.act.primary{background:#10243e;color:#fff;border-color:#10243e}
+.attq button.act,#attdlg button.act,#attphoto button.act{font:inherit;font-size:12.5px;font-weight:600;padding:5px 9px;border-radius:7px;border:1px solid #cfd9e6;background:#fff;cursor:pointer;margin:0 4px 4px 0}
+.attq button.act.primary,#attdlg button.act.primary{background:#10243e;color:#fff;border-color:#10243e}
 .attq .muted{color:#5a6b82}.attq .err{color:#a1241c;font-weight:600}
 #attdlg{border:1px solid #cfd9e6;border-radius:12px;padding:18px;max-width:480px;width:92vw}
 #attdlg::backdrop{background:rgba(16,36,62,.35)}
