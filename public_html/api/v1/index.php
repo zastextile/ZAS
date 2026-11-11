@@ -35,6 +35,7 @@ require_once dirname(__DIR__, 2) . '/includes/att/Storage.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Images.php';
 require_once dirname(__DIR__, 2) . '/includes/att/PhotoService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/OvertimeService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/ReportService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
@@ -47,6 +48,7 @@ use Att\HrService;
 use Att\Http;
 use Att\Images;
 use Att\OvertimeService as OT;
+use Att\ReportService;
 use Att\PhotoService;
 use Att\Policy;
 use Att\Roles;
@@ -807,14 +809,58 @@ try {
             admin_answer(AdminService::saveSettings(is_array($values) ? $values : [], (int) $u['id']));
             break;
 
-        // ------------------------------------------- declared, not yet built
+        // ---------------------------------------------------------- reports
+        /* Read-only. HR, Accounts and Admin see every department; a HOD sees
+           their own departments only. ?format=csv downloads the same rows. */
 
-        case in_array($route, [
-            '/reports/attendance', '/reports/movements', '/reports/overtime',
-        ], true):
-            Http::fail('NOT_IMPLEMENTED', 'This endpoint arrives in a later milestone.', 501, [
-                'route' => $route,
-            ]);
+        case $method === 'GET' && $route === '/reports/dashboard':
+            $u = Http::requirePermission('attrep', 'v');
+            Http::json(ReportService::dashboard(report_scope((int) $u['id'])));
+            break;
+
+        case $method === 'GET' && in_array($route, ['/reports/attendance', '/reports/movements', '/reports/overtime'], true):
+            $u = Http::requirePermission('attrep', 'v');
+            if ($route === '/reports/overtime' && !Roles::can('attotap', 'v') && !Roles::can('attpay', 'v') && !Roles::can('attot', 'v')) {
+                Http::fail('FORBIDDEN', 'You do not have permission for this action.', 403);
+            }
+            $f = ['from' => Http::input('from', ''), 'to' => Http::input('to', ''), 'department_id' => Http::input('department_id', 0), 'employee' => Http::input('employee', '')];
+            $scope = report_scope((int) $u['id']);
+            $r = match ($route) {
+                '/reports/attendance' => ReportService::attendance($f, $scope),
+                '/reports/movements'  => ReportService::movements($f, $scope),
+                default               => ReportService::overtime($f, $scope),
+            };
+            if (!$r['ok'] || Http::input('format', '') !== 'csv') {
+                admin_answer($r);
+            }
+            Audit::record('report.export', 'att_report', 0, null, ['report' => $route, 'from' => $r['from'], 'to' => $r['to'], 'rows' => count($r['rows'])], (int) $u['id']);
+            $t = fn($v) => $v === null ? '' : (new DateTimeImmutable((string) $v))->setTimezone(new DateTimeZone('Asia/Karachi'))->format('Y-m-d H:i');
+            $name = trim($route, '/');
+            $name = str_replace('reports/', '', $name) . '-' . $r['from'] . '-to-' . $r['to'] . '.csv';
+            if ($route === '/reports/attendance') {
+                send_csv($name, ['Work date', 'Code', 'Name', 'Department', 'Shift', 'Shift start', 'Shift end', 'First IN', 'Last OUT', 'Entries', 'Present minutes',
+                                 'Late minutes', 'Left early minutes (potential)', 'Unconfirmed by HOD', 'Status', 'Approved OT minutes', 'Actual OT minutes'],
+                    array_map(fn($x) => [$x['work_date'], $x['employee_code'], $x['full_name'], $x['department_name'], $x['shift_name'], $t($x['starts_at']), $t($x['ends_at']),
+                        $t($x['first_in']), $t($x['last_out']), $x['entries'], $x['present_minutes'], $x['late_minutes'], $x['early_minutes'], $x['unconfirmed'], $x['status'],
+                        $x['ot_approved_minutes'], $x['ot_actual_minutes']], $r['rows']));
+            } elseif ($route === '/reports/movements') {
+                send_csv($name, ['Time', 'IN/OUT', 'Code', 'Name', 'Department', 'Entry no.', 'Recorded by', 'Phone', 'Sent', 'Received by server', 'HOD confirmed', 'HOD'],
+                    array_map(fn($x) => [$t($x['occurred_at']), $x['event_type'] === 'GATE_IN' ? 'IN' : 'OUT', $x['employee_code'], $x['full_name'], $x['department_name'],
+                        $x['entry_sequence'], $x['recorded_by'], $x['phone'], $x['source'] === 'offline_replay' ? 'later (offline)' : 'at once', $t($x['received_at']),
+                        $t($x['hod_confirmed_at']), $x['hod_name']], $r['rows']));
+            } else {
+                send_csv($name, ['Work date', 'Department', 'Code', 'Name', 'Reason', 'Asked min', 'Decision', 'Approved min', 'Checked', 'Actual min', 'Rate type', 'Rate', 'Amount', 'Payroll',
+                                 'Requested by', 'Decided by', 'Checked by'],
+                    array_map(fn($x) => [$x['work_date'], $x['department_name'], $x['employee_code'], $x['full_name'], $x['reason'], $x['estimated_minutes'], $x['approval_status'],
+                        $x['approved_minutes'], $x['verification_status'], $x['actual_minutes'], $x['rate_type'], $x['manual_rate'], $x['amount'], $x['payroll_status'],
+                        $x['requested_by'], $x['decided_by'], $x['verified_by']], $r['rows']));
+            }
+            break;
+
+        case $method === 'POST' && preg_match('#^/admin/devices/(\d+)/label$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u = Http::requirePermission('attadm', 'u');
+            admin_answer(AdminService::renameDevice((int) $m[1], (string) Http::input('label', ''), (int) $u['id']));
             break;
 
         default:
@@ -895,6 +941,18 @@ function flag_answer(array $out): never
         default                                                          => 422,
     };
     Http::json($out, $status);
+}
+
+/** Which departments a report covers for this user. null = all. */
+function report_scope(int $userId): array|null
+{
+    if (ot_is_officer($userId)) {
+        return null;
+    }
+    if (Roles::has($userId, Roles::HOD)) {
+        return Roles::departmentScope($userId, Roles::HOD) ?? [];
+    }
+    return [];      // the permission without a job: sees no department's people
 }
 
 /** Departments this user may request overtime for. null = any (an admin). */

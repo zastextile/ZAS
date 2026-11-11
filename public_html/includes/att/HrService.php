@@ -246,9 +246,13 @@ final class HrService
     /** @return list<array<string,mixed>> */
     public static function devices(): array
     {
+        $users = Db::tableExists('users');
         return Db::all(
-            'SELECT id, device_uuid, label, role_scope, app_version, last_seen_at, revoked_at, revoke_reason, created_at
-               FROM att_devices ORDER BY (revoked_at IS NOT NULL), last_seen_at DESC, id DESC'
+            'SELECT dv.id, dv.device_uuid, dv.label, dv.role_scope, dv.app_version, dv.last_seen_at, dv.revoked_at, dv.revoke_reason, dv.created_at,
+                    ' . ($users ? 'u.name' : 'NULL') . ' AS registered_by_name,
+                    (SELECT COUNT(*) FROM att_events ev WHERE ev.device_id = dv.id) AS scans
+               FROM att_devices dv ' . ($users ? 'LEFT JOIN users u ON u.id = dv.registered_by ' : '') . '
+              ORDER BY (dv.revoked_at IS NOT NULL), dv.last_seen_at DESC, dv.id DESC'
         );
     }
 

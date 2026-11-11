@@ -50,13 +50,13 @@ final class AdminService
                               'also' => ['attflag' => 'vc']],
         Roles::HOD        => ['label' => 'HOD',        'module' => 'atthod',  'actions' => 'vc',  'needs' => 'vc', 'needs_department' => true,
                               // A HOD asks for overtime for their department.
-                              'also' => ['attot' => 'vc']],
+                              'also' => ['attot' => 'vc', 'attrep' => 'v']],
         Roles::HR         => ['label' => 'HR',         'module' => 'atthr',   'actions' => 'vud', 'needs' => 'vu', 'needs_department' => false,
                               // Blueprint §4: one of HR / Admin / Accounts approves, and verifies the next day.
-                              'also' => ['attotap' => 'vu', 'attotvf' => 'vu']],
+                              'also' => ['attotap' => 'vu', 'attotvf' => 'vu', 'attrep' => 'v']],
         Roles::ACCOUNTS   => ['label' => 'Accounts',   'module' => 'attpay',  'actions' => 'vu',  'needs' => 'v',  'needs_department' => false,
                               // Accounts approves and verifies too, and enters the rate and finalizes payroll.
-                              'also' => ['attotap' => 'vu', 'attotvf' => 'vu']],
+                              'also' => ['attotap' => 'vu', 'attotvf' => 'vu', 'attrep' => 'v']],
     ];
     /* 'actions' is what granting the job ticks; 'needs' is the least the job
        must hold to count as working on the People tab. */
@@ -895,6 +895,24 @@ final class AdminService
             error_log('[att-admin] permission sync failed: ' . $e->getMessage());
             return false;
         }
+    }
+
+    // ------------------------------------------------------------------ phones
+
+    /** Give a phone a name people recognise — "Main gate", "Unit 2 back gate". */
+    public static function renameDevice(int $id, string $label, int $actorId): array
+    {
+        $label = self::clean($label);
+        if ($label === '' || mb_strlen($label) > 100) {
+            return self::no('VALIDATION', $label === '' ? 'Give the phone a name.' : 'A phone name can be at most 100 characters.');
+        }
+        $d = Db::one('SELECT id, label FROM att_devices WHERE id = ?', [$id]);
+        if ($d === null) {
+            return self::no('NOT_FOUND', 'That phone is not registered.');
+        }
+        Db::run('UPDATE att_devices SET label = ? WHERE id = ?', [$label, $id]);
+        Audit::record('device.rename', 'att_device', $id, ['label' => $d['label']], ['label' => $label], $actorId);
+        return ['ok' => true, 'device_id' => $id, 'label' => $label];
     }
 
     // ----------------------------------------------------------------- settings

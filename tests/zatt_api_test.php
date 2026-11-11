@@ -335,12 +335,13 @@ $hodGate = call('POST', '/attendance/in', [
 ], ['X-CSRF-Token' => $csrf]);
 ok($hodGate['status'] === 403, 'A HOD CANNOT RECORD GATE EVENTS — view permission is not create permission');
 
-echo "9. Later milestones answer 501, unknown routes 404\n";
-/* A route from a milestone that has not been built. This used to probe
-   /sync/status, which M4 then built — so the probe moves on with it. */
-$later = call('GET', '/reports/overtime');
-ok($later['status'] === 501, '/reports/overtime is 501 (declared, not built)');
-ok(($later['body']['reason_code'] ?? '') === 'NOT_IMPLEMENTED', '  reason_code NOT_IMPLEMENTED');
+echo "9. Reports need their own permission; unknown routes 404\n";
+/* Every route in API_CONTRACT.md is built as of M7, so the old "501, not
+   built yet" probe now checks the report routes are guarded: this HOD was
+   given HOD and gate-view rights directly, not the Reports permission. */
+$later = call('GET', '/reports/overtime', ['from' => '2026-03-01', 'to' => '2026-03-02']);
+ok($later['status'] === 403, '/reports/overtime without the Reports permission is 403');
+ok(($later['body']['reason_code'] ?? '') === 'FORBIDDEN', '  reason_code FORBIDDEN');
 $nowhere = call('GET', '/does/not/exist');
 ok($nowhere['status'] === 404 && ($nowhere['body']['reason_code'] ?? '') === 'NO_ROUTE', 'an unknown route is 404 NO_ROUTE');
 

@@ -110,7 +110,7 @@ function page_opens(string $href): bool {
            att/ is the static phone-app shell: the file itself loads for
            anyone, but it is only any use to someone the API will let record a
            gate movement or a HOD confirmation — that is the rule here. */
-        'att_hr_reconciliation.php' => $zu('atthr'), 'att_setup.php' => $zu('attadm'), 'att_overtime.php' => $zu('attot') || $zu('attotap') || $zu('attotvf') || $zu('attpay'),
+        'att_hr_reconciliation.php' => $zu('atthr'), 'att_setup.php' => $zu('attadm'), 'att_reports.php' => $zu('attrep'), 'att_overtime.php' => $zu('attot') || $zu('attotap') || $zu('attotvf') || $zu('attpay'),
         'att/' => $zu('attgate', 'c') || $zu('atthod', 'c'),
     ];
     if (!array_key_exists($f, $map)) { t("the page table knows $f", false); return false; }

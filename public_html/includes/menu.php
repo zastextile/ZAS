@@ -222,11 +222,12 @@ function zas_menu(): array {
         [
             'label' => 'Attendance', 'icon' => 'shield',
             'show'  => $zu('atthr') || $zu('attadm') || $zu('attgate', 'c') || $zu('atthod', 'c')
-                       || $zu('attot') || $zu('attotap') || $zu('attotvf') || $zu('attpay'),
+                       || $zu('attot') || $zu('attotap') || $zu('attotvf') || $zu('attpay') || $zu('attrep'),
             'items' => [
                 ['label' => 'Setup',                'href' => 'att_setup.php',             'show' => $zu('attadm')],
                 ['label' => 'Overtime',             'href' => 'att_overtime.php',
                  'show' => $zu('attot') || $zu('attotap') || $zu('attotvf') || $zu('attpay')],
+                ['label' => 'Reports',              'href' => 'att_reports.php',           'show' => $zu('attrep')],
                 ['label' => 'Reconciliation (HR)',  'href' => 'att_hr_reconciliation.php', 'show' => $zu('atthr')],
                 ['label' => 'Gate / HOD phone app', 'href' => 'att/',                      'show' => $zu('attgate', 'c') || $zu('atthod', 'c')],
             ],

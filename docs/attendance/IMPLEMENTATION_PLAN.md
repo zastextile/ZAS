@@ -838,5 +838,40 @@ setup 173, M5 213, M6 157). Existing ERP suites unchanged.
 rejects it instead); separate approval limits per officer; overtime reports
 across months (M7).
 
-### Next: M7 — dashboards and reports (attendance, movements, overtime),
-device list on the Setup screen.
+## 19. M7 — delivered 2026-11-11
+
+**1007 assertions green** (M1 64, M2 51, M3 62, M4 74, API 58, phone app 83,
+setup 173, M5 216, M6 157, M7 69). Existing ERP suites unchanged.
+
+| Delivered | Where |
+|---|---|
+| Today, attendance, movements, overtime — read-only | `includes/att/ReportService.php` |
+| `/reports/dashboard`, `/reports/attendance\|movements\|overtime` (+ `?format=csv`), `/admin/devices/{id}/label` | `api/v1/index.php` |
+| Reports screen: Today, Attendance, Movements, Overtime | `att_reports.php` |
+| Setup › Phones: list, rename, withdraw | `att_setup.php` |
+| HOD, HR and Accounts jobs include Reports; menu entry | `AdminService.php`, `includes/menu.php` |
+| Tests, incl. night shift across midnight, grace boundaries, scope, CSV, browser | `tests/zatt_m7_test.php` |
+
+**Definitions the reports use (and say on screen):**
+- *Present minutes* = closed IN–OUT entries only. An open entry is "inside".
+  An HOD confirmation is never an IN (blueprint §5) — tested.
+- *Late* = first IN after shift start + grace. *Left early* = last OUT before
+  shift end − grace with nothing open; labelled **potential** (blueprint §2).
+  Exactly on a grace limit is neither.
+- *Absent* = a shift day that was assigned and has no entry. A default shift
+  is attached only on arrival (D4), so "no entry today" is shown separately
+  and includes days off.
+- *Overtime* = approved and next-day-checked only (AT08 on the report side).
+- A night shift is reported under the day it began.
+
+**Scope:** HR, Accounts and Admin see every department and get the "Needs
+attention" panel (blueprint §7 monitoring: quiet phones as the server-side
+sign of a sync backlog, held scans, unmatched HOD confirmations, entries left
+open, clock drift, failed photo uploads, overtime waiting). A HOD sees only
+their departments and no system monitoring. Every CSV download is audited.
+
+**Not here:** backup monitoring — Cloudways takes the backups; the panel says
+so. All API_CONTRACT.md routes are now built (no 501s left).
+
+### Next: M8 — integration tests, UAT with real users, backup/restore test,
+security hardening and deployment checklist.

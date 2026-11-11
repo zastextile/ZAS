@@ -227,6 +227,7 @@ page_header('Attendance — Setup');
     { id: 'dept',   label: 'Departments', draw: drawDepartments },
     { id: 'shift',  label: 'Shifts',      draw: drawShifts },
     { id: 'photo',  label: 'Photos',      draw: drawPhotos },
+    { id: 'phones', label: 'Phones',      draw: drawPhones },
     { id: 'people', label: 'People',      draw: drawPeople },
     { id: 'set',    label: 'Settings',    draw: drawSettings }
   ];
@@ -616,6 +617,39 @@ page_header('Attendance — Setup');
         el('label', { style: 'display:block;font-size:13.5px;margin:0 0 10px' }, [notice, ' These employees have been told their photo will be kept for attendance']),
         el('div', { class: 'bar' }, [go]),
         importOut
+      ]);
+    });
+  }
+
+  // --------------------------------------------------------------- phones
+  /* Every phone that has signed in to the gate / HOD app. Name each one so
+     scans say where they came from ("Main gate", "Unit 2 back gate"), and
+     withdraw a lost or retired one: it is refused from its very next scan. */
+  function utc(v){ if (!v) return '—'; var d = new Date(String(v).replace(' ', 'T').replace(/(\.\d+)?$/, '') + 'Z'); return isNaN(d) ? v : d.toLocaleString('en-GB', { timeZone: 'Asia/Karachi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+  function drawPhones(){
+    call('GET', '/devices').then(function(r){
+      if (!r.ok) return fail(r);
+      var live = r.devices.filter(function(d){ return !d.revoked_at; });
+      show([
+        el('p', { class: 'note', text: live.length + ' phone' + (live.length === 1 ? '' : 's') + ' in service. A phone registers itself the first time a gatekeeper or HOD signs in on it. Give each one a name people recognise — the name appears on every scan it sends.' }),
+        r.devices.length ? table(['Phone', 'Used for', 'Signed in first by', 'Scans', 'Last heard from', 'App', 'State', ''], r.devices, function(d){
+          var off = !!d.revoked_at;
+          return [el('strong', { text: d.label || '—' }), d.role_scope === 'both' ? 'gate and HOD' : d.role_scope, d.registered_by_name || '—', String(d.scans || 0), utc(d.last_seen_at), d.app_version || '—',
+            el('span', { class: 'pill ' + (off ? 'off' : 'good'), text: off ? 'Withdrawn ' + utc(d.revoked_at) : 'In service' }),
+            (!off && CAN.u) ? el('span', {}, [
+              btn('Rename', function(){
+                var n = el('input', { type: 'text', class: 'full', maxlength: 100, value: d.label || '', id: 'ph-label' });
+                dialog({ title: 'Name this phone', text: 'For example "Main gate" or "Stitching HOD". Shown on every scan this phone sends.', fields: [field('Name', n)],
+                  submit: function(){ return call('POST', '/admin/devices/' + d.id + '/label', { label: n.value }).then(function(x){ if (x.ok) drawPhones(); return x; }); } });
+              }), ' ',
+              btn('Withdraw…', function(){
+                var why = el('textarea', { class: 'full', rows: 3, id: 'ph-why' });
+                dialog({ title: 'Withdraw "' + (d.label || 'this phone') + '"?', text: 'It is refused from its next scan and cannot register again. Scans still on it and not yet sent will be refused too, so send them first if the phone is in your hand.',
+                  fields: [field('Reason (kept on the record)', why)], okText: 'Withdraw',
+                  submit: function(){ return call('POST', '/devices/' + d.id + '/revoke', { reason: why.value }).then(function(x){ if (x.ok) drawPhones(); return x; }); } });
+              })
+            ]) : el('span', {})];
+        }) : el('p', { class: 'muted', text: 'No phone has signed in yet.' })
       ]);
     });
   }
