@@ -115,6 +115,7 @@ try {
                     'gate' => Roles::can('attgate', 'c'),
                     'hod'  => Roles::can('atthod', 'c'),
                     'flag' => Roles::can('attflag', 'c'),
+                    'ot'   => Roles::can('attot', 'c'),
                 ],
                 'flag_reasons' => PhotoService::REASONS,
                 'csrf_token' => function_exists('csrf_token') ? csrf_token() : ($_SESSION['_csrf'] ?? ''),
@@ -411,6 +412,16 @@ try {
             Http::requireCsrf();
             $u = Http::requirePermission('attot', 'c');
             admin_answer(OT::createRequest(Http::body(), ot_request_scope((int) $u['id']), (int) $u['id']));
+            break;
+
+        /* Who a requester may ask for overtime for: their departments and
+           the active people in them. */
+        case $method === 'GET' && $route === '/overtime/employees':
+            $u = Http::requirePermission('attot', 'v');
+            $scope = ot_request_scope((int) $u['id']);
+            $depts = array_values(array_filter(Employees::departments(true), fn($d) => $scope === null || in_array((int) $d['id'], $scope, true)));
+            Http::json(['ok' => true, 'departments' => $depts,
+                        'employees' => $depts === [] ? [] : Employees::syncSnapshot(array_map(fn($d) => (int) $d['id'], $depts))['employees']]);
             break;
 
         case $method === 'GET' && $route === '/overtime/requests':

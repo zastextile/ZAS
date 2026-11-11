@@ -28,12 +28,12 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.1.0';
+  var APP_VERSION = '1.2.0';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
   var S = {
-    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false }, csrf: '', flagReasons: {},
+    screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false, ot: false }, csrf: '', flagReasons: {}, otUuid: null,
     deviceUuid: null, deviceId: null, revoked: false, online: navigator.onLine, needLogin: false,
     syncing: false, lastSync: null, lastError: '', persisted: null, pin: null, pinFails: 0,
     policies: { dup: 60, warnMin: 120 }, waitingForGate: 0, hiddenAt: 0, message: null, selected: {}
@@ -407,6 +407,94 @@
     reason.focus();
   }
 
+  // --------------------------------------------------------------- overtime
+  /* An overtime REQUEST is not a gate record and does not go through the
+     outbox: it needs a connection, and the screen says so. It carries its
+     own id, kept until the server answers, so pressing Send again after a
+     dropped connection is the same request and never a second one. */
+  function renderOvertime(body) {
+    var box = el('div', { class: 'card', id: 'ot-card' }, [el('p', { class: 'muted', text: 'Loading…' })]);
+    var mine = el('div', { id: 'ot-mine' });
+    body.appendChild(box);
+    body.appendChild(el('h2', { text: 'Your recent requests' }));
+    body.appendChild(mine);
+    if (!navigator.onLine) {
+      box.textContent = '';
+      box.appendChild(el('p', { class: 'msg bad', id: 'ot-offline', text: 'Overtime requests need a connection. Nothing here is saved on the phone.' }));
+      return;
+    }
+    Promise.all([api('GET', '/overtime/employees'), api('GET', '/overtime/requests?status=all')]).then(function (v) {
+      var r = v[0].body, list = v[1].body;
+      box.textContent = '';
+      if (!r.ok || !r.departments.length) { box.appendChild(el('p', { class: 'muted', text: (r && r.error) || 'You are not the HOD of a department.' })); return; }
+      var now = new Date(Date.now() + (5 * 60 + new Date().getTimezoneOffset()) * 60000);
+      var date = el('input', { type: 'date', id: 'ot-date', value: now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2) });
+      var dept = el('select', { id: 'ot-dept' }, r.departments.map(function (d) { return el('option', { value: d.id, text: d.name }); }));
+      var reason = el('textarea', { id: 'ot-reason', rows: '2', maxlength: '1000', placeholder: 'Reason' });
+      var minutes = el('input', { type: 'number', id: 'ot-min', min: '1', max: '1440', value: '120', inputmode: 'numeric' });
+      var list2 = el('div', { id: 'ot-people' });
+      var msg = el('p', { class: 'msg', id: 'ot-msg' });
+      var picked = {};
+      function paint() {
+        list2.textContent = '';
+        r.employees.filter(function (e) { return String(e.department_id) === dept.value; }).forEach(function (e) {
+          var c = el('input', { type: 'checkbox', 'data-id': e.id });
+          c.checked = !!picked[e.id];
+          c.addEventListener('change', function () { picked[e.id] = c.checked; S.otUuid = null; });
+          list2.appendChild(el('label', { class: 'item pick' }, [c, el('span', { text: ' ' + e.full_name + ' · ' + e.code })]));
+        });
+      }
+      [date, reason, minutes].forEach(function (x) { x.addEventListener('input', function () { S.otUuid = null; }); });
+      dept.addEventListener('change', function () { picked = {}; S.otUuid = null; paint(); });
+      var send = el('button', { class: 'btn primary', id: 'ot-send', text: 'Send overtime request', on: { click: function () {
+        var ids = Object.keys(picked).filter(function (k) { return picked[k]; });
+        msg.className = 'msg bad';
+        if (!ids.length) { msg.textContent = 'Tick at least one employee.'; return; }
+        if (!reason.value.trim()) { msg.textContent = 'Give the reason.'; return; }
+        S.otUuid = S.otUuid || uuid();
+        send.disabled = true;
+        api('POST', '/overtime/requests', {
+          request_uuid: S.otUuid, department_id: parseInt(dept.value, 10), work_date: date.value, reason: reason.value,
+          employees: ids.map(function (k) { return { employee_id: parseInt(k, 10), estimated_minutes: minutes.value }; })
+        }).then(function (x) {
+          send.disabled = false;
+          if (!x.body.ok) { msg.textContent = x.body.error || 'Not sent.'; return; }
+          S.otUuid = null;
+          msg.className = 'msg ok';
+          msg.textContent = 'Sent for ' + x.body.request.lines.length + ' employee(s). One officer will decide each.';
+          picked = {}; reason.value = ''; paint();
+          return api('GET', '/overtime/requests?status=all').then(function (l) { paintMine(l.body); });
+        }).catch(function () {
+          send.disabled = false;
+          msg.textContent = 'No connection — NOT SENT. Press Send again when there is a signal; it will not be sent twice.';
+        });
+      } } });
+      box.appendChild(el('h1', { text: 'Ask for overtime' }));
+      box.appendChild(el('p', { class: 'muted small', text: 'Only approved and checked minutes are paid. Staying late without a request is not overtime.' }));
+      [date, r.departments.length > 1 ? dept : null, reason, el('label', { class: 'muted', for: 'ot-min', text: 'Estimated minutes for each' }), minutes, list2, send, msg]
+        .forEach(function (n) { if (n) box.appendChild(n); });
+      paint();
+      paintMine(list);
+    }).catch(function () {
+      box.textContent = '';
+      box.appendChild(el('p', { class: 'msg bad', text: 'Overtime requests need a connection.' }));
+    });
+    function paintMine(l) {
+      mine.textContent = '';
+      var reqs = (l && l.requests) || [];
+      if (!reqs.length) { mine.appendChild(el('p', { class: 'muted', text: 'None yet.' })); return; }
+      reqs.slice(0, 10).forEach(function (q) {
+        mine.appendChild(el('div', { class: 'item note' }, [
+          el('div', {}, [el('b', { text: q.work_date + '  ' }), el('span', { class: 'muted', text: q.reason })]),
+          el('div', { class: 'sub' }, q.lines.map(function (x) {
+            var word = x.approval_status === 'pending' ? 'waiting' : x.approval_status;
+            return el('div', { 'data-status': x.approval_status, text: x.full_name + ' — ' + word + (x.decided_by_name ? ' by ' + x.decided_by_name : '') });
+          }))
+        ]));
+      });
+    }
+  }
+
   // ------------------------------------------------------ employee's photo
   /* Shown from the server, every time; never kept on the phone. The address
      is this app's own API — the phone is not told where pictures are stored. */
@@ -681,6 +769,7 @@
     var tabs = [];
     if (S.can.gate) tabs.push(['gate', 'Gate']);
     if (S.can.hod) tabs.push(['hod', 'HOD']);
+    if (S.can.ot) tabs.push(['ot', 'Overtime']);
     tabs.push(['queue', 'Queue']);
     if (!tabs.some(function (t) { return t[0] === S.tab; })) S.tab = tabs[0][0];
 
@@ -727,6 +816,7 @@
         el('button', { class: 'btn primary', id: 'btn-confirm', text: 'Confirm selected', on: { click: hodConfirmSelected } })
       ]));
     }
+    if (S.tab === 'ot') renderOvertime(body);
     if (S.tab === 'queue') {
       body.appendChild(el('div', { class: 'card', id: 'queueinfo' }));
       body.appendChild(el('div', { class: 'row' }, [

@@ -40,3 +40,4 @@ footer{margin:22px 2px 6px;font-size:12.5px;color:var(--muted);border-top:1px so
 .bigphoto{width:100%;max-width:360px;aspect-ratio:4/5;object-fit:cover;border-radius:12px;background:#e9eef5}
 .small{font-size:12.5px;margin:6px 0 0}.item .sub.flag{margin-top:4px;font-weight:600}.item .sub.flag.ok{color:var(--ok)}.item .sub.flag.bad{color:var(--bad)}.item .sub.flag.wait{color:var(--wait)}
 .item .btn.small{margin-right:6px}
+.card textarea,.card input[type=date],.card input[type=number],.card select{width:100%;padding:12px;font:inherit;font-size:16px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);margin:6px 0;box-sizing:border-box}

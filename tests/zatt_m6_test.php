@@ -482,7 +482,188 @@ $gs = signIn('gate@zas.test');
 ok(call('POST', "/overtime/requests/$R8/verify-hours", ['request_employee_id' => $L8, 'actual_minutes' => 60], $gs)['status'] === 200,
    'NOW THE GATEKEEPER, WITH BOTH THE PERMISSION AND THE SETTING, CAN ENTER ACTUAL MINUTES');
 
-echo "13. Rolling back\n";
+/* ===================================================================== */
+echo "13. In a browser: the HOD's phone, HR's and Accounts' desk\n";
+OT::setRate($L8, 'fixed', '500', $acc);       // the gatekeeper-verified line from step 12, so only the browser's line is left to rate
+$scan('GATE_IN', 'E001', $yday, '04:00'); $scan('GATE_OUT', 'E001', $yday, '14:00');     // 09:00 → 19:00 at the factory
+$scan('GATE_IN', 'E004', $yday, '04:00'); $scan('GATE_OUT', 'E004', $yday, '12:05');     // left on time
+$work = __DIR__ . '/.zattm6';
+@mkdir($work, 0777, true);
+$shot = getenv('ATT_SHOT_DIR') ?: '';
+file_put_contents($work . '/run.js', <<<'JS'
+const { chromium } = require('playwright');
+const BASE = process.argv[2], YDAY = process.argv[3], SHOT = process.argv[4] || '';
+const out = [];
+const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra === undefined ? '' : String(extra) });
+async function desk(page, email) {
+  await page.goto(BASE + '/att/manifest.webmanifest');
+  return page.evaluate(async (email) => (await fetch('../api/v1/index.php?route=%2Fauth%2Flogin', { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: 'CorrectHorse9' }) })).status, email);
+}
+const loaded = (page) => page.waitForFunction(() => !/^Loading…$/.test(document.getElementById('atto-body').textContent.trim()), null, { timeout: 20000 });
+(async () => {
+  const browser = await chromium.launch();
+  try {
+    // ============================================================ HOD phone
+    const pc = await browser.newContext({ viewport: { width: 390, height: 800 } });
+    const ph = await pc.newPage();
+    const perr = [];
+    ph.on('pageerror', e => perr.push(e.message));
+    ph.on('dialog', d => d.accept());
+    await ph.goto(BASE + '/att/');
+    await ph.waitForSelector('#email', { timeout: 20000 });
+    await ph.fill('#email', 'hod@zas.test'); await ph.fill('#password', 'CorrectHorse9'); await ph.click('#signin');
+    await ph.waitForSelector('#pin', { timeout: 20000 }); await ph.fill('#pin', '1234'); await ph.click('#pingo');
+    await ph.waitForSelector('#tab-ot', { timeout: 20000 });
+    check('the HOD\'s phone has an Overtime tab', true);
+    await ph.click('#tab-ot');
+    await ph.waitForSelector('#ot-send', { timeout: 20000 });
+    await ph.fill('#ot-date', YDAY);
+    await ph.fill('#ot-reason', 'Container 4471 loading ran late');
+    await ph.fill('#ot-min', '90');
+    for (const name of ['Imran Ali', 'Asad Mir']) await ph.locator('#ot-people label', { hasText: name }).locator('input').check();
+    check('only the HOD\'s own department is offered', (await ph.locator('#ot-people label', { hasText: 'Sara Khan' }).count()) === 0);
+    await ph.click('#ot-send');
+    await ph.waitForSelector('#ot-msg.ok', { timeout: 20000 });
+    check('the request is sent from the phone', /Sent for 2 employee/.test(await ph.textContent('#ot-msg')));
+    // Wait for THIS request: an older one in the list may already show "waiting".
+    const mineItem = ph.locator('#ot-mine .item', { hasText: 'Container 4471' });
+    await mineItem.waitFor({ timeout: 20000 });
+    check('  and appears under "Your recent requests", both employees waiting', (await mineItem.locator('[data-status="pending"]').count()) === 2);
+    if (SHOT) await ph.screenshot({ path: SHOT + '/att-m6-hod-phone.png', fullPage: true });
+    await pc.setOffline(true);
+    await ph.click('#tab-queue'); await ph.click('#tab-ot');
+    await ph.waitForSelector('#ot-offline');
+    check('offline, the Overtime tab says plainly that it needs a connection', /need a connection/.test(await ph.textContent('#ot-offline')));
+    await pc.setOffline(false);
+    check('no script error on the HOD phone', perr.length === 0, perr.join(' | '));
+    await pc.close();
+
+    // ============================================================= HR desk
+    const hc = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const hp = await hc.newPage();
+    const herr = [];
+    hp.on('pageerror', e => herr.push(e.message));
+    await desk(hp, 'hr@zas.test');
+    await hp.goto(BASE + '/att_overtime.php');
+    await loaded(hp);
+    const tabs = await hp.locator('#atto-tabs button').allTextContents();
+    check('HR sees Requests and Verify hours — not New request, not Payroll', tabs.join(',') === 'Requests,Verify hours', tabs.join(','));
+    check('the menu shows Attendance › Overtime', /Overtime/.test(await hp.textContent('.nav')));
+    const card = hp.locator('.req', { hasText: 'Container 4471' });
+    await card.waitFor({ timeout: 20000 });
+    await card.locator('tr', { hasText: 'Imran Ali' }).locator('input[type=checkbox]').check();
+    await card.locator('button:has-text("Approve selected")').click();
+    await hp.waitForSelector('#attodlg[open]');
+    await hp.fill('#dec-remarks', 'Loading confirmed by dispatch');
+    await hp.click('#attodlg-ok');
+    await hp.waitForFunction(() => !document.querySelector('#attodlg[open]'));
+    await loaded(hp);
+    const card2 = hp.locator('.req', { hasText: 'Container 4471' });
+    await card2.locator('tr', { hasText: 'Asad Mir' }).locator('input[type=checkbox]').check();
+    await card2.locator('button:has-text("Reject selected")').click();
+    await hp.waitForSelector('#attodlg[open]');
+    await hp.click('#attodlg-ok');
+    await hp.waitForFunction(() => !document.querySelector('#attodlg[open]'));
+    await loaded(hp);
+    check('once both are decided the request leaves the "waiting" list', (await hp.locator('.req', { hasText: 'Container 4471' }).count()) === 0);
+    await hp.selectOption('#req-status', 'decided');
+    await loaded(hp);
+    const dc = await hp.locator('.req', { hasText: 'Container 4471' }).textContent();
+    check('  and shows under Decided: Imran approved, Asad rejected, by Rana HR', /Imran Ali[\s\S]*approved[\s\S]*Rana HR/.test(dc) && /Asad Mir[\s\S]*rejected/.test(dc), dc.slice(0, 300));
+    if (SHOT) await hp.screenshot({ path: SHOT + '/att-m6-requests.png', fullPage: true });
+
+    await hp.click('#atto-tabs button:has-text("Verify hours")');
+    await loaded(hp);
+    const vrow = hp.locator('#atto-body tr', { hasText: 'Imran Ali' }).filter({ hasText: 'Container 4471' });
+    await vrow.waitFor();
+    const vt = await vrow.textContent();
+    check('the gate history is shown beside the line: out at 19:00, 2 h inside after the shift', /Inside after the shift ended: 2 h 0 min/.test(vt), vt);
+    const box = vrow.locator('input[type=number]');
+    check('THE ACTUAL MINUTES BOX IS EMPTY — the 2 hours at the gate are not copied into it', (await box.inputValue()) === '');
+    await vrow.locator('button:has-text("Verify")').click();
+    await hp.waitForFunction(() => /Type the actual minutes/.test(document.getElementById('atto-body').textContent));
+    check('verifying with the box empty is refused on the screen', true);
+    await box.fill('120');
+    await vrow.locator('button:has-text("Verify")').click();
+    await hp.waitForFunction(() => /approved\. An officer must first amend/.test(document.getElementById('atto-body').textContent));
+    check('120 against 90 approved is refused, with the reason', true);
+    if (SHOT) await hp.screenshot({ path: SHOT + '/att-m6-verify.png', fullPage: true });
+    await box.fill('85');
+    await vrow.locator('button:has-text("Verify")').click();
+    await hp.waitForFunction(() => !/Container 4471/.test(document.getElementById('atto-body').textContent) || /verified/.test(document.getElementById('atto-body').textContent), null, { timeout: 20000 });
+    check('85 minutes is accepted and the line leaves the list', true);
+    check('no script error on HR\'s desk', herr.length === 0, herr.join(' | '));
+    await hc.close();
+
+    // ======================================================= Accounts desk
+    const ac = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+    const ap = await ac.newPage();
+    const aerr = [];
+    ap.on('pageerror', e => aerr.push(e.message));
+    await desk(ap, 'acc@zas.test');
+    await ap.goto(BASE + '/att_overtime.php#pay');
+    await loaded(ap);
+    await ap.fill('#pay-from', YDAY); await ap.fill('#pay-to', YDAY);
+    await ap.click('#atto-body button:has-text("Show")');
+    await ap.waitForSelector('#atto-body tr:has-text("Imran Ali")');
+    const prow = ap.locator('#atto-body tr', { hasText: 'Imran Ali' });
+    check('Imran\'s line waits for a rate, and blocks finalizing until it has one', /no rate/.test(await prow.textContent()) && await ap.isDisabled('button:has-text("Finalize these dates")'));
+    await prow.locator('input[type=text]').fill('abc');
+    await prow.locator('button:has-text("Save")').click();
+    await ap.waitForFunction(() => /never worked out/.test(document.getElementById('atto-body').textContent));
+    check('a rate that is not an amount is refused', true);
+    await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).locator('input[type=text]').fill('240');
+    await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).locator('button:has-text("Save")').click();
+    await ap.waitForFunction(() => /340\.00/.test(document.getElementById('atto-body').textContent), null, { timeout: 20000 });
+    check('240 per hour × 85 minutes = 340.00', true);
+    const total = await ap.textContent('#pay-total');
+    check('the total ready to finalize is shown', /\d+\.\d\d/.test(total), total);
+    if (SHOT) await ap.screenshot({ path: SHOT + '/att-m6-payroll.png', fullPage: true });
+    await ap.click('button:has-text("Finalize these dates")');
+    await ap.waitForSelector('#attodlg[open]');
+    check('the confirmation states the total and that the lines will be locked', /locked/.test(await ap.textContent('#attodlg-text')) && (await ap.textContent('#attodlg-ok')).includes(total));
+    await ap.click('#attodlg-ok');
+    await ap.waitForFunction(() => !document.querySelector('#attodlg[open]'));
+    await loaded(ap);
+    await ap.waitForSelector('#atto-body a:has-text("Download")');
+    check('after finalizing, the line shows as finalized and the run is listed', /finalized/.test(await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).first().textContent()));
+    const [dl] = await Promise.all([ap.waitForEvent('download'), ap.locator('#atto-body a:has-text("Download")').first().click()]);
+    const csv = require('fs').readFileSync(await dl.path(), 'utf8');
+    check('the run downloads as a spreadsheet with the 340.00 in it', /Imran Ali/.test(csv) && /340\.00/.test(csv), csv.slice(0, 200));
+    check('a finalized line offers only "Correct…", no rate box', (await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).first().locator('input').count()) === 0
+      && (await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).first().locator('button:has-text("Correct")').count()) === 1);
+    check('no script error on Accounts\' desk', aerr.length === 0, aerr.join(' | '));
+
+    // phone width
+    const mc = await browser.newContext({ viewport: { width: 390, height: 800 }, storageState: await ac.storageState() });
+    const mp = await mc.newPage();
+    const wide = [];
+    for (const t of ['req', 'verify', 'pay']) {
+      await mp.goto(BASE + '/att_overtime.php#' + t); await mp.reload(); await loaded(mp); await mp.waitForTimeout(300);
+      const over = await mp.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+      if (over > 1) wide.push(t + ' +' + over);
+    }
+    check('at phone width no tab pushes the page sideways', wide.length === 0, wide.join(', '));
+    await mc.close(); await ac.close();
+  } catch (e) { check('the browser run completed', false, e && e.message); }
+  finally { await browser.close(); }
+  console.log('RESULT' + JSON.stringify(out));
+})();
+JS);
+$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 400 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg($yday) . ' ' . escapeshellarg($shot) . ' 2>&1');
+$results = [];
+if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
+ok(count($results) >= 20, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
+$e1 = Db::one("SELECT l.approval_status, l.approved_minutes, l.actual_minutes, l.decided_by, l.verified_by, p.payable_amount, p.status
+                 FROM att_ot_request_employees l LEFT JOIN att_ot_payroll p ON p.request_employee_id = l.id
+                WHERE l.employee_id = ? AND l.work_date = ?", [$emp['E001'], $yday]);
+ok($e1 && $e1['approval_status'] === 'approved' && (int) $e1['approved_minutes'] === 90 && (int) $e1['actual_minutes'] === 85 && (int) $e1['decided_by'] === $hr && (int) $e1['verified_by'] === $hr
+   && $e1['payable_amount'] === '340.00' && $e1['status'] === 'finalized', 'on the server: requested 90, approved by HR, 85 verified by HR, 340.00 finalized');
+ok(Db::value("SELECT approval_status FROM att_ot_request_employees WHERE employee_id = ? AND work_date = ?", [$emp['E004'], $yday]) === 'rejected', 'and Asad\'s line is rejected');
+
+echo "14. Rolling back\n";
 $mig->down(13);
 ok(!Db::tableExists('att_ot_requests') && !Db::tableExists('att_ot_payroll') && Db::tableExists('att_flags'), 'down to 13 removes the overtime tables and nothing older');
 $mig->up();

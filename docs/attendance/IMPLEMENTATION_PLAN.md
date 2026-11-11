@@ -784,5 +784,59 @@ setup 173, M5 213). Existing ERP suites unchanged.
 - Retention for reference photos of leavers — only flagged stills have a
   retention period today. Open decision for the owner.
 
-### Next: M6 — overtime request, approval, next-day verification, rate and
-payroll lock (AT08–AT11).
+## 18. M6 — delivered 2026-11-11
+
+**915 assertions green** (M1 64, M2 51, M3 62, M4 74, API 58, phone app 63,
+setup 173, M5 213, M6 157). Existing ERP suites unchanged.
+
+| Delivered | Where |
+|---|---|
+| Requests, lines, decision batches, history, payroll runs, payroll, corrections; 5 policies + rollback | `sql/att/0014` |
+| Request → decision → next-day verification → rate → finalize → correction | `includes/att/OvertimeService.php` |
+| All ten overtime routes in API_CONTRACT.md, plus `/overtime/employees`, `…/dispute`, `/overtime/lines/{id}/history`, `/overtime/payroll` (view), `/overtime/payroll/correct`, `/overtime/payroll/runs[/{id}/export]` | `api/v1/index.php` |
+| Desktop: New request, Requests, Verify hours, Payroll | `att_overtime.php` |
+| HOD phone: Overtime tab (online only) | `att/app.js` 1.2.0, shell v3 |
+| Jobs tick the overtime permissions; six settings | `includes/att/AdminService.php` |
+| Tests, incl. a two-process approval race and a browser run | `tests/zatt_m6_test.php` |
+
+**Acceptance:**
+- **AT08** ✅ An employee five hours late with no request, and one with a
+  request nobody approved, are on no verification list, owe nothing, and no
+  line anywhere has actual minutes. No column in the overtime tables is ever
+  filled from a gate record; the gate history is shown beside the empty
+  "actual minutes" box, never copied into it (checked in the browser).
+- **AT09** ✅ Two real processes decide the same employee at the same moment
+  (approve vs reject): exactly one wins, the other gets `ALREADY_DECIDED`, one
+  decision in the history. A decision replayed with the same id returns the
+  first answer. A later change is an amendment with a reason.
+- **AT10** ✅ Minutes cannot be entered on the work date itself; next day,
+  more than approved is refused (`EXCESS_REQUIRES_AMENDMENT`) until an officer
+  amends the approval. A dispute parks a line for an amendment to settle.
+- **AT11** ✅ The rate is typed (hourly or fixed); there is no wage column to
+  derive one from. Amounts are counted in whole paisa. Finalizing refuses
+  while anything in the period is undecided, unchecked, disputed or unrated,
+  and refuses if the total differs from the one on the screen. After it, the
+  line is locked (`PAYROLL_LOCKED`) — including 0-minute lines — and a
+  correction is a new row beside the finalized figure, which never changes.
+
+**Decisions taken while building (open to the owner):**
+1. **One live overtime line per employee per work date**, kept by a unique key.
+   Without it two HODs could request the same evening and it could be paid
+   twice. More time on the same evening is an amendment.
+2. **Who does what, by default:** HOD requests; HR and Accounts approve and
+   verify; Accounts rates and finalizes; Admin can do everything. A
+   gatekeeper verifies only with the verify permission AND the setting on.
+   Amending verified minutes is for HR / Accounts / Admin only.
+3. **Windows:** request up to 14 days ahead and 1 day back; decisions without
+   a time limit; actual minutes from the next day. All on Settings.
+4. **Overtime requests are online only** on the phone, with a request id kept
+   until the server answers so a retry is never a second request. They are
+   not gate records and do not go through the offline queue.
+5. **The payroll export escapes spreadsheet formulas** in text cells.
+
+**Not in M6:** a HOD withdrawing a request before it is decided (an officer
+rejects it instead); separate approval limits per officer; overtime reports
+across months (M7).
+
+### Next: M7 — dashboards and reports (attendance, movements, overtime),
+device list on the Setup screen.

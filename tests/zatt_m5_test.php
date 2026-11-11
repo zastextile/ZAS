@@ -857,7 +857,7 @@ ok(strlen($ordinary) > 1500 && !preg_match('/openFlag|shrink\(|upload\(|toBlob|c
 $scanFn = $fn('scanInto');
 ok(str_contains($scanFn, 'getUserMedia') && !preg_match('/toBlob|canvas|upload\(|AttDB\.put|FormData/', $scanFn), 'the code scanner uses the camera to read, and has no way to keep or send a frame');
 $sw = (string) file_get_contents($B . 'att/sw.js');
-ok(str_contains($sw, "indexOf('/api/') !== -1) return") && str_contains($sw, 'zas-att-shell-v2'), 'the service worker still never touches /api/ (so never a photo), and its version was raised for the new app files');
+ok(str_contains($sw, "indexOf('/api/') !== -1) return") && preg_match('/zas-att-shell-v(\d+)/', $sw, $vm) === 1 && (int) $vm[1] >= 2, 'the service worker still never touches /api/ (so never a photo), and its version was raised for the new app files');
 
 echo "18. The timed clean-up\n";
 $pdo->exec("UPDATE att_flags SET photo_stored_at = (UTC_TIMESTAMP(6) - INTERVAL 200 DAY) WHERE photo_key IS NOT NULL AND status = 'reviewed'");
