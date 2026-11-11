@@ -28,8 +28,10 @@ require_once dirname(__DIR__, 2) . '/includes/att/HodService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Reconciler.php';
 require_once dirname(__DIR__, 2) . '/includes/att/SyncService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/HrService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/AdminService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
+use Att\AdminService;
 use Att\AttendanceService;
 use Att\Audit;
 use Att\Db;
@@ -365,6 +367,130 @@ try {
             Http::json($out, ($out['ok'] ?? false) ? 200 : 422);
             break;
 
+        // ------------------------------------------------------------ setup
+        /* The Attendance Setup screen. Not in API_CONTRACT.md — the contract
+           lists what the phones and reports need and leaves the masters to
+           the implementation — so these live under /admin and nothing a
+           phone uses depends on them.
+
+           Departments, employees and shifts are open to whoever holds the
+           "Employees, Shifts, Devices" permission. Who holds which attendance
+           job, and the settings, are for an ERP admin only: handing out
+           access is not something a setup clerk should be able to do for
+           themselves. */
+
+        case $method === 'GET' && $route === '/admin/overview':
+            Http::requirePermission('attadm', 'v');
+            Http::json(AdminService::overview());
+            break;
+
+        case $method === 'GET' && $route === '/admin/departments':
+            Http::requirePermission('attadm', 'v');
+            Http::json(AdminService::departments());
+            break;
+
+        case $method === 'POST' && $route === '/admin/departments':
+            Http::requireCsrf();
+            $id = ((int) Http::input('id', 0)) ?: null;
+            $u  = Http::requirePermission('attadm', $id === null ? 'c' : 'u');
+            $active = Http::input('active', null);
+            admin_answer(AdminService::saveDepartment($id, (string) Http::input('name', ''),
+                $active === null ? null : (bool) $active, (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/admin/departments/seed':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attadm', 'c');
+            Http::json(['ok' => true, 'added' => Employees::seedDepartmentsFromInventory((int) $u['id'])]);
+            break;
+
+        case $method === 'GET' && $route === '/admin/employees':
+            Http::requirePermission('attadm', 'v');
+            Http::json(AdminService::employees([
+                'query' => Http::input('query', ''), 'department_id' => Http::input('department_id', 0),
+                'state' => Http::input('state', 'active'), 'page' => Http::input('page', 1),
+            ]));
+            break;
+
+        case $method === 'POST' && $route === '/admin/employees':
+            Http::requireCsrf();
+            $id = ((int) Http::input('id', 0)) ?: null;
+            $u  = Http::requirePermission('attadm', $id === null ? 'c' : 'u');
+            admin_answer(AdminService::saveEmployee($id, Http::body(), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/admin/employees/active':
+            Http::requireCsrf();
+            $active = (bool) Http::input('active', false);
+            // Taking somebody off the roll is the 'delete' letter; nothing is
+            // ever actually deleted.
+            $u = Http::requirePermission('attadm', $active ? 'u' : 'd');
+            admin_answer(AdminService::setEmployeeActive((int) Http::input('id', 0), $active,
+                (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/admin/employees/import':
+            Http::requireCsrf();
+            $u    = Http::requirePermission('attadm', 'c');
+            $rows = Http::input('rows', []);
+            admin_answer(AdminService::importEmployees(
+                is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [],
+                (bool) Http::input('commit', false), (bool) Http::input('create_departments', false), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/admin/workers':
+            Http::requirePermission('attadm', 'v');
+            Http::json(AdminService::unlinkedWorkers());
+            break;
+
+        case $method === 'GET' && $route === '/admin/shifts':
+            Http::requirePermission('attadm', 'v');
+            Http::json(AdminService::shifts());
+            break;
+
+        case $method === 'POST' && $route === '/admin/shifts':
+            Http::requireCsrf();
+            $id = ((int) Http::input('id', 0)) ?: null;
+            $u  = Http::requirePermission('attadm', $id === null ? 'c' : 'u');
+            admin_answer(AdminService::saveShift($id, Http::body(), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/admin/shifts/assign':
+            Http::requireCsrf();
+            $u   = Http::requirePermission('attadm', 'c');
+            $wd  = Http::input('weekdays', []);
+            $ids = Http::input('employee_ids', []);
+            admin_answer(AdminService::assignRange(
+                (int) Http::input('shift_id', 0), (string) Http::input('from', ''), (string) Http::input('to', ''),
+                is_array($wd) ? array_values($wd) : [], (int) Http::input('department_id', 0),
+                is_array($ids) ? array_values($ids) : [], (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/admin/users':
+            require_erp_admin();
+            Http::json(AdminService::users());
+            break;
+
+        case $method === 'POST' && ($route === '/admin/jobs/grant' || $route === '/admin/jobs/revoke'):
+            Http::requireCsrf();
+            $u = require_erp_admin();
+            $args = [(int) Http::input('user_id', 0), (string) Http::input('role', ''),
+                     (int) Http::input('department_id', 0), (int) $u['id']];
+            admin_answer($route === '/admin/jobs/grant' ? AdminService::grantJob(...$args) : AdminService::revokeJob(...$args));
+            break;
+
+        case $method === 'GET' && $route === '/admin/settings':
+            Http::requirePermission('attadm', 'v');
+            Http::json(AdminService::settings());
+            break;
+
+        case $method === 'POST' && $route === '/admin/settings':
+            Http::requireCsrf();
+            $u = require_erp_admin();
+            $values = Http::input('values', []);
+            admin_answer(AdminService::saveSettings(is_array($values) ? $values : [], (int) $u['id']));
+            break;
+
         // ------------------------------------------- declared, not yet built
 
         case in_array($route, [
@@ -388,6 +514,29 @@ try {
 }
 
 /* -------------------------------------------------------------- handlers */
+
+/** A service answer, with a status code a caller can branch on. */
+function admin_answer(array $out): never
+{
+    if ($out['ok'] ?? false) {
+        Http::json($out, 200);
+    }
+    Http::json($out, ($out['reason_code'] ?? '') === 'NOT_FOUND' ? 404 : 422);
+}
+
+/**
+ * Only an ERP admin account. Deliberately not a zu_perm letter: the people
+ * who may hand out attendance access are the same people who may hand out
+ * every other access in the ERP, and nobody else.
+ */
+function require_erp_admin(): array
+{
+    $u = Http::requireUser();
+    if (($u['role'] ?? '') !== 'admin') {
+        Http::fail('FORBIDDEN', 'Only an administrator can change this.', 403);
+    }
+    return $u;
+}
 
 /**
  * POST /attendance/in and /attendance/out.

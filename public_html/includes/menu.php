@@ -221,8 +221,9 @@ function zas_menu(): array {
            HOD can find it once and add it to their home screen. */
         [
             'label' => 'Attendance', 'icon' => 'shield',
-            'show'  => $zu('atthr') || $zu('attgate', 'c') || $zu('atthod', 'c'),
+            'show'  => $zu('atthr') || $zu('attadm') || $zu('attgate', 'c') || $zu('atthod', 'c'),
             'items' => [
+                ['label' => 'Setup',                'href' => 'att_setup.php',             'show' => $zu('attadm')],
                 ['label' => 'Reconciliation (HR)',  'href' => 'att_hr_reconciliation.php', 'show' => $zu('atthr')],
                 ['label' => 'Gate / HOD phone app', 'href' => 'att/',                      'show' => $zu('attgate', 'c') || $zu('atthod', 'c')],
             ],

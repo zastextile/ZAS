@@ -658,5 +658,61 @@ apart by the match window. Keep one gate phone per gate where possible.
 policies (M7). Until then they are set through the API or directly in the
 database.
 
+## 16. Admin screens — delivered 2026-11-11 (pulled forward from M7)
+
+Pulled forward at the owner's request: without them nobody can be scanned,
+so nothing built so far could be tried at the gate.
+
+**541 assertions green** (M1 64, M2 51, M3 62, M4 74, API 58, phone app 63,
+setup 169). Existing ERP suites unchanged.
+
+| Delivered | Where |
+|---|---|
+| Employee code / worker code widened to 40 characters + rollback | `sql/att/0012` |
+| All setup rules | `includes/att/AdminService.php` |
+| `/admin/overview\|departments\|employees\|workers\|shifts\|users\|jobs\|settings` | `api/v1/index.php` |
+| Setup screen: Start here, Employees, Departments, Shifts, People, Settings | `public_html/att_setup.php` |
+| Menu: Attendance › Setup | `includes/menu.php` |
+| Tests (service, HTTP, Chromium) | `tests/zatt_admin_test.php` |
+
+**What the screen refuses, and why:**
+- Changing the code of an employee who already has scans — phones hold scans
+  by code while offline.
+- Making somebody inactive while they are inside the factory — their exit
+  scan would be refused and the entry would stay open.
+- A code that is another employee's card text, or the reverse — the gate
+  looks a scan up as "code or card text".
+- Switching off a department that has active employees, or the default shift.
+- Re-pointing a day that already has entries at another shift, by an edit or
+  by a bulk assignment. Changing a shift's hours moves only days that have
+  not started.
+- An import overwriting somebody already on the roll: such lines are skipped
+  and reported. The list is always checked first; nothing is written until
+  the second button.
+
+**Access:**
+- Departments, employees, shifts: the `attadm` permission (view / create /
+  update; "delete" = make inactive, nothing is ever deleted).
+- People and Settings: ERP admin accounts only. A setup clerk cannot give
+  themselves a job or change a setting (tested over HTTP).
+- Giving a job (Gatekeeper, HOD of a department, HR, Accounts) ticks the
+  matching User Access permission through the ERP's own `zu_save_perms()`;
+  taking the last such job away un-ticks it, so removing HR really removes
+  the access. If that cannot be done the screen says so.
+- The 60-second duplicate rule is shown and cannot be edited.
+
+**Additions outside API_CONTRACT.md:** the `/admin/*` routes. The contract
+covers phones and reports and leaves masters to the implementation; nothing a
+phone uses depends on them.
+
+**Found and fixed while building:**
+- The ERP stylesheet gives every table `min-width:980px`. On a phone that
+  pushed the HR Reconciliation screen (M4) and this one sideways. Both now
+  undo it and scroll a wide table inside its own box; a browser test checks
+  every tab at 390px.
+
+**Still to come in M7:** attendance and movement reports, dashboards, device
+list on the setup screen (withdrawing a phone is on the HR screen today).
+
 ### Next: M5 — flagged entries with photo (private R2 storage, signed URLs,
 retention). Normal attendance still never takes a photo.

@@ -34,6 +34,10 @@ page_header('Attendance — Reconciliation');
 ?>
 <style>
 .attq h2{font-size:15px;margin:22px 0 4px}.attq .why{color:#5a6b82;font-size:13px;margin:0 0 8px}
+/* The ERP's stylesheet gives every table min-width:980px. On a phone that
+   pushed this whole page sideways; undone here, and each table scrolls
+   inside its own box when it still does not fit. */
+.attq table{min-width:0}.attq .scroll{overflow-x:auto;width:0;min-width:100%}
 .attq table{width:100%;border-collapse:collapse;font-size:13.5px}
 .attq th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:#5a6b82;padding:7px 8px;border-bottom:1px solid #dfe6ef}
 .attq td{padding:8px;border-bottom:1px solid #edf1f6;vertical-align:top}
@@ -144,7 +148,7 @@ page_header('Attendance — Reconciliation');
     var t = el('table', {}, [el('thead', {}, [el('tr', {}, head.map(function(h){ return el('th', { text: h }); }))])]);
     var tb = el('tbody');
     rows.forEach(function(r){ tb.appendChild(el('tr', {}, draw(r).map(function(c){ return el('td', {}, [c]); }))); });
-    t.appendChild(tb); box.appendChild(t);
+    t.appendChild(tb); box.appendChild(el('div', { class: 'scroll' }, [t]));
   }
   function who(r){ return el('span', {}, [el('strong', { text: r.full_name || r.employee_code || '—' }), el('span', { class: 'muted', text: '  ' + (r.employee_code || '') + (r.department_name ? ' · ' + r.department_name : '') })]); }
   function actions(list){ return el('span', {}, CAN_ACT ? list : [el('span', { class: 'muted', text: 'view only' })]); }
