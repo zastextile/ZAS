@@ -213,13 +213,6 @@ ok($first !== null && $first['closed'] === 2 && $cyc('E009')['close_source'] ===
    'the first phone sync of the day runs it (E009, and E006\'s second day, closed)');
 ok(A::autoCloseIfDue() === null, '  and it waits five minutes before running again');
 
-echo "12. Undo\n";
-$mig->down(14);
-ok($n("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'att_entry_cycles' AND column_name = 'auto_closed_at'") === 0
-   && $n('SELECT COUNT(*) FROM att_entry_cycles WHERE closed_at IS NULL') === 0, 'the database step undoes cleanly; closed entries stay closed');
-$mig->up();
-ok($n("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'att_entry_cycles' AND column_name = 'auto_closed_at'") === 1, '  and applies again');
-
 echo "13. The morning's first lookup, before anyone has scanned\n";
 $pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'attgate', 'vc')")->execute([$gk]);
 $scan('GATE_IN', 'E010', '03:00');                                   // 2 March, never scanned out; nothing has run since
@@ -241,6 +234,65 @@ $e10 = array_values(array_filter($look['employees'] ?? [], fn($e) => $e['code'] 
 ok($e10 !== null && (int) $e10['inside'] === 0 && $e10['last_auto_out_at'] !== null,
    'THE GATE TYPES E010 NEXT MORNING: the server answers "outside" — so the phone shows green IN — and that the system closed his last exit');
 ok($cyc('E010')['close_source'] === 'auto_shift_end', '  the lookup itself ran the rule');
+
+echo "14. What people see\n";
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'attrep', 'v')")->execute([$admin]);
+$work = __DIR__ . '/.zattautoout';
+@mkdir($work, 0777, true);
+file_put_contents($work . '/run.js', <<<'JS'
+const { chromium } = require('playwright');
+const BASE = process.argv[2], SHOT = process.env.ATT_SHOT || '';
+const out = [];
+const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra === undefined ? '' : String(extra) });
+(async () => {
+  const browser = await chromium.launch();
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOT ? 2 : 1 });
+    const page = await ctx.newPage();
+    page.on('dialog', d => d.accept());
+    await page.goto(BASE + '/att/');
+    await page.waitForSelector('#email', { timeout: 20000 });
+    await page.fill('#email', 'gate@zas.test'); await page.fill('#password', 'CorrectHorse9'); await page.click('#signin');
+    await page.waitForSelector('#pin', { timeout: 20000 }); await page.fill('#pin', '1234'); await page.click('#pingo');
+    await page.waitForSelector('#status', { timeout: 20000 });
+    await page.waitForFunction(() => AttDB.getAll('employees').then(r => r.length > 0), null, { timeout: 20000 });
+    await page.fill('#code', 'E004');
+    await page.waitForFunction(() => /server/.test(document.getElementById('emphint').textContent), null, { timeout: 10000 });
+    await page.waitForTimeout(500);
+    check('NEXT MORNING THE GATE SHOWS GREEN IN for someone the system closed', await page.isVisible('#btn-in') && !(await page.isVisible('#btn-out')));
+    const note = await page.textContent('#empnote');
+    check('  with a note that the system closed the last exit', await page.isVisible('#empnote') && /system closed it at/.test(note), note);
+    if (SHOT) await page.screenshot({ path: SHOT + '/gate-next-morning.png' });
+    await ctx.close();
+
+    const a = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: SHOT ? 2 : 1 });
+    const ap = await a.newPage();
+    await ap.goto(BASE + '/att/manifest.webmanifest');
+    await ap.evaluate(async () => fetch('../api/v1/index.php?route=%2Fauth%2Flogin', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@zas.test', password: 'CorrectHorse9' }) }));
+    await ap.goto(BASE + '/att_reports.php#today');
+    await ap.waitForSelector('#auto-out', { timeout: 20000 }).catch(() => {});
+    const t = await ap.textContent('#auto-out').catch(() => '');
+    check('Reports › Today has the "Not scanned out" list', /Not scanned out/.test(t) && /E004/.test(t), t.slice(0, 120));
+    if (SHOT) { await ap.locator('#auto-out').screenshot({ path: SHOT + '/reports-not-scanned-out.png' }).catch(() => {}); }
+    await a.close();
+  } catch (e) { check('the browser run completed', false, e && e.message); }
+  finally { await browser.close(); }
+  console.log('RESULT' + JSON.stringify(out));
+})();
+JS);
+$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 180 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' 2>&1');
+$results = [];
+if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
+ok(count($results) >= 3, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
+
+echo "15. Undo\n";
+$mig->down(14);
+ok($n("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'att_entry_cycles' AND column_name = 'auto_closed_at'") === 0
+   && $n('SELECT COUNT(*) FROM att_entry_cycles WHERE closed_at IS NULL') === 0, 'the database step undoes cleanly; closed entries stay closed');
+$mig->up();
+ok($n("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'att_entry_cycles' AND column_name = 'auto_closed_at'") === 1, '  and applies again');
 
 echo "\n$P passed, $F failed\n";
 exit($F === 0 ? 0 : 1);
