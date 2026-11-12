@@ -566,6 +566,7 @@ const loaded = (page) => page.waitForFunction(() => !/^Loading…$/.test(documen
     await hp.click('#attodlg-ok');
     await hp.waitForFunction(() => !document.querySelector('#attodlg[open]'));
     await loaded(hp);
+    await hp.waitForFunction(() => ![...document.querySelectorAll('.req')].some(r => /Container 4471/.test(r.textContent)), null, { timeout: 10000 }).catch(() => {});
     check('once both are decided the request leaves the "waiting" list', (await hp.locator('.req', { hasText: 'Container 4471' }).count()) === 0);
     await hp.selectOption('#req-status', 'decided');
     await loaded(hp);
@@ -627,7 +628,9 @@ const loaded = (page) => page.waitForFunction(() => !/^Loading…$/.test(documen
     await ap.waitForFunction(() => !document.querySelector('#attodlg[open]'));
     await loaded(ap);
     await ap.waitForSelector('#atto-body a:has-text("Download")');
-    check('after finalizing, the line shows as finalized and the run is listed', /finalized/.test(await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).first().textContent()));
+    await ap.waitForFunction(() => [...document.querySelectorAll('#atto-body tr')].some(r => /Imran Ali/.test(r.textContent) && /finalized/.test(r.textContent)), null, { timeout: 10000 }).catch(() => {});
+    const finRow = await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).first().textContent();
+    check('after finalizing, the line shows as finalized and the run is listed', /finalized/.test(finRow), finRow + ' || ' + (await ap.locator('#atto-body tr', { hasText: 'Imran Ali' }).allTextContents()).join(' ## '));
     const [dl] = await Promise.all([ap.waitForEvent('download'), ap.locator('#atto-body a:has-text("Download")').first().click()]);
     const csv = require('fs').readFileSync(await dl.path(), 'utf8');
     check('the run downloads as a spreadsheet with the 340.00 in it', /Imran Ali/.test(csv) && /340\.00/.test(csv), csv.slice(0, 200));

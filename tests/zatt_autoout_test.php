@@ -247,7 +247,7 @@ const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra
 (async () => {
   const browser = await chromium.launch();
   try {
-    const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOT ? 2 : 1 });
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOT ? 2 : 1, timezoneId: 'Asia/Karachi' });
     const page = await ctx.newPage();
     page.on('dialog', d => d.accept());
     await page.goto(BASE + '/att/');
@@ -261,7 +261,7 @@ const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra
     await page.waitForTimeout(500);
     check('NEXT MORNING THE GATE SHOWS GREEN IN for someone the system closed', await page.isVisible('#btn-in') && !(await page.isVisible('#btn-out')));
     const note = await page.textContent('#empnote');
-    check('  with a note that the system closed the last exit', await page.isVisible('#empnote') && /system closed it at/.test(note), note);
+    check('  with a note that the system closed the last exit — at 6 pm factory time', await page.isVisible('#empnote') && /system closed it at 06:00 PM on 2 Mar/.test(note), note);
     if (SHOT) await page.screenshot({ path: SHOT + '/gate-next-morning.png' });
     await ctx.close();
 
