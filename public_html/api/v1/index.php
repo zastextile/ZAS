@@ -1209,6 +1209,13 @@ function employee_scope_for(int $userId): ?array
             return null; // a gatekeeper sees everyone who walks through the gate
         }
     }
+    /* Ticked for the gate in User Access without the Gatekeeper job on Setup ›
+       People: the server already accepts this person's scans of anybody, so
+       the phone must be able to show whose code was typed. Seeing the names
+       follows the same permission as recording the scans. */
+    if (Roles::can('attgate', 'c', $userId)) {
+        return null;
+    }
     if (Roles::has($userId, Roles::HOD)) {
         return Roles::departmentScope($userId, Roles::HOD) ?? null;
     }

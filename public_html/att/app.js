@@ -28,7 +28,7 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.4.3';
+  var APP_VERSION = '1.4.4';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
@@ -529,7 +529,7 @@
       hint.textContent = S.needLogin || S.listError === 'signed_out'
         ? 'No employee list: this phone is SIGNED OUT on the server. Tap "Sign in" at the top. Scans are kept on the phone until then.'
         : (!navigator.onLine ? 'No employee list yet, and no connection. It downloads as soon as there is a signal. You can still choose IN or OUT.'
-        : (S.listError === 'not_allowed' ? 'No employee list: this login is not allowed to see employees. Ask the admin to give the Gatekeeper job (Setup › People).'
+        : (S.listError === 'not_allowed' || S.listError === 'empty' ? 'No employee list: the server sent no employees for this login (' + ((S.user && S.user.name) || 'this user') + '). Ask the admin: Setup › People › give the Gatekeeper job (or HOD with a department).'
         : 'Downloading the employee list… If this stays, open Queue and tap "Send now".'));
       return;
     }
@@ -736,7 +736,7 @@
         /* Signed out on the server (a new sign-in rule, or the session
            expired): say so, rather than quietly keeping no list. */
         if (r.status === 401) { S.needLogin = true; paintStatus(); }
-        S.listError = r.status === 200 ? '' : (r.status === 401 ? 'signed_out' : (r.status === 403 ? 'not_allowed' : 'failed'));
+        S.listError = r.status === 200 ? ((r.body.employees || []).length ? '' : 'empty') : (r.status === 401 ? 'signed_out' : (r.status === 403 ? 'not_allowed' : 'failed'));
         if (r.status === 200 && r.body.employees) {
           return AttDB.replaceAll('employees', r.body.employees).then(function () { return AttDB.setMeta('employees_at', Date.now()); });
         }

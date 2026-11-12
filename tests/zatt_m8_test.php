@@ -293,6 +293,20 @@ foreach (range(281, 300) as $i) {
 ok($wins === 20, "AT02 ACROSS TWO GATES: 20 people scanned IN at both gates at the same instant — every time one accepted, one refused ($wins of 20)");
 ok($n('SELECT COUNT(*) FROM att_events WHERE employee_id IN (SELECT id FROM att_employees WHERE code BETWEEN \'0281\' AND \'0300\')') === 20, '  twenty events stored, not forty');
 
+echo "5b. Gate permission without the Gatekeeper job\n";
+$permOnly = $mk('Perm Only', 'permonly@zas.test');
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'attgate', 'vc')")->execute([$permOnly]);
+[$pj, ] = login('permonly@zas.test');
+$ch = curl_init("http://127.0.0.1:$port/api/v1/index.php?route=%2Femployees%2Fsync-snapshot"); curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_COOKIEFILE => $pj]);
+$snap = json_decode((string) curl_exec($ch), true); curl_close($ch);
+ok(count($snap['employees'] ?? []) === 320, 'TICKED FOR THE GATE IN USER ACCESS BUT NO GATEKEEPER JOB: the phone still gets the whole employee list (' . count($snap['employees'] ?? []) . ') — the same people the server lets them scan');
+$noAtt = $mk('No Attendance', 'noatt@zas.test');
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'atthod', 'v')")->execute([$noAtt]);
+[$nj, ] = login('noatt@zas.test');
+$ch = curl_init("http://127.0.0.1:$port/api/v1/index.php?route=%2Femployees%2Fsync-snapshot"); curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_COOKIEFILE => $nj]);
+$snap2 = json_decode((string) curl_exec($ch), true); curl_close($ch);
+ok(($snap2['employees'] ?? null) === [], '  but HOD screens without a HOD job and department still see nobody');
+
 echo "6. Security headers\n";
 $ch = curl_init("http://127.0.0.1:$port/api/v1/index.php?route=%2Fauth%2Fme");
 curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true]);
