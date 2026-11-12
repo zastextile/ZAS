@@ -28,7 +28,7 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.4.1';
+  var APP_VERSION = '1.4.2';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
@@ -607,7 +607,13 @@
       var date = el('input', { type: 'date', id: 'ot-date', value: now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2) });
       var dept = el('select', { id: 'ot-dept' }, r.departments.map(function (d) { return el('option', { value: d.id, text: d.name }); }));
       var reason = el('textarea', { id: 'ot-reason', rows: '2', maxlength: '1000', placeholder: 'Reason' });
-      var minutes = el('input', { type: 'number', id: 'ot-min', min: '1', max: '1440', value: '120', inputmode: 'numeric' });
+      /* Hours, not minutes: "2", "1.5" or "1:30". Sent to the server as whole minutes. */
+      var minutes = el('input', { type: 'text', id: 'ot-min', value: '2', inputmode: 'decimal', autocomplete: 'off', placeholder: 'e.g. 1.5' });
+      var toMin = function (v) {
+        v = String(v || '').trim().replace(',', '.');
+        var t = /^(\d{1,2}):([0-5]\d)$/.exec(v); if (t) return parseInt(t[1], 10) * 60 + parseInt(t[2], 10);
+        return (/^\d{0,2}(\.\d{1,2})?$/.test(v) && v !== '' && v !== '.') ? Math.round(parseFloat(v) * 60) : NaN;
+      };
       var list2 = el('div', { id: 'ot-people' });
       var msg = el('p', { class: 'msg', id: 'ot-msg' });
       var picked = {};
@@ -627,11 +633,13 @@
         msg.className = 'msg bad';
         if (!ids.length) { msg.textContent = 'Tick at least one employee.'; return; }
         if (!reason.value.trim()) { msg.textContent = 'Give the reason.'; return; }
+        var est = toMin(minutes.value);
+        if (isNaN(est) || est < 1) { msg.textContent = 'Type the hours as a number, for example 2, 1.5 or 1:30.'; return; }
         S.otUuid = S.otUuid || uuid();
         send.disabled = true;
         api('POST', '/overtime/requests', {
           request_uuid: S.otUuid, department_id: parseInt(dept.value, 10), work_date: date.value, reason: reason.value,
-          employees: ids.map(function (k) { return { employee_id: parseInt(k, 10), estimated_minutes: minutes.value }; })
+          employees: ids.map(function (k) { return { employee_id: parseInt(k, 10), estimated_minutes: est }; })
         }).then(function (x) {
           send.disabled = false;
           if (!x.body.ok) { msg.textContent = x.body.error || 'Not sent.'; return; }
@@ -646,8 +654,8 @@
         });
       } } });
       box.appendChild(el('h1', { text: 'Ask for overtime' }));
-      box.appendChild(el('p', { class: 'muted small', text: 'Only approved and checked minutes are paid. Staying late without a request is not overtime.' }));
-      [date, r.departments.length > 1 ? dept : null, reason, el('label', { class: 'muted', for: 'ot-min', text: 'Estimated minutes for each' }), minutes, list2, send, msg]
+      box.appendChild(el('p', { class: 'muted small', text: 'Only approved and checked hours are paid. Staying late without a request is not overtime.' }));
+      [date, r.departments.length > 1 ? dept : null, reason, el('label', { class: 'muted', for: 'ot-min', text: 'Estimated hours for each (e.g. 2 or 1.5)' }), minutes, list2, send, msg]
         .forEach(function (n) { if (n) box.appendChild(n); });
       paint();
       paintMine(list);
@@ -664,7 +672,9 @@
           el('div', {}, [el('b', { text: q.work_date + '  ' }), el('span', { class: 'muted', text: q.reason })]),
           el('div', { class: 'sub' }, q.lines.map(function (x) {
             var word = x.approval_status === 'pending' ? 'waiting' : x.approval_status;
-            return el('div', { 'data-status': x.approval_status, text: x.full_name + ' — ' + word + (x.decided_by_name ? ' by ' + x.decided_by_name : '') });
+            var m = parseInt(x.approved_minutes || x.estimated_minutes, 10);
+            var h = isNaN(m) ? '' : ' · ' + (Math.round(m / 60 * 100) / 100) + ' h';
+            return el('div', { 'data-status': x.approval_status, text: x.full_name + h + ' — ' + word + (x.decided_by_name ? ' by ' + x.decided_by_name : '') });
           }))
         ]));
       });

@@ -137,7 +137,7 @@ final class OvertimeService
             }
             $m = $r['estimated_minutes'] ?? null;
             if (!self::wholeNumber($m) || (int) $m < 1 || (int) $m > $max) {
-                return self::no('VALIDATION', $emp['full_name'] . ": estimated minutes must be a whole number from 1 to $max.");
+                return self::no('VALIDATION', $emp['full_name'] . ': the estimated time must be more than 0 and at most ' . self::h($max) . '.');
             }
             $lines[(int) $emp['id']] = ['employee' => $emp, 'minutes' => (int) $m];
         }
@@ -448,7 +448,7 @@ final class OvertimeService
     public static function verify(int $requestId, int $lineId, mixed $actual, string $note, mixed $evidence, int $actorId, bool $allowed = true): array
     {
         if (!$allowed) {
-            return self::no('FORBIDDEN', 'Entering actual overtime minutes is not switched on for gatekeepers.');
+            return self::no('FORBIDDEN', 'Entering actual overtime hours is not switched on for gatekeepers.');
         }
         $note = self::text($note);
         if (mb_strlen($note) > 1000) {
@@ -468,7 +468,7 @@ final class OvertimeService
             }
         }
         if (!self::wholeNumber($actual)) {
-            return self::no('VALIDATION', 'Actual minutes must be a whole number (0 if no overtime was worked).');
+            return self::no('VALIDATION', 'Give the actual hours (0 if no overtime was worked).');
         }
         $actual = (int) $actual;
 
@@ -482,14 +482,14 @@ final class OvertimeService
                 return self::no('NOT_APPROVED', 'Only approved overtime can be verified. This employee\'s request is ' . $line['approval_status'] . '.');
             }
             if ($line['verification_status'] === 'verified') {
-                return self::no('ALREADY_VERIFIED', 'The actual minutes were already entered. A change now is an amendment.');
+                return self::no('ALREADY_VERIFIED', 'The actual hours were already entered. A change now is an amendment.');
             }
             if (Policy::bool('ot_verify_from_next_day', true) && (string) $line['work_date'] >= self::today()) {
-                return self::no('TOO_EARLY', 'Actual minutes are entered from the day after the work date, once the gate record for the evening is complete.');
+                return self::no('TOO_EARLY', 'Actual hours are entered from the day after the work date, once the gate record for the evening is complete.');
             }
             if ($actual > (int) $line['approved_minutes']) {
-                return self::no('EXCESS_REQUIRES_AMENDMENT', "$actual minutes is more than the $line[approved_minutes] approved. "
-                    . 'An officer must first amend the approved minutes, with a reason.');
+                return self::no('EXCESS_REQUIRES_AMENDMENT', self::h($actual) . ' is more than the ' . self::h((int) $line['approved_minutes']) . ' approved. '
+                    . 'An officer must first amend the approved hours, with a reason.');
             }
             Db::run(
                 "UPDATE att_ot_request_employees SET verification_status = 'verified', actual_minutes = ?, verified_by = ?, verified_at = ?,
@@ -507,7 +507,7 @@ final class OvertimeService
     public static function dispute(int $requestId, int $lineId, string $note, int $actorId, bool $allowed): array
     {
         if (!$allowed) {
-            return self::no('FORBIDDEN', 'Entering actual overtime minutes is not switched on for gatekeepers.');
+            return self::no('FORBIDDEN', 'Entering actual overtime hours is not switched on for gatekeepers.');
         }
         $note = self::text($note);
         if ($note === '' || mb_strlen($note) > 1000) {
@@ -590,32 +590,32 @@ final class OvertimeService
                     }
                 } elseif ($change === 'approved_minutes') {
                     if ($line['approval_status'] !== 'approved') {
-                        return self::no('NOT_APPROVED', 'Only approved overtime has approved minutes to change.');
+                        return self::no('NOT_APPROVED', 'Only approved overtime has approved hours to change.');
                     }
                     if (!self::wholeNumber($value) || (int) $value < 1 || (int) $value > $max) {
-                        return self::no('VALIDATION', "Approved minutes must be a whole number from 1 to $max.");
+                        return self::no('VALIDATION', 'The approved time must be more than 0 and at most ' . self::h($max) . '.');
                     }
                     $v = (int) $value;
                     if ($v === (int) $line['approved_minutes']) {
-                        return self::no('NO_CHANGE', "It is already $v minutes.");
+                        return self::no('NO_CHANGE', 'It is already ' . self::h((int) $v) . '.');
                     }
                     if ($line['actual_minutes'] !== null && (int) $line['actual_minutes'] > $v) {
-                        return self::no('VALIDATION', "The verified actual is $line[actual_minutes] minutes. Amend the actual minutes down first.");
+                        return self::no('VALIDATION', 'The verified actual is ' . self::h((int) $line['actual_minutes']) . '. Amend the actual hours down first.');
                     }
                     Db::run('UPDATE att_ot_request_employees SET approved_minutes = ? WHERE id = ?', [$v, $lineId]);
                     $old = ['approved_minutes' => (int) $line['approved_minutes']];
                     $new = ['approved_minutes' => $v];
                 } else {
                     if ($line['approval_status'] !== 'approved' || $line['verification_status'] === 'pending') {
-                        return self::no('VALIDATION', 'Only verified or disputed overtime has actual minutes to amend. Otherwise enter them on the Verify tab.');
+                        return self::no('VALIDATION', 'Only verified or disputed overtime has actual hours to amend. Otherwise enter them on the Verify tab.');
                     }
                     if (!self::wholeNumber($value) || (int) $value > (int) $line['approved_minutes']) {
-                        return self::no('VALIDATION', "Actual minutes must be a whole number from 0 to the $line[approved_minutes] approved. "
-                            . 'To allow more, amend the approved minutes first.');
+                        return self::no('VALIDATION', 'The actual time must be from 0 to the ' . self::h((int) $line['approved_minutes']) . ' approved. '
+                            . 'To allow more, amend the approved hours first.');
                     }
                     $v = (int) $value;
                     if ($line['verification_status'] === 'verified' && $v === (int) $line['actual_minutes']) {
-                        return self::no('NO_CHANGE', "It is already $v minutes.");
+                        return self::no('NO_CHANGE', 'It is already ' . self::h((int) $v) . '.');
                     }
                     Db::run("UPDATE att_ot_request_employees SET actual_minutes = ?, verification_status = 'verified',
                                     verified_by = COALESCE(verified_by, ?), verified_at = COALESCE(verified_at, ?) WHERE id = ?",
@@ -663,10 +663,10 @@ final class OvertimeService
                 return self::no('NOT_FOUND', 'That overtime line does not exist.');
             }
             if ($line['approval_status'] !== 'approved' || $line['verification_status'] !== 'verified') {
-                return self::no('NOT_VERIFIED', 'A rate is entered only after the actual minutes have been verified.');
+                return self::no('NOT_VERIFIED', 'A rate is entered only after the actual hours have been verified.');
             }
             if ((int) $line['actual_minutes'] === 0) {
-                return self::no('NOTHING_TO_PAY', 'The verified actual is 0 minutes; there is nothing to pay.');
+                return self::no('NOTHING_TO_PAY', 'The verified actual is 0 hours; there is nothing to pay.');
             }
             $pay = Db::one('SELECT id, status, rate_type, manual_rate, payable_amount FROM att_ot_payroll WHERE request_employee_id = ? FOR UPDATE', [$lineId]);
             if ($pay !== null && $pay['status'] === 'finalized') {
@@ -821,7 +821,7 @@ final class OvertimeService
         }
         $max = max(1, Policy::int('ot_max_minutes', 720));
         if (!self::wholeNumber($minutes) || (int) $minutes > $max) {
-            return self::no('VALIDATION', "Minutes must be a whole number from 0 to $max.");
+            return self::no('VALIDATION', 'The time must be from 0 to ' . self::h($max) . '.');
         }
         $min = (int) $minutes;
         $c = $rateType === 'none' ? 0 : self::cents($rate);
@@ -1013,6 +1013,12 @@ final class OvertimeService
             return '';
         }
         return trim(preg_replace('/\s+/u', ' ', preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', (string) $v) ?? '') ?? '');
+    }
+
+    /** Minutes as people read overtime: 90 → "1.5 h", 85 → "1.42 h". */
+    public static function h(int $m): string
+    {
+        return rtrim(rtrim(number_format($m / 60, 2, '.', ''), '0'), '.') . ' h';
     }
 
     private static function wholeNumber(mixed $v): bool

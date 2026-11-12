@@ -5,10 +5,10 @@
 
   Blueprint §4, one tab per step, each shown only to the people who do it:
 
-    New request   HOD               employees, date, reason, estimated minutes
+    New request   HOD               employees, date, reason, estimated hours
     Requests      HOD sees own;     approve / reject each employee; amend
                   officers see all
-    Verify hours  HR / Accounts /   next day: actual minutes, with the gate
+    Verify hours  HR / Accounts /   next day: actual hours, with the gate
                   Admin             history beside each line
     Payroll       Accounts / Admin  rate, finalize a period, correct, download
 
@@ -18,7 +18,7 @@
   are all kept by the server (includes/att/OvertimeService.php). A button
   hidden here is a courtesy only.
 
-  The actual minutes box is EMPTY until a person types in it. The gate
+  The actual hours box is EMPTY until a person types in it. The gate
   history is shown beside it to be checked, never copied into it: staying
   late is not overtime (AT08).
 
@@ -150,7 +150,18 @@ page_header('Attendance — Overtime');
   }
   function show(nodes){ body.textContent = ''; nodes.forEach(function(n){ if (n) body.appendChild(n); }); }
   function pill(state, text){ return el('span', { class: 'pill ' + state, text: text || state }); }
-  function mins(m){ if (m === null || m === undefined || m === '') return '—'; m = parseInt(m, 10); return (m >= 60 ? Math.floor(m / 60) + ' h ' : '') + (m % 60) + ' min'; }
+  /* Overtime is typed and shown in HOURS: "1.5" or "1:30" is an hour and a
+     half. The server still keeps whole minutes, so nothing about how amounts
+     are worked out changes. */
+  function mins(m){ if (m === null || m === undefined || m === '') return '—'; m = parseInt(m, 10); if (isNaN(m)) return '—';
+    var h = Math.round(m / 60 * 100) / 100; return h + ' h' + (m % 15 && m >= 60 ? ' (' + Math.floor(m / 60) + ':' + ('0' + (m % 60)).slice(-2) + ')' : (m % 15 && m < 60 ? ' (' + m + ' min)' : '')); }
+  function toMin(v){ v = String(v === null || v === undefined ? '' : v).trim().replace(',', '.');
+    var t = /^(\d{1,2}):([0-5]\d)$/.exec(v); if (t) return parseInt(t[1], 10) * 60 + parseInt(t[2], 10);
+    if (/^\d{0,2}(\.\d{1,2})?$/.test(v) && v !== '' && v !== '.') return Math.round(parseFloat(v) * 60);
+    return NaN; }
+  function hoursBox(attrs){ return el('input', Object.assign({ type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'e.g. 1.5', style: 'width:90px' }, attrs || {})); }
+  function hval(m){ m = parseInt(m, 10); return isNaN(m) ? '' : String(Math.round(m / 60 * 100) / 100); }
+  var BAD_HOURS = 'Type the hours as a number, for example 2, 1.5 or 1:30.';
   /* The database holds UTC; the factory reads Karachi time. */
   function clock(v){
     if (!v) return '—';
@@ -223,7 +234,7 @@ page_header('Attendance — Overtime');
       var dept = el('select', { id: 'ot-dept' }, r.departments.map(function(d){ return el('option', { value: d.id, text: d.name }); }));
       var reason = el('textarea', { rows: 2, class: 'grow', id: 'ot-reason', maxlength: 1000, style: 'width:100%', placeholder: 'For example: export order 4471 must ship Friday' });
       var ps = el('input', { type: 'time', id: 'ot-start' }), pe = el('input', { type: 'time', id: 'ot-end' });
-      var all = el('input', { type: 'number', min: 1, max: 1440, value: 120, id: 'ot-all' });
+      var all = hoursBox({ value: '2', id: 'ot-all' });
       var q = el('input', { type: 'search', placeholder: 'Find by code or name', id: 'ot-find' });
       var pick = el('div', { class: 'pick', id: 'ot-pick' });
       var msg = el('p', { id: 'ot-msg' });
@@ -232,7 +243,7 @@ page_header('Attendance — Overtime');
         pick.textContent = '';
         var did = parseInt(dept.value, 10), term = q.value.trim().toLowerCase();
         r.employees.filter(function(e){ return parseInt(e.department_id, 10) === did && (!term || (e.code + ' ' + e.full_name).toLowerCase().indexOf(term) >= 0); }).forEach(function(e){
-          var b = boxes[e.id] || (boxes[e.id] = { c: el('input', { type: 'checkbox', 'data-code': e.code }), m: el('input', { type: 'number', min: 1, max: 1440, value: all.value, 'aria-label': 'Minutes for ' + e.full_name }) });
+          var b = boxes[e.id] || (boxes[e.id] = { c: el('input', { type: 'checkbox', 'data-code': e.code }), m: hoursBox({ value: all.value, 'aria-label': 'Hours for ' + e.full_name }) });
           pick.appendChild(el('label', {}, [b.c, el('span', {}, [el('strong', { text: e.code }), ' ' + e.full_name]), b.m]));
         });
         if (!pick.children.length) pick.appendChild(el('p', { class: 'muted', text: 'Nobody matches.' }));
@@ -246,12 +257,14 @@ page_header('Attendance — Overtime');
         msg.className = 'err';
         if (!chosen.length) { msg.textContent = 'Tick at least one employee.'; return; }
         if (!reason.value.trim()) { msg.textContent = 'Give the reason for the overtime.'; return; }
+        var badH = chosen.filter(function(k){ var v = toMin(boxes[k].m.value); return isNaN(v) || v < 1; });
+        if (badH.length) { msg.textContent = BAD_HOURS; return; }
         pendingUuid = pendingUuid || uuid();
         send.disabled = true;
         call('POST', '/overtime/requests', {
           request_uuid: pendingUuid, department_id: parseInt(dept.value, 10), work_date: date.value, reason: reason.value,
           planned_start: ps.value, planned_end: pe.value,
-          employees: chosen.map(function(k){ return { employee_id: parseInt(k, 10), estimated_minutes: boxes[k].m.value }; })
+          employees: chosen.map(function(k){ return { employee_id: parseInt(k, 10), estimated_minutes: toMin(boxes[k].m.value) }; })
         }).then(function(x){
           send.disabled = false;
           if (!x.ok) { msg.textContent = x.error || 'The request was not sent.'; return; }
@@ -262,10 +275,10 @@ page_header('Attendance — Overtime');
         });
       }, true);
       show([
-        el('p', { class: 'note', text: 'Ask for overtime before it is worked. One officer (HR, Accounts or Admin) decides each employee. The actual minutes are checked the next day; only approved and checked minutes are paid.' }),
+        el('p', { class: 'note', text: 'Ask for overtime before it is worked. One officer (HR, Accounts or Admin) decides each employee. The actual hours are checked the next day; only approved and checked hours are paid.' }),
         el('div', { class: 'grid2' }, [field('Date', date), field('Department', dept), field('Planned start (optional)', ps), field('Planned end (optional)', pe)]),
         field('Reason', reason),
-        el('div', { class: 'bar', style: 'margin-top:10px' }, [el('label', { class: 'f', for: 'ot-all', style: 'margin:0', text: 'Minutes for each (can be changed per person)' }), all, q]),
+        el('div', { class: 'bar', style: 'margin-top:10px' }, [el('label', { class: 'f', for: 'ot-all', style: 'margin:0', text: 'Hours for each (can be changed per person)' }), all, q]),
         pick, el('div', { class: 'bar' }, [send]), msg
       ]);
       paint();
@@ -329,20 +342,21 @@ page_header('Attendance — Overtime');
   }
   function amendDialog(q, l){
     var what = el('select', { class: 'full', id: 'am-what' }, [
-      el('option', { value: 'approved_minutes', text: 'Approved minutes (to allow more or less)' }),
+      el('option', { value: 'approved_minutes', text: 'Approved hours (to allow more or less)' }),
       el('option', { value: 'decision', text: l.approval_status === 'approved' ? 'Change the decision to REJECTED' : 'Change the decision to APPROVED' }),
-      (l.verification_status !== 'pending' && l.approval_status === 'approved') ? el('option', { value: 'actual_minutes', text: 'Actual minutes already checked' }) : null
+      (l.verification_status !== 'pending' && l.approval_status === 'approved') ? el('option', { value: 'actual_minutes', text: 'Actual hours already checked' }) : null
     ].filter(Boolean));
-    var val = el('input', { type: 'number', min: 0, max: 1440, value: l.approved_minutes || l.estimated_minutes, id: 'am-value' });
-    var wrap = field('New value (minutes)', val);
-    what.addEventListener('change', function(){ wrap.hidden = what.value === 'decision'; val.value = what.value === 'actual_minutes' ? (l.actual_minutes || 0) : (l.approved_minutes || l.estimated_minutes); });
+    var val = hoursBox({ value: hval(l.approved_minutes || l.estimated_minutes), id: 'am-value' });
+    var wrap = field('New value (hours)', val);
+    what.addEventListener('change', function(){ wrap.hidden = what.value === 'decision'; val.value = hval(what.value === 'actual_minutes' ? (l.actual_minutes || 0) : (l.approved_minutes || l.estimated_minutes)); });
     var reason = el('textarea', { class: 'full', rows: 3, id: 'am-reason', maxlength: 1000 });
     dialog({ title: 'Amend — ' + l.full_name + ', ' + day(q.work_date), text: 'An amendment is kept with its reason and your name. It cannot be made once payroll for this day is finalized.',
       fields: [field('What changes', what), wrap, field('Reason (required)', reason)], okText: 'Save amendment',
       submit: function(){
         var change = what.value;
+        if (change !== 'decision' && isNaN(toMin(val.value))) return Promise.resolve({ ok: false, error: BAD_HOURS });
         return call('POST', '/overtime/requests/' + q.id + '/amend', { request_employee_id: l.request_employee_id, change: change,
-          value: change === 'decision' ? (l.approval_status === 'approved' ? 'reject' : 'approve') : val.value, reason: reason.value })
+          value: change === 'decision' ? (l.approval_status === 'approved' ? 'reject' : 'approve') : toMin(val.value), reason: reason.value })
           .then(function(r){ if (r.ok) drawRequests(); return r; });
       } });
   }
@@ -355,17 +369,17 @@ page_header('Attendance — Overtime');
       dt.value = verifyDate || '';
       dt.addEventListener('change', function(){ verifyDate = dt.value; drawVerify(); });
       var nodes = [
-        el('p', { class: 'note', text: 'Check the gate history, then type the minutes actually worked. The box starts empty on purpose: time inside after the shift is shown to help you, and is never counted as overtime by itself. More than was approved needs an amendment first.' }),
+        el('p', { class: 'note', text: 'Check the gate history, then type the hours actually worked (for example 1.5 or 1:30). The box starts empty on purpose: time inside after the shift is shown to help you, and is never counted as overtime by itself. More than was approved needs an amendment first.' }),
         el('div', { class: 'bar' }, [el('span', { class: 'muted', text: 'Showing ' + (verifyDate ? 'everything approved for' : 'everything still to check') }), dt,
           verifyDate ? btn('Show everything still to check', function(){ verifyDate = ''; drawVerify(); }) : null])
       ];
       if (!r.lines.length) nodes.push(el('p', { class: 'muted', id: 'ver-none', text: 'Nothing to check.' }));
-      else nodes.push(table(['Employee', 'Work date', 'Approved', 'Gate history', 'Actual minutes', ''], r.lines, function(l){
+      else nodes.push(table(['Employee', 'Work date', 'Approved', 'Gate history', 'Actual hours', ''], r.lines, function(l){
         var mv = l.movement || {};
         var gate = el('div', { class: 'gate' }, (mv.entries && mv.entries.length) ? mv.entries.map(function(e){ return el('div', { text: 'In ' + clock(e.in) + ' — ' + (e.out ? 'out ' + clock(e.out) + (e.auto_out ? ' (not scanned — closed by the system at shift end)' : '') : 'still inside') }); }) : [el('div', { class: 'muted', text: 'No gate entry that day' })]);
         if (mv.minutes_inside_after_shift !== null && mv.minutes_inside_after_shift !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside after the shift ended: ' + mins(mv.minutes_inside_after_shift) }));
         if (mv.minutes_inside_planned !== null && mv.minutes_inside_planned !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside during the planned time: ' + mins(mv.minutes_inside_planned) }));
-        var input = el('input', { type: 'number', min: 0, max: l.approved_minutes, 'aria-label': 'Actual minutes for ' + l.full_name, 'data-line': l.request_employee_id });
+        var input = hoursBox({ 'aria-label': 'Actual hours for ' + l.full_name, 'data-line': l.request_employee_id, class: 'hours' });
         var note = el('input', { type: 'text', placeholder: 'Note (optional)', maxlength: 1000, style: 'width:160px' });
         var out = el('div', { class: 'err', style: 'font-size:12.5px' });
         var acts;
@@ -378,8 +392,9 @@ page_header('Attendance — Overtime');
         } else if (CAN.verify) {
           acts = el('span', {}, [
             btn('Verify', function(){
-              if (input.value === '') { out.textContent = 'Type the actual minutes (0 if no overtime was worked).'; return; }
-              call('POST', '/overtime/requests/' + l.request_id + '/verify-hours', { request_employee_id: l.request_employee_id, actual_minutes: input.value, verification_note: note.value })
+              if (input.value.trim() === '') { out.textContent = 'Type the actual hours (0 if no overtime was worked).'; return; }
+              if (isNaN(toMin(input.value))) { out.textContent = BAD_HOURS; return; }
+              call('POST', '/overtime/requests/' + l.request_id + '/verify-hours', { request_employee_id: l.request_employee_id, actual_minutes: toMin(input.value), verification_note: note.value })
                 .then(function(x){ if (!x.ok) { out.textContent = x.error; return; } drawVerify(); });
             }, true),
             l.verification_status === 'pending' ? btn('Dispute…', function(){
@@ -459,14 +474,15 @@ page_header('Attendance — Overtime');
     });
   }
   function correctDialog(l){
-    var m = el('input', { type: 'number', min: 0, max: 1440, value: l.payable_minutes || 0, id: 'cor-min' });
+    var m = hoursBox({ value: hval(l.payable_minutes || 0), id: 'cor-min' });
     var type = el('select', { id: 'cor-type' }, [el('option', { value: 'hourly', text: 'per hour' }), el('option', { value: 'fixed', text: 'fixed amount' }), el('option', { value: 'none', text: 'nothing owed' })]);
     if (l.rate_type) type.value = l.rate_type;
     var rate = el('input', { type: 'text', inputmode: 'decimal', value: l.manual_rate === '0.00' ? '' : (l.manual_rate || ''), id: 'cor-rate' });
     var why = el('textarea', { class: 'full', rows: 3, id: 'cor-reason' });
     dialog({ title: 'Correct finalized payroll — ' + l.full_name, text: 'The finalized figure stays on record. This adds what is owed now, with the difference and your reason.',
-      fields: [el('div', { class: 'grid2' }, [field('Minutes', m), field('Rate type', type), field('Rate', rate)]), field('Reason (required)', why)], okText: 'Save correction',
-      submit: function(){ return call('POST', '/overtime/payroll/correct', { request_employee_id: l.request_employee_id, minutes: m.value, rate_type: type.value, manual_rate: rate.value, reason: why.value }).then(function(x){ if (x.ok) drawPayroll(); return x; }); } });
+      fields: [el('div', { class: 'grid2' }, [field('Hours', m), field('Rate type', type), field('Rate', rate)]), field('Reason (required)', why)], okText: 'Save correction',
+      submit: function(){ if (isNaN(toMin(m.value))) return Promise.resolve({ ok: false, error: BAD_HOURS });
+        return call('POST', '/overtime/payroll/correct', { request_employee_id: l.request_employee_id, minutes: toMin(m.value), rate_type: type.value, manual_rate: rate.value, reason: why.value }).then(function(x){ if (x.ok) drawPayroll(); return x; }); } });
   }
 
   var first = (location.hash || '').slice(1);

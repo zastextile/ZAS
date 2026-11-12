@@ -107,6 +107,8 @@ page_header('Attendance — Reports');
   function dt(iso){ if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString('en-GB', { timeZone: 'Asia/Karachi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
   function day(v){ var d = new Date(v + 'T00:00:00Z'); return isNaN(d) ? v : d.toLocaleDateString('en-GB', { timeZone: 'UTC', weekday: 'short', day: '2-digit', month: 'short' }); }
   function mins(m){ m = parseInt(m, 10); if (!m) return m === 0 ? '0' : '—'; return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + 'm'; }
+  /* Overtime is shown in hours, as it is typed: 1.5 h. */
+  function hrs(m){ m = parseInt(m, 10); if (isNaN(m)) return '—'; return (Math.round(m / 60 * 100) / 100) + ' h'; }
   function pill(s, t){ return el('span', { class: 'pill ' + s, text: t || s }); }
   function tile(n, label, cls, id){ return el('div', { class: 'tile ' + (cls || ''), id: id }, [el('b', { text: String(n) }), el('span', { text: label })]); }
   function iso(d){ return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
@@ -205,13 +207,13 @@ page_header('Attendance — Reports');
       bar.appendChild(download('/reports/attendance'));
       show([bar,
         el('div', { class: 'tiles' }, [tile(t.present, 'shift days worked'), tile(t.absent, 'had a shift, did not come', t.absent ? 'hot' : ''), tile(mins(t.present_minutes), 'present (closed entries)'),
-          tile(t.late, 'late days', t.late ? 'hot' : ''), tile(t.left_early, 'left early (potential)', t.left_early ? 'hot' : ''), tile(t.unconfirmed, 'entries unconfirmed by HOD', t.unconfirmed ? 'hot' : ''), tile(mins(t.ot_actual_minutes), 'overtime checked'),
+          tile(t.late, 'late days', t.late ? 'hot' : ''), tile(t.left_early, 'left early (potential)', t.left_early ? 'hot' : ''), tile(t.unconfirmed, 'entries unconfirmed by HOD', t.unconfirmed ? 'hot' : ''), tile(hrs(t.ot_actual_minutes), 'overtime checked'),
           t.auto_out ? tile(t.auto_out, 'days not scanned out (system OUT)', 'hot') : null]),
         el('p', { class: 'note', text: 'Present = time between IN and OUT. An entry still open shows as "inside". HOD confirmation times never count as an IN. Overtime is only what was approved and checked the next day.' }),
         r.rows.length ? table(['Day', 'Employee', 'Department', 'Shift', 'First IN', 'Last OUT', 'Entries', 'Present', 'Late', 'Left early', 'HOD unconfirmed', 'OT checked', ''], r.rows, function(x){
           return [day(x.work_date), x.employee_code + ' ' + x.full_name, x.department_name, x.shift_name + ' ' + hm(x.starts_at) + '–' + hm(x.ends_at) + (x.shift_source === 'default_auto' ? ' (default)' : ''),
             hm(x.first_in), x.auto_out ? el('span', { class: 'err', title: 'No OUT was scanned. The system closed the entry at shift end.', text: hm(x.last_out) + ' · system, not scanned' }) : hm(x.last_out), x.entries, mins(x.present_minutes), x.late_minutes ? mins(x.late_minutes) : '', x.early_minutes ? mins(x.early_minutes) : '', x.unconfirmed || '',
-            x.ot_actual_minutes !== null ? mins(x.ot_actual_minutes) : (x.ot_approved_minutes ? 'approved ' + mins(x.ot_approved_minutes) : ''),
+            x.ot_actual_minutes !== null ? hrs(x.ot_actual_minutes) : (x.ot_approved_minutes ? 'approved ' + hrs(x.ot_approved_minutes) : ''),
             pill(x.status, x.status === 'absent' ? 'did not come' : x.status)];
         }) : el('p', { class: 'muted', id: 'att-none', text: 'Nothing in these dates.' }),
         r.truncated ? el('p', { class: 'err', text: 'Only the first 20000 lines are shown. Choose fewer days.' }) : null]);
@@ -243,12 +245,12 @@ page_header('Attendance — Reports');
       show([bar,
         el('h3', { text: 'By department' }),
         r.by_department.length ? table(['Department', 'Asked', 'Approved', 'Rejected', 'Approved time', 'Checked time', 'Finalized pay', 'Not finalized yet'], r.by_department, function(b){
-          return [b.department_name, b.requested, b.approved, b.rejected, mins(b.approved_minutes), mins(b.actual_minutes), b.finalized_amount, b.draft_amount];
+          return [b.department_name, b.requested, b.approved, b.rejected, hrs(b.approved_minutes), hrs(b.actual_minutes), b.finalized_amount, b.draft_amount];
         }) : el('p', { class: 'muted', id: 'ot-none', text: 'No overtime in these dates.' }),
         r.rows.length ? el('h3', { style: 'margin-top:16px', text: 'Every line' }) : null,
         r.rows.length ? table(['Day', 'Employee', 'Department', 'Reason', 'Asked', 'Decision', 'Approved', 'Checked', 'Rate', 'Amount', 'Payroll'], r.rows, function(x){
-          return [day(x.work_date), x.employee_code + ' ' + x.full_name, x.department_name, x.reason, mins(x.estimated_minutes), pill(x.approval_status), x.approved_minutes ? mins(x.approved_minutes) : '',
-            x.verification_status === 'verified' ? mins(x.actual_minutes) : pill(x.verification_status), x.rate_type ? x.rate_type + ' ' + x.manual_rate : '', x.amount || '', pill(x.payroll_status === 'none' ? 'pending' : x.payroll_status, x.payroll_status)];
+          return [day(x.work_date), x.employee_code + ' ' + x.full_name, x.department_name, x.reason, hrs(x.estimated_minutes), pill(x.approval_status), x.approved_minutes ? hrs(x.approved_minutes) : '',
+            x.verification_status === 'verified' ? hrs(x.actual_minutes) : pill(x.verification_status), x.rate_type ? x.rate_type + ' ' + x.manual_rate : '', x.amount || '', pill(x.payroll_status === 'none' ? 'pending' : x.payroll_status, x.payroll_status)];
         }, [3]) : null]);
     });
   }

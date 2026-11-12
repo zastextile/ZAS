@@ -547,9 +547,9 @@ try {
             }
             Audit::record('ot.payroll_export', 'att_ot_payroll_run', (int) $m[1], null, ['lines' => count($r['lines'])], (int) $u['id']);
             send_csv('overtime-' . $r['run']['period_from'] . '-to-' . $r['run']['period_to'] . '.csv',
-                ['Work date', 'Department', 'Code', 'Name', 'Approved min', 'Actual min', 'Rate type', 'Rate', 'Payable min', 'Amount (finalized)', 'Amount now (after corrections)'],
-                array_map(fn($l) => [$l['work_date'], $l['department_name'], $l['employee_code'], $l['full_name'], $l['approved_minutes'], $l['actual_minutes'],
-                                     $l['rate_type'], $l['manual_rate'], $l['payable_minutes'], $l['payable_amount'], $l['effective_amount'] ?? $l['payable_amount']], $r['lines']));
+                ['Work date', 'Department', 'Code', 'Name', 'Approved hours', 'Actual hours', 'Rate type', 'Rate', 'Payable hours', 'Amount (finalized)', 'Amount now (after corrections)'],
+                array_map(fn($l) => [$l['work_date'], $l['department_name'], $l['employee_code'], $l['full_name'], ot_hours($l['approved_minutes']), ot_hours($l['actual_minutes']),
+                                     $l['rate_type'], $l['manual_rate'], ot_hours($l['payable_minutes']), $l['payable_amount'], $l['effective_amount'] ?? $l['payable_amount']], $r['lines']));
             break;
 
         // ----------------------------------------------------- capture & flag
@@ -842,24 +842,25 @@ try {
             }
             Audit::record('report.export', 'att_report', 0, null, ['report' => $route, 'from' => $r['from'], 'to' => $r['to'], 'rows' => count($r['rows'])], (int) $u['id']);
             $t = fn($v) => $v === null ? '' : (new DateTimeImmutable((string) $v))->setTimezone(new DateTimeZone('Asia/Karachi'))->format('Y-m-d H:i');
+            $h = fn($m) => ot_hours($m);
             $name = trim($route, '/');
             $name = str_replace('reports/', '', $name) . '-' . $r['from'] . '-to-' . $r['to'] . '.csv';
             if ($route === '/reports/attendance') {
                 send_csv($name, ['Work date', 'Code', 'Name', 'Department', 'Shift', 'Shift start', 'Shift end', 'First IN', 'Last OUT', 'Entries', 'Present minutes',
-                                 'Late minutes', 'Left early minutes (potential)', 'Unconfirmed by HOD', 'Status', 'Approved OT minutes', 'Actual OT minutes', 'Not scanned out (system OUT)'],
+                                 'Late minutes', 'Left early minutes (potential)', 'Unconfirmed by HOD', 'Status', 'Approved OT hours', 'Actual OT hours', 'Not scanned out (system OUT)'],
                     array_map(fn($x) => [$x['work_date'], $x['employee_code'], $x['full_name'], $x['department_name'], $x['shift_name'], $t($x['starts_at']), $t($x['ends_at']),
                         $t($x['first_in']), $t($x['last_out']), $x['entries'], $x['present_minutes'], $x['late_minutes'], $x['early_minutes'], $x['unconfirmed'], $x['status'],
-                        $x['ot_approved_minutes'], $x['ot_actual_minutes'], $x['auto_out'] > 0 ? 'yes — closed at shift end' : ''], $r['rows']));
+                        $h($x['ot_approved_minutes']), $h($x['ot_actual_minutes']), $x['auto_out'] > 0 ? 'yes — closed at shift end' : ''], $r['rows']));
             } elseif ($route === '/reports/movements') {
                 send_csv($name, ['Time', 'IN/OUT', 'Code', 'Name', 'Department', 'Entry no.', 'Recorded by', 'Phone', 'Sent', 'Received by server', 'HOD confirmed', 'HOD'],
                     array_map(fn($x) => [$t($x['occurred_at']), $x['event_type'] === 'GATE_IN' ? 'IN' : ($x['event_type'] === 'AUTO_OUT' ? 'OUT (system, not scanned)' : 'OUT'), $x['employee_code'], $x['full_name'], $x['department_name'],
                         $x['entry_sequence'], $x['recorded_by'], $x['phone'], $x['source'] === 'offline_replay' ? 'later (offline)' : ($x['source'] === 'system' ? 'by the system' : 'at once'), $t($x['received_at']),
                         $t($x['hod_confirmed_at']), $x['hod_name']], $r['rows']));
             } else {
-                send_csv($name, ['Work date', 'Department', 'Code', 'Name', 'Reason', 'Asked min', 'Decision', 'Approved min', 'Checked', 'Actual min', 'Rate type', 'Rate', 'Amount', 'Payroll',
+                send_csv($name, ['Work date', 'Department', 'Code', 'Name', 'Reason', 'Asked hours', 'Decision', 'Approved hours', 'Checked', 'Actual hours', 'Rate type', 'Rate', 'Amount', 'Payroll',
                                  'Requested by', 'Decided by', 'Checked by'],
-                    array_map(fn($x) => [$x['work_date'], $x['department_name'], $x['employee_code'], $x['full_name'], $x['reason'], $x['estimated_minutes'], $x['approval_status'],
-                        $x['approved_minutes'], $x['verification_status'], $x['actual_minutes'], $x['rate_type'], $x['manual_rate'], $x['amount'], $x['payroll_status'],
+                    array_map(fn($x) => [$x['work_date'], $x['department_name'], $x['employee_code'], $x['full_name'], $x['reason'], $h($x['estimated_minutes']), $x['approval_status'],
+                        $h($x['approved_minutes']), $x['verification_status'], $h($x['actual_minutes']), $x['rate_type'], $x['manual_rate'], $x['amount'], $x['payroll_status'],
                         $x['requested_by'], $x['decided_by'], $x['verified_by']], $r['rows']));
             }
             break;
@@ -1078,6 +1079,13 @@ function require_gate_or_hod(): array
 /* The forgotten-exit rule (AttendanceService::autoCloseDue), at most every
    five minutes, on the requests that happen all day anyway. A failure here
    must never stop a scan being recorded. */
+/* Overtime in a spreadsheet: hours to two decimals (90 minutes = 1.5).
+   The amount beside it is still worked out from the exact minutes. */
+function ot_hours(mixed $m): string
+{
+    return $m === null || $m === '' ? '' : rtrim(rtrim(number_format(((int) $m) / 60, 2, '.', ''), '0'), '.');
+}
+
 function auto_out_if_due(): void
 {
     try {
