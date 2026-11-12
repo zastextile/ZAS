@@ -173,9 +173,13 @@ final class Employees
     {
         $limit  = max(1, min(100, $limit));
         $params = [];
-        $sql = 'SELECT e.id, e.code, e.full_name, e.department_id, d.name AS department_name, e.active
+        /* inside / inside_since: whether the person has an open entry right
+           now, from any gate. The phone uses it to offer IN or OUT. */
+        $sql = 'SELECT e.id, e.code, e.full_name, e.department_id, d.name AS department_name, e.active,
+                       (c.id IS NOT NULL) AS inside, c.opened_at AS inside_since
                   FROM att_employees e
                   JOIN att_departments d ON d.id = e.department_id
+                  LEFT JOIN att_entry_cycles c ON c.open_employee_id = e.id
                  WHERE e.active = 1';
 
         $query = trim($query);
@@ -217,8 +221,10 @@ final class Employees
            picture is worth a request. The picture's whereabouts never leave
            the server. */
         $sql = 'SELECT e.id, e.code, e.full_name, e.department_id, e.qr_payload,
-                       (e.reference_photo_key IS NOT NULL) AS has_photo
+                       (e.reference_photo_key IS NOT NULL) AS has_photo,
+                       (c.id IS NOT NULL) AS inside, c.opened_at AS inside_since
                   FROM att_employees e
+                  LEFT JOIN att_entry_cycles c ON c.open_employee_id = e.id
                  WHERE e.active = 1';
         if ($departmentIds !== null) {
             if ($departmentIds === []) {

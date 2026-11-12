@@ -97,6 +97,7 @@ $work = __DIR__ . '/.zattpwa';
 file_put_contents($work . '/run.js', <<<'JS'
 const { chromium } = require('playwright');
 const BASE = process.argv[2];
+const SHOT = process.env.ATT_SHOT || '';
 const out = [];
 const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra === undefined ? '' : String(extra) });
 
@@ -117,6 +118,13 @@ async function gate(page, code, btn) {
   await page.fill('#code', code);
   await page.click(btn);
 }
+/* The button the screen did NOT offer: through "Not right?". */
+async function gateOther(page, code, btn) {
+  await page.fill('#code', code);
+  await page.click('#btn-other');
+  await page.click(btn);
+}
+const shown = (page, sel) => page.isVisible(sel);
 
 (async () => {
   const browser = await chromium.launch();
@@ -127,7 +135,8 @@ async function gate(page, code, btn) {
     page.on('dialog', d => d.accept());
     await signIn(page, 'gate@zas.test');
 
-    check('after sign-in and PIN the Gate tab is shown', await page.isVisible('#btn-in'));
+    check('after sign-in and PIN the Gate tab is shown, waiting for a code', await page.isVisible('#gate-idle'));
+    check('BY DEFAULT NO BUTTON AND NO MESSAGE: nothing to press until a code is typed', !(await shown(page, '#btn-in')) && !(await shown(page, '#btn-out')) && (await page.$('#msg')) === null);
     check('a gatekeeper is NOT shown the HOD tab', !(await page.isVisible('#tab-hod')));
     check('a login with one job gets no switch', !(await page.isVisible('#mode-gate')) && !(await page.isVisible('#mode-hod')));
     check('the header says "Security gate"', /Security gate/.test(await text(page, '#who')));
@@ -145,30 +154,54 @@ async function gate(page, code, btn) {
     await page.fill('#code', 'E001');
     await page.waitForFunction(() => document.getElementById('empname').textContent.includes('Imran'), null, { timeout: 10000 });
     check('typing a code shows the name from the phone\'s own list', true);
-    await page.waitForSelector('#btn-in.suggest');
-    check('with nothing on this phone for E001 yet, IN gets the ring', !(await page.evaluate(() => document.getElementById('btn-out').classList.contains('suggest'))));
+    await page.waitForSelector('#btn-in', { state: 'visible' });
+    check('E001 IS OUTSIDE: ONLY THE GREEN IN BUTTON IS SHOWN', !(await shown(page, '#btn-out')) && !(await shown(page, '#gate-idle')));
+    await page.waitForFunction(() => /server/.test(document.getElementById('emphint').textContent), null, { timeout: 10000 });
+    check('  marked Outside, checked with the server', /Outside/.test(await text(page, '#empstate')), await text(page, '#emphint'));
+    check('  the button names the person', /Imran is coming in/.test(await text(page, '#btn-in')), await text(page, '#btn-in'));
 
     await page.evaluate(() => { window.__vib = []; navigator.vibrate = (p) => { window.__vib.push(p); return true; }; });
     await page.click('#btn-in');
     await page.waitForSelector('.burst', { state: 'attached', timeout: 3000 }).catch(() => {});
     await page.waitForSelector('#msg');
     check('A SAVED SCAN BUZZES THE PHONE and bursts on the button', (await page.evaluate(() => window.__vib.length)) >= 1);
+    check('the first message says saved ON THIS PHONE', /saved on this phone/i.test(await text(page, '#msg')), await text(page, '#msg'));
+    check('after saving, the code box is empty and the screen is back to waiting', (await page.inputValue('#code')) === '' && await page.isVisible('#gate-idle'));
+    await page.waitForSelector('#msg', { state: 'detached', timeout: 8000 }).catch(() => {});
+    check('THE SUCCESS MESSAGE HIDES BY ITSELF after a few seconds', (await page.$('#msg')) === null);
     await page.fill('#code', 'E001');
-    await page.waitForSelector('#btn-out.suggest', { timeout: 10000 });
-    check('typing E001 again: after an IN on this phone, OUT gets the ring, with the time of the IN', /Last on this phone: IN at/.test(await text(page, '#emphint')));
+    await page.waitForSelector('#btn-out', { state: 'visible', timeout: 10000 });
+    check('TYPING E001 AGAIN: HE IS INSIDE, ONLY THE RED OUT BUTTON IS SHOWN', !(await shown(page, '#btn-in')) && /Inside since/.test(await text(page, '#empstate')), await text(page, '#empstate'));
+    check('  "Not right?" offers the other one', /Record IN instead/.test(await text(page, '#btn-other')));
     await page.press('#code', 'Enter');
-    check('the "Next" key closes the keypad and records nothing', (await page.evaluate(() => document.activeElement && document.activeElement.id)) !== 'code'
+    check('the "Next" key closes the keypad, points at OUT, and records nothing', (await page.evaluate(() => document.activeElement && document.activeElement.id)) === 'btn-out'
       && (await page.evaluate(() => AttDB.allOutbox().then(r => r.length))) === 1);
     await page.fill('#code', '');
-    check('the first message says saved ON THIS PHONE', /saved on this phone/i.test(await text(page, '#msg')), await text(page, '#msg'));
+    check('clearing the code goes back to waiting, no buttons', await page.isVisible('#gate-idle') && !(await shown(page, '#btn-out')));
     await page.waitForFunction(() => [...document.querySelectorAll('#recent .item')].some(i => /Recorded by the server/.test(i.textContent)), null, { timeout: 20000 });
     check('once the receipt arrives the row says Recorded by the server', true);
     check('and nothing is left waiting', (await waiting(page)) === '0');
 
     await page.fill('#code', 'ZZZ999');
-    await page.click('#btn-in');
-    await page.waitForFunction(() => /not in this phone/i.test(document.getElementById('msg').textContent));
-    check('an unknown code is refused on the phone and nothing is queued', (await waiting(page)) === '0');
+    await page.waitForFunction(() => /not in this phone/i.test(document.getElementById('empname').textContent));
+    check('an unknown code says so and offers no button at all', !(await shown(page, '#btn-in')) && !(await shown(page, '#btn-out')) && !(await shown(page, '#btn-other')));
+    check('  and nothing is queued', (await waiting(page)) === '0');
+
+    // A second gate phone: what it offers comes from the one central database.
+    const ctx2 = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOT ? 2 : 1 });
+    const p2 = await ctx2.newPage();
+    await signIn(p2, 'gate@zas.test');
+    await p2.waitForFunction(() => AttDB.getAll('employees').then(r => r.length > 0), null, { timeout: 20000 });
+    await p2.fill('#code', 'E001');
+    await p2.waitForFunction(() => /server/.test(document.getElementById('emphint').textContent), null, { timeout: 10000 });
+    check('ANOTHER GATE\'S PHONE, never used for E001, offers OUT: he is inside, says the server', await p2.isVisible('#btn-out') && !(await p2.isVisible('#btn-in')));
+    if (SHOT) {
+      await p2.waitForTimeout(600); await p2.screenshot({ path: SHOT + '/gate-out.png' });
+      await p2.fill('#code', 'E002'); await p2.waitForFunction(() => /server/.test(document.getElementById('emphint').textContent));
+      await p2.waitForTimeout(600); await p2.screenshot({ path: SHOT + '/gate-in.png' });
+      await p2.fill('#code', ''); await p2.waitForTimeout(600); await p2.screenshot({ path: SHOT + '/gate-idle.png' });
+    }
+    await ctx2.close();
 
     // ---------------------------------------------------- the network is cut
     await page.evaluate(() => navigator.serviceWorker.ready);
@@ -176,7 +209,7 @@ async function gate(page, code, btn) {
     await ctx.setOffline(true);
 
     await gate(page, 'E002', '#btn-in');
-    await page.waitForFunction(() => /Sara Khan/.test(document.getElementById('msg').textContent), null, { timeout: 10000 });
+    await page.waitForFunction(() => /Sara Khan/.test(((document.getElementById('msg') || {}).textContent || '')), null, { timeout: 10000 });
     check('OFFLINE: the scan is saved and the message says on this phone', /saved on this phone/i.test(await text(page, '#msg')));
     await page.waitForFunction(() => document.getElementById('waiting').getAttribute('data-count') === '1' && !/Sending/.test(document.getElementById('waiting').textContent), null, { timeout: 20000 });
     check('OFFLINE: the waiting count is 1', true);
@@ -184,8 +217,8 @@ async function gate(page, code, btn) {
     const row = await text(page, '#recent .item');
     check('OFFLINE: the row says NOT SENT YET — it does not say recorded', /not sent yet/i.test(row) && !/Recorded by the server/.test(row), row);
 
-    await gate(page, 'E002', '#btn-in');
-    await page.waitForFunction(() => /Already scanned/i.test(document.getElementById('msg').textContent), null, { timeout: 10000 });
+    await gateOther(page, 'E002', '#btn-in');
+    await page.waitForFunction(() => /Already scanned/i.test(((document.getElementById('msg') || {}).textContent || '')), null, { timeout: 10000 });
     check('OFFLINE: a double-tap inside 60 seconds is stopped on the phone', (await waiting(page)) === '1');
 
     // ------------------------------- closed and reopened with no connection
@@ -212,7 +245,7 @@ async function gate(page, code, btn) {
     check('BACK ONLINE: the offline scan now says Recorded by the server', true);
 
     // ------------------------------------------- the server's refusal shows
-    await gate(page, 'E003', '#btn-out');
+    await gateOther(page, 'E003', '#btn-out');
     await page.waitForFunction(() => [...document.querySelectorAll('#recent .item')].some(i => /Refused by the server/.test(i.textContent)), null, { timeout: 20000 });
     check('an OUT with nobody inside comes back Refused by the server, with the reason', /not currently inside/i.test(await text(page, '#recent')));
     check('a refused scan is settled — it is not left waiting to be resent', (await waiting(page)) === '0');
@@ -313,8 +346,8 @@ $forced = Att\HodService::confirm(['event_uuid' => 'dddddddd-0000-4000-8000-0000
     'employee_id' => (int) Db::value("SELECT id FROM att_employees WHERE code='P001'"), 'device_time' => gmdate('Y-m-d\TH:i:s\Z'), 'timezone' => 'UTC']);
 ok(($forced['receipt_status'] ?? '') === 'REJECTED' && $n("SELECT COUNT(*) FROM att_hod_arrivals h JOIN att_employees e ON e.id=h.employee_id WHERE e.code='P001'") === 0,
    'A CONFIRMATION FOR PACKING SENT STRAIGHT TO THE SERVER BY THE STITCHING HOD IS REFUSED (' . ($forced['reason_code'] ?? '?') . ')');
-ok($n("SELECT COUNT(*) FROM att_devices WHERE revoked_at IS NULL") === 3, 'three phones registered themselves: gate, HOD, and the one with both jobs');
-ok(Db::value("SELECT role_scope FROM att_devices WHERE registered_by=?", [$gk]) === 'gate'
+ok($n("SELECT COUNT(*) FROM att_devices WHERE revoked_at IS NULL") === 4, 'four phones registered themselves: two at the gate, the HOD, and the one with both jobs');
+ok(Db::value("SELECT role_scope FROM att_devices WHERE registered_by=? LIMIT 1", [$gk]) === 'gate'
    && Db::value("SELECT role_scope FROM att_devices WHERE registered_by=?", [$hod]) === 'hod',
    'each with the scope the SERVER derived from the user\'s permissions');
 

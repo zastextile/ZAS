@@ -28,7 +28,7 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.3.0';
+  var APP_VERSION = '1.4.0';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
@@ -503,22 +503,79 @@
     return { input: inp, toggle: toggle };
   }
 
-  /* Which button is likely next for this person, from THIS phone's own
-     record only: after an IN, OUT; otherwise IN. A ring around the button,
-     never a press — another gate may have recorded something since. */
-  function suggestFor(code) {
-    var bi = document.getElementById('btn-in'), bo = document.getElementById('btn-out'), hint = document.getElementById('emphint');
-    if (!bi || !bo) return Promise.resolve();
-    bi.classList.remove('suggest'); bo.classList.remove('suggest');
-    if (hint) hint.textContent = '';
-    if (!code) return Promise.resolve();
-    return AttDB.allOutbox().then(function (rows) {
-      var mine = rows.filter(function (r) { return r.employee_code === code && (r.event_type === 'GATE_IN' || r.event_type === 'GATE_OUT') && r.state !== 'rejected'; });
+  /* IN or OUT — only the right one is shown. Freshest knowledge wins:
+       1. a scan still waiting on THIS phone (the server has not heard it yet);
+       2. the server's answer just now — one database for every gate;
+       3. this phone's own settled scan, if newer than its employee list;
+       4. the employee list's "inside" mark, from its last refresh.
+     It only chooses which button to show; the gatekeeper still presses it,
+     and "Not right?" shows the other one. The server has the final say. */
+  var decideSeq = 0;
+  function utcMs(v) { if (!v) return null; var t = Date.parse(String(v).replace(' ', 'T').replace(/\.\d+$/, '') + 'Z'); return isNaN(t) ? null : t; }
+  function gateView(state, emp, st) {
+    var idle = document.getElementById('gate-idle'), person = document.getElementById('gate-person');
+    var bi = document.getElementById('btn-in'), bo = document.getElementById('btn-out'), other = document.getElementById('btn-other');
+    var chip = document.getElementById('empstate'), hint = document.getElementById('emphint');
+    if (!idle || !person || !bi || !bo) return;
+    idle.hidden = state !== 'idle';
+    person.hidden = state === 'idle';
+    [bi, bo].forEach(function (b) { b.classList.remove('suggest', 'pop'); });
+    chip.className = 'chip'; chip.textContent = ''; hint.textContent = '';
+    other.hidden = true;
+    if (state === 'idle' || state === 'unknown') { bi.hidden = true; bo.hidden = true; return; }
+    if (state === 'nolist') {                     // no employee list on this phone yet: both, as before
+      bi.hidden = false; bo.hidden = false; S.gateNext = null;
+      hint.textContent = 'This phone has no employee list yet — choose IN or OUT.';
+      return;
+    }
+    var next = st.inside ? 'GATE_OUT' : 'GATE_IN', show = st.inside ? bo : bi, hide = st.inside ? bi : bo;
+    var changed = S.gateNext !== next || show.hidden;
+    S.gateNext = next;
+    hide.hidden = true; show.hidden = false;
+    if (changed) { void show.offsetWidth; show.classList.add('pop'); }
+    var first = (emp.full_name || '').split(' ')[0];
+    show.querySelector('.who-sub').textContent = st.inside ? first + ' is leaving' : first + ' is coming in';
+    chip.classList.add(st.inside ? 'inside' : 'outside');
+    chip.textContent = st.inside ? ('Inside' + (st.since ? ' since ' + timeOf(st.since) : '')) : 'Outside';
+    hint.textContent = { server: 'Checked with the server just now', phone: 'From this phone\'s last scan', waiting: 'From this phone — that scan is not sent yet',
+                         list: 'From the employee list' + (S.listAt ? ', updated ' + timeOf(S.listAt) : ''), none: 'No entry recorded yet' }[st.src] || '';
+    other.hidden = false;
+    other.textContent = 'Not right? Record ' + (st.inside ? 'IN' : 'OUT') + ' instead';
+  }
+  function decideFor(code) {
+    var seq = ++decideSeq;
+    if (!code) { S.gateNext = null; gateView('idle'); return Promise.resolve(); }
+    return Promise.all([findEmployee(code), AttDB.allOutbox(), AttDB.getMeta('employees_at')]).then(function (v) {
+      if (seq !== decideSeq) return;
+      var emp = v[0].hit, listAt = v[2] || 0;
+      S.listAt = listAt || null;
+      if (!emp) { gateView(v[0].known ? 'unknown' : 'nolist'); return; }
+      var mine = v[1].filter(function (r) { return r.employee_code === emp.code && (r.event_type === 'GATE_IN' || r.event_type === 'GATE_OUT') && r.state !== 'rejected'; });
       var last = mine[mine.length - 1];
-      var next = last && last.event_type === 'GATE_IN' ? bo : bi;
-      next.classList.add('suggest');
-      if (hint) hint.textContent = last ? ('Last on this phone: ' + (last.event_type === 'GATE_IN' ? 'IN' : 'OUT') + ' at ' + timeOf(Date.parse(last.occurred_at))) : 'Nothing for this person on this phone yet';
+      var fromLast = last ? { inside: last.event_type === 'GATE_IN', since: last.event_type === 'GATE_IN' ? Date.parse(last.occurred_at) : null } : null;
+      var st;
+      if (last && last.state === 'pending') st = Object.assign(fromLast, { src: 'waiting' });
+      else if (last && last.created_at > listAt) st = Object.assign(fromLast, { src: 'phone' });
+      else if (emp.inside !== undefined && emp.inside !== null) st = { inside: !!parseInt(emp.inside, 10), since: utcMs(emp.inside_since), src: 'list' };
+      else if (fromLast) st = Object.assign(fromLast, { src: 'phone' });
+      else st = { inside: false, since: null, src: 'none' };
+      gateView('person', emp, st);
+      if (st.src === 'waiting' || !navigator.onLine) return;
+      return api('GET', '/employees?query=' + encodeURIComponent(emp.code)).then(function (r) {
+        if (seq !== decideSeq || r.status !== 200 || !r.body.employees) return;
+        var s = r.body.employees.filter(function (e) { return e.code === emp.code; })[0];
+        if (!s || s.inside === undefined) return;
+        gateView('person', emp, { inside: !!parseInt(s.inside, 10), since: utcMs(s.inside_since), src: 'server' });
+      }).catch(function () {});
     });
+  }
+  /* "Next" on the keypad: point at the button, never press it. */
+  function pointAtAction() {
+    var b = S.gateNext === 'GATE_OUT' ? document.getElementById('btn-out') : document.getElementById('btn-in');
+    if (!b || b.hidden) return;
+    b.classList.remove('suggest'); void b.offsetWidth; b.classList.add('suggest');
+    try { b.focus({ preventScroll: true }); } catch (e) { b.focus(); }
+    b.scrollIntoView({ block: 'nearest', behavior: lessMotion ? 'auto' : 'smooth' });
   }
 
   // --------------------------------------------------------------- overtime
@@ -681,7 +738,15 @@
   }
 
   // --------------------------------------------------------------- actions
-  function say(kind, text) { S.message = { kind: kind, text: text }; paintMessage(); }
+  /* Messages appear only when something happened. A success fades by itself
+     after a few seconds; a refusal stays until the next code is typed. */
+  var sayTimer = null;
+  function say(kind, text) {
+    S.message = { kind: kind, text: text }; paintMessage();
+    clearTimeout(sayTimer);
+    if (kind === 'ok') sayTimer = setTimeout(function () { S.message = null; var m = document.getElementById('msg'); if (m) { m.classList.add('fade'); setTimeout(paintMessage, 400); } }, 4500);
+  }
+  function quiet() { if (S.message) { clearTimeout(sayTimer); S.message = null; paintMessage(); } }
 
   function findEmployee(value) {
     return AttDB.getAll('employees').then(function (all) {
@@ -751,8 +816,9 @@
 
       return saveEvent(type, code, emp ? emp.full_name : '', {}).then(function () {
         feedback('ok', document.getElementById(type === 'GATE_IN' ? 'btn-in' : 'btn-out'));
-        input.value = ''; paintEmployee(''); suggestFor('');
+        input.value = ''; paintEmployee(''); decideFor('');
         say('ok', (type === 'GATE_IN' ? 'IN' : 'OUT') + ' for ' + (emp ? emp.full_name + ' (' + code + ')' : code) + ' — saved on this phone. Sending…');
+        try { input.focus({ preventScroll: true }); } catch (e) {}
         refreshLists(); paintStatus();
         return syncNow();
       });
@@ -953,15 +1019,30 @@
     root.appendChild(el('div', { id: 'message' }));
 
     if (S.tab === 'gate') {
-      var ci = codeInput('code', function (v) { paintEmployee(v); suggestFor(v); }, function () { suggestFor((document.getElementById('code').value || '').trim()); });
+      var ci = codeInput('code', function (v) { quiet(); paintEmployee(v); decideFor(v); }, pointAtAction);
+      var bigBtn = function (type) {
+        var isIn = type === 'GATE_IN';
+        return el('button', { class: 'btn big ' + (isIn ? 'in' : 'out'), id: isIn ? 'btn-in' : 'btn-out', type: 'button', hidden: '', on: { click: function () { gateAction(type); } } }, [
+          el('span', { class: 'arrow', 'aria-hidden': 'true', text: isIn ? '→' : '←' }),
+          el('span', { class: 'big-label' }, [el('span', { class: 'word', text: isIn ? 'IN' : 'OUT' }), el('span', { class: 'who-sub' })])
+        ]);
+      };
       body.appendChild(el('div', { class: 'card scan-card', id: 'scan-card' }, [
         el('label', { class: 'step', for: 'code' }, [el('b', { text: '1' }), 'Type or scan the employee code']),
         el('div', { class: 'row' }, [ci.input, ci.toggle, ('BarcodeDetector' in window) ? el('button', { class: 'btn', id: 'scan', type: 'button', text: 'Scan', on: { click: function () { scanInto('code'); } } }) : null]),
-        el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'empphoto', hidden: '' }), el('div', { class: 'whotext' }, [el('p', { id: 'empname', class: 'empname' }), el('p', { id: 'emphint', class: 'hint' })])]),
-        el('div', { class: 'step' }, [el('b', { text: '2' }), 'Check the face, then press']),
-        el('div', { class: 'row' }, [
-          el('button', { class: 'btn big in', id: 'btn-in', type: 'button', on: { click: function () { gateAction('GATE_IN'); } } }, [el('span', { class: 'arrow', 'aria-hidden': 'true', text: '↘' }), 'IN']),
-          el('button', { class: 'btn big out', id: 'btn-out', type: 'button', on: { click: function () { gateAction('GATE_OUT'); } } }, [el('span', { class: 'arrow', 'aria-hidden': 'true', text: '↗' }), 'OUT'])
+        el('div', { class: 'idle', id: 'gate-idle' }, [
+          el('div', { class: 'idle-ico', 'aria-hidden': 'true' }, [el('span', { text: '⇄' })]),
+          el('p', { class: 'idle-title', text: 'Ready for the next person' }),
+          el('p', { class: 'idle-sub', text: 'The right button appears here: IN if they are outside, OUT if they are inside.' })
+        ]),
+        el('div', { class: 'person', id: 'gate-person', hidden: '' }, [
+          el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'empphoto', hidden: '' }), el('div', { class: 'whotext' }, [
+            el('p', { id: 'empname', class: 'empname' }), el('span', { id: 'empstate', class: 'chip' }), el('p', { id: 'emphint', class: 'hint' })])]),
+          el('div', { class: 'action', id: 'gate-action' }, [bigBtn('GATE_IN'), bigBtn('GATE_OUT')]),
+          el('button', { class: 'linkbtn', id: 'btn-other', type: 'button', hidden: '', on: { click: function () {
+            document.getElementById('btn-in').hidden = false; document.getElementById('btn-out').hidden = false;
+            this.hidden = true; S.gateNext = null; feedback('tap');
+          } } })
         ])
       ]));
       body.appendChild(el('h2', { text: 'Recent on this phone' }));

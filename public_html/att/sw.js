@@ -15,8 +15,8 @@
  *
  * RAISE THE VERSION when any shell file changes, or phones keep the old one.
  */
-var VERSION = 'zas-att-shell-v6';
-var SHELL = ['./', 'index.html', 'app.css?v=6', 'db.js?v=6', 'app.js?v=6', 'manifest.webmanifest'];
+var VERSION = 'zas-att-shell-v7';
+var SHELL = ['./', 'index.html', 'app.css?v=7', 'db.js?v=7', 'app.js?v=7', 'manifest.webmanifest'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(VERSION).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));
