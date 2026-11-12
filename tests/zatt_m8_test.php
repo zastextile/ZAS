@@ -204,6 +204,18 @@ $cliC = (string) shell_exec('cd ' . escapeshellarg(rtrim($B, '/')) . ' && php at
 ok(str_contains($cliC, 'Backed up') && str_contains($cliC, 'NOT ENCRYPTED'), 'php att_backup.php create works, and says plainly when it is not encrypted');
 for ($i = 0; $i < 4; $i++) { sleep(1); AttBackup::create($bdir . '/keep', null, 3); }
 ok(count(glob($bdir . '/keep/att-*.sql.gz') ?: []) === 3, 'only the newest backups are kept (3 here, 14 by default)');
+$note = AttBackup::lastNote();
+ok($note !== null && str_starts_with((string) $note['file'], 'att-') && !str_contains(json_encode($note), 'Worker'), 'each backup leaves a short note in the database: name, time, size — never the contents');
+/* The live web server runs as another user and cannot look inside the SSH
+   user's private backup folder. The check then reads the note. */
+$hidden = AttBackup::defaultDir(rtrim($B, '/'));
+$moved = is_dir($hidden) ? $hidden . '.moved' : null;
+if ($moved) { rename($hidden, $moved); }
+AttBackup::verify($b['file'], null);
+$bk = $byId(SystemCheck::run(true))['backup'];
+if ($moved) { rename($moved, $hidden); }
+ok($bk['state'] === 'ok' && str_contains($bk['detail'], 'as recorded by the backup') && str_contains($bk['detail'], 'restore test PASSED'),
+   'A PAGE THAT CANNOT SEE THE BACKUP FOLDER STILL SHOWS THE LAST BACKUP AND RESTORE TEST: ' . $bk['detail']);
 
 /* ===================================================================== */
 echo "5. Over HTTP: speed, and two gates at the same instant\n";

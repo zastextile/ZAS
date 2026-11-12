@@ -383,7 +383,10 @@ ok((Ph::reviewFlag((int) $fr['id'], 'again', $hr)['reason_code'] ?? '') === 'ALR
 $l2 = Ph::flags();
 ok(count($l2['open']) === 2 && count($l2['reviewed']) === 1 && $l2['reviewed'][0]['review_note'] !== '', 'it moves to the reviewed list with its finding');
 
+Db::run("DELETE FROM att_policies WHERE policy_key = 'photo_purge_last_run'");
 ok(Ph::purgeExpired()['purged'] === 0, 'a fresh still is not purged');
+ok(str_starts_with((string) Db::value("SELECT value FROM att_policies WHERE policy_key = 'photo_purge_last_run'"), gmdate('Y-m-d')),
+   'every clean-up run, including php att_cron.php, records when it ran — Setup › System shows it');
 $pdo->prepare('UPDATE att_flags SET photo_stored_at = (UTC_TIMESTAMP(6) - INTERVAL 91 DAY) WHERE id = ?')->execute([(int) $fr['id']]);
 $down(true);
 $pg = Ph::purgeExpired();
@@ -397,6 +400,8 @@ ok($after['photo_key'] === null && $after['photo_purged_at'] !== null && $after[
 ok(str_contains((string) (Ph::flagPhoto((int) $fr['id'], 'flag', $hr)['error'] ?? ''), 'retention'), 'opening it now explains that the photo passed its retention period');
 ok((Ph::storeFlagPhoto($fu, picture(800, 800), $gk)['reason_code'] ?? '') === 'PHOTO_EXISTS', 'and a purged flag cannot be given a new picture');
 ok(count($objects('attendance/ref/')) === 3, 'reference photos are not touched by the retention purge');
+ok(Ph::purgeIfDue() === null, 'the clean-up just ran (as php att_cron.php would), so the automatic one waits a day');
+Db::run("DELETE FROM att_policies WHERE policy_key = 'photo_purge_last_run'");
 ok(Ph::purgeIfDue() !== null && Ph::purgeIfDue() === null, 'the automatic purge runs at most once a day');
 
 $t = Ph::selfTest($admin);

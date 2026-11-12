@@ -666,7 +666,7 @@ page_header('Attendance — Setup');
           return el('li', { 'data-probe': p.url, 'data-state': state }, [
             el('div', { class: 'mark ' + (state === 'ok' ? 'done' : (state === 'warn' ? 'opt' : '')), text: mark[state] }),
             el('div', { style: 'flex:1;min-width:0;overflow-wrap:anywhere' }, [el('b', { text: p.url }), el('span', { class: 't', text: !readable
-              ? 'Cannot be downloaded (answer ' + p.status + '). Good.'
+              ? (p.status === 200 ? 'Runs on the server but shows nothing (empty page). Good.' : 'Cannot be downloaded (answer ' + p.status + '). Good.')
               : (sql ? 'Can be downloaded. It shows the table layout only — no data, no passwords — but it is better hidden. Ask Cloudways support to block .sql files, or move on: nothing else depends on it.'
                      : 'The code can be READ from the web. Tell your developer before going live.') })])
           ]);

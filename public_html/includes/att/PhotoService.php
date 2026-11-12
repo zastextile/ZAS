@@ -537,6 +537,11 @@ final class PhotoService
             Db::run('UPDATE att_flags SET photo_key = NULL, photo_purged_at = ? WHERE id = ?', [Time::sql(), (int) $r['id']]);
             $purged++;
         }
+        Db::run(
+            "INSERT INTO att_policies (policy_key, value, value_type, description) VALUES ('photo_purge_last_run', ?, 'string', '')
+             ON DUPLICATE KEY UPDATE value = VALUES(value)",
+            [gmdate('Y-m-d H:i:s')]
+        );
         if ($purged > 0 || $failed > 0) {
             Audit::record('photo.retention_purge', 'att_flag', 0, null,
                 ['purged' => $purged, 'failed' => $failed, 'retention_days' => $days], null);

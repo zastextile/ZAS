@@ -111,6 +111,8 @@ final class AttBackup
         rename($tmp, $final);
         @chmod($final, 0600);
         self::prune($dir, $keep);
+        self::note('att_backup_last', ['file' => basename($final), 'at' => gmdate('Y-m-d H:i:s'), 'bytes' => (int) filesize($final),
+                                       'tables' => count($manifest['tables']), 'rows' => $rowsTotal, 'encrypted' => $encrypted]);
         return ['ok' => true, 'file' => $final, 'bytes' => (int) filesize($final), 'tables' => count($manifest['tables']), 'rows' => $rowsTotal, 'encrypted' => $encrypted];
     }
 
@@ -202,6 +204,7 @@ final class AttBackup
             try { $pdo->exec('SET FOREIGN_KEY_CHECKS=1'); } catch (\Throwable) {}
         }
         self::dropScratch();
+        self::note('att_backup_last_verified', ['file' => basename($file), 'at' => gmdate('Y-m-d H:i:s'), 'passed' => $all]);
         return ['ok' => $all, 'tables' => $out, 'created_at' => $manifest['created_at'] ?? null,
                 'error' => $all ? null : 'Some tables do not match what was backed up.'];
     }
@@ -261,6 +264,31 @@ final class AttBackup
             return ['ok' => false, 'error' => 'The file is not a readable backup (damaged or cut short).'];
         }
         return ['ok' => true, 'sql' => $sql];
+    }
+
+    /* A short note in the database of the last backup and the last restore
+       test: name, time, size — never the contents. The backup folder is
+       private to the SSH user, so the web page (another user) cannot look
+       inside it; it reads this note instead. */
+    private static function note(string $key, array $data): void
+    {
+        try {
+            Db::run(
+                "INSERT INTO att_policies (policy_key, value, value_type, description) VALUES (?, ?, 'string', '')
+                 ON DUPLICATE KEY UPDATE value = VALUES(value)",
+                [$key, json_encode($data)]
+            );
+        } catch (\Throwable) {
+            // the backup itself is what matters; the note is a convenience
+        }
+    }
+
+    /** @return array<string,mixed>|null the note left by the last create / verify */
+    public static function lastNote(string $key = 'att_backup_last'): ?array
+    {
+        $v = Db::value('SELECT value FROM att_policies WHERE policy_key = ?', [$key]);
+        $d = is_string($v) ? json_decode($v, true) : null;
+        return is_array($d) && isset($d['at']) ? $d : null;
     }
 
     /** @return array{file:string,age_hours:int}|null */

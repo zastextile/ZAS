@@ -233,8 +233,18 @@ final class SystemCheck
         $root = dirname(__DIR__, 2);
         $dir = AttBackup::defaultDir($root);
         $latest = AttBackup::latest($dir);
-        $this->add($g, 'backup', 'Attendance backup in the last 2 days', ($latest !== null && $latest['age_hours'] <= 48) ? 'ok' : 'warn',
-            $latest === null ? 'None found in ' . basename(dirname($dir)) . '/' . basename($dir) . '. (Cloudways backs up the whole database separately.)' : basename($latest['file']) . ', ' . $latest['age_hours'] . ' h old.',
+        $seen = '';
+        if ($latest === null && ($n = AttBackup::lastNote()) !== null) {
+            /* The web page usually cannot look inside the private backup
+               folder (it belongs to the SSH user); the backup leaves a note. */
+            $latest = ['file' => (string) $n['file'], 'age_hours' => (int) floor((time() - (int) strtotime($n['at'] . ' UTC')) / 3600)];
+            $seen = ' (as recorded by the backup)';
+        }
+        $v = AttBackup::lastNote('att_backup_last_verified');
+        $tested = $v !== null ? ' Last restore test ' . (!empty($v['passed']) ? 'PASSED' : 'FAILED') . ' on ' . substr((string) $v['at'], 0, 16) . ' UTC.' : ' No restore test yet.';
+        $this->add($g, 'backup', 'Attendance backup in the last 2 days', ($latest !== null && $latest['age_hours'] <= 48 && ($v === null || !empty($v['passed']))) ? 'ok' : 'warn',
+            $latest === null ? 'None found in ' . basename(dirname($dir)) . '/' . basename($dir) . '. (Cloudways backs up the whole database separately.)'
+                             : basename($latest['file']) . ', ' . $latest['age_hours'] . ' h old' . $seen . '.' . $tested,
             'php att_backup.php create — or a daily cron job. Check it with php att_backup.php verify <file>.');
     }
 
