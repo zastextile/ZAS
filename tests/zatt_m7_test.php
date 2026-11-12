@@ -317,7 +317,7 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     await loaded(p);
     await p.fill('#f-from', '2026-03-01'); await p.fill('#f-to', '2026-03-31'); await p.click('#f-show');
     await p.waitForSelector('#attr-body table');
-    check('overtime: by department, 1h 0m approved and 45m checked', /1h 0m/.test(await p.textContent('#attr-body')) && /45m/.test(await p.textContent('#attr-body')));
+    check('overtime: by department, in hours — 1 h approved and 0.75 h checked', /Stitching110(1 h)(0\.75 h)/.test(await p.textContent('#attr-body')), (await p.textContent('#attr-body')).slice(0, 300));
     await p.click('#attr-tabs button:has-text("Today")');
     await loaded(p);
     if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-today.png', fullPage: true });
