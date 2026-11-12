@@ -299,6 +299,13 @@ ok(trim($body) === '', 'opening a service file from the web runs nothing and sho
 $ch = curl_init("http://127.0.0.1:$port/api/v1/index.php?route=%2Fadmin%2Fsystem-check"); curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_COOKIEFILE => $aj]);
 $sc = json_decode((string) curl_exec($ch), true); curl_close($ch);
 ok(($sc['ok'] ?? false) && isset(array_column($sc['checks'], null, 'id')['https']) && count($sc['web_probes'] ?? []) === 3, 'the admin\'s browser check adds HTTPS and three web probes');
+$web = array_column($sc['checks'] ?? [], null, 'id');
+ok(($web['migrations']['state'] ?? '') === 'ok' && ($web['migration_files']['state'] ?? '') === 'ok',
+   'THE SAME CHECK FROM THE WEB READS THE DATABASE STEPS: all applied and unchanged (' . ($web['migrations']['detail'] ?? '?') . ')');
+$webFails = array_values(array_diff(array_keys(array_filter($web, fn($c) => $c['state'] === 'fail')), ['https']));   // HTTPS is checked from the web only; the test server is plain http
+$cliFails = array_keys(array_filter(array_column(SystemCheck::run(false)['checks'], null, 'id'), fn($c) => $c['state'] === 'fail'));
+sort($webFails); sort($cliFails);
+ok($webFails === $cliFails, '  and fails exactly what the command-line check fails (' . implode(',', $webFails) . ')');
 $ch = curl_init("http://127.0.0.1:$port/api/v1/index.php?route=%2Fadmin%2Fsystem-check"); curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_COOKIEFILE => $s1[0]]);
 curl_exec($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
 ok($code === 403, 'a gatekeeper cannot run the system check');

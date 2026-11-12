@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 namespace Att;
 
+/* Loaded here, not left to the caller: the web route does not load the
+   migration runner for anything else, and without it this list cannot read
+   the database steps. */
+require_once __DIR__ . '/Migrations.php';
+
 /**
  * "Is this server ready?" — one list of checks, each pass / warn / fail with
  * what to do about it. Used by `php att_check.php` and Setup › System.
