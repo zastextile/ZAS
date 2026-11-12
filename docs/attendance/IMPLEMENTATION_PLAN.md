@@ -919,3 +919,23 @@ ERP suites unchanged.
 **Left for people, not code:** the UAT with real staff and phones
 (`UAT_CHECKLIST.md`), the PHP-FPM cookie settings, choosing an
 `att_backup_key`, and the two cron lines (`GO_LIVE.md` §3–5).
+
+## 21. Gate screen and Automatic OUT — delivered 2026-11-12 (owner's requests)
+
+**Gate screen (phone 1.4).** One button only: green IN for someone outside,
+red OUT for someone inside — from the central server when online (every
+gate agrees), else from the phone's own queue and employee list. Nothing
+shown until a code is typed; success messages fade; "Not right?" shows the
+other button. The server still decides.
+
+**Automatic OUT (migration 0015).** New rule from the owner: an entry still
+open `auto_out_after_minutes` (240) after shift end + *approved* overtime is
+closed at shift end + approved overtime, `close_source = 'auto_shift_end'`,
+`auto_closed_at` = when. No gate event is written; overtime is never created
+(a person who came in after that time is closed at their IN, 0 minutes).
+Runs on phone syncs, Reports › Today and HR Reconciliation (at most every 5
+minutes), from `att_cron.php`, and on the spot when the person's next IN
+arrives. A real OUT scanned before the system closed the entry replaces it;
+one scanned after is refused. HR can re-time a system OUT as a correction.
+Shown on Reports › Today, attendance/movements reports and CSVs, HR, the
+overtime check, and the gate phone. Tests: `tests/zatt_autoout_test.php`.

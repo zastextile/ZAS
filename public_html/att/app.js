@@ -28,7 +28,7 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.4.0';
+  var APP_VERSION = '1.4.1';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
@@ -521,6 +521,7 @@
     person.hidden = state === 'idle';
     [bi, bo].forEach(function (b) { b.classList.remove('suggest', 'pop'); });
     chip.className = 'chip'; chip.textContent = ''; hint.textContent = '';
+    var note = document.getElementById('empnote'); if (note) { note.textContent = ''; note.hidden = true; }
     other.hidden = true;
     if (state === 'idle' || state === 'unknown') { bi.hidden = true; bo.hidden = true; return; }
     if (state === 'nolist') {                     // no employee list on this phone yet: both, as before
@@ -539,6 +540,10 @@
     chip.textContent = st.inside ? ('Inside' + (st.since ? ' since ' + timeOf(st.since) : '')) : 'Outside';
     hint.textContent = { server: 'Checked with the server just now', phone: 'From this phone\'s last scan', waiting: 'From this phone — that scan is not sent yet',
                          list: 'From the employee list' + (S.listAt ? ', updated ' + timeOf(S.listAt) : ''), none: 'No entry recorded yet' }[st.src] || '';
+    if (note && st.lastAuto && !st.inside) {
+      note.hidden = false;
+      note.textContent = 'Last time no OUT was scanned — the system closed it at ' + timeOf(st.lastAuto) + ' on ' + new Date(st.lastAuto).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + '.';
+    }
     other.hidden = false;
     other.textContent = 'Not right? Record ' + (st.inside ? 'IN' : 'OUT') + ' instead';
   }
@@ -565,7 +570,7 @@
         if (seq !== decideSeq || r.status !== 200 || !r.body.employees) return;
         var s = r.body.employees.filter(function (e) { return e.code === emp.code; })[0];
         if (!s || s.inside === undefined) return;
-        gateView('person', emp, { inside: !!parseInt(s.inside, 10), since: utcMs(s.inside_since), src: 'server' });
+        gateView('person', emp, { inside: !!parseInt(s.inside, 10), since: utcMs(s.inside_since), src: 'server', lastAuto: utcMs(s.last_auto_out_at) });
       }).catch(function () {});
     });
   }
@@ -1038,6 +1043,7 @@
         el('div', { class: 'person', id: 'gate-person', hidden: '' }, [
           el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'empphoto', hidden: '' }), el('div', { class: 'whotext' }, [
             el('p', { id: 'empname', class: 'empname' }), el('span', { id: 'empstate', class: 'chip' }), el('p', { id: 'emphint', class: 'hint' })])]),
+          el('p', { class: 'autonote', id: 'empnote', hidden: '' }),
           el('div', { class: 'action', id: 'gate-action' }, [bigBtn('GATE_IN'), bigBtn('GATE_OUT')]),
           el('button', { class: 'linkbtn', id: 'btn-other', type: 'button', hidden: '', on: { click: function () {
             document.getElementById('btn-in').hidden = false; document.getElementById('btn-out').hidden = false;

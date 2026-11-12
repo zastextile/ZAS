@@ -399,7 +399,7 @@ final class OvertimeService
         $from = (new DateTimeImmutable($workDate . ' 00:00:00', $tz))->setTimezone($utc);
         $to   = (new DateTimeImmutable($workDate . ' 12:00:00', $tz))->modify('+1 day')->setTimezone($utc);
         $cycles = Db::all(
-            'SELECT c.entry_sequence, c.opened_at, c.closed_at, c.present_minutes, si.starts_at AS shift_starts_at, si.ends_at AS shift_ends_at, s.name AS shift_name
+            'SELECT c.entry_sequence, c.opened_at, c.closed_at, c.present_minutes, c.close_source, si.starts_at AS shift_starts_at, si.ends_at AS shift_ends_at, s.name AS shift_name
                FROM att_entry_cycles c
                JOIN att_shift_instances si ON si.id = c.shift_instance_id
                JOIN att_shifts s ON s.id = si.shift_id
@@ -429,7 +429,8 @@ final class OvertimeService
                 if ($pS !== null) { $insidePlanned += self::overlap($in, $out, $pS, $pE); }
             }
             $list[] = ['entry_sequence' => (int) $c['entry_sequence'], 'shift' => $c['shift_name'],
-                       'in' => Time::iso($in), 'out' => $out ? Time::iso($out) : null, 'present_minutes' => $c['present_minutes'] !== null ? (int) $c['present_minutes'] : null];
+                       'in' => Time::iso($in), 'out' => $out ? Time::iso($out) : null, 'present_minutes' => $c['present_minutes'] !== null ? (int) $c['present_minutes'] : null,
+                       'auto_out' => ($c['close_source'] ?? '') === 'auto_shift_end'];
         }
         return [
             'entries' => $list,

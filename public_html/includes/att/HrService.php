@@ -90,6 +90,19 @@ final class HrService
                     AND c.opened_at < (UTC_TIMESTAMP(6) - INTERVAL $staleHours HOUR)
                   ORDER BY c.opened_at LIMIT 500"
             ),
+            /* Closed by the system because no OUT was scanned (the auto-OUT
+               rule). Listed for a week so HR can put in the real time. */
+            'auto_closed' => Db::all(
+                "SELECT c.id AS entry_cycle_id, c.opened_at, c.closed_at, c.auto_closed_at, c.present_minutes, si.work_date, si.ends_at AS shift_ends_at,
+                        e.id AS employee_id, e.code AS employee_code, e.full_name, d.name AS department_name
+                   FROM att_entry_cycles c
+                   JOIN att_employees e        ON e.id = c.employee_id
+                   JOIN att_departments d      ON d.id = e.department_id
+                   JOIN att_shift_instances si ON si.id = c.shift_instance_id
+                  WHERE c.close_source = 'auto_shift_end'
+                    AND c.auto_closed_at > (UTC_TIMESTAMP(6) - INTERVAL 7 DAY)
+                  ORDER BY c.auto_closed_at DESC, e.full_name LIMIT 500"
+            ),
             'unconfirmed_entries' => (int) Db::value(
                 'SELECT COUNT(*) FROM att_entry_cycles c LEFT JOIN att_hod_arrivals h ON h.entry_cycle_id = c.id WHERE h.id IS NULL'
             ),
@@ -183,11 +196,14 @@ final class HrService
         }
 
         return Db::tx(static function () use ($cycleId, $closedAt, $reason, $actorId) {
-            $c = Db::one('SELECT id, employee_id, opened_at, closed_at FROM att_entry_cycles WHERE id = ? FOR UPDATE', [$cycleId]);
+            $c = Db::one('SELECT id, employee_id, opened_at, closed_at, close_source, present_minutes FROM att_entry_cycles WHERE id = ? FOR UPDATE', [$cycleId]);
             if ($c === null) {
                 return self::no('CYCLE_NOT_FOUND', 'No such entry.');
             }
-            if ($c['closed_at'] !== null) {
+            /* An entry the SYSTEM closed (no OUT scanned) may be given its
+               real time; one closed by a gate scan or by HR may not. */
+            $wasAuto = $c['close_source'] === AttendanceService::AUTO_OUT;
+            if ($c['closed_at'] !== null && !$wasAuto) {
                 return self::no('ALREADY_CLOSED', 'That entry is already closed.');
             }
             $opened = Time::fromDb((string) $c['opened_at']);
@@ -199,15 +215,15 @@ final class HrService
             }
             $minutes = intdiv($closedAt->getTimestamp() - $opened->getTimestamp(), 60);
 
-            $corrId = self::correction('att_entry_cycle', $cycleId, 'cycle.close',
-                ['closed_at' => null],
+            $corrId = self::correction('att_entry_cycle', $cycleId, $wasAuto ? 'cycle.retime_auto_out' : 'cycle.close',
+                $wasAuto ? ['closed_at' => $c['closed_at'], 'present_minutes' => $c['present_minutes'], 'close_source' => AttendanceService::AUTO_OUT] : ['closed_at' => null],
                 ['closed_at' => Time::sql($closedAt), 'present_minutes' => $minutes, 'close_source' => 'hr_correction'],
                 $reason, $actorId);
 
             Db::run(
                 "UPDATE att_entry_cycles
                     SET closed_at = ?, present_minutes = ?, close_source = 'hr_correction', correction_id = ?
-                  WHERE id = ? AND closed_at IS NULL",
+                  WHERE id = ? AND (closed_at IS NULL OR close_source = 'auto_shift_end')",
                 [Time::sql($closedAt), $minutes, $corrId, $cycleId]
             );
             return ['ok' => true, 'entry_cycle_id' => $cycleId, 'present_minutes' => $minutes, 'correction_id' => $corrId];

@@ -138,7 +138,8 @@ page_header('Attendance — Reports');
           tile(d.late_count, 'late today', d.late_count ? 'hot' : '', 't-late'),
           tile(d.left_early_count, 'left before shift end (potential)', d.left_early_count ? 'hot' : '', 't-early'),
           tile(d.unconfirmed_entries, 'entries not yet confirmed by HOD', d.unconfirmed_entries ? 'hot' : '', 't-unconf'),
-          d.absent_with_shift_count ? tile(d.absent_with_shift_count, 'had a shift, did not come', 'hot', 't-absent') : null
+          d.absent_with_shift_count ? tile(d.absent_with_shift_count, 'had a shift, did not come', 'hot', 't-absent') : null,
+          d.auto_out_count ? tile(d.auto_out_count, 'not scanned out — system closed at shift end', 'hot', 't-auto') : null
         ]),
         el('div', { class: 'grid2' }, [
           el('div', {}, [el('h3', { text: 'Inside now, by department' }),
@@ -147,6 +148,11 @@ page_header('Attendance — Reports');
             })) : el('p', { class: 'muted', text: 'Nobody is inside.' })]),
           d.monitoring ? el('div', {}, [el('h3', { text: 'Needs attention' }), watch(d.monitoring)]) : null
         ]),
+        d.auto_out_count ? el('div', { id: 'auto-out' }, [
+          el('h3', { style: 'margin-top:16px', text: 'Not scanned out — the system closed these at shift end' }),
+          el('p', { class: 'note', text: 'Nobody scanned OUT for these people, so the system closed the entry at the shift end (or shift end plus approved overtime). HR can put in the real time on the Reconciliation screen.' }),
+          table(['Employee', 'Department', 'Came in', 'System OUT at', 'Closed by the system'], d.auto_out, function(r){ return [r.employee_code + ' ' + r.full_name, r.department_name, dt(r.opened_at), hm(r.closed_at), dt(r.auto_closed_at)]; })
+        ]) : null,
         el('h3', { style: 'margin-top:16px', text: 'Late today' }),
         d.late.length ? table(['Employee', 'Department', 'Shift starts', 'First IN', 'Late by'], d.late, function(r){ return [r.employee_code + ' ' + r.full_name, r.department_name, hm(r.starts_at), hm(r.first_in), mins(r.late_minutes)]; }) : el('p', { class: 'muted', text: 'Nobody.' }),
         el('h3', { style: 'margin-top:16px', text: 'Left before shift end (potential — a break or permission may explain it)' }),
@@ -199,11 +205,12 @@ page_header('Attendance — Reports');
       bar.appendChild(download('/reports/attendance'));
       show([bar,
         el('div', { class: 'tiles' }, [tile(t.present, 'shift days worked'), tile(t.absent, 'had a shift, did not come', t.absent ? 'hot' : ''), tile(mins(t.present_minutes), 'present (closed entries)'),
-          tile(t.late, 'late days', t.late ? 'hot' : ''), tile(t.left_early, 'left early (potential)', t.left_early ? 'hot' : ''), tile(t.unconfirmed, 'entries unconfirmed by HOD', t.unconfirmed ? 'hot' : ''), tile(mins(t.ot_actual_minutes), 'overtime checked')]),
+          tile(t.late, 'late days', t.late ? 'hot' : ''), tile(t.left_early, 'left early (potential)', t.left_early ? 'hot' : ''), tile(t.unconfirmed, 'entries unconfirmed by HOD', t.unconfirmed ? 'hot' : ''), tile(mins(t.ot_actual_minutes), 'overtime checked'),
+          t.auto_out ? tile(t.auto_out, 'days not scanned out (system OUT)', 'hot') : null]),
         el('p', { class: 'note', text: 'Present = time between IN and OUT. An entry still open shows as "inside". HOD confirmation times never count as an IN. Overtime is only what was approved and checked the next day.' }),
         r.rows.length ? table(['Day', 'Employee', 'Department', 'Shift', 'First IN', 'Last OUT', 'Entries', 'Present', 'Late', 'Left early', 'HOD unconfirmed', 'OT checked', ''], r.rows, function(x){
           return [day(x.work_date), x.employee_code + ' ' + x.full_name, x.department_name, x.shift_name + ' ' + hm(x.starts_at) + '–' + hm(x.ends_at) + (x.shift_source === 'default_auto' ? ' (default)' : ''),
-            hm(x.first_in), hm(x.last_out), x.entries, mins(x.present_minutes), x.late_minutes ? mins(x.late_minutes) : '', x.early_minutes ? mins(x.early_minutes) : '', x.unconfirmed || '',
+            hm(x.first_in), x.auto_out ? el('span', { class: 'err', title: 'No OUT was scanned. The system closed the entry at shift end.', text: hm(x.last_out) + ' · system, not scanned' }) : hm(x.last_out), x.entries, mins(x.present_minutes), x.late_minutes ? mins(x.late_minutes) : '', x.early_minutes ? mins(x.early_minutes) : '', x.unconfirmed || '',
             x.ot_actual_minutes !== null ? mins(x.ot_actual_minutes) : (x.ot_approved_minutes ? 'approved ' + mins(x.ot_approved_minutes) : ''),
             pill(x.status, x.status === 'absent' ? 'did not come' : x.status)];
         }) : el('p', { class: 'muted', id: 'att-none', text: 'Nothing in these dates.' }),
@@ -217,10 +224,11 @@ page_header('Attendance — Reports');
     get('/reports/movements', F).then(function(r){
       if (!r.ok) return show([bar, el('p', { class: 'err', text: r.error })]);
       bar.appendChild(download('/reports/movements'));
-      show([bar, el('p', { class: 'note', text: r.rows.length + ' scan' + (r.rows.length === 1 ? '' : 's') + '. "Later" means the phone had no signal and sent it afterwards; the time shown is when it was scanned.' }),
+      show([bar, el('p', { class: 'note', text: r.rows.length + ' scan' + (r.rows.length === 1 ? '' : 's') + '. "Later" means the phone had no signal and sent it afterwards; the time shown is when it was scanned. "OUT · system" means nobody scanned OUT and the system closed the entry at shift end.' }),
         r.rows.length ? table(['Time', '', 'Employee', 'Department', 'Entry', 'Recorded by', 'Phone', 'Sent', 'HOD confirmed'], r.rows, function(x){
-          return [dt(x.occurred_at), pill(x.event_type === 'GATE_IN' ? 'present' : 'pending', x.event_type === 'GATE_IN' ? 'IN' : 'OUT'), x.employee_code + ' ' + x.full_name, x.department_name,
-            x.entry_sequence ? '#' + x.entry_sequence : '', x.recorded_by, x.phone, x.source === 'offline_replay' ? 'later' : 'at once',
+          var auto = x.event_type === 'AUTO_OUT';
+          return [dt(x.occurred_at), pill(x.event_type === 'GATE_IN' ? 'present' : (auto ? 'absent' : 'pending'), x.event_type === 'GATE_IN' ? 'IN' : (auto ? 'OUT · system' : 'OUT')), x.employee_code + ' ' + x.full_name, x.department_name,
+            x.entry_sequence ? '#' + x.entry_sequence : '', auto ? el('span', { class: 'err', text: x.recorded_by }) : x.recorded_by, x.phone || '', auto ? 'not scanned' : (x.source === 'offline_replay' ? 'later' : 'at once'),
             x.event_type === 'GATE_IN' ? (x.hod_confirmed_at ? hm(x.hod_confirmed_at) + ' · ' + (x.hod_name || '') : el('span', { class: 'err', text: 'not yet' })) : ''];
         }) : el('p', { class: 'muted', id: 'mov-none', text: 'No scans in these dates.' })]);
     });

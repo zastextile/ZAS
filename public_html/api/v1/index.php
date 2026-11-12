@@ -360,6 +360,7 @@ try {
         case $method === 'POST' && $route === '/sync/events':
             Http::requireCsrf();
             $u = Http::requireUser();
+            auto_out_if_due();
             $allowed = [];
             if (Roles::can('attgate', 'c')) { $allowed[] = 'GATE_IN'; $allowed[] = 'GATE_OUT'; }
             if (Roles::can('atthod', 'c'))  { $allowed[] = 'HOD_CONFIRM'; }
@@ -393,6 +394,7 @@ try {
 
         case $method === 'GET' && $route === '/hr/reconciliation':
             Http::requirePermission('atthr', 'v');
+            auto_out_if_due();
             Http::json(array_merge(['ok' => true], HrService::queue()));
             break;
 
@@ -817,6 +819,7 @@ try {
 
         case $method === 'GET' && $route === '/reports/dashboard':
             $u = Http::requirePermission('attrep', 'v');
+            auto_out_if_due();
             Http::json(ReportService::dashboard(report_scope((int) $u['id'])));
             break;
 
@@ -841,14 +844,14 @@ try {
             $name = str_replace('reports/', '', $name) . '-' . $r['from'] . '-to-' . $r['to'] . '.csv';
             if ($route === '/reports/attendance') {
                 send_csv($name, ['Work date', 'Code', 'Name', 'Department', 'Shift', 'Shift start', 'Shift end', 'First IN', 'Last OUT', 'Entries', 'Present minutes',
-                                 'Late minutes', 'Left early minutes (potential)', 'Unconfirmed by HOD', 'Status', 'Approved OT minutes', 'Actual OT minutes'],
+                                 'Late minutes', 'Left early minutes (potential)', 'Unconfirmed by HOD', 'Status', 'Approved OT minutes', 'Actual OT minutes', 'Not scanned out (system OUT)'],
                     array_map(fn($x) => [$x['work_date'], $x['employee_code'], $x['full_name'], $x['department_name'], $x['shift_name'], $t($x['starts_at']), $t($x['ends_at']),
                         $t($x['first_in']), $t($x['last_out']), $x['entries'], $x['present_minutes'], $x['late_minutes'], $x['early_minutes'], $x['unconfirmed'], $x['status'],
-                        $x['ot_approved_minutes'], $x['ot_actual_minutes']], $r['rows']));
+                        $x['ot_approved_minutes'], $x['ot_actual_minutes'], $x['auto_out'] > 0 ? 'yes — closed at shift end' : ''], $r['rows']));
             } elseif ($route === '/reports/movements') {
                 send_csv($name, ['Time', 'IN/OUT', 'Code', 'Name', 'Department', 'Entry no.', 'Recorded by', 'Phone', 'Sent', 'Received by server', 'HOD confirmed', 'HOD'],
-                    array_map(fn($x) => [$t($x['occurred_at']), $x['event_type'] === 'GATE_IN' ? 'IN' : 'OUT', $x['employee_code'], $x['full_name'], $x['department_name'],
-                        $x['entry_sequence'], $x['recorded_by'], $x['phone'], $x['source'] === 'offline_replay' ? 'later (offline)' : 'at once', $t($x['received_at']),
+                    array_map(fn($x) => [$t($x['occurred_at']), $x['event_type'] === 'GATE_IN' ? 'IN' : ($x['event_type'] === 'AUTO_OUT' ? 'OUT (system, not scanned)' : 'OUT'), $x['employee_code'], $x['full_name'], $x['department_name'],
+                        $x['entry_sequence'], $x['recorded_by'], $x['phone'], $x['source'] === 'offline_replay' ? 'later (offline)' : ($x['source'] === 'system' ? 'by the system' : 'at once'), $t($x['received_at']),
                         $t($x['hod_confirmed_at']), $x['hod_name']], $r['rows']));
             } else {
                 send_csv($name, ['Work date', 'Department', 'Code', 'Name', 'Reason', 'Asked min', 'Decision', 'Approved min', 'Checked', 'Actual min', 'Rate type', 'Rate', 'Amount', 'Payroll',
@@ -1070,6 +1073,18 @@ function require_gate_or_hod(): array
  * who may hand out attendance access are the same people who may hand out
  * every other access in the ERP, and nobody else.
  */
+/* The forgotten-exit rule (AttendanceService::autoCloseDue), at most every
+   five minutes, on the requests that happen all day anyway. A failure here
+   must never stop a scan being recorded. */
+function auto_out_if_due(): void
+{
+    try {
+        AttendanceService::autoCloseIfDue();
+    } catch (Throwable $e) {
+        error_log('[att-api] auto OUT: ' . $e->getMessage());
+    }
+}
+
 function require_erp_admin(): array
 {
     $u = Http::requireUser();

@@ -362,7 +362,7 @@ page_header('Attendance — Overtime');
       if (!r.lines.length) nodes.push(el('p', { class: 'muted', id: 'ver-none', text: 'Nothing to check.' }));
       else nodes.push(table(['Employee', 'Work date', 'Approved', 'Gate history', 'Actual minutes', ''], r.lines, function(l){
         var mv = l.movement || {};
-        var gate = el('div', { class: 'gate' }, (mv.entries && mv.entries.length) ? mv.entries.map(function(e){ return el('div', { text: 'In ' + clock(e.in) + ' — ' + (e.out ? 'out ' + clock(e.out) : 'still inside') }); }) : [el('div', { class: 'muted', text: 'No gate entry that day' })]);
+        var gate = el('div', { class: 'gate' }, (mv.entries && mv.entries.length) ? mv.entries.map(function(e){ return el('div', { text: 'In ' + clock(e.in) + ' — ' + (e.out ? 'out ' + clock(e.out) + (e.auto_out ? ' (not scanned — closed by the system at shift end)' : '') : 'still inside') }); }) : [el('div', { class: 'muted', text: 'No gate entry that day' })]);
         if (mv.minutes_inside_after_shift !== null && mv.minutes_inside_after_shift !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside after the shift ended: ' + mins(mv.minutes_inside_after_shift) }));
         if (mv.minutes_inside_planned !== null && mv.minutes_inside_planned !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside during the planned time: ' + mins(mv.minutes_inside_planned) }));
         var input = el('input', { type: 'number', min: 0, max: l.approved_minutes, 'aria-label': 'Actual minutes for ' + l.full_name, 'data-line': l.request_employee_id });

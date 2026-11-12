@@ -171,6 +171,9 @@ final class AttendanceService
     ): array {
         // Already inside? (invariant 2 — no double IN)
         $open = self::openCycleFor($employeeId);
+        if ($open !== null && self::autoCloseOne((int) $open['id'], Time::nowUtc())) {
+            $open = null;          // yesterday's forgotten exit, closed by the rule just now
+        }
         if ($open !== null) {
             return self::reject($uuid, 'GATE_IN', 'ALREADY_INSIDE',
                 'This employee is already inside. Record an exit first.',
@@ -274,10 +277,30 @@ final class AttendanceService
                       WHERE employee_id = ? AND closed_at IS NULL FOR UPDATE',
                     [$employeeId]
                 );
+                $replacesAuto = false;
                 if ($open === null) {
-                    // invariant 2 — no OUT without IN
-                    return self::reject($uuid, 'GATE_OUT', 'NOT_INSIDE',
-                        'This employee is not currently inside.', $deviceId);
+                    /* A real OUT scanned BEFORE the system closed the entry —
+                       on a phone with no signal that sent it afterwards — is
+                       what actually happened, so it takes the place of the
+                       system's OUT. One scanned after the system closed it is
+                       not: the entry was already closed when it happened. */
+                    $auto = Db::one(
+                        "SELECT id, opened_at, shift_instance_id, auto_closed_at FROM att_entry_cycles
+                          WHERE employee_id = ? AND opened_at <= ? ORDER BY opened_at DESC LIMIT 1 FOR UPDATE",
+                        [$employeeId, Time::sql($occurred)]
+                    );
+                    $autoSource = $auto !== null ? Db::value('SELECT close_source FROM att_entry_cycles WHERE id = ?', [(int) $auto['id']]) : null;
+                    if ($auto !== null && $autoSource === self::AUTO_OUT && $auto['auto_closed_at'] !== null
+                        && $occurred <= Time::fromDb((string) $auto['auto_closed_at'])) {
+                        $open = $auto;
+                        $replacesAuto = true;
+                    } else {
+                        // invariant 2 — no OUT without IN
+                        return self::reject($uuid, 'GATE_OUT', 'NOT_INSIDE',
+                            $autoSource === self::AUTO_OUT
+                                ? 'This employee is not inside: the system closed the entry because no OUT was scanned.'
+                                : 'This employee is not currently inside.', $deviceId);
+                    }
                 }
 
                 Db::run(
@@ -306,14 +329,23 @@ final class AttendanceService
                     $minutes = $seconds >= 0 ? intdiv($seconds, 60) : null;
                 }
 
-                Db::run(
-                    'UPDATE att_entry_cycles
-                        SET gate_out_event_id = ?, closed_at = ?, present_minutes = ?
-                      WHERE id = ? AND closed_at IS NULL',
-                    [$eventId, Time::sql($occurred), $minutes, (int) $open['id']]
-                );
+                if ($replacesAuto) {
+                    Db::run(
+                        "UPDATE att_entry_cycles
+                            SET gate_out_event_id = ?, closed_at = ?, present_minutes = ?, close_source = 'gate'
+                          WHERE id = ? AND close_source = 'auto_shift_end' AND gate_out_event_id IS NULL",
+                        [$eventId, Time::sql($occurred), $minutes, (int) $open['id']]
+                    );
+                } else {
+                    Db::run(
+                        'UPDATE att_entry_cycles
+                            SET gate_out_event_id = ?, closed_at = ?, present_minutes = ?
+                          WHERE id = ? AND closed_at IS NULL',
+                        [$eventId, Time::sql($occurred), $minutes, (int) $open['id']]
+                    );
+                }
 
-                Audit::record('gate.out', 'att_entry_cycle', (int) $open['id'], null, [
+                Audit::record($replacesAuto ? 'gate.out_replaces_auto' : 'gate.out', 'att_entry_cycle', (int) $open['id'], null, [
                     'employee_id'     => $employeeId,
                     'event_uuid'      => $uuid,
                     'occurred_at'     => Time::sql($occurred),
@@ -323,11 +355,131 @@ final class AttendanceService
                 return self::accept($uuid, 'GATE_OUT', $eventId, $deviceId, [
                     'entry_cycle_id'  => (int) $open['id'],
                     'present_minutes' => $minutes,
-                ]);
+                ] + ($replacesAuto ? ['replaced_auto_out' => true] : []));
             });
         } catch (Throwable $e) {
             return self::fromRace($e, $uuid, 'GATE_OUT', $employeeId, $deviceId, $sequence);
         }
+    }
+
+    // ------------------------------------------------------------- auto OUT
+
+    public const AUTO_OUT = 'auto_shift_end';
+
+    /**
+     * The owner's rule for a forgotten exit scan.
+     *
+     * An entry still open when its shift has ended is closed by the system
+     * AT THE SHIFT END — or at shift end plus the employee's APPROVED overtime
+     * for that day — but only once a waiting time after that (setting
+     * auto_out_after_minutes, 4 hours by default) has passed with no OUT. So
+     * with a 6 pm shift end nothing happens until 10 pm; anyone still not
+     * scanned out then is closed at 6 pm.
+     *
+     * Overtime is never created by this: the closing time is never later
+     * than shift end + approved minutes. Someone who came in after that time
+     * is closed at the moment they came in, with no minutes.
+     *
+     * No gate event is written. The entry carries close_source
+     * 'auto_shift_end' and auto_closed_at, and every report says "not scanned
+     * out". HR can replace the time with the real one, as a correction.
+     *
+     * @return array{ok:bool,closed:int,checked:int}
+     */
+    public static function autoCloseDue(?DateTimeImmutable $now = null, int $limit = 1000): array
+    {
+        $now ??= Time::nowUtc();
+        if (!Policy::bool('auto_out_enabled', true)) {
+            return ['ok' => true, 'closed' => 0, 'checked' => 0, 'enabled' => false];
+        }
+        $wait = max(0, Policy::int('auto_out_after_minutes', 240));
+        $ids = Db::all(
+            'SELECT c.id FROM att_entry_cycles c JOIN att_shift_instances si ON si.id = c.shift_instance_id
+              WHERE c.closed_at IS NULL AND si.ends_at <= ? ORDER BY c.opened_at LIMIT ' . max(1, $limit),
+            [Time::sql($now->modify("-$wait minutes"))]
+        );
+        $closed = 0;
+        foreach ($ids as $r) {
+            if (self::autoCloseOne((int) $r['id'], $now)) {
+                $closed++;
+            }
+        }
+        return ['ok' => true, 'closed' => $closed, 'checked' => count($ids), 'enabled' => true];
+    }
+
+    /** Run the rule if it has not run in the last five minutes. Cheap; called on phone syncs, reports and the HR screen. */
+    public static function autoCloseIfDue(): ?array
+    {
+        $last = (string) (Db::value("SELECT value FROM att_policies WHERE policy_key = 'auto_out_last_run'") ?? '');
+        if ($last !== '' && strtotime($last . ' UTC') > time() - 300) {
+            return null;
+        }
+        Db::run(
+            "INSERT INTO att_policies (policy_key, value, value_type, description) VALUES ('auto_out_last_run', ?, 'string', '')
+             ON DUPLICATE KEY UPDATE value = VALUES(value)",
+            [gmdate('Y-m-d H:i:s')]
+        );
+        Policy::flush();
+        return self::autoCloseDue();
+    }
+
+    /** When would the system close this entry, and may it now? [closeAt, dueAt] or null if the rule is off. */
+    public static function autoOutTimes(array $c): ?array
+    {
+        if (!Policy::bool('auto_out_enabled', true)) {
+            return null;
+        }
+        $utc = new \DateTimeZone('UTC');
+        $end = new DateTimeImmutable((string) $c['ends_at'], $utc);
+        $ot  = 0;
+        if (Db::tableExists('att_ot_request_employees')) {
+            $ot = (int) (Db::value(
+                "SELECT approved_minutes FROM att_ot_request_employees
+                  WHERE employee_id = ? AND work_date = ? AND approval_status = 'approved' LIMIT 1",
+                [(int) $c['employee_id'], (string) $c['work_date']]
+            ) ?? 0);
+        }
+        $closeAt = $end->modify('+' . max(0, $ot) . ' minutes');
+        $opened  = new DateTimeImmutable((string) $c['opened_at'], $utc);
+        if ($opened > $closeAt) {
+            $closeAt = $opened;                       // came in after it: closed with no minutes
+        }
+        $wait = max(0, Policy::int('auto_out_after_minutes', 240));
+        return [$closeAt, $end->modify('+' . max(0, $ot) . ' minutes')->modify("+$wait minutes"), $ot];
+    }
+
+    /** Close one entry by the rule, if it is due. True when it was closed here. */
+    public static function autoCloseOne(int $cycleId, DateTimeImmutable $now): bool
+    {
+        $c = Db::one(
+            'SELECT c.id, c.employee_id, c.opened_at, si.ends_at, si.work_date
+               FROM att_entry_cycles c JOIN att_shift_instances si ON si.id = c.shift_instance_id
+              WHERE c.id = ? AND c.closed_at IS NULL',
+            [$cycleId]
+        );
+        $t = $c !== null ? self::autoOutTimes($c) : null;
+        if ($t === null || $now < $t[1]) {
+            return false;
+        }
+        [$closeAt, , $ot] = $t;
+        $minutes = intdiv($closeAt->getTimestamp() - (new DateTimeImmutable((string) $c['opened_at'], new \DateTimeZone('UTC')))->getTimestamp(), 60);
+        return Db::tx(static function () use ($cycleId, $closeAt, $minutes, $now, $c, $ot): bool {
+            $n = Db::run(
+                "UPDATE att_entry_cycles
+                    SET closed_at = ?, present_minutes = ?, close_source = 'auto_shift_end', auto_closed_at = ?
+                  WHERE id = ? AND closed_at IS NULL",
+                [Time::sql($closeAt), max(0, $minutes), Time::sql($now), $cycleId]
+            )->rowCount();
+            if ($n !== 1) {
+                return false;                         // a real OUT got there first
+            }
+            Audit::record('gate.auto_out', 'att_entry_cycle', $cycleId, ['closed_at' => null], [
+                'employee_id' => (int) $c['employee_id'], 'closed_at' => Time::sql($closeAt),
+                'present_minutes' => max(0, $minutes), 'approved_ot_minutes' => $ot,
+                'reason' => 'No OUT was scanned; closed at shift end' . ($ot ? ' plus approved overtime' : '') . ' by the system.',
+            ], null);
+            return true;
+        });
     }
 
     // ----------------------------------------------------------- race rescue

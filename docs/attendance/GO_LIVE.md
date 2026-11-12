@@ -72,11 +72,32 @@ attendance tables. Nothing outside the `att_` tables is touched.
 
 ```
 15 2 * * *  cd /home/master/applications/eqjpvvvmyz/public_html && php att_backup.php create
-30 2 * * *  cd /home/master/applications/eqjpvvvmyz/public_html && php att_cron.php
+0,30 * * * *  cd /home/master/applications/eqjpvvvmyz/public_html && php att_cron.php
 ```
 
-`att_cron.php` deletes flag photos older than the retention setting.
+`att_cron.php` closes forgotten exits (Automatic OUT, below) and deletes flag
+photos older than the retention setting. Both also run by themselves when
+phones sync and when HR or Reports are opened; the timer is the back-up for
+a quiet night.
 Setup › System shows when each last ran.
+
+## 5a. Automatic OUT (forgotten exit scans)
+
+Setup › Settings › **Automatic OUT** (on by default, waiting time 240 minutes).
+Someone still not scanned OUT when the waiting time after their shift end has
+passed is closed **at the shift end** — or shift end plus their *approved*
+overtime. Example: shift ends 18:00, wait 240 → at 22:00 everyone still
+"inside" is closed at 18:00.
+
+- Marked "not scanned out" on Reports › Today (next morning), the Attendance
+  and Movements reports and CSVs, the overtime check screen, and on the gate
+  phone the next time the code is typed.
+- No gate scan is invented. HR › Reconciliation › **Not scanned out** lets HR
+  put in the real time (kept as a correction).
+- A real OUT scanned *before* the system closed it (phone had no signal)
+  replaces the system's time when it arrives. One scanned *after* is refused.
+- On the first run, entries already left open from earlier days are closed
+  the same way.
 
 ## 6. Setup before staff use it
 

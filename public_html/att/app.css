@@ -84,6 +84,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--note);bo
 .chip:empty{display:none}
 .chip.outside{background:#e3f4ec;color:var(--ok)}
 .chip.inside{background:#fde8e5;color:var(--out)}
+.autonote{margin:-2px 0 12px;padding:9px 12px;border-radius:12px;background:#fff6e5;border:1px solid #f3dcae;color:#7a4a00;font-size:13.5px;font-weight:600}
 /* A ring around the likely next button. A hint, never a press. */
 .btn.suggest{animation:ring 1.6s ease-out infinite}
 @keyframes ring{0%{box-shadow:0 0 0 0 rgba(29,95,168,.55)}70%{box-shadow:0 0 0 12px rgba(29,95,168,0)}100%{box-shadow:0 0 0 0 rgba(29,95,168,0)}}

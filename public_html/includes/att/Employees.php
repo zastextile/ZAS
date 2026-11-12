@@ -176,7 +176,10 @@ final class Employees
         /* inside / inside_since: whether the person has an open entry right
            now, from any gate. The phone uses it to offer IN or OUT. */
         $sql = 'SELECT e.id, e.code, e.full_name, e.department_id, d.name AS department_name, e.active,
-                       (c.id IS NOT NULL) AS inside, c.opened_at AS inside_since
+                       (c.id IS NOT NULL) AS inside, c.opened_at AS inside_since,
+                       (SELECT CASE WHEN l.close_source = \'auto_shift_end\' THEN l.closed_at END
+                          FROM att_entry_cycles l WHERE l.employee_id = e.id AND l.closed_at IS NOT NULL
+                         ORDER BY l.opened_at DESC LIMIT 1) AS last_auto_out_at
                   FROM att_employees e
                   JOIN att_departments d ON d.id = e.department_id
                   LEFT JOIN att_entry_cycles c ON c.open_employee_id = e.id

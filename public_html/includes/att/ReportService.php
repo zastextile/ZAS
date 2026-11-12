@@ -90,8 +90,25 @@ final class ReportService
                 AND NOT EXISTS (SELECT 1 FROM att_entry_cycles c WHERE c.employee_id = e.id AND c.opened_at >= ? AND c.opened_at < ?)
               ORDER BY d.name, e.full_name LIMIT 300", array_merge($dp, [$from, $to]));
 
+        /* Not scanned out: closed by the system in the last day and a half, so
+           the morning after shows last night's forgotten exits. */
+        $auto = Db::all(
+            "SELECT e.code AS employee_code, e.full_name, d.name AS department_name, c.opened_at, c.closed_at, c.auto_closed_at, si.work_date
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
+               JOIN att_shift_instances si ON si.id = c.shift_instance_id
+              WHERE c.close_source = 'auto_shift_end' AND c.auto_closed_at >= ? $dw
+              ORDER BY c.auto_closed_at DESC, e.full_name LIMIT 300", array_merge([Time::sql(self::nowUtc()->modify('-36 hours'))], $dp));
+        $utcZ = new DateTimeZone('UTC');
+        foreach ($auto as &$a) {
+            foreach (['opened_at', 'closed_at', 'auto_closed_at'] as $k) {
+                $a[$k] = Time::iso(new DateTimeImmutable((string) $a[$k], $utcZ));
+            }
+        }
+        unset($a);
+
         $out = [
             'ok' => true, 'today' => $today, 'generated_at' => Time::iso(self::nowUtc()),
+            'auto_out' => $auto, 'auto_out_count' => count($auto),
             'inside_now' => array_sum(array_map(fn($r) => (int) $r['inside'], $inside)),
             'inside_by_department' => $inside,
             'active_employees' => $active,
@@ -158,13 +175,14 @@ final class ReportService
             return $r;
         }
         $rows = self::attendanceRows($r['from'], $r['to'], $scope, (int) ($f['department_id'] ?? 0) ?: null, self::str($f['employee'] ?? ''));
-        $sum = ['days' => count($rows), 'present' => 0, 'absent' => 0, 'present_minutes' => 0, 'late' => 0, 'left_early' => 0, 'unconfirmed' => 0, 'ot_actual_minutes' => 0];
+        $sum = ['days' => count($rows), 'present' => 0, 'absent' => 0, 'present_minutes' => 0, 'late' => 0, 'left_early' => 0, 'unconfirmed' => 0, 'ot_actual_minutes' => 0, 'auto_out' => 0];
         foreach ($rows as $x) {
             $sum[$x['status'] === 'absent' ? 'absent' : 'present']++;
             $sum['present_minutes'] += $x['present_minutes'];
             $sum['late'] += $x['late_minutes'] > 0 ? 1 : 0;
             $sum['left_early'] += $x['early_minutes'] > 0 ? 1 : 0;
             $sum['unconfirmed'] += $x['unconfirmed'];
+            $sum['auto_out'] += $x['auto_out'] > 0 ? 1 : 0;
             $sum['ot_actual_minutes'] += (int) ($x['ot_actual_minutes'] ?? 0);
         }
         return ['ok' => true, 'from' => $r['from'], 'to' => $r['to'], 'rows' => $rows, 'totals' => $sum, 'truncated' => count($rows) >= self::MAX_ROWS];
@@ -203,7 +221,8 @@ final class ReportService
                     SUM(CASE WHEN c.id IS NOT NULL AND c.closed_at IS NULL THEN 1 ELSE 0 END) AS open_entries,
                     COALESCE(SUM(c.present_minutes), 0) AS present_minutes,
                     SUM(CASE WHEN c.id IS NOT NULL AND h.id IS NULL THEN 1 ELSE 0 END) AS unconfirmed,
-                    SUM(CASE WHEN c.close_source = 'hr_correction' THEN 1 ELSE 0 END) AS corrected
+                    SUM(CASE WHEN c.close_source = 'hr_correction' THEN 1 ELSE 0 END) AS corrected,
+                    SUM(CASE WHEN c.close_source = 'auto_shift_end' THEN 1 ELSE 0 END) AS auto_out
                     $ot
                FROM att_shift_instances si
                JOIN att_shifts s ON s.id = si.shift_id
@@ -225,6 +244,7 @@ final class ReportService
             $r['present_minutes'] = (int) $r['present_minutes'];
             $r['unconfirmed'] = (int) $r['unconfirmed'];
             $r['corrected'] = (int) $r['corrected'];
+            $r['auto_out'] = (int) $r['auto_out'];       // entries closed by the system: no OUT was scanned
             $r['late_minutes'] = 0;
             $r['early_minutes'] = 0;
             if ($r['entries'] === 0) {
@@ -290,6 +310,24 @@ final class ReportService
             . ($users ? 'LEFT JOIN users u ON u.id = ev.operator_id LEFT JOIN users hu ON hu.id = h.hod_user_id ' : '') . "
               WHERE $where
               ORDER BY ev.occurred_at, ev.id LIMIT " . self::MAX_ROWS, $p);
+        /* Exits nobody scanned: the system's OUT, as its own row, so the list
+           of movements says plainly where the gate saw nothing. */
+        $aw = 'c.close_source = \'auto_shift_end\' AND c.closed_at >= ? AND c.closed_at < ?' . $dw;
+        $ap = array_merge([$a, $b], $dp);
+        if ((int) ($f['department_id'] ?? 0) > 0) { $aw .= ' AND e.department_id = ?'; $ap[] = (int) $f['department_id']; }
+        if ($emp !== '') { $aw .= ' AND (e.code = ? OR e.full_name LIKE ?)'; $ap[] = $emp; $ap[] = '%' . addcslashes($emp, '\\%_') . '%'; }
+        $autoRows = Db::all(
+            "SELECT 'AUTO_OUT' AS event_type, c.closed_at AS occurred_at, c.auto_closed_at AS received_at, 'system' AS source, 'accepted' AS reconciliation_status,
+                    e.code AS employee_code, e.full_name, d.name AS department_name,
+                    NULL AS phone, 'System — no OUT scanned' AS recorded_by, c.entry_sequence, NULL AS hod_confirmed_at, NULL AS hod_name
+               FROM att_entry_cycles c
+               JOIN att_employees e ON e.id = c.employee_id
+               JOIN att_departments d ON d.id = e.department_id
+              WHERE $aw LIMIT " . self::MAX_ROWS, $ap);
+        if ($autoRows !== []) {
+            $rows = array_merge($rows, $autoRows);
+            usort($rows, fn($x, $y) => strcmp((string) $x['occurred_at'], (string) $y['occurred_at']));
+        }
         $utc = new DateTimeZone('UTC');
         foreach ($rows as &$x) {
             foreach (['occurred_at', 'received_at', 'hod_confirmed_at'] as $k) {

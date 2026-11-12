@@ -270,11 +270,24 @@ page_header('Attendance — Reconciliation');
         return [el('strong', { text: r.employee_code || '—' }), r.event_kind === 'GATE_IN' ? 'IN' : 'OUT', when(r.occurred_at), el('span', { class: 'muted', text: r.message || r.reason_code || '' }), actions(btns)];
       });
 
-    section('Entries left open', 'No exit was scanned. Until the entry is closed, this employee\'s next IN is refused as "already inside". Closing it here records your stated exit time as a correction; no gate scan is invented.',
+    section('Entries left open', 'No exit was scanned. If Automatic OUT is on (Setup › Settings), the system closes these at shift end once the waiting time has passed. Closing it here instead records your stated exit time as a correction; no gate scan is invented.',
       q.open_too_long, ['Employee', 'Came in', 'Shift ended', ''], function(r){
         return [who(r), when(r.opened_at), when(r.shift_ends_at), actions([el('button', { class: 'act primary', type: 'button', text: 'Close entry…', click: function(){
           var t = el('input', { type: 'datetime-local', id: 'dlg-time' });
           ask('When did ' + (r.full_name || 'the employee') + ' leave?', 'Came in ' + when(r.opened_at) + '. Enter the exit in factory time.',
+            [el('label', { for: 'dlg-time', text: 'Exit time (factory time)' }), t],
+            function(reason){
+              if (!t.value) { document.getElementById('dlg-err').textContent = 'Give the exit time.'; return null; }
+              return { kind: 'cycle', entry_cycle_id: r.entry_cycle_id, closed_at: t.value, timezone: 'Asia/Karachi', reason: reason };
+            });
+        } })])];
+      });
+
+    section('Not scanned out — closed by the system', 'Nobody scanned OUT, so the system closed the entry at the shift end (or shift end plus approved overtime). If you know when the person really left, put it in: it is kept as a correction, and no gate scan is invented. Last 7 days.',
+      q.auto_closed || [], ['Employee', 'Came in', 'System OUT at', 'Closed by the system', ''], function(r){
+        return [who(r), when(r.opened_at), el('span', { class: 'err', text: when(r.closed_at) }), when(r.auto_closed_at), actions([el('button', { class: 'act', type: 'button', text: 'Put in real time…', click: function(){
+          var t = el('input', { type: 'datetime-local', id: 'dlg-time' });
+          ask('When did ' + (r.full_name || 'the employee') + ' really leave?', 'Came in ' + when(r.opened_at) + '. The system closed it at ' + when(r.closed_at) + '. Enter the real exit in factory time.',
             [el('label', { for: 'dlg-time', text: 'Exit time (factory time)' }), t],
             function(reason){
               if (!t.value) { document.getElementById('dlg-err').textContent = 'Give the exit time.'; return null; }

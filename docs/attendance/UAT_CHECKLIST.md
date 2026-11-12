@@ -31,6 +31,7 @@ Extra checks (no AT number):
 
 | Do this | Expected | ✓ / note |
 |---|---|---|
+| 9001 IN, never scanned OUT. Next morning open Reports › Today; type 9001 on the gate phone. | Listed under "Not scanned out", OUT at the shift end. The gate phone shows green IN and a note that the system closed it. HR can put in the real time. | |
 | Gatekeeper signs in on the phone app. | Only IN / OUT and Queue. No HOD screens. | |
 | HOD signs in on the phone app. | Only Arrivals, Overtime, Queue. | |
 | Code typed on the phone. | Number keypad with a Next key; sound and vibration on accept / refuse (switchable in Queue). | |
