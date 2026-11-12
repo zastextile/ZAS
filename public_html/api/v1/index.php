@@ -38,6 +38,7 @@ require_once dirname(__DIR__, 2) . '/includes/att/OvertimeService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/ReportService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/AttBackup.php';
 require_once dirname(__DIR__, 2) . '/includes/att/SystemCheck.php';
+require_once dirname(__DIR__, 2) . '/includes/att/EntryAdmin.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
@@ -45,6 +46,7 @@ use Att\AttendanceService;
 use Att\Audit;
 use Att\Db;
 use Att\Employees;
+use Att\EntryAdmin;
 use Att\HodService;
 use Att\HrService;
 use Att\Http;
@@ -853,7 +855,7 @@ try {
                         $h($x['ot_approved_minutes']), $h($x['ot_actual_minutes']), $x['auto_out'] > 0 ? 'yes — closed at shift end' : ''], $r['rows']));
             } elseif ($route === '/reports/movements') {
                 send_csv($name, ['Time', 'IN/OUT', 'Code', 'Name', 'Department', 'Entry no.', 'Recorded by', 'Phone', 'Sent', 'Received by server', 'HOD confirmed', 'HOD'],
-                    array_map(fn($x) => [$t($x['occurred_at']), $x['event_type'] === 'GATE_IN' ? 'IN' : ($x['event_type'] === 'AUTO_OUT' ? 'OUT (system, not scanned)' : 'OUT'), $x['employee_code'], $x['full_name'], $x['department_name'],
+                    array_map(fn($x) => [$t($x['occurred_at']), match ($x['event_type']) { 'GATE_IN' => 'IN', 'ADMIN_IN' => 'IN (added by administrator)', 'AUTO_OUT' => 'OUT (system, not scanned)', 'FIXED_OUT' => 'OUT (put in by HR / administrator)', default => 'OUT' } . (!empty($x['edited']) ? ' — time corrected, scanned ' . $t($x['scanned_at']) : ''), $x['employee_code'], $x['full_name'], $x['department_name'],
                         $x['entry_sequence'], $x['recorded_by'], $x['phone'], $x['source'] === 'offline_replay' ? 'later (offline)' : ($x['source'] === 'system' ? 'by the system' : 'at once'), $t($x['received_at']),
                         $t($x['hod_confirmed_at']), $x['hod_name']], $r['rows']));
             } else {
@@ -875,6 +877,32 @@ try {
             Http::requireCsrf();
             $u = Http::requirePermission('attadm', 'u');
             admin_answer(AdminService::renameDevice((int) $m[1], (string) Http::input('label', ''), (int) $u['id']));
+            break;
+
+        /* The administrator's own changes to entries: add, edit, delete.
+           Administrator only — the same people who hand out every access. */
+        case $method === 'GET' && $route === '/admin/entries':
+            require_erp_admin();
+            admin_answer(EntryAdmin::list((string) Http::input('date', ''), (string) Http::input('employee', '')));
+            break;
+
+        case $method === 'POST' && $route === '/admin/entries':
+            Http::requireCsrf();
+            $u = require_erp_admin();
+            $tz = (string) Http::input('timezone', 'Asia/Karachi');
+            admin_answer(EntryAdmin::add((string) Http::input('employee_code', ''),
+                Time::parse((string) Http::input('in_at', ''), $tz), Time::parse((string) Http::input('out_at', ''), $tz),
+                (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/admin/entries/(\d+)/(edit|delete)$#', $route, $m) === 1:
+            Http::requireCsrf();
+            $u = require_erp_admin();
+            $tz = (string) Http::input('timezone', 'Asia/Karachi');
+            admin_answer($m[2] === 'delete'
+                ? EntryAdmin::delete((int) $m[1], (string) Http::input('reason', ''), (int) $u['id'])
+                : EntryAdmin::edit((int) $m[1], Time::parse((string) Http::input('in_at', ''), $tz), Time::parse((string) Http::input('out_at', ''), $tz),
+                    (string) Http::input('reason', ''), (int) $u['id']));
             break;
 
         default:

@@ -295,7 +295,11 @@ final class ReportService
         if ($emp !== '') { $where .= ' AND (e.code = ? OR e.full_name LIKE ?)'; $p[] = $emp; $p[] = '%' . addcslashes($emp, '\\%_') . '%'; }
         $users = Db::tableExists('users');
         $rows = Db::all(
-            "SELECT ev.event_type, ev.occurred_at, ev.received_at, ev.source, ev.reconciliation_status,
+            /* The entry's time, which an administrator may have corrected; the
+               scan's own time beside it. A scan whose entry was deleted is left out. */
+            "SELECT ev.event_type, CASE WHEN ci.id IS NOT NULL THEN ci.opened_at ELSE co.closed_at END AS occurred_at,
+                    ev.occurred_at AS scanned_at, (COALESCE(ci.edited_at, co.edited_at) IS NOT NULL) AS edited,
+                    ev.received_at, ev.source, ev.reconciliation_status,
                     e.code AS employee_code, e.full_name, d.name AS department_name,
                     dv.label AS phone, " . ($users ? 'u.name' : 'NULL') . " AS recorded_by,
                     COALESCE(ci.entry_sequence, co.entry_sequence) AS entry_sequence,
@@ -308,31 +312,44 @@ final class ReportService
                LEFT JOIN att_entry_cycles co ON co.gate_out_event_id = ev.id
                LEFT JOIN att_hod_arrivals h ON h.entry_cycle_id = ci.id AND h.status = 'confirmed' "
             . ($users ? 'LEFT JOIN users u ON u.id = ev.operator_id LEFT JOIN users hu ON hu.id = h.hod_user_id ' : '') . "
-              WHERE $where
+              WHERE $where AND (ci.id IS NOT NULL OR co.id IS NOT NULL)
               ORDER BY ev.occurred_at, ev.id LIMIT " . self::MAX_ROWS, $p);
-        /* Exits nobody scanned: the system's OUT, as its own row, so the list
-           of movements says plainly where the gate saw nothing. */
-        $aw = 'c.close_source = \'auto_shift_end\' AND c.closed_at >= ? AND c.closed_at < ?' . $dw;
-        $ap = array_merge([$a, $b], $dp);
-        if ((int) ($f['department_id'] ?? 0) > 0) { $aw .= ' AND e.department_id = ?'; $ap[] = (int) $f['department_id']; }
-        if ($emp !== '') { $aw .= ' AND (e.code = ? OR e.full_name LIKE ?)'; $ap[] = $emp; $ap[] = '%' . addcslashes($emp, '\\%_') . '%'; }
-        $autoRows = Db::all(
-            "SELECT 'AUTO_OUT' AS event_type, c.closed_at AS occurred_at, c.auto_closed_at AS received_at, 'system' AS source, 'accepted' AS reconciliation_status,
-                    e.code AS employee_code, e.full_name, d.name AS department_name,
-                    NULL AS phone, 'System — no OUT scanned' AS recorded_by, c.entry_sequence, NULL AS hod_confirmed_at, NULL AS hod_name
-               FROM att_entry_cycles c
-               JOIN att_employees e ON e.id = c.employee_id
-               JOIN att_departments d ON d.id = e.department_id
-              WHERE $aw LIMIT " . self::MAX_ROWS, $ap);
+        /* What the gate did not scan, each as its own row, so the list of
+           movements says plainly where the gate saw nothing:
+             AUTO_OUT   the system's OUT at shift end (no OUT was scanned)
+             FIXED_OUT  an OUT time put in by HR or the administrator
+             ADMIN_IN   an entry the administrator added */
+        $extra = function (string $type, string $timeCol, string $cond, string $by, string $recvCol) use ($a, $b, $dw, $dp, $f, $emp): array {
+            $w = "$cond AND c.$timeCol >= ? AND c.$timeCol < ?" . $dw;
+            $q = array_merge([$a, $b], $dp);
+            if ((int) ($f['department_id'] ?? 0) > 0) { $w .= ' AND e.department_id = ?'; $q[] = (int) $f['department_id']; }
+            if ($emp !== '') { $w .= ' AND (e.code = ? OR e.full_name LIKE ?)'; $q[] = $emp; $q[] = '%' . addcslashes($emp, '\\%_') . '%'; }
+            return Db::all(
+                "SELECT '$type' AS event_type, c.$timeCol AS occurred_at, NULL AS scanned_at, 0 AS edited, c.$recvCol AS received_at, 'system' AS source, 'accepted' AS reconciliation_status,
+                        e.code AS employee_code, e.full_name, d.name AS department_name,
+                        NULL AS phone, '$by' AS recorded_by, c.entry_sequence, h.occurred_at AS hod_confirmed_at, NULL AS hod_name
+                   FROM att_entry_cycles c
+                   JOIN att_employees e ON e.id = c.employee_id
+                   JOIN att_departments d ON d.id = e.department_id
+                   LEFT JOIN att_hod_arrivals h ON h.entry_cycle_id = c.id AND h.status = 'confirmed'
+                  WHERE $w LIMIT " . self::MAX_ROWS, $q);
+        };
+        $autoRows = array_merge(
+            $extra('AUTO_OUT', 'closed_at', "c.close_source = 'auto_shift_end'", 'System — no OUT scanned', 'auto_closed_at'),
+            $extra('FIXED_OUT', 'closed_at', "c.close_source IN ('hr_correction','admin') AND c.gate_out_event_id IS NULL", 'HR / administrator — no OUT scanned', 'edited_at'),
+            $extra('ADMIN_IN', 'opened_at', "c.in_source = 'admin'", 'Administrator — added, not scanned', 'edited_at')
+        );
         if ($autoRows !== []) {
             $rows = array_merge($rows, $autoRows);
             usort($rows, fn($x, $y) => strcmp((string) $x['occurred_at'], (string) $y['occurred_at']));
         }
         $utc = new DateTimeZone('UTC');
         foreach ($rows as &$x) {
-            foreach (['occurred_at', 'received_at', 'hod_confirmed_at'] as $k) {
+            foreach (['occurred_at', 'received_at', 'hod_confirmed_at', 'scanned_at'] as $k) {
                 $x[$k] = $x[$k] !== null ? Time::iso(new DateTimeImmutable((string) $x[$k], $utc)) : null;
             }
+            // Shown only where the administrator moved the time away from the scan.
+            $x['edited'] = (int) $x['edited'] === 1 && $x['scanned_at'] !== $x['occurred_at'];
         }
         unset($x);
         return ['ok' => true, 'from' => $r['from'], 'to' => $r['to'], 'rows' => $rows, 'truncated' => count($rows) >= self::MAX_ROWS];

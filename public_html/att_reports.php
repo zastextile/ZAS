@@ -226,12 +226,15 @@ page_header('Attendance — Reports');
     get('/reports/movements', F).then(function(r){
       if (!r.ok) return show([bar, el('p', { class: 'err', text: r.error })]);
       bar.appendChild(download('/reports/movements'));
-      show([bar, el('p', { class: 'note', text: r.rows.length + ' scan' + (r.rows.length === 1 ? '' : 's') + '. "Later" means the phone had no signal and sent it afterwards; the time shown is when it was scanned. "OUT · system" means nobody scanned OUT and the system closed the entry at shift end.' }),
+      show([bar, el('p', { class: 'note', text: r.rows.length + ' scan' + (r.rows.length === 1 ? '' : 's') + '. "Later" means the phone had no signal and sent it afterwards; the time shown is when it was scanned. "OUT · system": nobody scanned OUT and the system closed the entry at shift end. "OUT · corrected" / "IN · added": put in by HR or the administrator. "corrected": the administrator changed the time; the scanned time is shown under it.' }),
         r.rows.length ? table(['Time', '', 'Employee', 'Department', 'Entry', 'Recorded by', 'Phone', 'Sent', 'HOD confirmed'], r.rows, function(x){
-          var auto = x.event_type === 'AUTO_OUT';
-          return [dt(x.occurred_at), pill(x.event_type === 'GATE_IN' ? 'present' : (auto ? 'absent' : 'pending'), x.event_type === 'GATE_IN' ? 'IN' : (auto ? 'OUT · system' : 'OUT')), x.employee_code + ' ' + x.full_name, x.department_name,
+          var auto = x.event_type === 'AUTO_OUT' || x.event_type === 'FIXED_OUT' || x.event_type === 'ADMIN_IN';
+          var isIn = x.event_type === 'GATE_IN' || x.event_type === 'ADMIN_IN';
+          var label = { GATE_IN: 'IN', ADMIN_IN: 'IN · added', AUTO_OUT: 'OUT · system', FIXED_OUT: 'OUT · corrected' }[x.event_type] || 'OUT';
+          var when = x.edited ? el('span', {}, [dt(x.occurred_at), el('span', { class: 'err', style: 'display:block;font-size:12px', text: 'corrected · scanned ' + dt(x.scanned_at) })]) : dt(x.occurred_at);
+          return [when, pill(isIn ? 'present' : (auto ? 'absent' : 'pending'), label), x.employee_code + ' ' + x.full_name, x.department_name,
             x.entry_sequence ? '#' + x.entry_sequence : '', auto ? el('span', { class: 'err', text: x.recorded_by }) : x.recorded_by, x.phone || '', auto ? 'not scanned' : (x.source === 'offline_replay' ? 'later' : 'at once'),
-            x.event_type === 'GATE_IN' ? (x.hod_confirmed_at ? hm(x.hod_confirmed_at) + ' · ' + (x.hod_name || '') : el('span', { class: 'err', text: 'not yet' })) : ''];
+            isIn ? (x.hod_confirmed_at ? hm(x.hod_confirmed_at) + ' · ' + (x.hod_name || '') : el('span', { class: 'err', text: 'not yet' })) : ''];
         }) : el('p', { class: 'muted', id: 'mov-none', text: 'No scans in these dates.' })]);
     });
   }

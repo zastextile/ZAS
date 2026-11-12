@@ -232,6 +232,7 @@ page_header('Attendance — Setup');
     { id: 'set',    label: 'Settings',    draw: drawSettings },
     { id: 'sys',    label: 'System',      draw: drawSystem }
   ];
+  if (CAN.admin) TABS.splice(7, 0, { id: 'entries', label: 'Entries', draw: drawEntries });
   var current = 'start';
   function go(id){
     current = id;
@@ -673,6 +674,81 @@ page_header('Attendance — Setup');
         })));
       });
     });
+  }
+
+  // -------------------------------------------------------------- entries
+  /* Administrator only: add an entry for someone who was never scanned,
+     change an IN or OUT time, delete an entry that should not be there.
+     Every change needs a reason and is kept with your name; a deleted entry
+     leaves every report, and a full copy is kept on record. The gate's own
+     scans are never altered: an edited time is shown beside the scan's. */
+  var ENT = null;
+  function khiDate(d){ var t = new Date((d || new Date()).getTime() + (5 * 60 + new Date().getTimezoneOffset()) * 60000);
+    return t.getFullYear() + '-' + ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2); }
+  function khiLocal(iso){ if (!iso) return ''; var d = new Date(iso); if (isNaN(d)) return '';
+    var t = new Date(d.getTime() + (5 * 60 + d.getTimezoneOffset()) * 60000);
+    return khiDate(d) + 'T' + ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2); }
+  function khiTime(iso){ return iso ? khiLocal(iso).slice(11) : '—'; }
+  function hm(m){ m = parseInt(m, 10); if (isNaN(m)) return '—'; return Math.floor(m / 60) + 'h ' + (m % 60) + 'm'; }
+  function drawEntries(){
+    if (!CAN.admin) return show([el('p', { class: 'muted', text: 'Only an administrator can change entries.' })]);
+    ENT = ENT || { date: khiDate(), employee: '' };
+    var date = el('input', { type: 'date', value: ENT.date, id: 'ent-date', 'aria-label': 'Day' });
+    var who = el('input', { type: 'search', value: ENT.employee, id: 'ent-emp', placeholder: 'Employee code or name' });
+    var bar = el('div', { class: 'bar' }, [date, who,
+      btn('Show', function(){ ENT.date = date.value; ENT.employee = who.value; drawEntries(); }, true),
+      btn('Add entry…', function(){ addEntry(); })]);
+    call('GET', '/admin/entries', { date: ENT.date, employee: ENT.employee }).then(function(r){
+      if (!r.ok) return show([bar, el('p', { class: 'err', text: r.error || 'Could not load.' })]);
+      show([
+        el('p', { class: 'note', text: 'Add an entry for someone who was not scanned, correct an IN or OUT time, or delete an entry that should not be there. Every change needs a reason and is kept with your name. The gate\'s own scans are never altered: an edited time is shown beside the time it was scanned.' }),
+        bar,
+        r.entries.length ? table(['Employee', 'Department', 'Shift', 'IN', 'OUT', 'Present', 'Notes', ''], r.entries, function(x){
+          var notes = [];
+          if (x.in_source === 'admin') notes.push('added by administrator');
+          if (x.scanned_in_at && x.scanned_in_at !== x.opened_at) notes.push('IN scanned ' + khiTime(x.scanned_in_at));
+          if (x.scanned_out_at && x.closed_at && x.scanned_out_at !== x.closed_at) notes.push('OUT scanned ' + khiTime(x.scanned_out_at));
+          if (x.close_source === 'auto_shift_end') notes.push('OUT by the system (not scanned)');
+          if ((x.close_source === 'hr_correction' || x.close_source === 'admin') && !x.scanned_out_at) notes.push('OUT put in by HR / administrator');
+          if (x.edited_at) notes.push('edited ' + khiLocal(x.edited_at).replace('T', ' '));
+          return [el('span', {}, [el('strong', { text: x.employee_code }), ' ' + x.full_name]), x.department_name, x.shift_name,
+            khiTime(x.opened_at), x.closed_at ? khiTime(x.closed_at) : el('span', { class: 'muted', text: 'inside' }), x.present_minutes !== null ? hm(x.present_minutes) : '—',
+            el('span', { class: 'muted', style: 'font-size:12.5px', text: notes.join(' · ') }),
+            el('span', {}, [btn('Edit…', function(){ editEntry(x); }), ' ', btn('Delete…', function(){ deleteEntry(x); })])];
+        }) : el('p', { class: 'muted', id: 'ent-none', text: 'No entries that day' + (ENT.employee ? ' for "' + ENT.employee + '"' : '') + '.' })
+      ]);
+    });
+  }
+  function reasonBox(id){ return el('textarea', { class: 'full', rows: 3, id: id, maxlength: 1000, placeholder: 'For example: scanned the wrong person; came in by the side gate; phone clock was wrong' }); }
+  function addEntry(){
+    var code = el('input', { type: 'text', class: 'full', id: 'ent-add-code', placeholder: 'Employee code' });
+    var tin = el('input', { type: 'datetime-local', id: 'ent-add-in', value: ENT.date + 'T08:00' });
+    var tout = el('input', { type: 'datetime-local', id: 'ent-add-out' });
+    var why = reasonBox('ent-add-why');
+    dialog({ title: 'Add an entry', text: 'For someone who came in but was not scanned. Leave OUT empty if they are still inside. Factory time.',
+      fields: [field('Employee code', code), field('IN', tin), field('OUT (empty = still inside)', tout), field('Reason (required)', why)], okText: 'Add entry',
+      submit: function(){ return call('POST', '/admin/entries', { employee_code: code.value, in_at: tin.value, out_at: tout.value, timezone: 'Asia/Karachi', reason: why.value })
+        .then(function(x){ if (x.ok) { ENT.date = tin.value.slice(0, 10); drawEntries(); } return x; }); } });
+  }
+  function editEntry(x){
+    var tin = el('input', { type: 'datetime-local', id: 'ent-ed-in', value: khiLocal(x.opened_at) });
+    var tout = el('input', { type: 'datetime-local', id: 'ent-ed-out', value: khiLocal(x.closed_at) });
+    var why = reasonBox('ent-ed-why');
+    dialog({ title: 'Edit — ' + x.full_name, text: 'Change the IN or OUT time. The gate\'s scan keeps the time it was scanned at; this entry and every report use the new time. Factory time.',
+      fields: [field('IN', tin), field('OUT' + (x.closed_at ? '' : ' (fill in to close the entry)'), tout), field('Reason (required)', why)], okText: 'Save change',
+      submit: function(){
+        var body = { reason: why.value, timezone: 'Asia/Karachi' };
+        if (tin.value !== khiLocal(x.opened_at)) body.in_at = tin.value;
+        if (tout.value && tout.value !== khiLocal(x.closed_at)) body.out_at = tout.value;
+        if (!body.in_at && !body.out_at) return Promise.resolve({ ok: false, error: 'Nothing was changed.' });
+        return call('POST', '/admin/entries/' + x.entry_cycle_id + '/edit', body).then(function(r){ if (r.ok) drawEntries(); return r; });
+      } });
+  }
+  function deleteEntry(x){
+    var why = reasonBox('ent-del-why');
+    dialog({ title: 'Delete this entry? — ' + x.full_name, text: 'IN ' + khiTime(x.opened_at) + (x.closed_at ? ', OUT ' + khiTime(x.closed_at) : ', still inside') + '. It leaves attendance and every report. A full copy is kept on record with your name and reason; a HOD confirmation of it is set aside.',
+      fields: [field('Reason (required)', why)], okText: 'Delete entry',
+      submit: function(){ return call('POST', '/admin/entries/' + x.entry_cycle_id + '/delete', { reason: why.value }).then(function(r){ if (r.ok) drawEntries(); return r; }); } });
   }
 
   // --------------------------------------------------------------- phones

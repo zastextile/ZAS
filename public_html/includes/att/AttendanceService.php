@@ -594,8 +594,8 @@ final class AttendanceService
                   FROM att_events ev
                   JOIN att_employees e  ON e.id = ev.employee_id
                   JOIN att_departments d ON d.id = e.department_id
-                 WHERE 1 = 1';
-        $params = [];
+                 WHERE EXISTS (SELECT 1 FROM att_entry_cycles c WHERE c.gate_in_event_id = ev.id OR c.gate_out_event_id = ev.id)';
+        $params = [];   // a scan whose entry the administrator deleted is not listed
 
         if ($departmentIds !== null) {
             if ($departmentIds === []) {
