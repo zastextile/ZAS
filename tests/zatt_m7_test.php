@@ -310,7 +310,9 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     await p.click('#attr-tabs button:has-text("Movements")');
     await loaded(p);
     await p.waitForSelector('#attr-body table');
-    check('movements: one row per scan, with the HOD who confirmed', (await p.locator('#attr-body tbody tr').count()) === 10 && /Hina Hod/.test(await p.textContent('#attr-body')));
+    check('movements: one row per scan, with the HOD who confirmed', (await p.locator('#attr-body tbody tr').count()) === 11 && /Hina Hod/.test(await p.textContent('#attr-body')));
+    // E003 never scanned out on 2 March; opening Today ran the Automatic OUT rule.
+    check('  and E003\'s forgotten exit as the system\'s OUT, not a scan', /OUT · system/.test(await p.textContent('#attr-body')) && /System — no OUT scanned/.test(await p.textContent('#attr-body')));
     await p.click('#attr-tabs button:has-text("Overtime")');
     await loaded(p);
     await p.fill('#f-from', '2026-03-01'); await p.fill('#f-to', '2026-03-31'); await p.click('#f-show');

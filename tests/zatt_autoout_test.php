@@ -152,6 +152,14 @@ ok(($o8['receipt_status'] ?? '') === 'REJECTED' && $o8['reason_code'] === 'NOT_I
    'an OUT scanned at 23:00, AFTER the system closed the entry, is refused and says why');
 ok($cyc('E008')['close_source'] === 'auto_shift_end', '  E008 stays closed at 18:00');
 
+echo "6b. Two INs replayed late from two phones\n";
+$scan('GATE_IN', 'E010', '03:00', '2026-03-05');                     // 08:00 on phone A
+$dbl = $scan('GATE_IN', 'E010', '05:00', '2026-03-05');              // 10:00 on phone B — both sent days later
+ok(($dbl['receipt_status'] ?? '') === 'REJECTED' && $dbl['reason_code'] === 'ALREADY_INSIDE' && $cyc('E010')['closed_at'] === null,
+   'A SECOND IN SCANNED DURING THE SHIFT IS STILL "ALREADY INSIDE" — the rule never closes an entry early to let a double IN through');
+$pdo->exec('DELETE FROM att_entry_cycles WHERE employee_id = ' . (int) $emp['E010']);
+$pdo->exec("UPDATE att_events SET reconciliation_status = 'rejected' WHERE employee_id = " . (int) $emp['E010']);
+
 echo "7. Next morning\n";
 $pdo->exec("UPDATE att_entry_cycles SET closed_at = NULL, present_minutes = NULL, close_source = 'gate', auto_closed_at = NULL WHERE id = " . (int) $cyc('E006')['id']);
 ok($cyc('E006')['closed_at'] === null, '(E006 put back to "still inside", as if the rule had not run overnight)');

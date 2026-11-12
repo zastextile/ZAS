@@ -171,8 +171,12 @@ final class AttendanceService
     ): array {
         // Already inside? (invariant 2 — no double IN)
         $open = self::openCycleFor($employeeId);
-        if ($open !== null && self::autoCloseOne((int) $open['id'], Time::nowUtc())) {
-            $open = null;          // yesterday's forgotten exit, closed by the rule just now
+        /* Yesterday's forgotten exit, closed by the rule on the spot — but
+           only for an IN scanned AFTER the time the system would close it.
+           An IN scanned while the entry was still running (a second phone,
+           replayed late) is a real double IN and is refused below. */
+        if ($open !== null && self::autoCloseOne((int) $open['id'], Time::nowUtc(), $occurred)) {
+            $open = null;
         }
         if ($open !== null) {
             return self::reject($uuid, 'GATE_IN', 'ALREADY_INSIDE',
@@ -449,7 +453,7 @@ final class AttendanceService
     }
 
     /** Close one entry by the rule, if it is due. True when it was closed here. */
-    public static function autoCloseOne(int $cycleId, DateTimeImmutable $now): bool
+    public static function autoCloseOne(int $cycleId, DateTimeImmutable $now, ?DateTimeImmutable $nextInAt = null): bool
     {
         $c = Db::one(
             'SELECT c.id, c.employee_id, c.opened_at, si.ends_at, si.work_date
@@ -458,7 +462,7 @@ final class AttendanceService
             [$cycleId]
         );
         $t = $c !== null ? self::autoOutTimes($c) : null;
-        if ($t === null || $now < $t[1]) {
+        if ($t === null || $now < $t[1] || ($nextInAt !== null && $nextInAt < $t[0])) {
             return false;
         }
         [$closeAt, , $ot] = $t;
