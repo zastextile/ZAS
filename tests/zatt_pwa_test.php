@@ -187,6 +187,14 @@ const shown = (page, sel) => page.isVisible(sel);
     check('an unknown code says so and offers no button at all', !(await shown(page, '#btn-in')) && !(await shown(page, '#btn-out')) && !(await shown(page, '#btn-other')));
     check('  and nothing is queued', (await waiting(page)) === '0');
 
+    // Signed in, but the phone's list is empty: typing a code fetches it.
+    await page.evaluate(() => AttDB.replaceAll('employees', []));
+    await page.fill('#code', '');
+    await page.fill('#code', 'E002');
+    await page.waitForFunction(() => /Sara Khan/.test(document.getElementById('empname').textContent), null, { timeout: 15000 }).catch(() => {});
+    check('AN EMPTY LIST IS DOWNLOADED BY ITSELF when a code is typed, and the name appears', /Sara Khan/.test(await text(page, '#empname')));
+    await page.fill('#code', '');
+
     // A second gate phone: what it offers comes from the one central database.
     const ctx2 = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOT ? 2 : 1 });
     const p2 = await ctx2.newPage();
@@ -201,6 +209,15 @@ const shown = (page, sel) => page.isVisible(sel);
       await p2.waitForTimeout(600); await p2.screenshot({ path: SHOT + '/gate-in.png' });
       await p2.fill('#code', ''); await p2.waitForTimeout(600); await p2.screenshot({ path: SHOT + '/gate-idle.png' });
     }
+    // Signed out on the server (as after a sign-in setting changes) with no employee list on the phone.
+    await p2.fill('#code', '');
+    await ctx2.clearCookies();
+    await p2.evaluate(() => AttDB.replaceAll('employees', []));
+    await p2.fill('#code', 'E002');
+    await p2.waitForFunction(() => /SIGNED OUT on the server/.test(document.getElementById('emphint').textContent), null, { timeout: 15000 }).catch(() => {});
+    const so = await p2.textContent('#emphint');
+    check('NO LIST AND SIGNED OUT ON THE SERVER: the gate is told why, and what to tap', /SIGNED OUT on the server/.test(so) && /Sign in/.test(so), so);
+    check('  and the red "signed out" banner with its Sign in button is shown', await p2.isVisible('#relogin'));
     await ctx2.close();
 
     // ---------------------------------------------------- the network is cut

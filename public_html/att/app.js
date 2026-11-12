@@ -28,7 +28,7 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.4.2';
+  var APP_VERSION = '1.4.3';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
@@ -526,7 +526,11 @@
     if (state === 'idle' || state === 'unknown') { bi.hidden = true; bo.hidden = true; return; }
     if (state === 'nolist') {                     // no employee list on this phone yet: both, as before
       bi.hidden = false; bo.hidden = false; S.gateNext = null;
-      hint.textContent = 'This phone has no employee list yet — choose IN or OUT.';
+      hint.textContent = S.needLogin || S.listError === 'signed_out'
+        ? 'No employee list: this phone is SIGNED OUT on the server. Tap "Sign in" at the top. Scans are kept on the phone until then.'
+        : (!navigator.onLine ? 'No employee list yet, and no connection. It downloads as soon as there is a signal. You can still choose IN or OUT.'
+        : (S.listError === 'not_allowed' ? 'No employee list: this login is not allowed to see employees. Ask the admin to give the Gatekeeper job (Setup › People).'
+        : 'Downloading the employee list… If this stays, open Queue and tap "Send now".'));
       return;
     }
     var next = st.inside ? 'GATE_OUT' : 'GATE_IN', show = st.inside ? bo : bi, hide = st.inside ? bi : bo;
@@ -554,7 +558,14 @@
       if (seq !== decideSeq) return;
       var emp = v[0].hit, listAt = v[2] || 0;
       S.listAt = listAt || null;
-      if (!emp) { gateView(v[0].known ? 'unknown' : 'nolist'); return; }
+      if (!emp) {
+        gateView(v[0].known ? 'unknown' : 'nolist');
+        if (!v[0].known && navigator.onLine && !S.needLogin && (!S.listTry || Date.now() - S.listTry > 15000)) {
+          S.listTry = Date.now();                  // fetch it now, then look again
+          refreshLookups().then(function () { if (seq === decideSeq) { paintEmployee(code); decideFor(code); } });
+        }
+        return;
+      }
       var mine = v[1].filter(function (r) { return r.employee_code === emp.code && (r.event_type === 'GATE_IN' || r.event_type === 'GATE_OUT') && r.state !== 'rejected'; });
       var last = mine[mine.length - 1];
       var fromLast = last ? { inside: last.event_type === 'GATE_IN', since: last.event_type === 'GATE_IN' ? Date.parse(last.occurred_at) : null } : null;
@@ -722,6 +733,10 @@
     var jobs = [];
     if (S.can.gate || S.can.hod) {
       jobs.push(api('GET', '/employees/sync-snapshot').then(function (r) {
+        /* Signed out on the server (a new sign-in rule, or the session
+           expired): say so, rather than quietly keeping no list. */
+        if (r.status === 401) { S.needLogin = true; paintStatus(); }
+        S.listError = r.status === 200 ? '' : (r.status === 401 ? 'signed_out' : (r.status === 403 ? 'not_allowed' : 'failed'));
         if (r.status === 200 && r.body.employees) {
           return AttDB.replaceAll('employees', r.body.employees).then(function () { return AttDB.setMeta('employees_at', Date.now()); });
         }
