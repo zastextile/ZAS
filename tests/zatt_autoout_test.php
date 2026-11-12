@@ -212,5 +212,27 @@ ok($n("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATA
 $mig->up();
 ok($n("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'att_entry_cycles' AND column_name = 'auto_closed_at'") === 1, '  and applies again');
 
+echo "13. The morning's first lookup, before anyone has scanned\n";
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'attgate', 'vc')")->execute([$gk]);
+$scan('GATE_IN', 'E010', '03:00');                                   // 2 March, never scanned out; nothing has run since
+$pdo->exec("UPDATE att_policies SET value = '' WHERE policy_key = 'auto_out_last_run'");
+ok($cyc('E010')['closed_at'] === null, '(E010 still open from 2 March, the rule has not run)');
+$port = 8736;
+$srv = proc_open(sprintf('exec php -S 127.0.0.1:%d -t %s', $port, escapeshellarg(rtrim($B, '/'))), [1 => ['file', '/dev/null', 'a'], 2 => ['file', '/dev/null', 'a']], $pipes);
+register_shutdown_function(static function () use ($srv) { if (is_resource($srv)) { proc_terminate($srv, 9); proc_close($srv); } });
+for ($i = 0; $i < 60; $i++) { $cc = @fsockopen('127.0.0.1', $port, $e1, $e2, 0.2); if ($cc) { fclose($cc); break; } usleep(200000); }
+$jar = tempnam(sys_get_temp_dir(), 'attao');
+$ch = curl_init("http://127.0.0.1:$port/api/v1/index.php?route=%2Fauth%2Flogin");
+curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_COOKIEJAR => $jar, CURLOPT_COOKIEFILE => $jar, CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => json_encode(['email' => 'gate@zas.test', 'password' => 'CorrectHorse9']), CURLOPT_HTTPHEADER => ['Content-Type: application/json']]);
+curl_exec($ch); curl_close($ch);
+$ch = curl_init("http://127.0.0.1:$port/api/v1/index.php?route=%2Femployees&query=E010");
+curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_COOKIEFILE => $jar]);
+$look = json_decode((string) curl_exec($ch), true); curl_close($ch);
+$e10 = array_values(array_filter($look['employees'] ?? [], fn($e) => $e['code'] === 'E010'))[0] ?? null;
+ok($e10 !== null && (int) $e10['inside'] === 0 && $e10['last_auto_out_at'] !== null,
+   'THE GATE TYPES E010 NEXT MORNING: the server answers "outside" — so the phone shows green IN — and that the system closed his last exit');
+ok($cyc('E010')['close_source'] === 'auto_shift_end', '  the lookup itself ran the rule');
+
 echo "\n$P passed, $F failed\n";
 exit($F === 0 ? 0 : 1);

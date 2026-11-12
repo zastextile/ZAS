@@ -150,6 +150,7 @@ try {
 
         case $method === 'GET' && $route === '/employees':
             $u     = require_gate_or_hod();
+            auto_out_if_due();      // so the morning's first lookup already sees last night's forgotten exits closed
             $scope = employee_scope_for((int) $u['id']);
             Http::json([
                 'ok'        => true,
@@ -159,6 +160,7 @@ try {
 
         case $method === 'GET' && $route === '/employees/sync-snapshot':
             $u     = require_gate_or_hod();
+            auto_out_if_due();      // so the morning's first lookup already sees last night's forgotten exits closed
             $scope = employee_scope_for((int) $u['id']);
             Http::json(array_merge(['ok' => true], Employees::syncSnapshot($scope)));
             break;
