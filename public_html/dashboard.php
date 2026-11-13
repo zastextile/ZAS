@@ -476,6 +476,38 @@ if ($canSeeAnalytics) {
         foreach ($st->fetchAll() as $r) { $draftCost['items']++; $draftCost['sales'] += to_pkr((float)($r['amt'] ?? 0), $r['cur'] ?? 'PKR', $fx); }
     } catch (Throwable $e) {}
 }
+
+/* HOW THE FIGURES WERE WORKED OUT — one row per invoice in the period.
+   A total that looks wrong is almost always ONE invoice: prices typed in
+   rupees on an invoice whose currency says USD turn 16 million into 4.4
+   billion, and nothing on the summary cards says which invoice did it. This
+   lists each invoice in its own currency, the rate used, and the result, and
+   marks the ones whose sales are out of all proportion to their cost. */
+$dashCheck = [];
+if ($canSeeAnalytics) {
+    try {
+        $st = db()->prepare("SELECT s.id, s.invoice_no, s.buyer_name, s.status, UPPER(COALESCE(s.currency,'PKR')) cur,
+                COALESCE(s.invoice_date, DATE(s.created_at)) dt, $valSub v, $costedValSub cv, $costValSub c
+            FROM shipments s WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql ORDER BY dt DESC, s.id DESC LIMIT 400");
+        $st->execute(array_merge([$curFrom, $curTo], $scopeParams));
+        foreach ($st->fetchAll() as $r) {
+            $cur = (string)($r['cur'] ?? 'PKR'); $own = (float)($r['v'] ?? 0);
+            $rate = ($cur === 'PKR') ? 1.0 : ((isset($fx[$cur]) && (float)$fx[$cur] > 0) ? 1 / (float)$fx[$cur] : 0.0);   // PKR for 1 unit; 0 = no rate
+            $sales = to_pkr($own, $cur, $fx);
+            $real  = to_pkr((float)($r['c'] ?? 0), $cur, $fx);
+            $costed = to_pkr((float)($r['cv'] ?? 0), $cur, $fx);
+            $cost  = $real + ($sales - $costed);                       // not-yet-costed sales count as their own cost
+            $pct   = $sales > 0 ? ($sales - $cost) / $sales * 100 : 0.0;
+            /* sales more than four times the cost entered against them: nearly
+               always the price or the currency, not a 75% margin */
+            $odd = $real > 0 && $costed > 0 && $costed > 4 * $real;
+            $dashCheck[] = ['id' => (int)($r['id'] ?? 0), 'no' => (string)($r['invoice_no'] ?? ''), 'buyer' => (string)($r['buyer_name'] ?? ''), 'status' => (string)($r['status'] ?? ''),
+                'dt' => (string)($r['dt'] ?? ''), 'cur' => $cur, 'own' => $own, 'rate' => $rate, 'sales' => $sales, 'cost' => $cost, 'pct' => $pct, 'odd' => $odd,
+                'costed' => $sales > 0 ? $costed / $sales * 100 : 0.0];
+        }
+    } catch (Throwable $e) { $dashCheck = []; }
+}
+$dashOdd = count(array_filter($dashCheck, fn($r) => $r['odd']));
 $fxMissingList = array_keys($fxMissing);
 sort($fxMissingList);
 
@@ -802,6 +834,42 @@ flash();
     <div class="kpi-delta <?= e($d['dir']) ?>"><?= $d['dir']==='up'?'▲':($d['dir']==='down'?'▼':'•') ?> <?= e($d['label']) ?></div>
   </div>
 </div>
+
+<?php if ($canSeeAnalytics && $dashCheck): ?>
+<details class="dash-card" style="<?= $cardCss ?>;padding:14px 20px;margin-bottom:16px<?= $dashOdd ? ';border-color:rgba(190,30,45,.4)' : '' ?>" <?= $dashOdd ? 'open' : '' ?>>
+  <summary style="cursor:pointer;font-weight:700;font-size:13.5px;color:<?= $dashOdd ? '#9b1c2a' : '#152033' ?>">
+    <?= $dashOdd ? '⚠ ' . $dashOdd . ' invoice' . ($dashOdd === 1 ? '' : 's') . ' to check — sales far above the cost entered. ' : '' ?>How these figures were worked out (<?= count($dashCheck) ?> invoice<?= count($dashCheck) === 1 ? '' : 's' ?> in <?= e($periodLabel) ?>)
+  </summary>
+  <p style="margin:10px 0 8px;font-size:12.5px;color:#5a6b82;line-height:1.6">
+    Each invoice in its own currency, the rate from Settings, and the result in PKR. Cost is in the invoice's currency too (Final Costing works in the invoice currency).
+    <?php if ($dashOdd): ?><b style="color:#9b1c2a">A red row usually means the unit prices were typed in rupees on an invoice whose currency is not PKR, or the currency of the invoice is wrong.</b> Open it and correct the currency or the prices.<?php endif; ?>
+  </p>
+  <div style="overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums;min-width:760px">
+    <thead><tr style="text-align:left;color:#5a6b82;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em">
+      <th style="padding:6px 8px;border-bottom:1px solid #dfe6ef">Invoice</th><th style="padding:6px 8px;border-bottom:1px solid #dfe6ef">Buyer</th><th style="padding:6px 8px;border-bottom:1px solid #dfe6ef">Date</th>
+      <th style="padding:6px 8px;border-bottom:1px solid #dfe6ef;text-align:right">Sales (own currency)</th><th style="padding:6px 8px;border-bottom:1px solid #dfe6ef;text-align:right">Rate used</th>
+      <th style="padding:6px 8px;border-bottom:1px solid #dfe6ef;text-align:right">Sales in PKR</th><th style="padding:6px 8px;border-bottom:1px solid #dfe6ef;text-align:right">Cost in PKR</th>
+      <th style="padding:6px 8px;border-bottom:1px solid #dfe6ef;text-align:right">Profit %</th><th style="padding:6px 8px;border-bottom:1px solid #dfe6ef;text-align:right">Costed</th></tr></thead>
+    <tbody>
+    <?php foreach ($dashCheck as $r): $bg = $r['odd'] ? 'background:rgba(190,30,45,.07);' : ''; ?>
+      <tr style="<?= $bg ?>">
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;white-space:nowrap"><a href="shipment_view.php?id=<?= (int)$r['id'] ?>" style="font-weight:700"><?= e($r['no'] !== '' ? $r['no'] : '#' . $r['id']) ?></a><?= $r['odd'] ? ' <b style="color:#9b1c2a">check</b>' : '' ?></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6"><?= e($r['buyer']) ?></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;white-space:nowrap"><?= e($r['dt']) ?></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap"><?= number_format($r['own'], 2) ?> <?= e($r['cur']) ?></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap"><?= $r['cur'] === 'PKR' ? '—' : ($r['rate'] > 0 ? '1 ' . e($r['cur']) . ' = ' . number_format($r['rate'], 2) : '<b style="color:#9b1c2a">no rate</b>') ?></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;text-align:right"><?= number_format($r['sales'], 0) ?></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;text-align:right"><?= number_format($r['cost'], 0) ?></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;text-align:right;font-weight:700;color:<?= $r['odd'] ? '#9b1c2a' : '#152033' ?>"><?= number_format($r['pct'], 1) ?>%</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #edf1f6;text-align:right;color:#5a6b82"><?= number_format($r['costed'], 0) ?>%</td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</details>
+<?php endif; ?>
 
 <?php if ($canSeeAnalytics && $missingCostItems): ?>
 <div class="dash-section-tag">Overdue Costing (<?= DASH_COST_GRACE_DAYS ?>+ days old) — <?= e($periodLabel) ?></div>
