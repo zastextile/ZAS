@@ -147,6 +147,9 @@ final class FinanceService
             $b = $bal[$id] ?? ['earned' => 0, 'deducted' => 0, 'paid' => 0, 'balance' => 0];
             $r += $b;
             $r['on_sheet'] = isset($onSheet[$id]);
+            if (!$caps['setup'] && !$caps['pay'] && !$caps['approve']) {
+                $r['bank_account'] = null;                 // an account number is for the people who pay
+            }
             if (!$caps['see_salary'] && $r['pay_type'] === 'salary') {
                 // Not for a HOD's eyes: the person is listed, the pay is not.
                 $r['basic_paisa'] = $r['allowance_paisa'] = null;

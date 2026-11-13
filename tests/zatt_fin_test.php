@@ -155,6 +155,10 @@ ok($pv['ok'] && count($pv['rows']) === 2, 'HR opens February: both salaried peop
 ok($line($s1['lines'], 'basic')['calc_paisa'] === 6000000 && $line($s1['lines'], 'basic')['editable'] === false, 'basic salary 60,000 — fixed, from salary setup');
 ok($line($s1['lines'], 'allowance')['calc_paisa'] === 500000, 'allowance 5,000');
 ok($line($s1['lines'], 'overtime')['calc_paisa'] === 115000, 'overtime 1,150: 2 h × 200 + the 750 HR typed; the unchecked evening is not paid (' . $line($s1['lines'], 'overtime')['calc_paisa'] . ')');
+// An overtime rate is only ever what a person typed: with none typed, nothing is worked out from the salary.
+Fin::saveProfile($emp['S001'], ['pay_type' => 'salary', 'basic_paisa' => 6000000, 'allowance_paisa' => 500000, 'ot_rate_paisa' => 0, 'pay_method' => 'bank', 'bank_account' => 'HBL 0042'], 'test: no overtime rate', $admin);
+ok($line($row(Fin::preview('salary', '2026-02-01', '2026-02-28', $R), $emp['S001'])['lines'], 'overtime')['calc_paisa'] === 75000, '  with no overtime rate typed, only the 750 HR priced is paid — NO RATE IS DERIVED FROM THE SALARY');
+Fin::saveProfile($emp['S001'], ['pay_type' => 'salary', 'basic_paisa' => 6000000, 'allowance_paisa' => 500000, 'ot_rate_paisa' => 20000, 'pay_method' => 'bank', 'bank_account' => 'HBL 0042'], 'test: rate back', $admin);
 ok($line($s1['lines'], 'leave')['calc_paisa'] === 428571 && $line($s1['lines'], 'leave')['side'] === 'deduct', 'unpaid leave 2 days = 60,000 ÷ 28 × 2 = 4,285.71');
 ok($line($s1['lines'], $ak)['calc_paisa'] === 250000 && $line($s1['lines'], $lk)['calc_paisa'] === 500000, 'advance recovery 2,500 and loan recovery 5,000 — each its own line');
 ok($s1['calc_paisa'] === 6000000 + 500000 + 115000 - 428571 - 250000 - 500000, 'net 54,364.29');

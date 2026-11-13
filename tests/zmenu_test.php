@@ -55,6 +55,9 @@ function is_colleague() { global $U; return ($U['role'] ?? '') === 'colleague'; 
 function is_staff() { global $U; return ($U['role'] ?? '') === 'staff'; }
 function is_production_staff() { global $U; return ($U['role'] ?? '') === 'production_staff'; }
 function zu_can($m, $a) { global $ZU; if (is_admin()) return true; return strpos($ZU[$m] ?? '', $a) !== false; }
+/* People Finance opens for a tick or for an attendance job (a database row,
+   which this file does not have): here, the tick half of the same rule. */
+function zfin_can_open() { foreach (['finprep', 'finwage', 'finapp', 'finpay'] as $m) if (zu_can($m, 'v')) return true; return false; }
 function inv_perm($w) { global $U; if (is_admin()) return true; return (int)($U['inv_' . $w] ?? 0) === 1; }
 function inv_can_see() { return inv_perm('view') || inv_perm('gate') || inv_perm('store') || inv_perm('consume') || inv_perm('master'); }
 function assigned_shipment_ids() { global $SHIPS; return (is_admin() || is_colleague()) ? ['ALL'] : $SHIPS; }
@@ -112,6 +115,7 @@ function page_opens(string $href): bool {
            gate movement or a HOD confirmation — that is the rule here. */
         'att_hr_reconciliation.php' => $zu('atthr'), 'att_setup.php' => $zu('attadm'), 'att_reports.php' => $zu('attrep'), 'att_overtime.php' => $zu('attot') || $zu('attotap') || $zu('attotvf') || $zu('attpay'),
         'att/' => $zu('attgate', 'c') || $zu('atthod', 'c'),
+        'att_finance.php' => $zu('finprep') || $zu('finwage') || $zu('finapp') || $zu('finpay'),
     ];
     if (!array_key_exists($f, $map)) { t("the page table knows $f", false); return false; }
     return $map[$f];
@@ -234,6 +238,7 @@ $guards = [
     'production_entry.php' => "if (!is_admin() && !is_colleague() && !is_production_staff())",
     'imp_register.php' => "imp_require('imp', 'v');", 'imp_new.php' => "imp_require('imp', 'c');",
     'imp_efs_recon.php' => "imp_require('efs', 'v');", 'imp_opening.php' => "imp_require('efs', 'v');",
+    'att_finance.php' => "if (!zfin_can_open())",
 ];
 foreach ($guards as $f => $g) t("$f guards with: $g", str_contains(nocomments((string)file_get_contents($B . $f)), $g));
 t('no store page still opens on the wide inv_can_see()',

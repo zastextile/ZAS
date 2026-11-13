@@ -376,7 +376,8 @@ $erp = ['ship','proforma','packing','shiplog','shippay','shipcost','shipdoc','im
 $missing = array_values(array_diff($erp, array_keys($mods)));
 ok($missing === [], 'all 27 permission rows the ERP had before are still listed' . ($missing ? ' — missing: ' . implode(', ', $missing) : ''));
 ok(($mods['admin'] ?? null) === ['Administration', 'Users & Setup', 'vcud'], 'THE "Users & Setup" ROW IS THERE, with view / create / update / delete');
-ok(count(array_filter(array_keys($mods), fn($k) => str_starts_with($k, 'att'))) === 10 && count($mods) === 37, 'plus the ten attendance rows: 37 in all');
+ok(count(array_filter(array_keys($mods), fn($k) => str_starts_with($k, 'att'))) === 10 && count(array_filter(array_keys($mods), fn($k) => str_starts_with($k, 'fin'))) === 4 && count($mods) === 41,
+   'plus the ten attendance rows and the four People Finance rows: 41 in all (' . count($mods) . ')');
 
 echo "10. Over HTTP: who may do what\n";
 ok(call('GET', '/admin/overview')['status'] === 401, 'signed out: 401');

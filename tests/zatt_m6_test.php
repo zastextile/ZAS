@@ -286,8 +286,14 @@ ok(OT::amount('hourly', 25050, 95) === 39663 && OT::amount('hourly', 1, 30) === 
    'rounding: half a paisa rounds up, less than half rounds down; fixed pays the amount whatever the minutes');
 $fx = OT::setRate($L5, 'fixed', '1500', $acc);
 ok($fx['ok'] && $fx['payable_amount'] === '1500.00', 'a fixed rate pays the amount typed');
-$cols = array_column(Db::all("SELECT COLUMN_NAME AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name LIKE 'att_%'"), 'c');
-ok(array_filter($cols, fn($c) => preg_match('/wage|salary|daily_rate|basic_pay/i', $c)) === [], 'THERE IS NO WAGE OR SALARY COLUMN ANYWHERE IN THE MODULE for a rate to be derived from');
+/* People Finance (migration 0017) holds what a person is paid, in its own
+   att_fin_* tables. The rule is unchanged: nothing in attendance or overtime
+   has a wage to derive a rate from, and the overtime code never looks at the
+   finance tables. (That People Finance does not derive one either is proved
+   in zatt_fin_test.php.) */
+$cols = array_column(Db::all("SELECT COLUMN_NAME AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name LIKE 'att\\_%' AND table_name NOT LIKE 'att\\_fin\\_%'"), 'c');
+ok(count($cols) > 50 && array_filter($cols, fn($c) => preg_match('/wage|salary|daily_rate|basic_pay|basic_paisa/i', $c)) === [], 'THERE IS NO WAGE OR SALARY COLUMN IN ANY ATTENDANCE OR OVERTIME TABLE for a rate to be derived from');
+ok(!str_contains((string) file_get_contents($B . 'includes/att/OvertimeService.php'), 'att_fin_'), '  and the overtime service never reads the People Finance tables — a rate is only ever what a person types');
 
 /* ===================================================================== */
 echo "7. Finalizing payroll\n";

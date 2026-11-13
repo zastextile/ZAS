@@ -939,3 +939,38 @@ arrives. A real OUT scanned before the system closed the entry replaces it;
 one scanned after is refused. HR can re-time a system OUT as a correction.
 Shown on Reports › Today, attendance/movements reports and CSVs, HR, the
 overtime check, and the gate phone. Tests: `tests/zatt_autoout_test.php`.
+
+**Admin entries (migration 0016).** The administrator adds, edits and deletes
+entries from Setup › Entries; gate events are never altered and a copy of every
+change is kept. Tests: `tests/zatt_entries_test.php`.
+
+## 22. People Finance — delivered 2026-11-13 (owner's request)
+
+Pay for three kinds of employee through one pipeline, **prepare → approve →
+pay**, designed with the owner over five demo rounds. The user guide is
+`docs/attendance/PEOPLE_FINANCE.md`; the decisions are these.
+
+- **Fixed salary** (month end; custom dates = salary ÷ days in month × days),
+  **daily wages** (weekly Friday–Thursday, days present from Attendance,
+  under `fin_half_day_minutes` = half a day), **contractor** (the unpaid
+  production balance). Pay day `fin_pay_weekday` = Thursday; another day needs
+  a reason.
+- **Every line is amended by itself** with a required reason; the worked-out
+  figure stays beside the changed one. Lines can be added (bonus, other
+  earning, deduction). Basic salary is not amendable on a sheet.
+- **Roles**: Admin all; Audit (new job) prepares salaries and approves;
+  Accounts prepares all and pays; HR prepares salaries; HOD prepares wages and
+  contractors of their own department. Nobody but an admin approves their own
+  sheet. Jobs open the module by themselves; `finprep/finwage/finapp/finpay`
+  in User Access give single powers.
+- **One ledger** (`att_fin_ledger`) is the balance. Earnings and deductions
+  post on approval, the payment on pay. Nothing is deleted: a sheet approved or
+  paid by mistake is cancelled with a reason and its lines stay, struck out.
+- **Production**: `zp_entries` and old `zp_pay` payments are copied in
+  idempotently. A worker set up as a contractor leaves the old Worker Pay grid
+  (`production_pay.php` refuses them); the others stay there unchanged.
+- The server works out every figure; the browser sends only which line to
+  change, to what, and why.
+
+Migration `0017_finance.sql`. Tests: `tests/zatt_fin_test.php` (111) and
+`tests/zatt_finweb_test.php` (72, API + the screen in a browser).
