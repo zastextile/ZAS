@@ -49,7 +49,7 @@ foreach ($mm as $x) {
     $routes[] = ['method' => $x[1], 'name' => $nm[1] ?? ($nm[2] ?? $x[2]), 'body' => $x[3]];
 }
 ok(count($routes) >= 60, 'the router has ' . count($routes) . ' routes, all read');
-$guards = '/Http::require(User|Permission)\(|require_erp_admin\(|require_gate_or_hod\(|ot_view_scope\(/';
+$guards = '/Http::require(User|Permission)\(|require_erp_admin\(|require_gate_or_hod\(|ot_view_scope\(|fin_caps\(/';
 $open = array_values(array_filter($routes, fn($r) => !preg_match($guards, $r['body']) && !in_array($r['name'], ['/auth/login', '/auth/logout'], true)));
 ok($open === [], 'EVERY ROUTE BUT LOGIN AND LOGOUT CHECKS WHO IS ASKING' . ($open ? ' — unguarded: ' . implode(', ', array_column($open, 'name')) : ''));
 $noCsrf = array_values(array_filter($routes, fn($r) => $r['method'] === 'POST' && !str_contains($r['body'], 'Http::requireCsrf()') && $r['name'] !== '/auth/login'));

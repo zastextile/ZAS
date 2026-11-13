@@ -57,6 +57,9 @@ final class AdminService
         Roles::ACCOUNTS   => ['label' => 'Accounts',   'module' => 'attpay',  'actions' => 'vu',  'needs' => 'v',  'needs_department' => false,
                               // Accounts approves and verifies too, and enters the rate and finalizes payroll.
                               'also' => ['attotap' => 'vu', 'attotvf' => 'vu', 'attrep' => 'v']],
+        // People Finance: Audit approves pay sheets and may prepare fixed salaries. Never pays.
+        Roles::AUDIT      => ['label' => 'Audit',      'module' => 'finapp',  'actions' => 'vu',  'needs' => 'vu', 'needs_department' => false,
+                              'also' => ['finprep' => 'vc']],
     ];
     /* 'actions' is what granting the job ticks; 'needs' is the least the job
        must hold to count as working on the People tab. */

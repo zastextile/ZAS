@@ -46,6 +46,10 @@ final class Roles
         ['g' => 'Attendance', 'k' => 'atthr',    'n' => 'Attendance — Reconciliation',           'a' => 'vud'],
         ['g' => 'Attendance', 'k' => 'attrep',   'n' => 'Attendance — Reports',                  'a' => 'v'],
         ['g' => 'Attendance', 'k' => 'attadm',   'n' => 'Attendance — Employees, Shifts, Devices','a' => 'vcud'],
+        ['g' => 'People Finance', 'k' => 'finprep', 'n' => 'Pay — Prepare Fixed Salaries (Edit = salary setup)', 'a' => 'vcu'],
+        ['g' => 'People Finance', 'k' => 'finwage', 'n' => 'Pay — Prepare Daily Wages & Contractors', 'a' => 'vc'],
+        ['g' => 'People Finance', 'k' => 'finapp',  'n' => 'Pay — Approve Pay Sheets',                'a' => 'vu'],
+        ['g' => 'People Finance', 'k' => 'finpay',  'n' => 'Pay — Record Payments & Advances',        'a' => 'vu'],
     ];
 
     /** @return list<array{role:string,department_id:?int}> */

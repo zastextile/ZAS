@@ -33,6 +33,22 @@ if (!is_admin() && !is_colleague()) { http_response_code(403); exit('Production 
 require_once __DIR__ . '/includes/zprod.php';
 zp_ensure_schema();
 
+/* PAYING MOVES TO PEOPLE FINANCE, ONE WORKER AT A TIME.
+   A worker who has been set up there as a Contractor (Attendance › People
+   Finance › People) is paid there, through prepare → approve → pay, and no
+   longer here — one person, one place to be paid, so nobody is paid twice.
+   Everything paid here before is carried into their statement there.
+   A worker NOT set up there stays exactly as before, so nobody is left with
+   nowhere to be paid. With People Finance not installed this list is empty
+   and the screen is unchanged. */
+$finIds = [];
+try {
+    if (is_file(__DIR__ . '/includes/att/FinanceService.php')) {
+        foreach (['Db', 'Time', 'Policy', 'Audit', 'Roles', 'FinanceService'] as $zpC) { require_once __DIR__ . "/includes/att/$zpC.php"; }
+        $finIds = array_flip(\Att\FinanceService::linkedWorkerIds());
+    }
+} catch (Throwable $e) { $finIds = []; }
+
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
 $msg = ''; $err = ''; $warn = [];
@@ -52,7 +68,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        'amount'    => $_POST['p_amount'][$i] ?? 0,
                        'note'      => $_POST['p_note'][$i] ?? ''];
         }
-        $r = zp_pay_save((string)($_POST['pay_date'] ?? ''), $rows, (int)(current_user()['id'] ?? 0));
+        /* Checked here as well as hidden below: a form left open from
+           before the worker moved must not pay them a second way. */
+        $moved = array_filter($rows, fn($x) => isset($finIds[(int)$x['worker_id']]) && (float)str_replace(',', '', (string)$x['amount']) > 0);
+        $r = $moved
+            ? ['ok' => false, 'errors' => ['Nothing was saved. ' . count($moved) . ' of these workers ' . (count($moved) === 1 ? 'is' : 'are') . ' now paid in People Finance (Attendance › People Finance). Reload this page and pay the rest.']]
+            : zp_pay_save((string)($_POST['pay_date'] ?? ''), $rows, (int)(current_user()['id'] ?? 0));
         if ($r['ok']) {
             $t = number_format($r['total'], 2);
             $_SESSION['zp_msg'] = $r['saved'] . ' payment' . ($r['saved'] === 1 ? '' : 's') . ' saved, ' . $t . ' in all.'
@@ -73,8 +94,9 @@ if (!empty($_SESSION['zp_msg'])) { $msg = $_SESSION['zp_msg']; unset($_SESSION['
 if (!empty($_SESSION['error']))  { $err = $_SESSION['error'];  unset($_SESSION['error']); }
 
 $bal    = zp_worker_balances();
-$owing  = array_values(array_filter($bal, fn($b) => $b['balance'] > 0.005));
-$totOwed = round(array_sum(array_column($bal, 'balance')), 2);
+$here   = array_values(array_filter($bal, fn($b) => !isset($finIds[$b['id']])));          // still paid on this screen
+$owing  = array_values(array_filter($here, fn($b) => $b['balance'] > 0.005));
+$totOwed = round(array_sum(array_column($here, 'balance')), 2);
 $totEarn = round(array_sum(array_column($bal, 'earned')), 2);
 $totPaid = round(array_sum(array_column($bal, 'paid')), 2);
 
@@ -125,6 +147,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
 </div>
 
 <?php if ($msg): ?><div class="note ok"><?= e($msg) ?></div><?php endif; ?>
+<?php if ($finIds): ?><div class="note" style="border-color:#bfe0d3;background:#eef8f3;color:#17624d">
+  <b><?= count($finIds) ?> worker<?= count($finIds) === 1 ? ' is' : 's are' ?> now paid in People Finance</b> — prepared, approved, then paid, with advances and a statement.
+  They are not in "Pay today" below, and "Owed right now" counts only the workers still paid here.
+  Everything paid to them on this screen is carried into their statement there.
+  <a href="att_finance.php" style="font-weight:700;color:#17624d">Open People Finance →</a></div><?php endif; ?>
 <?php if ($err): ?><div class="note bad"><?= e($err) ?></div><?php endif; ?>
 
 <div class="strip">
@@ -203,6 +230,9 @@ table.zp-t tbody tr:hover{background:#fafcff}
       </select></div>
   </form>
 
+  <?php if ($wid > 0 && isset($finIds[$wid])): ?>
+    <div class="note" style="border-color:#bfe0d3;background:#eef8f3;color:#17624d">This worker is paid in People Finance now. Below is what production booked and what was paid on this screen; payments made since are in their statement there (People Finance › People).</div>
+  <?php endif; ?>
   <?php if ($wid <= 0): ?>
     <div class="note">Pick somebody to see their ledger.</div>
   <?php elseif (!$ledger): ?>

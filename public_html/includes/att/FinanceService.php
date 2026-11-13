@@ -69,7 +69,7 @@ final class FinanceService
      *   departments       whose people this user may SEE (null = everyone)
      *   wage_departments  whose daily wages / contractor pay they may PREPARE
      *
-     * @return array{salary:bool,wage:bool,approve:bool,pay:bool,any:bool,admin:bool,see_salary:bool,departments:?list<int>,wage_departments:?list<int>}
+     * @return array{salary:bool,wage:bool,approve:bool,pay:bool,setup:bool,any:bool,admin:bool,see_salary:bool,departments:?list<int>,wage_departments:?list<int>}
      */
     public static function caps(int $userId): array
     {
@@ -89,15 +89,35 @@ final class FinanceService
         $hodOf   = $admin ? [] : (Roles::departmentScope($userId, Roles::HOD) ?? []);
         $approve = $admin || $tick('finapp', 'u') || $job(Roles::AUDIT);
         $pay     = $admin || $tick('finpay', 'u') || $job(Roles::ACCOUNTS);
-        $wide    = $salary || $office || $approve || $pay;
-        return [
-            'salary' => $salary, 'wage' => $office || $hodOf !== [], 'approve' => $approve, 'pay' => $pay,
+        $setup   = $admin || $tick('finprep', 'u') || $job(Roles::ACCOUNTS, Roles::HR);
+        // Someone ticked "View" only may look at everything and change nothing.
+        $view    = $tick('finprep', 'v') || $tick('finwage', 'v') || $tick('finapp', 'v') || $tick('finpay', 'v');
+        $wide    = $salary || $office || $approve || $pay || $setup || $view;
+        $caps = [
+            'salary' => $salary, 'wage' => $office || $hodOf !== [], 'approve' => $approve, 'pay' => $pay, 'setup' => $setup,
             'any' => $wide || $hodOf !== [], 'admin' => $admin,
             // A HOD prepares wages for their own people and never sees a salary.
             'see_salary' => $wide,
             'departments' => $wide ? null : $hodOf,
             'wage_departments' => $office ? null : $hodOf,
         ];
+        // The ERP's access hours apply here as everywhere: outside them a
+        // person may look (if their setting says so) but change nothing.
+        $window = self::windowState($userId);
+        if (!$admin && $window !== 'yes') {
+            foreach (['salary', 'wage', 'approve', 'pay', 'setup'] as $k) { $caps[$k] = false; }
+            if ($window !== 'ro') { $caps['any'] = false; }
+        }
+        return $caps;
+    }
+
+    private static function windowState(int $userId): string
+    {
+        if (!function_exists('zu_window_state') || !function_exists('current_user')) {
+            return 'yes';
+        }
+        $u = \current_user();
+        return is_array($u) && (int) ($u['id'] ?? 0) === $userId ? (string) \zu_window_state() : 'yes';
     }
 
     // ------------------------------------------------------- salary setup
@@ -272,46 +292,106 @@ final class FinanceService
      * step (a cancelled production entry lowers that day's line; a cancelled
      * old payment cancels its line).
      */
-    public static function syncProduction(): void
+    public static function syncProduction(bool $force = false): void
     {
         if (!Db::tableExists('zp_workers') || !Db::tableExists('zp_entries')) {
             return;
         }
-        $map = Db::all(
-            "SELECT e.id AS employee_id, w.id AS worker_id
-               FROM att_fin_profiles f JOIN att_employees e ON e.id = f.employee_id
-               JOIN zp_workers w ON w.worker_code = COALESCE(NULLIF(e.worker_code, ''), e.code)
-              WHERE f.pay_type = 'contract'");
-        foreach ($map as $m) {
-            $emp = (int) $m['employee_id']; $wid = (int) $m['worker_id'];
-            foreach (Db::all("SELECT entry_date, ROUND(SUM(amount) * 100) AS paisa FROM zp_entries WHERE worker_id = ? AND status = 'active' GROUP BY entry_date", [$wid]) as $d) {
-                Db::run(
-                    "INSERT INTO att_fin_ledger (employee_id, entry_date, kind, line_kind, label, amount_paisa, source, source_key)
-                     VALUES (?, ?, 'earning', 'production', 'Production', ?, 'production', ?)
-                     ON DUPLICATE KEY UPDATE amount_paisa = VALUES(amount_paisa), cancelled_at = NULL",
-                    [$emp, $d['entry_date'], (int) $d['paisa'], "zpe:$wid:" . $d['entry_date']]
-                );
-            }
+        $map = self::contractWorkers();
+        $hasPay = Db::tableExists('zp_pay');
+        // Nothing booked, paid, cancelled or linked since last time? Then there is nothing to copy.
+        $mark = md5(json_encode($map)
+            . json_encode(Db::one("SELECT COUNT(*) AS c, COALESCE(SUM(CRC32(CONCAT_WS(':', id, worker_id, entry_date, amount, status))), 0) AS h FROM zp_entries"))
+            . ($hasPay ? json_encode(Db::one("SELECT COUNT(*) AS c, COALESCE(SUM(CRC32(CONCAT_WS(':', id, worker_id, pay_date, amount, status, COALESCE(note, '')))), 0) AS h FROM zp_pay")) : ''));
+        if (!$force && $mark === (string) Db::value("SELECT value FROM att_policies WHERE policy_key = 'fin_sync_mark'")) {
+            return;
+        }
+        foreach ($map as $emp => $wid) {
+            Db::run(
+                "INSERT INTO att_fin_ledger (employee_id, entry_date, kind, line_kind, label, amount_paisa, source, source_key)
+                 SELECT ?, z.entry_date, 'earning', 'production', 'Production', ROUND(SUM(z.amount) * 100), 'production', CONCAT('zpe:', ?, ':', z.entry_date)
+                   FROM zp_entries z WHERE z.worker_id = ? AND z.status = 'active' GROUP BY z.entry_date
+                 ON DUPLICATE KEY UPDATE amount_paisa = VALUES(amount_paisa), cancelled_at = NULL",
+                [$emp, $wid, $wid]
+            );
             // A day whose every entry was cancelled has no row above: bring its line to zero.
             Db::run(
                 "UPDATE att_fin_ledger l SET l.amount_paisa = 0
-                  WHERE l.employee_id = ? AND l.source = 'production'
+                  WHERE l.employee_id = ? AND l.source = 'production' AND l.amount_paisa <> 0
                     AND NOT EXISTS (SELECT 1 FROM zp_entries z WHERE z.worker_id = ? AND z.status = 'active' AND z.entry_date = l.entry_date)",
                 [$emp, $wid]
             );
-            if (Db::tableExists('zp_pay')) {
+            if ($hasPay) {
                 foreach (Db::all('SELECT id, pay_date, ROUND(amount * 100) AS paisa, status, note FROM zp_pay WHERE worker_id = ?', [$wid]) as $pay) {
                     $dead = $pay['status'] !== 'active';
                     Db::run(
                         "INSERT INTO att_fin_ledger (employee_id, entry_date, kind, label, amount_paisa, method, source, source_key, cancelled_at, cancel_reason)
                          VALUES (?, ?, 'payment', ?, ?, 'cash', 'legacy_pay', ?, ?, ?)
-                         ON DUPLICATE KEY UPDATE amount_paisa = VALUES(amount_paisa), cancelled_at = VALUES(cancelled_at), cancel_reason = VALUES(cancel_reason)",
+                         ON DUPLICATE KEY UPDATE amount_paisa = VALUES(amount_paisa),
+                             cancelled_at = IF(VALUES(cancelled_at) IS NULL, NULL, COALESCE(cancelled_at, VALUES(cancelled_at))), cancel_reason = VALUES(cancel_reason)",
                         [$emp, $pay['pay_date'], 'Paid on Worker Pay' . ($pay['note'] ? ' · ' . mb_substr((string) $pay['note'], 0, 120) : ''), (int) $pay['paisa'],
                          'zpp:' . (int) $pay['id'], $dead ? Time::sql() : null, $dead ? 'Cancelled on Worker Pay' : null]
                     );
                 }
             }
         }
+        Db::run("INSERT INTO att_policies (policy_key, value, value_type, description) VALUES ('fin_sync_mark', ?, 'string', 'People Finance: fingerprint of the production data last copied in')
+                 ON DUPLICATE KEY UPDATE value = VALUES(value)", [$mark]);
+    }
+
+    /**
+     * Contractors and their Production worker: [employee_id => zp_workers.id],
+     * matched on the code (the employee's worker code, or else their own code).
+     *
+     * MATCHED IN PHP, NOT IN SQL. The production tables were made by the ERP
+     * with whatever collation the server had that day; joining their text to
+     * an attendance column can fail with "Illegal mix of collations" on one
+     * server and work on another.
+     *
+     * @return array<int,int>
+     */
+    private static function contractWorkers(): array
+    {
+        $byCode = [];
+        foreach (Db::all('SELECT id, worker_code FROM zp_workers') as $w) {
+            $byCode[mb_strtolower(trim((string) $w['worker_code']))] = (int) $w['id'];
+        }
+        $out = [];
+        foreach (Db::all("SELECT e.id, e.code, e.worker_code FROM att_fin_profiles f JOIN att_employees e ON e.id = f.employee_id WHERE f.pay_type = 'contract'") as $e) {
+            $code = mb_strtolower(trim((string) ($e['worker_code'] ?? '') !== '' ? (string) $e['worker_code'] : (string) $e['code']));
+            if (isset($byCode[$code])) {
+                $out[(int) $e['id']] = $byCode[$code];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Production workers nobody can pay here yet: active on Production ›
+     * Workers, but with no contractor set up under the same code. They stay
+     * on the old Worker Pay screen until they are linked.
+     *
+     * @return list<array{id:int,code:string,name:string}>
+     */
+    public static function unlinkedWorkers(): array
+    {
+        if (!Db::tableExists('zp_workers')) {
+            return [];
+        }
+        $linked = array_flip(self::contractWorkers());
+        $out = [];
+        foreach (Db::all('SELECT id, worker_code, worker_name FROM zp_workers WHERE is_active = 1 ORDER BY worker_name') as $w) {
+            if (!isset($linked[(int) $w['id']])) {
+                $out[] = ['id' => (int) $w['id'], 'code' => (string) $w['worker_code'], 'name' => (string) $w['worker_name']];
+            }
+        }
+        return $out;
+    }
+
+    /** Production worker ids that are paid through People Finance now. @return list<int> */
+    public static function linkedWorkerIds(): array
+    {
+        return Db::tableExists('zp_workers') ? array_values(self::contractWorkers()) : [];
     }
 
     // ----------------------------------------------------------- advances
@@ -326,6 +406,25 @@ final class FinanceService
         }
         unset($r);
         return $rows;
+    }
+
+    /** Every advance and loan this user may see, newest first. */
+    public static function advances(array $caps): array
+    {
+        [$w, $p] = self::deptWhere($caps['departments']);
+        $rows = Db::all(
+            "SELECT a.id, a.employee_id, a.kind, a.amount_paisa, a.per_pay_paisa, a.recovered_paisa, a.given_on, a.method, a.note, a.status,
+                    e.code, e.full_name, d.name AS department_name, f.pay_type
+               FROM att_fin_advances a JOIN att_employees e ON e.id = a.employee_id JOIN att_departments d ON d.id = e.department_id
+               LEFT JOIN att_fin_profiles f ON f.employee_id = e.id
+              WHERE a.status <> 'cancelled' $w" . ($caps['see_salary'] ? '' : " AND COALESCE(f.pay_type, '') <> 'salary'") . '
+              ORDER BY (a.status = \'active\') DESC, a.id DESC LIMIT 2000', $p);
+        foreach ($rows as &$r) {
+            foreach (['amount_paisa', 'per_pay_paisa', 'recovered_paisa'] as $k) { $r[$k] = (int) $r[$k]; }
+            $r['left_paisa'] = $r['amount_paisa'] - $r['recovered_paisa'];
+        }
+        unset($r);
+        return ['ok' => true, 'advances' => $rows];
     }
 
     /** @param array<string,mixed> $in */
@@ -928,6 +1027,7 @@ final class FinanceService
         foreach (self::sheets($caps, $userId)['sheets'] as $s) { $count[$s['status']]++; }
         return ['ok' => true, 'today' => self::today(), 'owed_paisa' => $t['owed'], 'earned_paisa' => $t['earned'], 'paid_paisa' => $t['paid'],
                 'sheets' => $count, 'no_setup' => count(array_filter($people, static fn($r) => $r['pay_type'] === null && (int) $r['active'] === 1)),
+                'unlinked_workers' => $caps['wage_departments'] === null && $caps['wage'] ? array_slice(self::unlinkedWorkers(), 0, 200) : [],
                 'advances_out_paisa' => (int) Db::value("SELECT COALESCE(SUM(amount_paisa - recovered_paisa), 0) FROM att_fin_advances WHERE status = 'active'"),
                 'pay_weekday' => Policy::int('fin_pay_weekday', 4)];
     }

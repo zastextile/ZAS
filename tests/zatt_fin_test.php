@@ -57,12 +57,12 @@ $pdo->exec("CREATE TABLE zu_perm (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT
             UNIQUE KEY uniq_user_module (user_id, module), INDEX(user_id))");
 // Production, as the ERP makes it (includes/zprod.php).
 $pdo->exec("CREATE TABLE zp_workers (id INT AUTO_INCREMENT PRIMARY KEY, worker_code VARCHAR(40) NOT NULL, worker_name VARCHAR(120) NOT NULL,
-            department VARCHAR(60) NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, UNIQUE KEY uniq_worker_code (worker_code))");
+            department VARCHAR(60) NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, UNIQUE KEY uniq_worker_code (worker_code)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
 $pdo->exec("CREATE TABLE zp_entries (id INT AUTO_INCREMENT PRIMARY KEY, entry_date DATE NOT NULL, worker_id INT NOT NULL, product_id INT NOT NULL DEFAULT 1,
             op_id INT NOT NULL DEFAULT 1, qty DECIMAL(12,2) NOT NULL, rate_applied DECIMAL(12,2) NOT NULL, amount DECIMAL(14,2) NOT NULL,
-            status VARCHAR(12) NOT NULL DEFAULT 'active')");
+            status VARCHAR(12) NOT NULL DEFAULT 'active') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
 $pdo->exec("CREATE TABLE zp_pay (id INT AUTO_INCREMENT PRIMARY KEY, pay_date DATE NOT NULL, worker_id INT NOT NULL, amount DECIMAL(14,2) NOT NULL,
-            note VARCHAR(255) NULL, status VARCHAR(12) NOT NULL DEFAULT 'active')");
+            note VARCHAR(255) NULL, status VARCHAR(12) NOT NULL DEFAULT 'active') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
 (new Migrations($B . 'sql/att'))->up();
 $n = fn(string $sql, array $p = []) => (int) Db::value($sql, $p);
 $hash = password_hash('CorrectHorse9', PASSWORD_DEFAULT);
@@ -296,6 +296,14 @@ Fin::syncProduction();
 ok(Fin::balance($emp['C001']) === 100000, 'a production entry cancelled later lowers what is owed: 1,000');
 $pdo->exec("UPDATE zp_pay SET status = 'cancelled' WHERE amount = 2000.00");
 ok(Fin::people($C)['ok'] && Fin::balance($emp['C001']) === 300000, 'an old payment cancelled on Worker Pay comes back as owed: 3,000');
+$pdo->exec("INSERT INTO zp_workers (worker_code, worker_name) VALUES ('W777', 'Not Linked Yet'), ('w-OLD', 'Left Long Ago')");
+$pdo->exec("UPDATE zp_workers SET is_active = 0 WHERE worker_code = 'w-OLD'");
+ok(array_column(Fin::unlinkedWorkers(), 'code') === ['W777'] && Fin::linkedWorkerIds() === [1], 'a production worker with no contractor set up is listed as "still on the old screen"; the linked one is not');
+Fin::saveProfile($emp['D003'], ['pay_type' => 'contract'], 'Moved to piece rate', $admin);
+Db::run("UPDATE att_employees SET worker_code = 'w777' WHERE id = ?", [$emp['D003']]);
+ok(Fin::unlinkedWorkers() === [] && count(Fin::linkedWorkerIds()) === 2, '  set up as a contractor under the same code (any letter case), they move over');
+Fin::saveProfile($emp['D003'], ['pay_type' => 'daily', 'daily_rate_paisa' => 120000], 'Back to daily', $admin);
+Db::run("UPDATE att_employees SET worker_code = NULL WHERE id = ?", [$emp['D003']]);
 // Stale sheet: prepared for 3,000, then production is cancelled before approval.
 $st = Fin::createSheet('contract', '2026-03-05', '2026-03-05', [['employee_id' => $emp['C001']]], $C, $acc);
 $pdo->exec("UPDATE zp_entries SET status = 'cancelled' WHERE entry_date = '2026-03-03'");

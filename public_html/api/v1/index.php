@@ -39,6 +39,7 @@ require_once dirname(__DIR__, 2) . '/includes/att/ReportService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/AttBackup.php';
 require_once dirname(__DIR__, 2) . '/includes/att/SystemCheck.php';
 require_once dirname(__DIR__, 2) . '/includes/att/EntryAdmin.php';
+require_once dirname(__DIR__, 2) . '/includes/att/FinanceService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
@@ -47,6 +48,7 @@ use Att\Audit;
 use Att\Db;
 use Att\Employees;
 use Att\EntryAdmin;
+use Att\FinanceService as Fin;
 use Att\HodService;
 use Att\HrService;
 use Att\Http;
@@ -905,6 +907,110 @@ try {
                     (string) Http::input('reason', ''), (int) $u['id']));
             break;
 
+        /* ---------------------------------------------------------------
+           PEOPLE FINANCE. fin_caps() says who is asking and what they may
+           do; FinanceService checks it again for the thing itself (which
+           kind of sheet, whose department, their own sheet or not). */
+        case $method === 'GET' && $route === '/finance/overview':
+            [$u, $caps] = fin_caps();
+            admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps, 'departments' => Employees::departments()]);
+            break;
+
+        case $method === 'GET' && $route === '/finance/people':
+            [, $caps] = fin_caps();
+            admin_answer(Fin::people($caps));
+            break;
+
+        case $method === 'POST' && preg_match('#^/finance/people/(\d+)/profile$#', $route, $m) === 1:
+            Http::requireCsrf();
+            [$u] = fin_caps('setup');
+            admin_answer(Fin::saveProfile((int) $m[1], Http::body(), (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/finance/people/(\d+)/opening$#', $route, $m) === 1:
+            Http::requireCsrf();
+            [$u] = fin_caps('pay');
+            admin_answer(Fin::setOpening((int) $m[1], fin_paisa(Http::input('amount_paisa')), (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && preg_match('#^/finance/people/(\d+)/ledger$#', $route, $m) === 1:
+            [, $caps] = fin_caps();
+            admin_answer(Fin::ledger((int) $m[1], $caps));
+            break;
+
+        case $method === 'GET' && $route === '/finance/advances':
+            [, $caps] = fin_caps();
+            admin_answer(Fin::advances($caps));
+            break;
+
+        case $method === 'POST' && $route === '/finance/advances':
+            Http::requireCsrf();
+            [$u] = fin_caps('pay');
+            admin_answer(Fin::giveAdvance(Http::body(), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/finance/advances/(\d+)/cancel$#', $route, $m) === 1:
+            Http::requireCsrf();
+            [$u] = fin_caps('pay');
+            admin_answer(Fin::cancelAdvance((int) $m[1], (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/finance/preview':
+            [, $caps] = fin_caps();
+            admin_answer(Fin::preview((string) Http::input('kind', ''), (string) Http::input('from', ''), (string) Http::input('to', ''), $caps));
+            break;
+
+        case $method === 'GET' && $route === '/finance/sheets':
+            [$u, $caps] = fin_caps();
+            admin_answer(Fin::sheets($caps, (int) $u['id'], Http::input('status') === null ? null : (string) Http::input('status')));
+            break;
+
+        case $method === 'POST' && $route === '/finance/sheets':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            $items = Http::input('items', []);
+            admin_answer(Fin::createSheet((string) Http::input('kind', ''), (string) Http::input('from', ''), (string) Http::input('to', ''),
+                is_array($items) ? array_values(array_filter($items, 'is_array')) : [], $caps, (int) $u['id']));
+            break;
+
+        case $method === 'GET' && preg_match('#^/finance/sheets/(\d+)$#', $route, $m) === 1:
+            [$u, $caps] = fin_caps();
+            admin_answer(Fin::sheet((int) $m[1], $caps, (int) $u['id']));
+            break;
+
+        case $method === 'GET' && preg_match('#^/finance/sheets/(\d+)/export$#', $route, $m) === 1:
+            [$u, $caps] = fin_caps();
+            $sh = Fin::sheet((int) $m[1], $caps, (int) $u['id']);
+            if (!$sh['ok']) {
+                admin_answer($sh);
+            }
+            $rs = static fn(int $p): string => number_format($p / 100, 2, '.', '');
+            $rows = [];
+            foreach ($sh['items'] as $i) {
+                $earn = 0; $ded = 0; $carry = 0; $notes = [];
+                foreach ($i['lines'] as $l) {
+                    if ($l['side'] === 'earn') { $earn += $l['amount_paisa']; } elseif ($l['side'] === 'deduct') { $ded += $l['amount_paisa']; } else { $carry += $l['amount_paisa']; }
+                    if ($l['reason'] !== null && $l['reason'] !== '') { $notes[] = $l['label'] . ': ' . $l['reason']; }
+                }
+                $rows[] = [$i['code'], $i['full_name'], $i['department_name'], $rs($earn), $rs($carry), $rs($ded), $rs($i['amount_paisa']), $i['method'], implode(' | ', $notes)];
+            }
+            send_csv('pay-sheet-' . $sh['sheet']['ref'] . '.csv', ['Code', 'Name', 'Department', 'Earned', 'Owed from before', 'Deducted', 'To pay', 'Bank or cash', 'Amendments'], $rows);
+            break;
+
+        case $method === 'POST' && preg_match('#^/finance/sheets/(\d+)/(amend|approve|return|pay|cancel)$#', $route, $m) === 1:
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            $sid = (int) $m[1]; $uid = (int) $u['id']; $why = (string) Http::input('reason', '');
+            $items = Http::input('items', []);
+            admin_answer(match ($m[2]) {
+                'amend'   => Fin::amendSheet($sid, is_array($items) ? array_values(array_filter($items, 'is_array')) : [], $caps, $uid),
+                'approve' => Fin::approve($sid, $caps, $uid),
+                'return'  => Fin::sendBack($sid, $why, $caps, $uid),
+                'pay'     => Fin::pay($sid, (string) Http::input('pay_date', ''), $why, $caps, $uid),
+                'cancel'  => Fin::cancelSheet($sid, $why, $caps, $uid),
+            });
+            break;
+
         default:
             Http::fail('NO_ROUTE', 'Unknown endpoint.', 404, ['route' => $route, 'method' => $method]);
     }
@@ -1076,7 +1182,7 @@ function admin_answer(array $out): never
         Http::json($out, 200);
     }
     $code = (string) ($out['reason_code'] ?? '');
-    Http::json($out, match ($code) { 'NOT_FOUND' => 404, 'FORBIDDEN' => 403, 'PAYROLL_LOCKED', 'ALREADY_DECIDED', 'TOTAL_CHANGED' => 409, default => 422 });
+    Http::json($out, match ($code) { 'NOT_FOUND' => 404, 'FORBIDDEN' => 403, 'PAYROLL_LOCKED', 'ALREADY_DECIDED', 'TOTAL_CHANGED', 'STALE' => 409, default => 422 });
 }
 
 /**
@@ -1121,6 +1227,28 @@ function auto_out_if_due(): void
     } catch (Throwable $e) {
         error_log('[att-api] auto OUT: ' . $e->getMessage());
     }
+}
+
+/**
+ * People Finance: who is asking, and what may they do. Refuses anybody with
+ * no part in it; $need names one power the route cannot do without.
+ *
+ * @return array{0:array,1:array}
+ */
+function fin_caps(?string $need = null): array
+{
+    $u = Http::requireUser();
+    $caps = Fin::caps((int) $u['id']);
+    if (!$caps['any'] || ($need !== null && empty($caps[$need]))) {
+        Http::fail('FORBIDDEN', 'You do not have permission for this action.', 403);
+    }
+    return [$u, $caps];
+}
+
+/* A whole number of paisa, or -1 so the service refuses it. Never a float. */
+function fin_paisa(mixed $v): int
+{
+    return (is_int($v) || (is_string($v) && preg_match('/^\d{1,13}$/', $v) === 1)) ? (int) $v : -1;
 }
 
 function require_erp_admin(): array

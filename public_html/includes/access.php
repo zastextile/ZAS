@@ -95,6 +95,13 @@ function zu_modules(): array {
         ['g' => 'Attendance',        'k' => 'atthr',    'n' => 'Attendance — Reconciliation',            'a' => 'vud'],
         ['g' => 'Attendance',        'k' => 'attrep',   'n' => 'Attendance — Reports',                   'a' => 'v'],
         ['g' => 'Attendance',        'k' => 'attadm',   'n' => 'Attendance — Employees, Shifts, Devices','a' => 'vcud'],
+        /* PEOPLE FINANCE (att_finance.php). A job given on Attendance › Setup ›
+           People (Accounts, HR, HOD, Audit) opens it by itself; these rows
+           are for giving one power to somebody without the whole job. */
+        ['g' => 'People Finance',    'k' => 'finprep',  'n' => 'Pay — Prepare Fixed Salaries (Edit = salary setup)', 'a' => 'vcu'],
+        ['g' => 'People Finance',    'k' => 'finwage',  'n' => 'Pay — Prepare Daily Wages & Contractors',  'a' => 'vc'],
+        ['g' => 'People Finance',    'k' => 'finapp',   'n' => 'Pay — Approve Pay Sheets',                 'a' => 'vu'],
+        ['g' => 'People Finance',    'k' => 'finpay',   'n' => 'Pay — Record Payments & Advances',         'a' => 'vu'],
         ['g' => 'Administration',    'k' => 'admin',    'n' => 'Users & Setup',         'a' => 'vcud'],
     ];
 }
@@ -271,6 +278,29 @@ function zu_can(string $module, string $action, ?int $userId = null): bool {
     }
     $have = zu_perm_map($userId)[$module] ?? '';
     return strpos($have, $action) !== false;
+}
+
+/* PEOPLE FINANCE opens for a tick in User Access OR for a job given on
+   Attendance › Setup › People — the same rule Att\FinanceService::caps()
+   applies to every request. The menu and the page both ask here, so the link
+   shows exactly when the page opens. */
+function zfin_can_open(): bool {
+    static $memo = null;
+    if ($memo !== null) return $memo;
+    $u = current_user();
+    if (!$u) return $memo = false;
+    if (($u['role'] ?? '') === 'admin') return $memo = true;
+    if (in_array(zu_window_state(), ['no', 'off'], true)) return $memo = false;
+    foreach (['finprep', 'finwage', 'finapp', 'finpay'] as $m) {
+        if (zu_can($m, 'v')) return $memo = true;
+    }
+    try {
+        $st = db()->prepare("SELECT 1 FROM att_user_roles WHERE user_id = ? AND role IN ('hod','hr','accounts','audit','admin') AND (role <> 'hod' OR department_id IS NOT NULL) LIMIT 1");
+        $st->execute([(int)$u['id']]);
+        return $memo = (bool)$st->fetchColumn();
+    } catch (Throwable $e) {
+        return $memo = false;   // attendance not installed yet
+    }
 }
 
 function zu_require(string $module, string $action): void {
