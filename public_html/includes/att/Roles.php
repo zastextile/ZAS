@@ -30,8 +30,9 @@ final class Roles
     public const HR         = 'hr';
     public const ACCOUNTS   = 'accounts';
     public const ADMIN      = 'admin';
+    public const AUDIT      = 'audit';      // People Finance: approves pay sheets (migration 0017)
 
-    public const ALL = [self::GATEKEEPER, self::HOD, self::HR, self::ACCOUNTS, self::ADMIN];
+    public const ALL = [self::GATEKEEPER, self::HOD, self::HR, self::ACCOUNTS, self::ADMIN, self::AUDIT];
 
     /** zu_perm modules this module registers. Mirrors §5 of the plan. */
     public const MODULES = [
