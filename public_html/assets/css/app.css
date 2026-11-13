@@ -369,3 +369,68 @@ input[type=number]{-moz-appearance:textfield}
   .app{grid-template-columns:minmax(0,1fr)}
   .content{min-width:0}
 }
+
+/* ---------- desktop menu: a slim rail, and a board on "/" (assets/js/zmenu.js) ----------
+   html.zm-rail is set only on a desktop (1101px and wider) and only while the
+   person has not pinned the full menu. Without it every rule here is inert,
+   so phones and the pinned menu look exactly as before. */
+.zr,.zr-fold{display:none}
+html.zm-desk:not(.zm-rail) .sidebar .brand .zr-fold{display:inline-flex;margin-left:auto;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;
+  border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#cfe0f5;cursor:pointer;flex:0 0 auto;padding:0}
+html.zm-desk:not(.zm-rail) .sidebar .brand .zr-fold:hover{background:rgba(255,255,255,.14);color:#fff}
+.zr-fold svg{width:16px;height:16px}
+html.zm-rail .app{grid-template-columns:62px minmax(0,1fr)}
+html.zm-rail .sidebar{padding:10px 0 8px;align-items:center}
+html.zm-rail .sidebar .brand{padding:2px 0 10px;gap:0;justify-content:center;width:44px}
+html.zm-rail .sidebar .brand-title,html.zm-rail .sidebar .brand-sub,html.zm-rail .sidebar>.nav,html.zm-rail .sidebar>.side-user{display:none!important}
+html.zm-rail .zr{display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-height:0;width:100%;padding-top:8px;overflow-y:auto;scrollbar-width:none}
+html.zm-rail .zr::-webkit-scrollbar{display:none}
+.zr-b{width:44px;height:42px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;border:1px solid transparent;border-radius:11px;background:transparent;
+  color:#a9c1dc;cursor:pointer;padding:0;text-decoration:none;font:700 12.5px/1 inherit;font-family:inherit;transition:background .14s ease,color .14s ease}
+.zr-b svg{width:20px;height:20px}
+.zr-b:hover,.zr-b[aria-expanded="true"]{background:rgba(255,255,255,.1);color:#fff}
+.zr-b.on{background:rgba(14,168,201,.2);border-color:rgba(14,168,201,.45);color:#fff}
+.zr-b:focus-visible,.zx-item:focus-visible,.zb-chip:focus-visible,.zx-star:focus-visible,.zb-close:focus-visible,.zr-fold:focus-visible{outline:2px solid #f0b547;outline-offset:2px}
+.zr-all{background:rgba(14,168,201,.16);color:#d9f4fb;margin-bottom:6px}
+.zr-sp{flex:1}
+.zr-user{background:rgba(255,255,255,.1);color:#fff;border-radius:50%;width:38px;height:38px;margin-top:4px}
+
+.zr-fly{position:fixed;z-index:1000;width:248px;max-height:calc(100vh - 16px);overflow-y:auto;background:#0b2a4a;color:#eaf1ff;border:1px solid rgba(255,255,255,.13);
+  border-left:0;border-radius:0 14px 14px 0;padding:8px;box-shadow:14px 10px 34px rgba(4,16,34,.34)}
+.zx-gh{font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#8fabc9;padding:8px 9px 5px}
+.zx-sub{font-size:9.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#7793b5;padding:9px 9px 3px}
+.zx-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;color:#d3e2f5;font-size:13px;font-weight:600;text-decoration:none;min-width:0}
+.zx-item:hover{background:rgba(255,255,255,.09);color:#fff}
+.zx-item.on{background:rgba(14,168,201,.22);color:#fff}
+.zx-item.zx-out{color:#ff9aaa}
+.zx-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zx-nm small{display:block;font-size:11px;font-weight:500;color:#8fabc9}
+.zx-star{flex:0 0 auto;border:0;background:none;color:#7f9ab9;font-size:15px;line-height:1;padding:3px 5px;border-radius:6px;cursor:pointer}
+.zx-star:hover{color:#fff}
+.zx-star.on{color:#f0b547}
+
+.zb-shade{position:fixed;inset:0;z-index:1100;background:rgba(6,18,36,.5)}
+.zb{position:fixed;z-index:1101;top:6vh;left:50%;transform:translateX(-50%);width:min(1040px,calc(100vw - 48px));max-height:86vh;display:flex;flex-direction:column;
+  background:#0b2a4a;color:#eaf1ff;border:1px solid rgba(255,255,255,.14);border-radius:18px;overflow:hidden;box-shadow:0 26px 70px rgba(4,16,34,.5)}
+.zb-bar{display:flex;gap:8px;align-items:center;padding:12px;border-bottom:1px solid rgba(255,255,255,.12)}
+.zb-in{flex:1;min-width:0;font:500 16px/1.3 inherit;font-family:inherit;color:#fff;background:rgba(255,255,255,.09);border:1.5px solid transparent;border-radius:11px;padding:10px 13px}
+.zb-in::placeholder{color:#8fabc9}
+.zb-in:focus{outline:none;border-color:#0ea8c9;background:rgba(255,255,255,.13)}
+.zb-close{border:0;background:rgba(255,255,255,.1);color:#eaf1ff;border-radius:10px;padding:9px 12px;font:600 12.5px/1 inherit;font-family:inherit;cursor:pointer;white-space:nowrap}
+.zb-close:hover{background:rgba(255,255,255,.18)}
+.zb-body{overflow-y:auto;padding:6px 12px 12px}
+.zb-quick{display:flex;flex-wrap:wrap;gap:6px;padding:2px 4px 8px}
+.zb-chip{background:rgba(255,255,255,.1);color:#eaf1ff;border-radius:99px;padding:6px 12px;font-size:12.5px;font-weight:600;text-decoration:none}
+.zb-chip:hover{background:rgba(255,255,255,.18)}
+.zb-chip.f::before{content:"★ ";color:#f0b547}
+.zb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 16px}
+.zb-grid.one{grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+.zb-col{min-width:0}
+.zb-foot{padding:8px 16px;border-top:1px solid rgba(255,255,255,.12);font-size:11.5px;color:#8fabc9}
+@media (prefers-reduced-motion:no-preference){
+  .zr-fly{animation:zrfly .14s ease both}
+  .zb{animation:zbup .16s ease both}
+}
+@keyframes zrfly{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+@keyframes zbup{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+@media print{.zr-fly,.zb,.zb-shade{display:none!important}}

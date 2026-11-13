@@ -19,7 +19,7 @@ function page_header(string $title): void {
 
          RAISE THIS NUMBER whenever assets/css/app.css changes. Same for the
          ?v= on any assets/js file. */ ?>
-<link rel="stylesheet" href="assets/css/app.css?v=30">
+<link rel="stylesheet" href="assets/css/app.css?v=31">
 <?php /* THE NEW SKIN, AND WHY IT IS SAFE TO LINK ON EVERY PAGE.
          Every rule inside zskin.css is scoped under .zskin, so a page is
          untouched until it puts that class on a wrapper. Linking it here costs
@@ -40,6 +40,12 @@ function page_header(string $title): void {
 <meta name="apple-mobile-web-app-title" content="ZAS Production">
 </head>
 <body>
+<?php if ($u): /* DESKTOP: the menu is a slim rail unless this person pinned the full
+                  one (assets/js/zmenu.js). The class is set here, before anything is
+                  drawn, so the page does not jump. If that script never arrives, the
+                  line in page_footer() takes the class off and the full menu is back. */ ?>
+<script>try{if(window.matchMedia('(min-width:1101px)').matches){document.documentElement.classList.add('zm-desk');if(localStorage.getItem('zasMenuMode')!=='full')document.documentElement.classList.add('zm-rail');}}catch(e){}</script>
+<?php endif; ?>
 <div class="app">
 <?php if ($u): ?>
 <aside class="sidebar" style="display:flex;flex-direction:column;max-height:100vh">
@@ -86,6 +92,8 @@ function page_footer(): void {
 </main>
 </div>
 <script src="assets/js/app.js?v=2"></script>
+<script src="assets/js/zmenu.js?v=1"></script>
+<script>window.addEventListener('load',function(){if(!window.zasMenuReady){document.documentElement.classList.remove('zm-rail');}});</script>
 <script>if ('serviceWorker' in navigator) { window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); }); }</script>
 </body>
 </html>

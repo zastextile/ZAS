@@ -241,12 +241,62 @@ const BASE = process.argv[2];
     check('  tapping Menu opens the links', await p.evaluate(() => !!document.querySelector('.sidebar .nav').offsetParent) && /Close/.test(await p.textContent('.side-toggle')));
     await p.click('.side-toggle');
     check('  tapping again closes them', await p.evaluate(() => !document.querySelector('.sidebar .nav').offsetParent));
+    /* DESKTOP: the slim rail and the board on "/" (assets/js/zmenu.js) */
     const d = await b.newContext({ viewport: { width: 1366, height: 800 } });
     const q = await d.newPage();
+    const errs = []; q.on('pageerror', e => errs.push(e.message));
     await q.goto(BASE + '/att/manifest.webmanifest');
     await q.evaluate(async () => fetch('../api/v1/index.php?route=%2Fauth%2Flogin', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@zas.test', password: 'CorrectHorse9' }) }));
-    await q.goto(BASE + '/dashboard.php');
-    check('on a desktop nothing changed: the full menu shows and there is no Menu button', await q.evaluate(() => !!document.querySelector('.sidebar .nav').offsetParent && getComputedStyle(document.querySelector('.side-toggle')).display === 'none'));
+    await q.goto(BASE + '/users.php'); await q.waitForSelector('.zr .zr-b');
+    let m = await q.evaluate(() => ({ w: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width), nav: !!document.querySelector('#zmNav').offsetParent,
+      toggle: getComputedStyle(document.querySelector('.side-toggle')).display, content: Math.round(document.querySelector('.content').getBoundingClientRect().width), over: document.documentElement.scrollWidth - document.documentElement.clientWidth }));
+    check('DESKTOP MENU: the sidebar is a 62px rail of icons, the long list is folded away', m.w <= 64 && m.nav === false && m.toggle === 'none', JSON.stringify(m));
+    check('  the page gains the width (' + m.content + 'px of 1366) and does not scroll sideways', m.content >= 1290 && m.over <= 1, JSON.stringify(m));
+    check('  the section holding this page is lit on the rail', (await q.locator('.zr-b.on').getAttribute('title')) === 'Administration', await q.locator('.zr-b.on').getAttribute('title'));
+    await q.hover('.zr-b[title="Attendance"]'); await q.waitForSelector('.zr-fly');
+    let t = await q.textContent('.zr-fly');
+    check('  pointing at Attendance slides its pages out', /People Finance/.test(t) && /Overtime/.test(t) && !/User Access/.test(t), t.slice(0, 120));
+    check('  each is a real link to its page', (await q.locator('.zr-fly a.zx-item', { hasText: 'Overtime' }).getAttribute('href')) === 'att_overtime.php');
+    await q.mouse.move(700, 400); await q.waitForFunction(() => !document.querySelector('.zr-fly'), null, { timeout: 4000 }).catch(() => {});
+    check('  moving away puts them back', (await q.locator('.zr-fly').count()) === 0);
+    await q.keyboard.press('/'); await q.waitForSelector('.zb');
+    t = await q.textContent('.zb');
+    check('BOARD: "/" opens the whole menu on one sheet with a search box', /Sales/.test(t) && /Attendance/.test(t) && /People Finance/.test(t) && await q.evaluate(() => document.activeElement.classList.contains('zb-in')));
+    await q.locator('.zb a.zx-item', { hasText: 'People Finance' }).locator('.zx-star').click();
+    check('  starring a page puts it at the top', (await q.locator('.zb-chip.f', { hasText: 'People Finance' }).count()) === 1 && /board|zb/.test(await q.evaluate(() => document.querySelector('.zb') ? 'zb' : '')));
+    await q.fill('.zb-in', 'overt');
+    check('  typing narrows it to the matching pages', (await q.locator('.zb-body a.zx-item').count()) === 1 && /Overtime/.test(await q.textContent('.zb-body')));
+    await Promise.all([q.waitForURL(/att_overtime\.php/), q.keyboard.press('Enter')]);
+    check('  Enter opens the first match', /att_overtime\.php/.test(q.url()));
+    await q.waitForSelector('.zr .zr-b');
+    await q.keyboard.press('Control+k'); await q.waitForSelector('.zb');
+    t = await q.textContent('.zb-quick');
+    check('  on the next page the star is still there and the last page is under "recent"', /People Finance/.test(t) && /Users/.test(t), t);
+    await q.keyboard.press('Escape');
+    check('  Esc closes the board', (await q.locator('.zb').count()) === 0);
+    await q.focus('body'); await q.evaluate(() => { const i = document.createElement('input'); i.id = 'zt-typing'; document.querySelector('.content').prepend(i); i.focus(); });
+    await q.keyboard.type('a/b');
+    check('  "/" typed into a field is just a character — the board stays shut', (await q.inputValue('#zt-typing')) === 'a/b' && (await q.locator('.zb').count()) === 0);
+    await q.click('.zr-b[title="Show the full menu"]');
+    m = await q.evaluate(() => ({ w: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width), nav: !!document.querySelector('#zmNav').offsetParent, fold: !!document.querySelector('.zr-fold').offsetParent }));
+    check('PIN: the full menu comes back exactly as before, with a fold button', m.w >= 250 && m.nav && m.fold, JSON.stringify(m));
+    await q.goto(BASE + '/users.php'); await q.waitForSelector('#zmNav');
+    check('  and that choice is remembered on the next page', await q.evaluate(() => !!document.querySelector('#zmNav').offsetParent && !document.documentElement.classList.contains('zm-rail')));
+    await q.click('.zr-fold');
+    check('  the fold button returns to the rail', await q.evaluate(() => document.documentElement.classList.contains('zm-rail') && !document.querySelector('#zmNav').offsetParent));
+    check('no script error on the desktop', errs.length === 0, errs.join(' | '));
+    /* a colleague sees only their own pages on the board */
+    const cc = await b.newContext({ viewport: { width: 1366, height: 800 } });
+    const cp = await cc.newPage();
+    await cp.goto(BASE + '/att/manifest.webmanifest');
+    await cp.evaluate(async () => fetch('../api/v1/index.php?route=%2Fauth%2Flogin', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'col@zas.test', password: 'NewSecret77' }) }));
+    await cp.goto(BASE + '/dashboard.php'); await cp.waitForSelector('.zr .zr-b');
+    await cp.keyboard.press('/'); await cp.waitForSelector('.zb');
+    t = await cp.textContent('.zb');
+    check('PERMISSIONS: the board shows a colleague only what their own menu has — no Administration, no User Access', !/User Access/.test(t) && !/Administration/.test(t) && /Dashboard/.test(t), t.slice(0, 200));
+    /* the phone is untouched by all of this */
+    await p.goto(BASE + '/dashboard.php'); await p.waitForSelector('.side-toggle');
+    check('PHONE: no rail and no board — the Menu button as before', await p.evaluate(() => !document.documentElement.classList.contains('zm-rail') && !document.querySelector('.zr').offsetParent && getComputedStyle(document.querySelector('.side-toggle')).display !== 'none'));
   } catch (e) { check('the browser run completed', false, e && e.message); }
   finally { await b.close(); }
   console.log('RESULT' + JSON.stringify(out));
