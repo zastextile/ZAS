@@ -146,7 +146,7 @@ function production_ensure_schema(): void {
 
     try { db()->exec("ALTER TABLE proforma_invoices ADD COLUMN production_enabled TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE proforma_invoices ADD COLUMN production_status ENUM('not_started','in_progress','completed') NOT NULL DEFAULT 'not_started'"); } catch (Throwable $e) {}
-    try { db()->exec("ALTER TABLE users MODIFY COLUMN role ENUM('admin','colleague','staff','production_staff') NOT NULL DEFAULT 'colleague'"); } catch (Throwable $e) {}
+    if (function_exists('users_role_ensure')) users_role_ensure(['admin', 'colleague', 'staff', 'production_staff']);   // adds what is missing and never removes 'customer'; see includes/helpers.php
 
     /* which production_staff logins may act on a given order — hard
        restriction: unassigned orders don't show up in their search at

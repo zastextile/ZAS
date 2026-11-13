@@ -921,6 +921,25 @@ try {
             admin_answer(Fin::people($caps));
             break;
 
+        case $method === 'POST' && $route === '/finance/people/bulk-profile':
+            Http::requireCsrf();
+            [$u] = fin_caps('setup');
+            $items = Http::input('items', []);
+            admin_answer(Fin::saveProfiles(is_array($items) ? array_values(array_filter($items, 'is_array')) : [], (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && ($route === '/finance/ledger' || $route === '/finance/ledger/export'):
+            [, $caps] = fin_caps();
+            $today = Fin::today();
+            $lg = Fin::ledgerSummary($caps, (string) Http::input('from', substr($today, 0, 8) . '01'), (string) Http::input('to', $today));
+            if ($route === '/finance/ledger' || !$lg['ok']) {
+                admin_answer($lg);
+            }
+            $rs = static fn(int $p): string => number_format($p / 100, 2, '.', '');
+            send_csv('people-ledger-' . $lg['from'] . '-to-' . $lg['to'] . '.csv', ['Code', 'Name', 'Department', 'Paid as', 'Owed before', 'Earned', 'Deducted', 'Paid', 'Owed at end'],
+                array_map(static fn(array $r): array => [$r['code'], $r['full_name'], $r['department_name'], (string) $r['pay_type'], $rs($r['before_paisa']), $rs($r['earned']), $rs($r['deducted']), $rs($r['paid']), $rs($r['closing_paisa'])], $lg['rows']));
+            break;
+
         case $method === 'POST' && preg_match('#^/finance/people/(\d+)/profile$#', $route, $m) === 1:
             Http::requireCsrf();
             [$u] = fin_caps('setup');

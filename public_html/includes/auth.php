@@ -15,6 +15,26 @@ function current_user(): ?array {
         return $stmt->fetch() ?: false;
     });
     if ($user === false) $user = null;
+
+    /* A PASSWORD CHANGE SIGNS OUT EVERY OTHER SESSION OF THAT USER.
+       Before this, resetting somebody's password did nothing to a browser
+       (or a phone) that was already signed in as them: it stayed in until
+       its session expired by itself. Each session now remembers a
+       fingerprint of the password it signed in with; when the password in
+       the database is no longer that one, the session is over.
+       A session that began before this check existed has no fingerprint
+       yet — it takes the current one and carries on, so uploading this
+       file signs nobody out. No database change is needed. */
+    if ($user !== null && isset($user['password_hash'])) {
+        $fp = substr(hash('sha256', (string)$user['password_hash']), 0, 32);
+        if (empty($_SESSION['pw_fp'])) {
+            $_SESSION['pw_fp'] = $fp;
+        } elseif (!hash_equals((string)$_SESSION['pw_fp'], $fp)) {
+            $_SESSION = [];
+            if (session_status() === PHP_SESSION_ACTIVE) { @session_regenerate_id(true); }
+            $user = null;
+        }
+    }
     return $user;
 }
 

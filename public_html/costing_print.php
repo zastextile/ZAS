@@ -9,6 +9,9 @@ costing_ensure_schema();
 global $config;
 $curList = $config['costing_currencies'] ?? ['PKR','USD','EUR'];
 $fx = fx_get_rates(); // live-synced weekly from Frankfurter, falls back to config on failure
+/* A currency with no rate is converted at 1, which makes a wrong figure look
+   like a right one. It is named on the sheet instead of passing silently. */
+$cstFxMissing = array_values(array_filter(array_map('strtoupper', $curList), fn($c) => $c !== 'PKR' && (!isset($fx[$c]) || (float)$fx[$c] <= 0)));
 /* convert an amount given in $from currency into $to currency via PKR base */
 function cst_convert(float $amt, string $from, string $to, array $fx): float {
     $f = $fx[$from] ?? 1; $t = $fx[$to] ?? 1;
@@ -69,6 +72,7 @@ if ($pid) {
 
     costing_print_head($share ? 'Team Costing Summary' : 'Product Costing Summary');
     ?>
+    <?php if (!empty($GLOBALS['cstFxMissing'])): ?><div style="border:1px solid #e3a0a8;background:#fdeef0;color:#9b1c2a;font-size:10px;font-weight:700;padding:5px 8px;border-radius:5px;margin-bottom:6px">⚠ No exchange rate for <?= e(implode(', ', $GLOBALS['cstFxMissing'])) ?> — figures in that currency on this sheet are NOT converted (shown as if 1 = 1 PKR). Enter the rate in Settings before using them.</div><?php endif; ?>
     <div class="row">
       <div><div class="lbl">Product</div><div class="val"><?= e($prod['name']) ?></div></div>
       <div><div class="lbl">Product Code</div><div class="val"><?= e($prod['product_code'] ?: '—') ?></div></div>

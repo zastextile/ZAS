@@ -63,6 +63,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($password !== '') {
                 $stmt = db()->prepare("UPDATE users SET name=?, email=?, role=?, department=?, company_name=?, $costCols, password_hash=? WHERE id=?");
                 $stmt->execute([...$data, password_hash($password, PASSWORD_DEFAULT), $id]);
+                /* The person changing their OWN password stays signed in here; every
+                   other session of that user is ended by current_user() (includes/auth.php). */
+                if ((int)$id === (int)(current_user()['id'] ?? 0)) { unset($_SESSION['pw_fp']); }
+                if (function_exists('cache_bump')) { cache_bump('users'); }
             } else {
                 $stmt = db()->prepare("UPDATE users SET name=?, email=?, role=?, department=?, company_name=?, $costCols WHERE id=?");
                 $stmt->execute([...$data, $id]);

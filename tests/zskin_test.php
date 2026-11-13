@@ -181,7 +181,7 @@ ok(str_contains($pf, 'shown + \' of \' + rows.length'), 'and the count says how 
 
 echo "7. The stylesheet is cache-busted, like the last one had to be\n";
 ok(preg_match('/zskin\.css\?v=\d+/', $lay) === 1, 'it carries a version');
-ok(str_contains($lay, 'assets/css/app.css?v=29'), 'and app.css keeps its own');
+ok(preg_match('/assets\/css\/app\.css\?v=(\d+)/', $lay, $av) === 1 && (int) $av[1] >= 30, 'and app.css keeps its own (raised to 30 with the phone menu)');
 ok(str_contains(flat($lay), 'until it puts that class on a wrapper'),
    'layout.php says why linking it globally is safe');
 

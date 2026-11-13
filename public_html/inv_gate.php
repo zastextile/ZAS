@@ -19,7 +19,13 @@ require_once __DIR__ . '/includes/mobile.php';
 inv_ensure_schema();
 if (!inv_can_open('gate')) { http_response_code(403); exit('You do not have permission to view gate passes.'); }
 
-$canEdit = inv_perm('gate');
+/* Create, edit and delete are three separate ticks in User Access; each is
+   asked for by itself (inv_may, includes/inventory.php). $canEdit stays as
+   "may write here at all" for what the screen shows. */
+$canCreate = inv_may('gate', 'c');
+$canUpdate = inv_may('gate', 'u');
+$canDelete = inv_may('gate', 'd');
+$canEdit = $canCreate || $canUpdate;
 $canPost = inv_perm('post');
 $canRev  = inv_perm('adjust');
 
@@ -144,8 +150,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['action'] ?? '';
 
     if ($act === 'save') {
-        if (!$canEdit) { http_response_code(403); exit('You do not have permission to create gate passes.'); }
         $id   = (int)($_POST['id'] ?? 0);
+        if ($id > 0 ? !$canUpdate : !$canCreate) { http_response_code(403); exit($id > 0 ? 'You do not have permission to edit gate passes. Ask an admin to tick Edit for Gate Inward / Outward in User Access.' : 'You do not have permission to create gate passes.'); }
         $type = array_key_exists($_POST['txn_type'] ?? '', $TYPES) ? $_POST['txn_type'] : array_key_first($TYPES);
         $date = ($_POST['gate_date'] ?? '') !== '' ? $_POST['gate_date'] : date('Y-m-d');
 
@@ -397,7 +403,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        document view cannot drift apart — this only checks permission and
        decides where to send you afterwards. */
     if ($act === 'delete') {
-        if (!$canEdit) { http_response_code(403); exit('You do not have permission to delete gate passes.'); }
+        if (!$canDelete) { http_response_code(403); exit('You do not have permission to delete gate passes. Ask an admin to tick Delete for Gate Inward / Outward in User Access.'); }
         $id  = (int)($_POST['id'] ?? 0);
         $dir2 = ($_POST['direction'] ?? $dir) === 'out' ? 'out' : 'in';
         $impGone = $impOfGate($id);
@@ -2613,7 +2619,7 @@ tr.detail .dwrap{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:10px;margi
       <?php endif; ?>
       <?php /* Nothing has moved, so there is nothing to undo — a plain
                delete, no reason, no ceremony. */
-      if ($canEdit && !$links['jobwork_bills']): ?>
+      if ($canDelete && !$links['jobwork_bills']): ?>
         <form method="post" style="margin-left:auto"
               onsubmit="return confirm('Delete <?= e($doc['gate_no']) ?>? It has not moved any stock, so nothing in the ledger changes.');">
           <?= csrf_field() ?><input type="hidden" name="action" value="delete">

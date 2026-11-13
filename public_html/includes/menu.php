@@ -130,7 +130,7 @@ function zas_menu(): array {
                 ['label' => 'Production Reports',    'href' => 'production_reports.php',   'show' => $prodAny],
                 ['label' => 'Production Workers',    'href' => 'production_workers.php',   'show' => $admin || $colleague],
                 ['label' => 'Assembly — Make Sets', 'href' => 'production_assembly.php',  'show' => $admin || $colleague],
-                ['label' => 'Worker Pay',            'href' => 'production_pay.php',       'show' => $admin || $colleague],
+                ['label' => 'Worker Pay (old screen)', 'href' => 'production_pay.php',       'show' => $admin || $colleague],
                 /* One order pays more for one operation — a tighter hem, a
                    quality parameter in the contract. Amended there, not on the
                    product, so no other order moves. A colleague may read it;

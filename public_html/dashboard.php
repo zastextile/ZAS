@@ -53,7 +53,7 @@ $pending = dash_scalar("SELECT COUNT(*) FROM shipments s WHERE s.status IN ('dra
    is a PER-UNIT figure, same convention as costing_report_print.php, so
    it must be multiplied by qty here too). ---- */
 $valSub = "(SELECT COALESCE(SUM(amount),0) FROM shipment_items WHERE shipment_id=s.id)";
-$costValSub = "(SELECT COALESCE(SUM(fc.total_cost * si.qty),0) FROM final_costings fc JOIN shipment_items si ON si.id=fc.shipment_item_id WHERE fc.shipment_id=s.id)";
+$costValSub = "(SELECT COALESCE(SUM(fc.total_cost * si.qty),0) FROM final_costings fc JOIN shipment_items si ON si.id=fc.shipment_item_id WHERE fc.shipment_id=s.id AND fc.total_cost > 0)";
 // Sales total for ONLY the items that actually have a Final Costing — the
 // same subset $costValSub already sums cost for. The difference
 // ($valSub - $costedValSub) is sales with NO cost entered yet (very
@@ -68,11 +68,25 @@ $costValSub = "(SELECT COALESCE(SUM(fc.total_cost * si.qty),0) FROM final_costin
 // a % here can never be a blunder in the inflated direction — it's a
 // floor that rises as costing catches up, never a number that overstates.
 // $valSub itself stays the honest, unmodified "Total Sales" figure.
-$costedValSub = "(SELECT COALESCE(SUM(si.amount),0) FROM shipment_items si WHERE si.shipment_id=s.id AND EXISTS (SELECT 1 FROM final_costings fc WHERE fc.shipment_item_id=si.id))";
+/* A COSTING WITH NO COST IN IT IS NOT A COSTING YET. Opening a Final Costing
+   and saving it before any line is entered leaves a row with total_cost 0.
+   Counted as "costed", that item showed a 100% margin — the one way the
+   break-even rule above could still be beaten. Every query below therefore
+   asks for total_cost > 0; an empty costing falls back to break-even like
+   an item with none. Drafts that DO carry a cost are still counted, and are
+   listed separately as "not locked yet" (see $draftCost below). */
+$costedValSub = "(SELECT COALESCE(SUM(si.amount),0) FROM shipment_items si WHERE si.shipment_id=s.id AND EXISTS (SELECT 1 FROM final_costings fc WHERE fc.shipment_item_id=si.id AND fc.total_cost > 0))";
 
 $fx = fx_get_rates(); // live-synced weekly from Frankfurter, falls back to config on failure
+/* A currency with NO rate used to be converted at 1 — 1,000 USD counted as
+   1,000 PKR — and nothing said so. The sum still has to use something, so
+   it still uses 1, but every such currency is collected here and the page
+   shows a red warning naming it (see $fxMissing further down). */
+$fxMissing = [];
 function to_pkr(float $amount, ?string $currency, array $fx): float {
+    global $fxMissing;
     $cur = strtoupper(trim((string)$currency)) ?: 'PKR';
+    if ($cur !== 'PKR' && (!isset($fx[$cur]) || (float)$fx[$cur] <= 0) && abs($amount) > 0.0001) $fxMissing[$cur] = true;
     $rate = $fx[$cur] ?? 1;
     if ($rate <= 0) $rate = 1;
     return $amount / $rate; // fx_per_pkr is "units of currency per 1 PKR", so amount/rate = PKR
@@ -231,7 +245,7 @@ function dash_product_rows(string $scopeSql, array $scopeParams, string $from, s
     $out = [];
     try {
         $st = db()->prepare("SELECT si.product_name grp, UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt,
-                (SELECT fc.total_cost * si.qty FROM final_costings fc WHERE fc.shipment_item_id = si.id) cost_amt
+                (SELECT fc.total_cost * si.qty FROM final_costings fc WHERE fc.shipment_item_id = si.id AND fc.total_cost > 0) cost_amt
             FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id
             WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql");
         $st->execute(array_merge([$from, $to], $scopeParams));
@@ -285,7 +299,7 @@ function dash_missing_cost_items(string $scopeSql, array $scopeParams, string $f
             FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id
             WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql
               AND COALESCE(s.invoice_date, DATE(s.created_at)) <= ?
-              AND NOT EXISTS (SELECT 1 FROM final_costings fc WHERE fc.shipment_item_id = si.id)
+              AND NOT EXISTS (SELECT 1 FROM final_costings fc WHERE fc.shipment_item_id = si.id AND fc.total_cost > 0)
             ORDER BY dt DESC");
         $st->execute(array_merge([$from, $to], $scopeParams, [$graceCutoff]));
         foreach ($st->fetchAll() as $r) {
@@ -304,7 +318,7 @@ function dash_top_customers(string $scopeSql, array $scopeParams, string $from, 
     $out = [];
     try {
         $st = db()->prepare("SELECT s.id sid, s.buyer_name grp, s.status, UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt,
-                (SELECT fc.total_cost * si.qty FROM final_costings fc WHERE fc.shipment_item_id = si.id) cost_amt
+                (SELECT fc.total_cost * si.qty FROM final_costings fc WHERE fc.shipment_item_id = si.id AND fc.total_cost > 0) cost_amt
             FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id
             WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql");
         $st->execute(array_merge([$from, $to], $scopeParams));
@@ -446,6 +460,24 @@ $missingCostProducts = array_values(array_intersect_key(
 ));
 $missingCostProductCount = count($missingCostProducts);
 $missingCostTotalPkr = array_sum(array_column($missingCostItems, 'amount_pkr'));
+
+/* COSTING COMPLETENESS. How much of this period's sales rests on a Final
+   Costing that is still a DRAFT — entered, counted in the profit above, but
+   not locked, so it can still change. Shown beside Total Cost so a margin is
+   never read as final while part of it is provisional. */
+$draftCost = ['items' => 0, 'sales' => 0.0];
+if ($canSeeAnalytics) {
+    try {
+        $st = db()->prepare("SELECT UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt
+            FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id
+            JOIN final_costings fc ON fc.shipment_item_id = si.id AND fc.status = 'draft' AND fc.total_cost > 0
+            WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql");
+        $st->execute(array_merge([$curFrom, $curTo], $scopeParams));
+        foreach ($st->fetchAll() as $r) { $draftCost['items']++; $draftCost['sales'] += to_pkr((float)($r['amt'] ?? 0), $r['cur'] ?? 'PKR', $fx); }
+    } catch (Throwable $e) {}
+}
+$fxMissingList = array_keys($fxMissing);
+sort($fxMissingList);
 
 // $curTotals['cost'] already includes the break-even top-up (see
 // dash_period_totals()), so Gross Profit and Avg. Profit % are always
@@ -705,6 +737,16 @@ flash();
 </div>
 <?php endif; ?>
 
+<?php if ($canSeeAnalytics && $fxMissingList): ?>
+<div class="dash-card" style="<?= $cardCss ?>;padding:14px 20px;margin-bottom:16px;border-color:rgba(190,30,45,.35);background:rgba(190,30,45,.06)">
+  <p style="margin:0;font-size:12.5px;color:#9b1c2a;line-height:1.6">
+    <b>No exchange rate for <?= e(implode(', ', $fxMissingList)) ?>.</b>
+    Amounts in <?= count($fxMissingList) === 1 ? 'that currency' : 'those currencies' ?> are being added below as if 1 <?= e($fxMissingList[0]) ?> = 1 PKR, so sales, cost and profit on this page are wrong until a rate is entered.
+    <?php if ($admin): ?><a href="settings.php" style="font-weight:700;color:#9b1c2a">Enter the rate in Settings →</a><?php else: ?>Ask an admin to enter the rate in Settings.<?php endif; ?>
+  </p>
+</div>
+<?php endif; ?>
+
 <?php if ($canSeeAnalytics && $missingCostCount > 0): ?>
 <div class="dash-card" style="<?= $cardCss ?>;padding:14px 20px;margin-bottom:16px;border-color:rgba(217,119,6,.3);background:rgba(217,119,6,.06)">
   <p style="margin:0;font-size:12.5px;color:#a15c00;line-height:1.6">
@@ -729,6 +771,7 @@ flash();
     <?php $d = dash_delta_pct($curTotals['cost'], $prevTotals['cost']); ?>
     <div class="kpi-delta <?= e($d['dir']) ?>"><?= $d['dir']==='up'?'▲':($d['dir']==='down'?'▼':'•') ?> <?= e($d['label']) ?></div>
     <?php if ($curTotals['breakeven_cost'] > 1): ?><div class="kpi-delta" style="color:#d97706;margin-top:2px">⚠ incl. <?= number_format($curTotals['breakeven_cost'],0) ?> assumed break-even (not yet costed)</div><?php endif; ?>
+    <?php if ($draftCost['items'] > 0): ?><div class="kpi-delta" style="color:#d97706;margin-top:2px">⚠ <?= (int)$draftCost['items'] ?> costing<?= $draftCost['items']===1?'':'s' ?> still draft (not locked) — <?= number_format($draftCost['sales'],0) ?> of sales; profit on these can still change</div><?php endif; ?>
     <?php if ($missingCostCount > 0): ?><div class="kpi-delta" style="color:#d97706;margin-top:2px"><?= $missingCostProductCount ?> product<?= $missingCostProductCount===1?'':'s' ?> overdue for costing</div><?php endif; ?>
   </div>
   <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .6s ease both">

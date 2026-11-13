@@ -9,7 +9,7 @@
 function customer_ensure_schema(): void {
     // Same technique already used in includes/production.php to add
     // 'production_staff' to this same ENUM — additive, no data loss.
-    try { db()->exec("ALTER TABLE users MODIFY COLUMN role ENUM('admin','colleague','staff','production_staff','customer') NOT NULL DEFAULT 'colleague'"); } catch (Throwable $e) {}
+    if (function_exists('users_role_ensure')) users_role_ensure(['admin', 'colleague', 'staff', 'production_staff', 'customer']);   // widens the list; see includes/helpers.php
     // Matched case-insensitively against shipments.buyer_name to decide which
     // invoices this account can see — set once by Admin on Users, must match
     // the Buyer Name exactly as typed on their invoices.

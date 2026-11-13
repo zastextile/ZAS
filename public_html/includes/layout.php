@@ -19,7 +19,7 @@ function page_header(string $title): void {
 
          RAISE THIS NUMBER whenever assets/css/app.css changes. Same for the
          ?v= on any assets/js file. */ ?>
-<link rel="stylesheet" href="assets/css/app.css?v=29">
+<link rel="stylesheet" href="assets/css/app.css?v=30">
 <?php /* THE NEW SKIN, AND WHY IT IS SAFE TO LINK ON EVERY PAGE.
          Every rule inside zskin.css is scoped under .zskin, so a page is
          untouched until it puts that class on a wrapper. Linking it here costs
@@ -46,6 +46,11 @@ function page_header(string $title): void {
     <div class="brand">
         <div class="brand-title">ZAS TEXTILE</div>
         <div class="brand-sub">Textile Exports</div>
+        <?php /* PHONES: the whole menu used to sit on top of every page, a
+                 screen and a half of links to scroll past before any content.
+                 Below 900px it is folded behind this button (assets/css/app.css). */ ?>
+        <button type="button" class="side-toggle" aria-expanded="false" aria-controls="zas-side-nav"
+                onclick="var s=this.closest('.sidebar');var o=s.classList.toggle('open');this.setAttribute('aria-expanded',o?'true':'false');this.firstChild.textContent=o?'✕ Close':'☰ Menu';">☰ Menu</button>
     </div>
     <?php
     /* Menu structure lives in includes/menu.php, declared as data. The
@@ -55,7 +60,7 @@ function page_header(string $title): void {
     if (is_file(__DIR__ . '/inventory.php')) require_once __DIR__ . '/inventory.php';
     require_once __DIR__ . '/menu.php';
     ?>
-    <div class="nav" style="overflow-y:auto;flex:1;min-height:0">
+    <div class="nav" id="zas-side-nav" style="overflow-y:auto;flex:1;min-height:0">
         <?php zas_render_menu(); ?>
     </div>
     <a href="logout.php" style="display:none">Logout</a>

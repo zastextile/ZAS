@@ -119,6 +119,7 @@ function inv_can_see(){ return true; }
 function inv_can_open($m){ return true; }
 function inv_gate_out_negative_ok(){ return false; }
 function inv_perm($k){ return true; }
+function inv_may($m, $a){ return true; }   // create / edit / delete, each its own tick (includes/inventory.php)
 function inv_num($v){ return (float)str_replace(',', '', (string)$v); }
 function inv_setting($k, $d = null){ return $d; }
 function inv_gst_default(){ return 18.0; }

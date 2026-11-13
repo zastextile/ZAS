@@ -714,6 +714,22 @@ function inv_can_open(string $module): bool {
     return inv_can_see();
 }
 
+/* MAY THIS PERSON DO THIS ONE THING — create, edit or delete — on this screen.
+ *
+ * User Access has a separate tick for each (includes/access.php), but these
+ * screens asked one old question, inv_perm('gate'), which is true for a
+ * Create tick OR an Edit tick. So somebody given only "Edit" could also
+ * create and DELETE gate passes, and the Delete tick decided nothing at all.
+ * Each write now asks for its own letter: c create, u edit, d delete.
+ * Admin always may. On an install with no per-action table (no zu_can) the
+ * old single flag still answers, so nothing is locked shut by accident. */
+function inv_may(string $module, string $action): bool {
+    if (function_exists('is_admin') && is_admin()) return true;
+    if (function_exists('zu_can')) return zu_can($module, $action);
+    $old = ['gate' => 'gate', 'opening' => 'gate', 'store' => 'store', 'consume' => 'consume', 'invmast' => 'master'];
+    return inv_perm($old[$module] ?? 'view');
+}
+
 /* ---------------------------------------------------- document numbers */
 /* PREFIX-YYMM-nnnn, sequence restarting each month. Reads the highest
    existing number for the month rather than keeping a counter, so it can
@@ -1926,6 +1942,49 @@ function inv_return_check(int $materialId, int $partyId, string $locKind, float 
     ];
 }
 
+/* ONE DOCUMENT, ONE WRITER AT A TIME.
+ *
+ * Posting, reversing and deleting all work the same way: read the document,
+ * check its status, then write the stock rows and the new status. Two requests
+ * arriving together — a double click, two people on the same pass, a phone
+ * that retried — could BOTH read "draft" before either had written, and both
+ * post: the stock doubled, with one document to show for it. The "already
+ * posted" check could not stop that, because it is a read too.
+ *
+ * So each of those functions first takes a named lock on its document from
+ * the database (GET_LOCK). The second request waits here until the first has
+ * finished, then reads the status the first one left — "posted" — and is
+ * refused like any repeat. The lock belongs to the database connection and is
+ * let go when the function returns (the object is destroyed), on every path.
+ * If the server cannot give named locks at all, behaviour is as before.
+ */
+final class InvDocLock {
+    public bool $held = false;
+    private ?string $name = null;
+    public function __construct(string $kind, int $id, int $waitSeconds = 8) {
+        $name = 'zas_doc_' . $kind . '_' . $id;
+        try {
+            $st = db()->prepare('SELECT GET_LOCK(?, ?)');
+            $st->execute([$name, $waitSeconds]);
+            $got = $st->fetchColumn();
+            $st->closeCursor();
+            if ($got === null) { $this->held = true; return; }      // lock service unavailable: carry on as before
+            $this->held = (string)$got === '1';
+            if ($this->held) $this->name = $name;
+        } catch (Throwable $e) {
+            $this->held = true;                                      // no named locks on this server: as before
+        }
+    }
+    public function __destruct() {
+        if ($this->name === null) return;
+        try { $st = db()->prepare('SELECT RELEASE_LOCK(?)'); $st->execute([$this->name]); $st->closeCursor(); } catch (Throwable $e) {}
+        $this->name = null;
+    }
+}
+function inv_doc_busy(): array {
+    return ['ok' => false, 'error' => 'Somebody else is posting or changing this document right now. Reload the page and check its status before trying again.'];
+}
+
 /* Write one ledger row. This is the ONLY function in the module that is
    allowed to insert into inv_stock_ledger — everything else calls it, so
    there is exactly one place where stock can change. */
@@ -2026,6 +2085,8 @@ function inv_location_by_kind(string $kind): ?int {
      to_cust   one row  IN  at custody, ownership=customer, value 0
      from_cust one row  OUT at custody, ownership=customer, value 0 */
 function inv_gate_post(int $gateId): array {
+    $zlock = new InvDocLock('inv_gate', $gateId);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     try {
         $st = db()->prepare("SELECT * FROM inv_gate WHERE id=?");
         $st->execute([$gateId]);
@@ -2425,6 +2486,8 @@ function inv_gate_links(int $gateId): array {
    becomes unanswerable. The reason text below survives in the audit log,
    which is why it is required and written before anything is removed. */
 function inv_gate_delete(int $gateId, string $reason = ''): array {
+    $zlock = new InvDocLock('inv_gate', $gateId);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     try {
         $s = db()->prepare("SELECT * FROM inv_gate WHERE id=?");
         $s->execute([$gateId]); $g = $s->fetch();
@@ -2477,6 +2540,8 @@ function inv_gate_delete(int $gateId, string $reason = ''): array {
    an opposite set is written, so the history reads as what happened
    followed by the correction, which is what an auditor expects. */
 function inv_gate_reverse(int $gateId, string $reason): array {
+    $zlock = new InvDocLock('inv_gate', $gateId);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     if (trim($reason) === '') return ['ok' => false, 'error' => 'A reason is required to reverse a posted document.'];
     try {
         $st = db()->prepare("SELECT * FROM inv_gate WHERE id=?");
@@ -2558,6 +2623,8 @@ function inv_opening_onhand(int $matId, int $prodId, int $locId, string $lot, st
    else, so it appears in the Stock Ledger, in Current Stock and in every
    balance the app computes — with its date, its number and its author. */
 function inv_opening_post(int $id): array {
+    $zlock = new InvDocLock('inv_opening', $id);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     try {
         $st = db()->prepare("SELECT * FROM inv_opening WHERE id=?");
         $st->execute([$id]); $o = $st->fetch();
@@ -2625,6 +2692,8 @@ function inv_opening_post(int $id): array {
    written beside them, so the history reads as what happened rather than
    as though it never did. */
 function inv_opening_reverse(int $id, string $reason): array {
+    $zlock = new InvDocLock('inv_opening', $id);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     if (trim($reason) === '') return ['ok' => false, 'error' => 'A reason is required to reverse a posted document.'];
     try {
         $st = db()->prepare("SELECT * FROM inv_opening WHERE id=?");
@@ -2749,6 +2818,8 @@ function inv_contract_qty(int $contractId): float {
    same ownership. Never a cost change, never a conversion — which is why
    an issue can never cause a costing error. */
 function inv_store_post(int $moveId): array {
+    $zlock = new InvDocLock('inv_store_move', $moveId);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     try {
         $s = db()->prepare("SELECT * FROM inv_store_move WHERE id=?"); $s->execute([$moveId]);
         $m = $s->fetch();
@@ -2801,6 +2872,8 @@ function inv_store_post(int $moveId): array {
    the finished goods, so both sides carry ownership='customer' and neither
    is valued. */
 function inv_consumption_post(int $conId): array {
+    $zlock = new InvDocLock('inv_consumption', $conId);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     try {
         $s = db()->prepare("SELECT * FROM inv_consumption WHERE id=?"); $s->execute([$conId]);
         $c = $s->fetch();
@@ -2927,6 +3000,8 @@ function inv_consumption_post(int $conId): array {
 /* Generic reversal for store / consumption documents. Same principle as
    the gate reversal: opposite entries, original left untouched. */
 function inv_doc_reverse(string $table, string $noCol, string $sourceType, int $id, string $reason): array {
+    $zlock = new InvDocLock($table, $id);           // one writer at a time — see InvDocLock
+    if (!$zlock->held) return inv_doc_busy();
     if (trim($reason) === '') return ['ok' => false, 'error' => 'A reason is required to reverse a posted document.'];
     if (!in_array($table, ['inv_store_move', 'inv_consumption'], true)) return ['ok' => false, 'error' => 'Unknown document type.'];
     try {

@@ -212,6 +212,34 @@ final class FinanceService
         });
     }
 
+    /**
+     * Pay setup for many people in one go — the first-time job, instead of
+     * opening each person. Every row goes through saveProfile(), so every
+     * rule and the history are exactly the same; a row that is refused is
+     * reported by name and the others are still saved.
+     *
+     * @param list<array<string,mixed>> $items each: employee_id + the fields of saveProfile()
+     */
+    public static function saveProfiles(array $items, string $reason, int $actorId): array
+    {
+        if ($items === [] || count($items) > 1000) {
+            return self::no('VALIDATION', 'Tick at least one person.');
+        }
+        $saved = 0; $errors = [];
+        foreach ($items as $it) {
+            $id = (int) ($it['employee_id'] ?? 0);
+            $r = self::saveProfile($id, $it, $reason, $actorId);
+            if ($r['ok']) {
+                $saved++;
+            } else {
+                $name = (string) (Db::value('SELECT full_name FROM att_employees WHERE id = ?', [$id]) ?: 'Someone');
+                $errors[] = $name . ': ' . $r['error'];
+            }
+        }
+        return ['ok' => $saved > 0 || $errors === [], 'saved' => $saved, 'errors' => $errors,
+                'error' => $saved === 0 && $errors !== [] ? implode(' ', array_slice($errors, 0, 3)) : null];
+    }
+
     /** What is owed today when the system starts being used. One per person; replaced, never added twice. */
     public static function setOpening(int $employeeId, int $paisa, string $reason, int $actorId): array
     {
@@ -259,6 +287,45 @@ final class FinanceService
     public static function balance(int $employeeId): int
     {
         return self::balances($employeeId)[$employeeId]['balance'] ?? 0;
+    }
+
+    /**
+     * THE LEDGER IN ONE PLACE: every person this user may see, with what they
+     * were owed before the first day, what they earned, had deducted and were
+     * paid between the two days, and what they are owed at the end.
+     */
+    public static function ledgerSummary(array $caps, string $from, string $to): array
+    {
+        if (!self::isDate($from) || !self::isDate($to) || $to < $from) {
+            return self::no('VALIDATION', 'Give the first and last day.');
+        }
+        self::syncProduction();
+        [$w, $p] = self::deptWhere($caps['departments']);
+        $rows = Db::all(
+            "SELECT e.id AS employee_id, e.code, e.full_name, d.name AS department_name, f.pay_type,
+                    COALESCE(SUM(CASE WHEN l.entry_date <  ? THEN IF(l.kind IN ('opening','earning'), l.amount_paisa, -l.amount_paisa) END), 0) AS before_paisa,
+                    COALESCE(SUM(CASE WHEN l.entry_date BETWEEN ? AND ? AND l.kind IN ('opening','earning') THEN l.amount_paisa END), 0) AS earned,
+                    COALESCE(SUM(CASE WHEN l.entry_date BETWEEN ? AND ? AND l.kind = 'deduction' THEN l.amount_paisa END), 0) AS deducted,
+                    COALESCE(SUM(CASE WHEN l.entry_date BETWEEN ? AND ? AND l.kind = 'payment' THEN l.amount_paisa END), 0) AS paid,
+                    COUNT(l.id) AS line_count
+               FROM att_employees e
+               JOIN att_departments d ON d.id = e.department_id
+               LEFT JOIN att_fin_profiles f ON f.employee_id = e.id
+               LEFT JOIN att_fin_ledger l ON l.employee_id = e.id AND l.cancelled_at IS NULL AND l.entry_date <= ?
+              WHERE 1 = 1 $w" . ($caps['see_salary'] ? '' : " AND COALESCE(f.pay_type, '') <> 'salary'") . '
+              GROUP BY e.id, e.code, e.full_name, d.name, f.pay_type
+             HAVING COUNT(l.id) > 0
+              ORDER BY e.full_name LIMIT 5000',
+            array_merge([$from, $from, $to, $from, $to, $from, $to, $to], $p));
+        $t = ['before_paisa' => 0, 'earned' => 0, 'deducted' => 0, 'paid' => 0, 'closing_paisa' => 0];
+        foreach ($rows as &$r) {
+            foreach (['before_paisa', 'earned', 'deducted', 'paid'] as $k) { $r[$k] = (int) $r[$k]; }
+            $r['closing_paisa'] = $r['before_paisa'] + $r['earned'] - $r['deducted'] - $r['paid'];
+            unset($r['line_count']);
+            foreach ($t as $k => $_) { $t[$k] += $r[$k]; }
+        }
+        unset($r);
+        return ['ok' => true, 'from' => $from, 'to' => $to, 'rows' => $rows, 'totals' => $t];
     }
 
     /** One person's statement, oldest first, with the running balance. */

@@ -18,7 +18,9 @@ require_once __DIR__ . '/includes/production.php';
 inv_ensure_schema();
 if (!inv_can_open('consume')) { http_response_code(403); exit('You do not have permission to view consumption.'); }
 
-$canEdit = inv_perm('consume');
+$canCreate = inv_may('consume', 'c');       // each its own tick in User Access — see inv_may()
+$canUpdate = inv_may('consume', 'u');
+$canEdit = $canCreate || $canUpdate;
 $canPost = inv_perm('post');
 $canRev  = inv_perm('adjust');
 
@@ -102,8 +104,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['action'] ?? '';
 
     if ($act === 'save') {
-        if (!$canEdit) { http_response_code(403); exit('You do not have permission to record consumption.'); }
         $id = (int)($_POST['id'] ?? 0);
+        if ($id > 0 ? !$canUpdate : !$canCreate) { http_response_code(403); exit($id > 0 ? 'You do not have permission to edit consumption.' : 'You do not have permission to record consumption.'); }
         $date = ($_POST['con_date'] ?? '') !== '' ? $_POST['con_date'] : date('Y-m-d');
         if ($date > date('Y-m-d')) { $_SESSION['error'] = 'The date cannot be in the future.'; redirect('inv_consume.php'); }
         $limit = (int)inv_setting('backdate_days', '7');

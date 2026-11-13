@@ -195,6 +195,10 @@ foreach (['inv_opening_post', 'inv_opening_reverse', 'inv_opening_onhand'] as $f
 }
 ok(substr_count($funcs, 'function ') >= 3, 'all three functions lifted out of the shipped file');
 
+/* The posting functions take a per-document lock first (InvDocLock). This
+   harness has no real database, so the lock is a stand-in that is always held;
+   the lock itself is tested against MySQL in zfix_test.php. */
+$funcs = "final class InvDocLock { public bool \$held = true; public function __construct(...\$a) {} }\nfunction inv_doc_busy(): array { return ['ok' => false, 'error' => 'busy']; }\n" . $funcs;
 file_put_contents($work . '/run.php', str_replace('%%FUNCS%%', $funcs, $harness));
 $raw = shell_exec('php ' . escapeshellarg($work . '/run.php') . ' 2>&1');
 $R = json_decode((string)$raw, true);

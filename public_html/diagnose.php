@@ -2,8 +2,36 @@
 
 declare(strict_types=1);
 
+/*
+ * WHO MAY RUN THIS.
+ * This page prints where the configuration lives and the database's own
+ * error messages. It used to answer anybody on the internet. Now:
+ *   - from the server's command line (SSH):  php diagnose.php   — always
+ *   - in a browser: only for a signed-in ADMIN
+ * If the app itself is too broken to sign in, use SSH — that is exactly the
+ * case the command line is for. Everybody else gets a plain 404.
+ */
+if (PHP_SAPI !== 'cli') {
+    $zdOk = false;
+    try {
+        ob_start();
+        require_once __DIR__ . '/includes/bootstrap.php';
+        ob_end_clean();
+        $zdUser = function_exists('current_user') ? current_user() : null;
+        $zdOk = is_array($zdUser) && ($zdUser['role'] ?? '') === 'admin';
+    } catch (Throwable $e) {
+        if (ob_get_level() > 0) { ob_end_clean(); }
+        $zdOk = false;
+    }
+    if (!$zdOk) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit("Not found.\n");
+    }
+}
+
 error_reporting(E_ALL);
-ini_set('display_errors', '1');
+ini_set('display_errors', PHP_SAPI === 'cli' ? '1' : '0');
 
 header('Content-Type: text/plain; charset=utf-8');
 
@@ -110,11 +138,12 @@ try {
 /*
  * Test PHP sessions.
  */
-if (!empty($config['session_name'])) {
-    session_name((string) $config['session_name']);
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    if (!empty($config['session_name'])) {
+        session_name((string) $config['session_name']);
+    }
+    session_start();
 }
-
-session_start();
 
 $_SESSION['diagnostic_counter'] =
     ($_SESSION['diagnostic_counter'] ?? 0) + 1;

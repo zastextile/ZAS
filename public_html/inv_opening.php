@@ -27,7 +27,10 @@ if (!inv_can_open('opening')) { http_response_code(403); exit('You do not have p
 /* Opening stock creates quantity out of nothing, which is the same power
    a gate receipt has, so it is the same permission. Posting is separate,
    as everywhere else in this module. */
-$canEdit = inv_perm('gate') || inv_perm('master');
+$canCreate = inv_may('opening', 'c');      // each its own tick in User Access — see inv_may()
+$canUpdate = inv_may('opening', 'u');
+$canDelete = inv_may('opening', 'd');
+$canEdit = $canCreate || $canUpdate;
 $canPost = inv_perm('post');
 $canRev  = inv_perm('adjust');
 
@@ -51,8 +54,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['action'] ?? '';
 
     if ($act === 'save') {
-        if (!$canEdit) { http_response_code(403); exit('You do not have permission to enter opening stock.'); }
         $id   = (int)($_POST['id'] ?? 0);
+        if ($id > 0 ? !$canUpdate : !$canCreate) { http_response_code(403); exit($id > 0 ? 'You do not have permission to edit opening stock.' : 'You do not have permission to enter opening stock.'); }
         $date = ($_POST['opening_date'] ?? '') !== '' ? $_POST['opening_date'] : date('Y-m-d');
 
         /* An opening balance dated in the future would sit in the ledger
@@ -156,7 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($act === 'delete') {
-        if (!$canEdit) { http_response_code(403); exit('Not permitted.'); }
+        if (!$canDelete) { http_response_code(403); exit('You do not have permission to delete opening stock. Ask an admin to tick Delete for Opening Stock in User Access.'); }
         $id = (int)($_POST['id'] ?? 0);
         try {
             $s = db()->prepare("SELECT status, opening_no FROM inv_opening WHERE id=?"); $s->execute([$id]);
@@ -637,7 +640,7 @@ page_header('Opening Stock');
       <?php else: ?>
         <span class="op-note info" style="margin:0">Someone with posting permission must post it before stock changes.</span>
       <?php endif; ?>
-      <?php if ($canEdit): ?>
+      <?php if ($canDelete): ?>
         <form method="post" onsubmit="return confirm('Delete this draft? Nothing has moved, so there is nothing to undo.');">
           <?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= (int)$doc['id'] ?>">
           <button class="op-btn sec" type="submit" style="color:#c0293f">Delete draft</button>

@@ -170,3 +170,30 @@ function short_ref(?string $ref): string {
     if ($first === '' || $last === '') return $ref;
     return $first . $sep . $last;
 }
+
+/* THE LIST OF USER ROLES IS WIDENED, NEVER REPLACED.
+ *
+ * Two modules each used to set users.role to THEIR OWN list on page load:
+ * production wrote ('admin','colleague','staff','production_staff') and the
+ * customer portal wrote the same plus 'customer'. Whichever ran last won. On
+ * a server whose MySQL is not in strict mode, the production list REMOVES
+ * 'customer' from the column and every customer account's role becomes
+ * blank — they can no longer sign in, and nothing says why.
+ *
+ * This reads what the column allows now and adds only what is missing.
+ */
+function users_role_ensure(array $need): void {
+    try {
+        $col = db()->query("SHOW COLUMNS FROM users LIKE 'role'")->fetch();
+        $type = (string)($col['Type'] ?? '');
+        if (stripos($type, 'enum(') !== 0) return;                 // not an ENUM: any value already fits
+        preg_match_all("/'((?:[^']|'')*)'/", $type, $m);
+        $have = array_map(fn($v) => str_replace("''", "'", $v), $m[1]);
+        $missing = array_values(array_diff($need, $have));
+        if (!$missing) return;
+        $all = array_merge($have, $missing);
+        $list = implode(',', array_map(fn($v) => db()->quote($v), $all));
+        $default = in_array('colleague', $all, true) ? 'colleague' : $all[0];
+        db()->exec("ALTER TABLE users MODIFY COLUMN role ENUM($list) NOT NULL DEFAULT " . db()->quote($default));
+    } catch (Throwable $e) {}
+}

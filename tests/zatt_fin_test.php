@@ -335,6 +335,28 @@ ok($line($d3['lines'], 'carry')['calc_paisa'] === 300000 && $d3['calc_paisa'] ==
 $ov = Fin::overview($C, $acc);
 ok($ov['ok'] && $ov['owed_paisa'] === 300000 && $ov['sheets']['paid'] === 3 && $ov['sheets']['cancelled'] === 1 && $ov['pay_weekday'] === 4, 'overview: 3,000 owed in all, 3 sheets paid, 1 cancelled, pay day Thursday');
 
+echo "12b. Many people at once, and the ledger in one place\n";
+$n1 = Employees::create(['code' => 'B001', 'full_name' => 'Bilal Bulk', 'department_id' => $dS]);
+$n2 = Employees::create(['code' => 'B002', 'full_name' => 'Bushra Bulk', 'department_id' => $dP]);
+$bk = Fin::saveProfiles([['employee_id' => $n1, 'pay_type' => 'daily', 'daily_rate_paisa' => 110000], ['employee_id' => $n2, 'pay_type' => 'salary', 'basic_paisa' => 0],
+                         ['employee_id' => $emp['S002'], 'pay_type' => 'salary', 'basic_paisa' => 4300000]], '', $hr);
+ok($bk['ok'] && $bk['saved'] === 1 && count($bk['errors']) === 2 && str_contains($bk['errors'][0], 'Bushra Bulk') && str_contains($bk['errors'][1], 'Sami Salaried'),
+   'BULK SETUP: the good row is saved; the salary with no amount and the unexplained raise are refused by name');
+ok($n('SELECT daily_rate_paisa FROM att_fin_profiles WHERE employee_id = ?', [$n1]) === 110000 && $n('SELECT basic_paisa FROM att_fin_profiles WHERE employee_id = ?', [$emp['S002']]) === 4200000 && $n('SELECT COUNT(*) FROM att_fin_profile_history WHERE employee_id = ?', [$n1]) === 1,
+   '  each row went through the same rules and the same history as one person at a time');
+ok(Fin::saveProfiles([['employee_id' => $emp['S002'], 'pay_type' => 'salary', 'basic_paisa' => 4300000]], 'Annual raise', $hr)['saved'] === 1, '  with the reason, the raise is saved');
+ok($code(Fin::saveProfiles([], '', $hr)) === 'VALIDATION', '  an empty list is refused');
+$ls = Fin::ledgerSummary($C, '2026-03-01', '2026-03-05');
+$lr = array_column($ls['rows'], null, 'code');
+ok($ls['ok'] && $lr['D001']['before_paisa'] === 0 && $lr['D001']['earned'] === 480000 && $lr['D001']['paid'] === 480000 && $lr['D001']['closing_paisa'] === 0, 'LEDGER, 1–5 March: D001 earned 4,800, was paid 4,800, is owed nothing');
+ok($lr['D002']['earned'] === 240000 && $lr['D002']['deducted'] === 100000 && $lr['D002']['paid'] === 140000, '  D002: earned 2,400, 1,000 recovered, 1,400 paid');
+ok(!isset($lr['S001']) || $lr['S001']['closing_paisa'] === 0, '  the cancelled salary sheet counts for nothing');
+ok($ls['totals']['closing_paisa'] === array_sum(array_column($ls['rows'], 'closing_paisa')) && $ls['totals']['closing_paisa'] === Fin::overview($C, $acc)['owed_paisa'], '  the totals add up, and "owed at the end" is the same figure Home shows');
+$later = array_column(Fin::ledgerSummary($C, '2026-03-06', '2026-03-06')['rows'], null, 'code');
+ok($later['D003']['before_paisa'] === 300000 && $later['D003']['earned'] === 0 && $later['D003']['closing_paisa'] === 300000, '  a later window carries the balance forward as "owed before"');
+ok(array_filter(Fin::ledgerSummary($H, '2026-03-01', '2026-03-05')['rows'], fn($r) => $r['pay_type'] === 'salary' || $r['department_name'] !== 'Stitching') === [], '  the HOD sees only their own department, and no salaried person');
+ok($code(Fin::ledgerSummary($C, '2026-03-05', '2026-03-01')) === 'VALIDATION', '  the dates must be in order');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

@@ -14,7 +14,9 @@ require_once __DIR__ . '/includes/inventory.php';
 inv_ensure_schema();
 if (!inv_can_open('store') && !inv_can_open('stockrep')) { http_response_code(403); exit('You do not have permission to view store movements.'); }
 
-$canEdit = inv_perm('store');
+$canCreate = inv_may('store', 'c');         // each its own tick in User Access — see inv_may()
+$canUpdate = inv_may('store', 'u');
+$canEdit = $canCreate || $canUpdate;
 $canPost = inv_perm('post');
 $canRev  = inv_perm('adjust');
 
@@ -26,8 +28,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['action'] ?? '';
 
     if ($act === 'save') {
-        if (!$canEdit) { http_response_code(403); exit('You do not have permission to issue or return material.'); }
         $id = (int)($_POST['id'] ?? 0);
+        if ($id > 0 ? !$canUpdate : !$canCreate) { http_response_code(403); exit($id > 0 ? 'You do not have permission to edit a store issue or return.' : 'You do not have permission to issue or return material.'); }
         $date = ($_POST['move_date'] ?? '') !== '' ? $_POST['move_date'] : date('Y-m-d');
         if ($date > date('Y-m-d')) { $_SESSION['error'] = 'The date cannot be in the future.'; redirect('inv_store.php?type=' . $type); }
         $limit = (int)inv_setting('backdate_days', '7');

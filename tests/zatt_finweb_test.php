@@ -222,6 +222,18 @@ $csv = req($sx['acc'], 'GET', '/finance/sheets/' . $sid . '/export')['raw'];
 ok(str_contains($csv, 'Sara Salaried') && str_contains($csv, '62000.00') && str_contains($csv, 'Asked for a smaller cut'), 'the download has the person, the amount and the amendment reason');
 ok(req($sx['aud'], 'POST', '/finance/sheets/' . $sid . '/cancel', ['reason' => 'x'])['status'] === 403, 'a paid sheet is not cancelled by Audit');
 
+echo "3a. Many at once, and the ledger\n";
+ok(req($sx['hod'], 'POST', '/finance/people/bulk-profile', ['items' => [['employee_id' => $emp['D001'], 'pay_type' => 'daily', 'daily_rate_paisa' => 999900]], 'reason' => 'x'])['status'] === 403
+   && $n('SELECT daily_rate_paisa FROM att_fin_profiles WHERE employee_id = ?', [$emp['D001']]) === 120000, 'a HOD cannot set pay in bulk either');
+ok(req($sx['hr'], 'POST', '/finance/people/bulk-profile', ['items' => [['employee_id' => $emp['N001'], 'pay_type' => 'daily', 'daily_rate_paisa' => 105000]], 'reason' => 'Corrected rate'], false)['status'] !== 200, '  nor anybody without the CSRF token');
+$lgr = req($sx['acc'], 'GET', "/finance/ledger?from=$mFrom&to=$today");
+$lgS = array_column($lgr['body']['rows'] ?? [], null, 'code');
+ok($lgr['status'] === 200 && ($lgS['S001']['earned'] ?? 0) === 6300000 && ($lgS['S001']['deducted'] ?? 0) === 100000 && ($lgS['S001']['paid'] ?? 0) === 6200000 && ($lgS['S001']['closing_paisa'] ?? 1) === 0, 'the ledger shows S001: earned 63,000, 1,000 recovered, 62,000 paid, owed 0');
+$hl = req($sx['hod'], 'GET', "/finance/ledger?from=$mFrom&to=$today")['body']['rows'] ?? [['code' => 'S001']];
+ok(!in_array('S001', array_column($hl, 'code'), true), '  the HOD\'s ledger has no salaried person in it');
+ok(str_contains(req($sx['acc'], 'GET', "/finance/ledger/export?from=$mFrom&to=$today")['raw'], 'Sara Salaried'), '  and it downloads for Excel');
+ok(req($sx['gk'], 'GET', '/finance/ledger')['status'] === 403, '  a gatekeeper gets nothing');
+
 echo "3b. The old Worker Pay screen\n";
 $pdo->exec("INSERT INTO zp_workers (worker_code, worker_name) VALUES ('W900', 'Unlinked Usman')");
 $pdo->prepare("INSERT INTO zp_entries (entry_date, worker_id, qty, rate_applied, amount) VALUES (?, 2, 10, 70, 700.00)")->execute([$wFrom]);
@@ -373,8 +385,39 @@ const body = p => p.textContent('#fin-body');
     t = await m.textContent('#fin-shade');
     check('People › Sami: pay setup, and a statement ending at zero', /How they are paid/.test(t) && /Eid bonus/.test(t) && /Wages paid/.test(t));
     await shot(m, '6-phone-person');
+    await m.click('#fin-shade button:has-text("Close")');
+    await m.click('#fin-tabs button:has-text("Ledger")');
+    await m.waitForSelector('table.t tr.click');
+    t = await body(m);
+    check('Ledger tab: everybody in one place with owed-before / earned / paid / owed-at-end', /Owed before/.test(t) && /Sami Salaried/.test(t) && /Sara Salaried/.test(t) && /Total —/.test(t));
+    await m.locator('tr.click', { hasText: 'Sami Salaried' }).click();
+    await m.waitForFunction(() => /Wages paid/.test(document.getElementById('fin-shade').textContent));
+    check('  a row opens that person\'s statement for the same dates', /statement/.test(await m.textContent('#fin-shade')) && /Owed before this date/.test(await m.textContent('#fin-shade')));
+    await shot(m, '7-phone-ledger');
+    await m.click('#fin-shade button:has-text("Close")');
     check('no script error (phone)', e3.length === 0, e3.join(' | '));
     await c3.close();
+
+    // ---- HR sets up several people at once
+    const c5 = await browser.newContext({ viewport: { width: 1366, height: 900 }, deviceScaleFactor: SHOTS ? 2 : 1 });
+    const r = await signIn(c5, 'hr@zas.test');
+    const e5 = []; r.on('pageerror', e => e5.push(e.message));
+    await r.goto(BASE + '/att_finance.php#people');
+    await r.waitForSelector('table.t');
+    await r.click('button:has-text("Set up many at once")');
+    await r.waitForSelector('#fin-shade table.bulk');
+    const nrow = r.locator('#fin-shade table.bulk tbody tr', { hasText: 'Nida New' });
+    await nrow.locator('select').first().selectOption('salary');
+    await nrow.locator('input.n').nth(0).fill('38000');
+    await nrow.locator('input.n').nth(1).fill('2000');
+    await shot(r, '8-bulk-setup');
+    await r.fill('#fin-shade input[placeholder^="Reason"]', 'Moved from daily to monthly');
+    await r.click('#fin-shade button:has-text("Save all ticked")');
+    await r.waitForFunction(() => document.getElementById('fin-shade').hidden);
+    await r.waitForFunction(() => /38,000 a month \+ 2,000/.test(document.getElementById('fin-body').textContent));
+    check('People › Set up many at once: one grid, one Save — Nida is now 38,000 a month + 2,000', true);
+    check('no script error (HR)', e5.length === 0, e5.join(' | '));
+    await c5.close();
 
     // ---- HOD
     const c4 = await browser.newContext({ viewport: { width: 1366, height: 900 } });

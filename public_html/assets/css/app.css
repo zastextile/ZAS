@@ -345,3 +345,27 @@ td textarea{min-height:30px}
 /* Numeric fields: no tiny 0.001-step spinner arrows cluttering the box. */
 input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 input[type=number]{-moz-appearance:textfield}
+
+/* ---------- phones: the menu folds away ----------
+   Below 900px the sidebar is a slim bar with the name and a Menu button; the
+   links and the signed-in box appear when it is pressed. Before this the full
+   menu was laid out above every page. !important because the menu and the
+   user box carry inline display styles from includes/layout.php. */
+.side-toggle{display:none}
+@media(max-width:900px){
+  .sidebar{max-height:none!important;padding:10px 14px}
+  .sidebar .brand{border-bottom:0;padding:2px 2px}
+  .sidebar.open .brand{border-bottom:1px solid rgba(255,255,255,.12);padding-bottom:12px}
+  .side-toggle{display:inline-flex;align-items:center;margin-left:auto;font:600 14px/1 inherit;font-family:inherit;color:#fff;
+    background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);border-radius:10px;padding:10px 13px;cursor:pointer;min-height:40px}
+  .sidebar:not(.open) .nav,.sidebar:not(.open) .side-user{display:none!important}
+  .sidebar.open .nav{max-height:none}
+}
+/* A grid column of "1fr" may not shrink below its widest child, so one wide
+   table or chart made the WHOLE page wider than the phone and the right-hand
+   side was cut off. minmax(0,1fr) lets the column be the width of the screen;
+   the wide thing then scrolls inside its own box. */
+@media(max-width:1100px){
+  .app{grid-template-columns:minmax(0,1fr)}
+  .content{min-width:0}
+}
