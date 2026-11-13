@@ -695,8 +695,8 @@ if ($id) {
             <th style="width:150px">Size</th>
             <th style="width:92px;text-align:right">Qty</th>
             <th style="width:82px">Unit</th>
-            <th style="width:100px;text-align:right">Unit price</th>
-            <th style="width:112px;text-align:right">Amount</th>
+            <th style="width:100px;text-align:right">Unit price <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$pf['currency']) ?></span></th>
+            <th style="width:112px;text-align:right">Amount <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$pf['currency']) ?></span></th>
             <th class="zpin-r" style="width:40px"></th>
           </tr></thead>
           <tbody><?php foreach($items as $r): ?>
@@ -1315,4 +1315,15 @@ page_header('Proforma Invoices'); flash();
   <?php endif; ?>
 </div>
 </div><?php /* closes .zskin */ ?>
+<script>
+/* The currency beside "Rate" and "Amount" follows the Currency box as it is
+   changed, so the prices being typed are never in doubt. */
+(function(){
+  var sel = document.querySelector('select[name="currency"]');
+  if (!sel) return;
+  sel.addEventListener('change', function(){
+    Array.prototype.forEach.call(document.querySelectorAll('.curtag'), function(t){ t.textContent = sel.value; });
+  });
+})();
+</script>
 <?php page_footer(); ?>

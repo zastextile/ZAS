@@ -508,6 +508,47 @@ if ($canSeeAnalytics) {
     } catch (Throwable $e) { $dashCheck = []; }
 }
 $dashOdd = count(array_filter($dashCheck, fn($r) => $r['odd']));
+
+/* SALES, ORDERS AND CONTRACTS — EACH IN ITS OWN CURRENCY, THEN IN PKR.
+   The cards above show one PKR total, which hides what it is made of: how
+   much was invoiced in dollars, in euros, in rupees, and at which rate each
+   was turned into PKR. This lists them side by side, using the rates typed
+   in Settings and nothing else. Orders are proforma invoices; contracts are
+   the purchase / sales / job-work contracts of Store & Inventory. */
+$pkrFor1 = function (string $cur) use ($fx): float {                       // PKR for one unit of the currency; 0 = no rate entered
+    return $cur === 'PKR' ? 1.0 : ((isset($fx[$cur]) && (float)$fx[$cur] > 0) ? 1 / (float)$fx[$cur] : 0.0);
+};
+$curBlocks = [];
+if ($canSeeAnalytics) {
+    $acc = [];
+    foreach ($dashCheck as $r) {
+        $c = $r['cur'];
+        if (!isset($acc[$c])) $acc[$c] = ['cur' => $c, 'n' => 0, 'own' => 0.0];
+        $acc[$c]['n']++; $acc[$c]['own'] += $r['own'];
+    }
+    if ($acc) $curBlocks[] = ['title' => 'Sales invoices', 'rows' => array_values($acc)];
+    try {
+        $st = db()->prepare("SELECT UPPER(COALESCE(NULLIF(pf.currency,''),'USD')) cur, COUNT(DISTINCT pf.id) n, COALESCE(SUM(pit.amount),0) v
+            FROM proforma_invoices pf LEFT JOIN proforma_items pit ON pit.proforma_id = pf.id
+            WHERE COALESCE(pf.pi_date, DATE(pf.created_at)) BETWEEN ? AND ? AND COALESCE(pf.status,'') <> 'cancelled'
+            GROUP BY UPPER(COALESCE(NULLIF(pf.currency,''),'USD')) ORDER BY 1");
+        $st->execute([$curFrom, $curTo]);
+        $rows = [];
+        foreach ($st->fetchAll() as $r) if (isset($r['cur'], $r['v'])) $rows[] = ['cur' => (string)$r['cur'], 'n' => (int)($r['n'] ?? 0), 'own' => (float)$r['v']];
+        if ($rows) $curBlocks[] = ['title' => 'Orders (proforma invoices)', 'rows' => $rows];
+    } catch (Throwable $e) {}
+    try {
+        $st = db()->prepare("SELECT c.contract_type t, UPPER(COALESCE(NULLIF(c.currency,''),'PKR')) cur, COUNT(DISTINCT c.id) n, COALESCE(SUM(ci.amount),0) v
+            FROM inv_contracts c LEFT JOIN inv_contract_items ci ON ci.contract_id = c.id
+            WHERE COALESCE(c.contract_date, DATE(c.created_at)) BETWEEN ? AND ? AND c.status <> 'cancelled'
+            GROUP BY c.contract_type, UPPER(COALESCE(NULLIF(c.currency,''),'PKR')) ORDER BY 1, 2");
+        $st->execute([$curFrom, $curTo]);
+        $names = ['sales' => 'Sales contracts', 'purchase' => 'Purchase contracts', 'jobwork_out' => 'Job work — we send', 'jobwork_in' => 'Job work — we do'];
+        $byType = [];
+        foreach ($st->fetchAll() as $r) if (isset($r['t'], $r['cur'], $r['v'])) $byType[(string)$r['t']][] = ['cur' => (string)$r['cur'], 'n' => (int)($r['n'] ?? 0), 'own' => (float)$r['v']];
+        foreach ($names as $k => $title) if (!empty($byType[$k])) $curBlocks[] = ['title' => $title, 'rows' => $byType[$k]];
+    } catch (Throwable $e) {}
+}
 $fxMissingList = array_keys($fxMissing);
 sort($fxMissingList);
 
@@ -834,6 +875,37 @@ flash();
     <div class="kpi-delta <?= e($d['dir']) ?>"><?= $d['dir']==='up'?'▲':($d['dir']==='down'?'▼':'•') ?> <?= e($d['label']) ?></div>
   </div>
 </div>
+
+<?php if ($canSeeAnalytics && $curBlocks): ?>
+<div class="dash-card" style="<?= $cardCss ?>;padding:16px 20px;margin-bottom:16px">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+    <h2 style="font-size:15px;margin:0">By currency — <?= e($periodLabel) ?></h2>
+    <span style="font-size:12px;color:#5a6b82">Converted to PKR with the rates in Settings<?= $admin ? ' · <a href="settings.php">change rates</a>' : '' ?></span>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px 22px">
+  <?php foreach ($curBlocks as $blk): $tot = 0.0; $cnt = 0; ?>
+    <div style="min-width:0">
+      <div style="font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#5a6b82;margin-bottom:4px"><?= e($blk['title']) ?></div>
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums">
+        <?php foreach ($blk['rows'] as $r): $one = $pkrFor1($r['cur']); $pkr = $r['own'] * ($one > 0 ? $one : 1); $tot += $pkr; $cnt += $r['n']; ?>
+        <tr>
+          <td style="padding:5px 6px 5px 0;border-bottom:1px solid #edf1f6;white-space:nowrap"><b><?= e($r['cur']) ?></b> <span style="color:#8a97ab">· <?= (int)$r['n'] ?></span></td>
+          <td style="padding:5px 6px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap"><?= number_format($r['own'], 2) ?></td>
+          <td style="padding:5px 6px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap;color:#5a6b82"><?= $r['cur'] === 'PKR' ? '' : ($one > 0 ? '× ' . number_format($one, 2) : '<b style="color:#9b1c2a">no rate</b>') ?></td>
+          <td style="padding:5px 0 5px 6px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap;font-weight:600"><?= number_format($pkr, 0) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        <tr>
+          <td style="padding:6px 6px 0 0;font-weight:700">Total <span style="color:#8a97ab;font-weight:400">· <?= (int)$cnt ?></span></td><td></td>
+          <td style="padding:6px 6px 0;text-align:right;color:#5a6b82">PKR</td>
+          <td style="padding:6px 0 0 6px;text-align:right;font-weight:800"><?= number_format($tot, 0) ?></td>
+        </tr>
+      </table>
+    </div>
+  <?php endforeach; ?>
+  </div>
+</div>
+<?php endif; ?>
 
 <?php if ($canSeeAnalytics && $dashCheck): ?>
 <details class="dash-card" style="<?= $cardCss ?>;padding:14px 20px;margin-bottom:16px<?= $dashOdd ? ';border-color:rgba(190,30,45,.4)' : '' ?>" <?= $dashOdd ? 'open' : '' ?>>

@@ -267,7 +267,7 @@ exp_tab_strip($shipment, 'invoice');
   <?php endif; ?>
   <div style="overflow-x:auto">
     <table class="ztable" style="min-width:560px;table-layout:fixed">
-      <thead><tr><th style="width:40px">Sr</th><th>Product / Article</th><th style="width:22%">Des / Col</th><?php if($optOn): ?><th style="width:12%"><?= e($shipment['optional_column_title']) ?></th><?php endif; ?><th class="num" style="width:64px">Qty</th><th style="width:58px">Unit</th><?php if($showRates): ?><th class="num" style="width:72px">Rate</th><th class="num" style="width:84px">Amount</th><?php endif; ?><th style="width:36px"></th></tr></thead>
+      <thead><tr><th style="width:40px">Sr</th><th>Product / Article</th><th style="width:22%">Des / Col</th><?php if($optOn): ?><th style="width:12%"><?= e($shipment['optional_column_title']) ?></th><?php endif; ?><th class="num" style="width:64px">Qty</th><th style="width:58px">Unit</th><?php if($showRates): ?><th class="num" style="width:72px">Rate <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$shipment['currency']) ?></span></th><th class="num" style="width:84px">Amount <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$shipment['currency']) ?></span></th><?php endif; ?><th style="width:36px"></th></tr></thead>
       <tbody id="invoiceRows">
       <?php foreach($items as $i=>$it): ?>
         <tr class="item-row">
@@ -730,4 +730,15 @@ function hideDeleteModal(){ document.getElementById('deleteModal').style.display
 <?php endif; ?>
 
 </div><?php /* closes .zskin */ ?>
+<script>
+/* The currency beside "Rate" and "Amount" follows the Currency box as it is
+   changed, so the prices being typed are never in doubt. */
+(function(){
+  var sel = document.querySelector('select[name="currency"]');
+  if (!sel) return;
+  sel.addEventListener('change', function(){
+    Array.prototype.forEach.call(document.querySelectorAll('.curtag'), function(t){ t.textContent = sel.value; });
+  });
+})();
+</script>
 <?php page_footer(); ?>

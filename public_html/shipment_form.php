@@ -35,6 +35,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($claimed !== null && $claimed !== '') $invoiceNo = $claimed;
     }
 
+    /* THE CURRENCY HAS TO BE CHOSEN. The list used to open on USD, so an
+       invoice priced in rupees was saved as dollars unless somebody noticed,
+       and the dashboard then multiplied every rupee by the dollar rate — a
+       16 million sale shown as 4.4 billion. Nothing is assumed now. */
+    $currency = strtoupper(trim((string)($_POST['currency'] ?? '')));
+    if (!in_array($currency, ['USD', 'EUR', 'GBP', 'PKR'], true)) {
+        $_SESSION['error'] = 'Choose the currency of this invoice (USD, EUR, GBP or PKR). The prices you type on it are in that currency.';
+        redirect('shipment_form.php');
+    }
+
     $stmt = db()->prepare("INSERT INTO shipments
         (invoice_no, invoice_date, buyer_name, buyer_address, buyer_country, destination_port, po_no, bl_container_no, currency, payment_terms, optional_column_enabled, optional_column_title, created_by, updated_by, created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())");
@@ -48,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         trim($_POST['destination_port'] ?? ''),
         trim($_POST['po_no'] ?? ''),
         trim($_POST['bl_container_no'] ?? ''),
-        trim($_POST['currency'] ?? 'USD'),
+        $currency,
         trim($_POST['payment_terms'] ?? ''),
         $optEnabled,
         $optTitle,
@@ -108,7 +118,7 @@ flash();
       <?php endif; ?>
     </label>
     <label class="zlabel">Invoice Date<input class="zin" type="date" name="invoice_date"></label>
-    <label class="zlabel">Currency<select class="zin" name="currency"><option>USD</option><option>EUR</option><option>GBP</option><option>PKR</option></select></label>
+    <label class="zlabel">Currency — prices on this invoice are in<select class="zin" name="currency" required><option value="">— choose —</option><option>USD</option><option>EUR</option><option>GBP</option><option>PKR</option></select></label>
     <label class="zlabel">Payment Terms<input class="zin" name="payment_terms" placeholder="DP / TT / LC"></label>
     <label class="zlabel zspan2">Buyer Name<input class="zin" name="buyer_name" required placeholder="Buyer company name"></label>
     <label class="zlabel zspan2">Buyer Address<textarea class="zin" name="buyer_address" style="min-height:70px;resize:vertical"></textarea></label>
