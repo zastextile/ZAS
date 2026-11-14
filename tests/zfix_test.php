@@ -173,6 +173,27 @@ to_pkr(100.0, 'USD', ['PKR' => 1.0, 'USD' => 0.0036]); to_pkr(50.0, 'EUR', ['PKR
 ok(array_keys($fxMissing) === ['EUR'], 'to_pkr(): USD with a rate is fine, EUR without one is flagged, a zero amount and PKR are not');
 ok(str_contains($src('costing_print.php'), 'cstFxMissing'), 'the costing print sheet names a missing rate too');
 
+/* A costing keeps the currency it was made in. An invoice corrected from USD
+   to PKR afterwards still has dollar costings, and the dashboard must convert
+   them — the real case: 12,151,784 PKR of sales, 39,995 USD of cost. */
+$fx = ['PKR' => 1.0, 'USD' => 1 / 274, 'EUR' => 1 / 315];
+preg_match('/\$dashPkrCase = function.*?\n};\n\$costToInvCur = [^\n]+\n\$costValSub = [^\n]+\n/s', (string) file_get_contents($B . 'dashboard.php'), $mm);
+ok(isset($mm[0]), 'the cost conversion is where the test expects it in dashboard.php');
+eval($mm[0] ?? '');
+$pdo->exec("CREATE TABLE shipments (id INT PRIMARY KEY, currency VARCHAR(10))");
+$pdo->exec("CREATE TABLE shipment_items (id INT PRIMARY KEY, shipment_id INT, qty DECIMAL(14,3), amount DECIMAL(14,2))");
+$pdo->exec("CREATE TABLE final_costings (id INT AUTO_INCREMENT PRIMARY KEY, shipment_item_id INT, shipment_id INT, currency VARCHAR(8), total_cost DECIMAL(16,2))");
+$pdo->exec("INSERT INTO shipments VALUES (9, 'PKR'), (10, 'USD'), (11, 'USD')");
+$pdo->exec("INSERT INTO shipment_items VALUES (1, 9, 10, 12151784.00), (2, 10, 100, 5000.00), (3, 11, 10, 900.00)");
+$pdo->exec("INSERT INTO final_costings (shipment_item_id, shipment_id, currency, total_cost) VALUES (1, 9, 'USD', 3999.50), (2, 10, 'USD', 40.00), (3, 11, 'PKR', 13700.00)");
+$costOf = fn(int $sid) => (float) $pdo->query("SELECT $costValSub FROM shipments s WHERE s.id = $sid")->fetchColumn();
+$c9 = $costOf(9);
+ok(abs($c9 - 39995 * 274) < 5, 'A PKR INVOICE WITH DOLLAR COSTINGS: 39,995 USD of cost is counted as 10,958,630 PKR, not 39,995 (' . number_format($c9, 0) . ')');
+ok(abs((12151784 - $c9) / 12151784 * 100 - 9.8) < 0.2, '  so the margin reads 9.8%, not 99.7%');
+ok(abs($costOf(10) - 4000) < 0.01, 'a costing in the invoice\'s own currency is left exactly as it was (4,000 USD)');
+ok(abs($costOf(11) - 500) < 0.01, 'a rupee costing on a dollar invoice comes out in dollars: 137,000 PKR = 500 USD');
+foreach (['final_costings', 'shipment_items', 'shipments'] as $t) { $pdo->exec("DROP TABLE $t"); }
+
 /* ===================================================================== */
 echo "3, 7, 8. Over the web\n";
 /* The sign-in API reads the attendance roles, so its tables have to exist. */

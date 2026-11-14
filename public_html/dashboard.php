@@ -53,7 +53,33 @@ $pending = dash_scalar("SELECT COUNT(*) FROM shipments s WHERE s.status IN ('dra
    is a PER-UNIT figure, same convention as costing_report_print.php, so
    it must be multiplied by qty here too). ---- */
 $valSub = "(SELECT COALESCE(SUM(amount),0) FROM shipment_items WHERE shipment_id=s.id)";
-$costValSub = "(SELECT COALESCE(SUM(fc.total_cost * si.qty),0) FROM final_costings fc JOIN shipment_items si ON si.id=fc.shipment_item_id WHERE fc.shipment_id=s.id AND fc.total_cost > 0)";
+
+$fx = fx_get_rates(); // the rates typed in Settings (units of each currency per 1 PKR)
+
+/* A FINAL COSTING IS IN ITS OWN CURRENCY, WHICH IS NOT ALWAYS THE INVOICE'S.
+ *
+ * A costing takes the invoice's currency on the day it is first opened and
+ * keeps it. Change the invoice afterwards — USD corrected to PKR — and the
+ * costing is still in dollars. This page used to read every cost in the
+ * INVOICE's currency, so 39,995 dollars of cost on a rupee invoice was counted
+ * as 39,995 rupees and the invoice showed a 99.7% profit.
+ *
+ * Each cost is now turned from the costing's own currency into the invoice's,
+ * inside the query, with the Settings rates. Everything further down goes on
+ * treating cost as "in the invoice's currency", which is now true.
+ * $dashPkrCase() writes "PKR for one unit of <currency column>" as SQL; the
+ * codes and numbers in it come from the rates table, never from a request. */
+$dashPkrCase = function (string $col) use ($fx): string {
+    $sql = "CASE UPPER(COALESCE(NULLIF($col,''),'PKR'))";
+    foreach ($fx as $cur => $perPkr) {
+        $cur = strtoupper((string)$cur);
+        if ($cur === 'PKR' || !preg_match('/^[A-Z]{3}$/', $cur) || (float)$perPkr <= 0) continue;
+        $sql .= " WHEN '$cur' THEN " . sprintf('%.8F', 1 / (float)$perPkr);
+    }
+    return $sql . ' ELSE 1 END';
+};
+$costToInvCur = '(' . $dashPkrCase("COALESCE(NULLIF(fc.currency,''), s.currency)") . ' / ' . $dashPkrCase('s.currency') . ')';
+$costValSub = "(SELECT COALESCE(SUM(fc.total_cost * si.qty * $costToInvCur),0) FROM final_costings fc JOIN shipment_items si ON si.id=fc.shipment_item_id WHERE fc.shipment_id=s.id AND fc.total_cost > 0)";
 // Sales total for ONLY the items that actually have a Final Costing — the
 // same subset $costValSub already sums cost for. The difference
 // ($valSub - $costedValSub) is sales with NO cost entered yet (very
@@ -77,7 +103,6 @@ $costValSub = "(SELECT COALESCE(SUM(fc.total_cost * si.qty),0) FROM final_costin
    listed separately as "not locked yet" (see $draftCost below). */
 $costedValSub = "(SELECT COALESCE(SUM(si.amount),0) FROM shipment_items si WHERE si.shipment_id=s.id AND EXISTS (SELECT 1 FROM final_costings fc WHERE fc.shipment_item_id=si.id AND fc.total_cost > 0))";
 
-$fx = fx_get_rates(); // live-synced weekly from Frankfurter, falls back to config on failure
 /* A currency with NO rate used to be converted at 1 — 1,000 USD counted as
    1,000 PKR — and nothing said so. The sum still has to use something, so
    it still uses 1, but every such currency is collected here and the page
@@ -242,15 +267,33 @@ function dash_bucket_series(array $daily, string $from, string $to, string $gran
    drive the small "⚠ not yet costed" note shown next to a product that's
    affected. ---- */
 function dash_product_rows(string $scopeSql, array $scopeParams, string $from, string $to, array $fx): array {
+    global $costToInvCur;
     $out = [];
     try {
-        $st = db()->prepare("SELECT si.product_name grp, UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt,
-                (SELECT fc.total_cost * si.qty FROM final_costings fc WHERE fc.shipment_item_id = si.id AND fc.total_cost > 0) cost_amt
-            FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id
-            WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql");
-        $st->execute(array_merge([$from, $to], $scopeParams));
+        /* A LINKED LINE IS COUNTED UNDER ITS PRODUCT, WHATEVER IT WAS CALLED
+           ON THE INVOICE. "Thermal Blanket 150x200 — buyer's wording" and
+           "Thermal Blanket" used to be two bars when both were the same
+           Product Master item. A line linked to a Part is counted under the
+           part. Unlinked lines still go by the name typed. If the link
+           columns are not on this install yet, the old query answers. */
+        $cost = "(SELECT fc.total_cost * si.qty * $costToInvCur FROM final_costings fc WHERE fc.shipment_item_id = si.id AND fc.total_cost > 0) cost_amt";
+        $tail = "FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id %s
+            WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql";
+        try {
+            $st = db()->prepare("SELECT COALESCE(p.name, zpp.part_name, si.product_name) grp, UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt, $cost "
+                . sprintf($tail, 'LEFT JOIN products p ON p.id = si.product_id LEFT JOIN zp_parts zpp ON zpp.id = si.part_id AND si.product_id IS NULL'));
+            $st->execute(array_merge([$from, $to], $scopeParams));
+        } catch (Throwable $e) {
+            try {
+                $st = db()->prepare("SELECT COALESCE(p.name, si.product_name) grp, UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt, $cost " . sprintf($tail, 'LEFT JOIN products p ON p.id = si.product_id'));
+                $st->execute(array_merge([$from, $to], $scopeParams));
+            } catch (Throwable $e2) {
+                $st = db()->prepare("SELECT si.product_name grp, UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt, $cost " . sprintf($tail, ''));
+                $st->execute(array_merge([$from, $to], $scopeParams));
+            }
+        }
         foreach ($st->fetchAll() as $r) {
-            $raw = trim((string)$r['grp']); if ($raw === '') continue;
+            $raw = trim((string)($r['grp'] ?? '')); if ($raw === '') continue;
             // group by a case-insensitive key so "Thermal Blanket" and
             // "thermal blanket" (same product, typed differently on
             // different shipments) don't silently fragment into two bars —
@@ -315,10 +358,11 @@ function dash_missing_cost_items(string $scopeSql, array $scopeParams, string $f
    price as its cost, so profit/pct here are always defined and can only be
    pulled toward zero by missing cost data, never inflated by it. ---- */
 function dash_top_customers(string $scopeSql, array $scopeParams, string $from, string $to, array $fx): array {
+    global $costToInvCur;
     $out = [];
     try {
         $st = db()->prepare("SELECT s.id sid, s.buyer_name grp, s.status, UPPER(COALESCE(s.currency,'PKR')) cur, si.amount amt,
-                (SELECT fc.total_cost * si.qty FROM final_costings fc WHERE fc.shipment_item_id = si.id AND fc.total_cost > 0) cost_amt
+                (SELECT fc.total_cost * si.qty * $costToInvCur FROM final_costings fc WHERE fc.shipment_item_id = si.id AND fc.total_cost > 0) cost_amt
             FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id
             WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?$scopeSql");
         $st->execute(array_merge([$from, $to], $scopeParams));
@@ -837,6 +881,7 @@ flash();
     <div class="dash-num num" data-count-to="<?= (int)round($curTotals['sales']) ?>">0</div>
     <?php $d = dash_delta_pct($curTotals['sales'], $prevTotals['sales']); ?>
     <div class="kpi-delta <?= e($d['dir']) ?>"><?= $d['dir']==='up'?'▲':($d['dir']==='down'?'▼':'•') ?> <?= e($d['label']) ?></div>
+    <div class="kpi-delta" style="color:#8a97ab;margin-top:2px"><?= count($dashCheck) ?> invoice<?= count($dashCheck) === 1 ? '' : 's' ?> · every currency in PKR</div>
   </div>
   <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .55s ease both">
     <span style="color:#5a6b82;font-size:12.5px">Total Cost</span>
@@ -876,36 +921,29 @@ flash();
   </div>
 </div>
 
-<?php if ($canSeeAnalytics && $curBlocks): ?>
-<div class="dash-card" style="<?= $cardCss ?>;padding:16px 20px;margin-bottom:16px">
-  <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-    <h2 style="font-size:15px;margin:0">By currency — <?= e($periodLabel) ?></h2>
-    <span style="font-size:12px;color:#5a6b82">Converted to PKR with the rates in Settings<?= $admin ? ' · <a href="settings.php">change rates</a>' : '' ?></span>
+<?php if ($canSeeAnalytics && $curBlocks):
+  /* ONE LINE, ONE PKR FIGURE EACH. Orders and contracts are added up in every
+     currency behind the scenes with the Settings rates; only the total is
+     shown, so the page stays easy to read. Sales invoices are not repeated
+     here — that is the Total Sales card above. */
+  $stripItems = [];
+  foreach ($curBlocks as $blk) {
+      if ($blk['title'] === 'Sales invoices') continue;
+      $tot = 0.0; $cnt = 0; $noRate = [];
+      foreach ($blk['rows'] as $r) { $one = $pkrFor1($r['cur']); if ($one <= 0) $noRate[$r['cur']] = true; $tot += $r['own'] * ($one > 0 ? $one : 1); $cnt += $r['n']; }
+      $stripItems[] = ['title' => $blk['title'], 'tot' => $tot, 'cnt' => $cnt, 'noRate' => array_keys($noRate)];
+  }
+  if ($stripItems): ?>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:16px">
+  <?php foreach ($stripItems as $it): ?>
+  <div class="dash-card" style="<?= $cardCss ?>;padding:14px 18px">
+    <span style="color:#5a6b82;font-size:12.5px"><?= e($it['title']) ?></span>
+    <div style="font-size:20px;font-weight:700;color:#152033;font-variant-numeric:tabular-nums;margin-top:2px"><?= number_format($it['tot'], 0) ?></div>
+    <div style="font-size:11.5px;color:#8a97ab"><?= (int)$it['cnt'] ?> in <?= e($periodLabel) ?> · PKR<?= $it['noRate'] ? ' · <b style="color:#9b1c2a">no rate for ' . e(implode(', ', $it['noRate'])) . '</b>' : '' ?></div>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px 22px">
-  <?php foreach ($curBlocks as $blk): $tot = 0.0; $cnt = 0; ?>
-    <div style="min-width:0">
-      <div style="font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#5a6b82;margin-bottom:4px"><?= e($blk['title']) ?></div>
-      <table style="width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums">
-        <?php foreach ($blk['rows'] as $r): $one = $pkrFor1($r['cur']); $pkr = $r['own'] * ($one > 0 ? $one : 1); $tot += $pkr; $cnt += $r['n']; ?>
-        <tr>
-          <td style="padding:5px 6px 5px 0;border-bottom:1px solid #edf1f6;white-space:nowrap"><b><?= e($r['cur']) ?></b> <span style="color:#8a97ab">· <?= (int)$r['n'] ?></span></td>
-          <td style="padding:5px 6px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap"><?= number_format($r['own'], 2) ?></td>
-          <td style="padding:5px 6px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap;color:#5a6b82"><?= $r['cur'] === 'PKR' ? '' : ($one > 0 ? '× ' . number_format($one, 2) : '<b style="color:#9b1c2a">no rate</b>') ?></td>
-          <td style="padding:5px 0 5px 6px;border-bottom:1px solid #edf1f6;text-align:right;white-space:nowrap;font-weight:600"><?= number_format($pkr, 0) ?></td>
-        </tr>
-        <?php endforeach; ?>
-        <tr>
-          <td style="padding:6px 6px 0 0;font-weight:700">Total <span style="color:#8a97ab;font-weight:400">· <?= (int)$cnt ?></span></td><td></td>
-          <td style="padding:6px 6px 0;text-align:right;color:#5a6b82">PKR</td>
-          <td style="padding:6px 0 0 6px;text-align:right;font-weight:800"><?= number_format($tot, 0) ?></td>
-        </tr>
-      </table>
-    </div>
   <?php endforeach; ?>
-  </div>
 </div>
-<?php endif; ?>
+<?php endif; endif; ?>
 
 <?php if ($canSeeAnalytics && $dashCheck): ?>
 <details class="dash-card" style="<?= $cardCss ?>;padding:14px 20px;margin-bottom:16px<?= $dashOdd ? ';border-color:rgba(190,30,45,.4)' : '' ?>" <?= $dashOdd ? 'open' : '' ?>>
@@ -913,7 +951,7 @@ flash();
     <?= $dashOdd ? '⚠ ' . $dashOdd . ' invoice' . ($dashOdd === 1 ? '' : 's') . ' to check — sales far above the cost entered. ' : '' ?>How these figures were worked out (<?= count($dashCheck) ?> invoice<?= count($dashCheck) === 1 ? '' : 's' ?> in <?= e($periodLabel) ?>)
   </summary>
   <p style="margin:10px 0 8px;font-size:12.5px;color:#5a6b82;line-height:1.6">
-    Each invoice in its own currency, the rate from Settings, and the result in PKR. Cost is in the invoice's currency too (Final Costing works in the invoice currency).
+    Each invoice in its own currency, the rate from Settings, and the result in PKR. A Final Costing made in another currency is converted with the same rates.
     <?php if ($dashOdd): ?><b style="color:#9b1c2a">A red row usually means the unit prices were typed in rupees on an invoice whose currency is not PKR, or the currency of the invoice is wrong.</b> Open it and correct the currency or the prices.<?php endif; ?>
   </p>
   <div style="overflow-x:auto">
