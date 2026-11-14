@@ -88,3 +88,32 @@ Nothing is ever deleted. A cancelled sheet's lines stay in every statement, stru
 - Production (`zp_entries`, `zp_pay`) is copied into the ledger idempotently (`source_key` `zpe:<worker>:<date>`, `zpp:<id>`), only when something changed, and matched to employees in PHP (the production tables may have a different collation).
 - The attendance backup (`att_backup.php`) covers the `att_fin_*` tables.
 - Tests: `tests/zatt_fin_test.php` (the rules) and `tests/zatt_finweb_test.php` (API, permissions, the screen in a real browser).
+
+## Employee Ledger and entries (migration 0018)
+
+The **Employee Ledger** tab shows everybody between two dates, or one person's
+statement (balance brought forward, each line with its reference, running
+balance, period totals), with Print / PDF and Excel export. Clicking a line
+opens the pay sheet or entry it came from.
+
+Four buttons make entries for one person or many:
+
+| Button | What it makes | After approval |
+|---|---|---|
+| Add Earning | overtime, production incentive, bonus, allowance, other earning | **posted** to the ledger; paid with the next pay sheet ("Balance owed from before") or by Record Payment |
+| Add Deduction | unpaid leave, advance recovery, loan recovery, other deduction | **posted**; never more than is owed to the person |
+| Record Payment | part or all of what is owed, by cash or bank | **approved**, then Accounts records the payment (PAY- line) |
+| Advance / Loan | the existing advance or loan dialog | recovered on the following sheets |
+
+Every entry is an *entry sheet* (`att_fin_sheets.kind = 'entry'`, reference
+`ENT-yymmdd-NN`) and waits for a second person's approval, exactly like a pay
+sheet. Entries are not amended: they are sent back and entered again. A posted
+entry can be cancelled by Audit or Admin; its lines are struck through.
+
+**No money is promised twice.** `FinanceService::owedFree()` is the balance
+less what approved sheets will pay and less what waiting sheets carry out of
+the balance. A new pay sheet's "Balance owed from before" and a payment entry
+can only take from that.
+
+Migration 0018 widens `att_fin_sheets.kind` (adds `entry`) and `status` (adds
+`posted`). Its rollback narrows them again only while no entry exists.

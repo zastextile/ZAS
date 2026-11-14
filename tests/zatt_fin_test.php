@@ -390,6 +390,67 @@ $sm2 = Fin::statement($emp['D003'], '2026-03-06', '2026-03-06', $C);
 ok($sm2['opening_paisa'] === 300000 && $sm2['rows'] === [] && $sm2['closing_paisa'] === 300000, '  a later window opens with the balance brought forward');
 ok($code(Fin::statement($emp['S001'], '2026-03-01', '2026-03-05', $H)) === 'NOT_FOUND', '  a HOD gets no statement for a salaried person');
 
+echo "12d. Entries from the Employee Ledger: earning, deduction, payment — always approved first\n";
+Fin::setToday('2026-03-05');
+$b3 = Fin::balance($emp['D003']); $b1 = Fin::balance($emp['D001']);
+$e1 = Fin::createEntry('earning', '2026-03-05', [
+    ['employee_id' => $emp['D003'], 'type' => 'bonus', 'amount_paisa' => 150000],
+    ['employee_id' => $emp['D001'], 'type' => 'bonus', 'amount_paisa' => 150000],
+    ['employee_id' => $emp['D001'], 'type' => 'overtime', 'label' => 'Sunday overtime · 4 h', 'amount_paisa' => 60000, 'reason' => 'Order 5236 shipment']], 'Eid bonus', $C, $acc);
+ok($e1['ok'] && str_starts_with($e1['ref'], 'ENT-') && $e1['people'] === 2 && $e1['total_paisa'] === 360000, 'ADD EARNING for two people at once: one entry ENT-…, 2 people, 3,600 — ' . ($e1['error'] ?? ''));
+ok(Fin::balance($emp['D003']) === $b3 && Fin::balance($emp['D001']) === $b1, '  nothing is in the ledger before it is approved');
+ok($n("SELECT COUNT(*) FROM att_fin_item_lines l JOIN att_fin_sheet_items i ON i.id = l.item_id WHERE i.sheet_id = ? AND l.reason = 'Eid bonus'", [$e1['sheet_id']]) === 2
+   && $n("SELECT COUNT(*) FROM att_fin_item_lines l JOIN att_fin_sheet_items i ON i.id = l.item_id WHERE i.sheet_id = ? AND l.reason = 'Order 5236 shipment'", [$e1['sheet_id']]) === 1, '  the shared reason goes on every line; a line\'s own reason wins');
+ok($code(Fin::createEntry('earning', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'bonus', 'amount_paisa' => 1000]], '', $C, $acc)) === 'REASON_REQUIRED', '  an earning needs a reason');
+ok($code(Fin::createEntry('earning', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'leave', 'amount_paisa' => 1000]], 'x', $C, $acc)) === 'VALIDATION', '  unpaid leave is not an earning');
+ok($code(Fin::createEntry('earning', '2026-03-06', [['employee_id' => $emp['D001'], 'type' => 'bonus', 'amount_paisa' => 1000]], 'x', $C, $acc)) === 'VALIDATION', '  no date in the future');
+ok($code(Fin::createEntry('earning', '2026-03-05', [['employee_id' => $emp['S001'], 'type' => 'bonus', 'amount_paisa' => 1000]], 'x', $H, $hod)) === 'FORBIDDEN'
+   && $code(Fin::createEntry('earning', '2026-03-05', [['employee_id' => $emp['D003'], 'type' => 'bonus', 'amount_paisa' => 1000]], 'x', $H, $hod)) === 'FORBIDDEN', '  a HOD cannot make an entry for a salaried person, nor for another department');
+ok($code(Fin::createEntry('earning', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'bonus', 'amount_paisa' => 0]], 'x', $C, $acc)) === 'VALIDATION', '  an amount of zero is refused');
+ok($code(Fin::amendSheet($e1['sheet_id'], [['employee_id' => $emp['D001'], 'changes' => []]], $U, $aud)) === 'VALIDATION', '  an entry is not amended: it is sent back and entered again');
+ok($code(Fin::approve($e1['sheet_id'], $C, $acc)) === 'FORBIDDEN', '  Accounts cannot approve it');
+$ap = Fin::approve($e1['sheet_id'], $U, $aud);
+ok($ap['ok'] && $ap['status'] === 'posted', 'Audit approves: the entry is POSTED to the ledger (nothing to hand over)');
+ok(Fin::balance($emp['D003']) === $b3 + 150000 && Fin::balance($emp['D001']) === $b1 + 210000, '  D003 is owed 1,500 more, D001 2,100 more');
+$st = Fin::statement($emp['D001'], '2026-03-05', '2026-03-05', $C);
+$refs = implode(' ', array_column($st['rows'], 'ref'));
+ok(preg_match('/BON-2603-\d{6}/', $refs) === 1 && preg_match('/OT-2603-\d{6}/', $refs) === 1, '  the ledger shows BON- and OT- lines — ' . $refs);
+ok(in_array($e1['sheet_id'], array_column($st['rows'], 'sheet_id'), true), '  each line knows the entry it came from, so a click opens it');
+ok(Fin::overview($C, $acc)['sheets']['posted'] === 1, '  Home counts it as posted');
+
+$b1 = Fin::balance($emp['D001']);
+ok(str_contains((string) (Fin::createEntry('deduction', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'deduction', 'amount_paisa' => $b1 + 100]], 'Damage', $C, $acc)['error'] ?? ''), 'cannot be taken off'),
+   'ADD DEDUCTION: never more than is owed — the person would end up owing the company');
+$e2 = Fin::createEntry('deduction', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'leave', 'label' => 'Unpaid leave · 1 day', 'amount_paisa' => 50000]], 'Absent Saturday, not marked in Attendance', $C, $acc);
+Fin::approve($e2['sheet_id'], $U, $aud);
+ok(Fin::balance($emp['D001']) === $b1 - 50000 && preg_match('/LVE-2603-\d{6}/', implode(' ', array_column(Fin::statement($emp['D001'], '2026-03-05', '2026-03-05', $C)['rows'], 'ref'))) === 1, '  unpaid leave 500 is taken off, as an LVE- line');
+$adv = Fin::giveAdvance(['employee_id' => $emp['D001'], 'kind' => 'loan', 'amount_paisa' => 200000, 'per_pay_paisa' => 50000, 'given_on' => '2026-03-05'], $acc)['advance_id'];
+ok($code(Fin::createEntry('deduction', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'loan', 'amount_paisa' => 50000]], 'x', $C, $acc)) === 'VALIDATION', '  a loan recovery must say which loan');
+ok($code(Fin::createEntry('deduction', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'loan', 'advance_id' => $adv, 'amount_paisa' => 250000]], 'x', $C, $acc)) === 'VALIDATION', '  and cannot take more than is still owed on it');
+$b1 = Fin::balance($emp['D001']);
+$e3 = Fin::createEntry('deduction', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'loan', 'advance_id' => $adv, 'amount_paisa' => 100000]], 'Two instalments at once', $C, $acc);
+Fin::approve($e3['sheet_id'], $U, $aud);
+ok($n('SELECT recovered_paisa FROM att_fin_advances WHERE id = ?', [$adv]) === 100000 && Fin::balance($emp['D001']) === $b1 - 100000, '  LOAN RECOVERY 1,000: the loan is 1,000 lower and so is the balance (LREC- line)');
+
+$b3 = Fin::balance($emp['D003']);
+ok($code(Fin::createEntry('payment', '2026-03-05', [['employee_id' => $emp['D003'], 'amount_paisa' => $b3 + 1]], '', $C, $acc)) === 'VALIDATION', 'RECORD PAYMENT: never more than is owed');
+$e4 = Fin::createEntry('payment', '2026-03-05', [['employee_id' => $emp['D003'], 'amount_paisa' => 100000, 'method' => 'bank']], 'Part of the old balance', $C, $acc);
+ok($e4['ok'] && $e4['total_paisa'] === 100000, '  a part payment of 1,000 waits for approval');
+$pv = $row(Fin::preview('daily', '2026-03-05', '2026-03-05', $C), $emp['D003']);
+ok($pv === null || ($line($pv['lines'], 'carry')['calc_paisa'] ?? 0) === $b3 - 100000, '  meanwhile a new pay sheet offers only what is not already on its way — the same money is never paid twice');
+ok($code(Fin::createEntry('payment', '2026-03-05', [['employee_id' => $emp['D003'], 'amount_paisa' => $b3 - 50000]], '', $C, $acc)) === 'VALIDATION', '  a second payment entry cannot take the same money either');
+$ap4 = Fin::approve($e4['sheet_id'], $U, $aud);
+ok($ap4['status'] === 'approved' && Fin::balance($emp['D003']) === $b3, '  approved, it is ready to pay — the balance moves only when it is paid');
+ok(Fin::pay($e4['sheet_id'], '2026-03-05', '', $C, $acc)['ok'] && Fin::balance($emp['D003']) === $b3 - 100000
+   && $n("SELECT COUNT(*) FROM att_fin_ledger WHERE sheet_id = ? AND kind = 'payment' AND method = 'bank' AND amount_paisa = 100000", [$e4['sheet_id']]) === 1, '  Accounts pays it: a PAY- line of 1,000 by bank, and 1,000 less is owed');
+
+$b1 = Fin::balance($emp['D001']);
+ok($code(Fin::cancelSheet($e1['sheet_id'], 'Bonus was for next month', $C, $acc)) === 'FORBIDDEN', 'a posted entry is cancelled by Audit or Admin only');
+ok(Fin::cancelSheet($e1['sheet_id'], 'Bonus was for next month', $U, $aud)['ok'] && Fin::balance($emp['D001']) === $b1 - 210000, '  cancelled: its lines are struck through and the 2,100 comes off again');
+$e5 = Fin::createEntry('earning', '2026-03-05', [['employee_id' => $emp['D001'], 'type' => 'production', 'amount_paisa' => 30000]], 'Line target met', $H, $hod);
+ok($e5['ok'], 'a HOD may enter an incentive for their own department\'s daily worker');
+ok($code(Fin::approve($e5['sheet_id'], $H, $hod)) === 'FORBIDDEN' && Fin::sendBack($e5['sheet_id'], 'Wrong amount', $H, $hod)['ok'], '  but not approve it; they can take it back');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

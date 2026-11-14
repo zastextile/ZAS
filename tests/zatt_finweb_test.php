@@ -401,10 +401,12 @@ const body = p => p.textContent('#fin-body');
     t = await body(m);
     check('Ledger tab: everybody in one place with owed-before / earned / paid / owed-at-end', /Owed before/.test(t) && /Sami Salaried/.test(t) && /Sara Salaried/.test(t) && /Total —/.test(t));
     await m.locator('tr.click', { hasText: 'Sami Salaried' }).click();
-    await m.waitForFunction(() => /Wages paid/.test(document.getElementById('fin-shade').textContent));
-    check('  a row opens that person\'s ledger page for the same dates', /ledger/.test(await m.textContent('#fin-shade')) && /Balance brought forward/.test(await m.textContent('#fin-shade')) && /PERIOD TOTALS/.test(await m.textContent('#fin-shade')));
+    await m.waitForFunction(() => /Balance brought forward/.test(document.getElementById('fin-body').textContent));
+    t = await body(m);
+    check('  a row opens that person\'s ledger on the same page, for the same dates', /Wages payable/.test(t) && /Balance brought forward/.test(t) && /PERIOD TOTALS/.test(t) && /Closing balance/.test(t), t.slice(0, 300));
     await shot(m, '7-phone-ledger');
-    await m.click('#fin-shade button:has-text("Close")');
+    await m.click('button:has-text("← Everyone")');
+    await m.waitForSelector('table.lg tr.click');
     check('no script error (phone)', e3.length === 0, e3.join(' | '));
     await c3.close();
 
@@ -461,6 +463,63 @@ const body = p => p.textContent('#fin-body');
     check('no script error (HR)', e5.length === 0, e5.join(' | '));
     await c5.close();
 
+    // ---- THE EMPLOYEE LEDGER: Accounts adds a bonus, Audit approves, it shows with its reference
+    const c6 = await browser.newContext({ viewport: { width: 1366, height: 900 }, timezoneId: 'Asia/Karachi', deviceScaleFactor: SHOTS ? 2 : 1 });
+    const g = await signIn(c6, 'acc@zas.test');
+    const e6 = []; g.on('pageerror', e => e6.push(e.message));
+    await g.goto(BASE + '/att_finance.php#ledger');
+    await g.waitForSelector('table.lg tr.click');
+    check('EMPLOYEE LEDGER: the four buttons, the figures and everyone in one table', (await g.locator('.lgacts button').count()) === 4 && (await g.locator('.lgcard').count()) === 5 && /Total —/.test(await body(g)));
+    await g.waitForTimeout(500); await shot(g, '13-ledger-everyone');
+    await g.click('.lgacts button:has-text("Add Earning")');
+    await g.waitForSelector('#fin-shade table.entry');
+    const r1 = g.locator('#fin-shade table.entry tbody tr').first();
+    await r1.locator('input[aria-label=Employee]').fill('Sami Salaried (S002)');
+    await r1.locator('input[aria-label=Employee]').dispatchEvent('change');
+    await r1.locator('select[aria-label=Type]').selectOption('bonus');
+    await r1.locator('input[aria-label=Amount]').fill('2500');
+    const r2 = g.locator('#fin-shade table.entry tbody tr').nth(1);
+    await r2.locator('input[aria-label=Employee]').fill('Sara Salaried (S001)');
+    await r2.locator('input[aria-label=Employee]').dispatchEvent('change');
+    await r2.locator('select[aria-label=Type]').selectOption('overtime');
+    await r2.locator('input[aria-label=Description]').fill('Sunday overtime · 6 h');
+    await r2.locator('input[aria-label=Amount]').fill('1800');
+    await g.fill('#fin-shade input[placeholder^="e.g. Eid"]', 'Eid bonus and Sunday work');
+    await g.waitForTimeout(300); await shot(g, '14-add-earning');
+    await g.click('#fin-shade button:has-text("Send for approval")');
+    await g.waitForFunction(() => document.getElementById('fin-shade').hidden && /sent for approval/.test(document.getElementById('fin-toast').textContent));
+    check('  Add Earning for two people: one entry sent for approval', /ENT-\d{6}-\d{2} sent for approval — 2 people, Rs 4,300/.test(await g.textContent('#fin-toast')), await g.textContent('#fin-toast'));
+    await g.click('.lgacts button:has-text("Record Payment")');
+    await g.waitForSelector('#fin-shade table.entry');
+    check('  Record Payment shows what each person is owed and how they are paid', (await g.locator('#fin-shade table.entry th').allTextContents()).join('|').includes('Owed now'));
+    await g.click('#fin-shade button:has-text("Close")');
+    check('no script error (ledger, Accounts)', e6.length === 0, e6.join(' | '));
+    await c6.close();
+    const c7 = await browser.newContext({ viewport: { width: 1366, height: 900 }, timezoneId: 'Asia/Karachi', deviceScaleFactor: SHOTS ? 2 : 1 });
+    const v = await signIn(c7, 'audit@zas.test');
+    const e7 = []; v.on('pageerror', e => e7.push(e.message));
+    await v.goto(BASE + '/att_finance.php#sheets');
+    await v.waitForSelector('.scard');
+    await v.locator('.scard', { hasText: 'ENT-' }).first().click();
+    await v.waitForSelector('button:has-text("Approve")');
+    check('  Audit opens the entry: no Amend, just Approve or Send back', (await v.locator('#fin-body button:has-text("Amend")').count()) === 0 && (await v.locator('#fin-body button:has-text("Send back")').count()) === 1);
+    await v.click('#fin-body button:has-text("Approve")');
+    await v.click('#fin-shade button.pri:has-text("Approve")');
+    await v.waitForFunction(() => /Posted to ledger/.test(document.getElementById('fin-body').textContent));
+    check('  approved, it is POSTED to the ledger', true);
+    await v.click('#fin-tabs button:has-text("Employee Ledger")');
+    await v.waitForSelector('table.lg tr.click');
+    await v.locator('table.lg tr.click', { hasText: 'Sami Salaried' }).click();
+    await v.waitForFunction(() => /Balance brought forward/.test(document.getElementById('fin-body').textContent) && /BON-/.test(document.getElementById('fin-body').textContent));
+    t = await body(v);
+    check('  Sami\'s ledger now has the bonus, with its BON- reference and the reason', /BON-\d{4}-\d{6}/.test(t) && /Eid bonus and Sunday work/.test(t) && /Closing balance/.test(t), t.slice(0, 400));
+    await v.waitForTimeout(500); await shot(v, '15-ledger-person');
+    await v.locator('table.lg tr.click', { hasText: 'BON-' }).click();
+    await v.waitForFunction(() => /ENT-/.test(document.getElementById('fin-body').textContent) && /Posted to ledger/.test(document.getElementById('fin-body').textContent));
+    check('  clicking the line opens the entry it came from', true);
+    check('no script error (ledger, Audit)', e7.length === 0, e7.join(' | '));
+    await c7.close();
+
     // ---- HOD
     const c4 = await browser.newContext({ viewport: { width: 1366, height: 900 } });
     const h = await signIn(c4, 'hod@zas.test');
@@ -484,7 +543,8 @@ if (preg_match('/RESULT(\[.*\])/s', $outp, $mm)) {
 } else {
     ok(false, 'the browser test produced a result: ' . substr($outp, 0, 400));
 }
-ok($n("SELECT COUNT(*) FROM att_fin_sheets WHERE status = 'paid'") === 2 && Fin::balance($emp['S002']) === 0, 'after the screen: two sheets paid, S002 settled at 43,000');
+ok($n("SELECT COUNT(*) FROM att_fin_sheets WHERE status = 'paid'") === 2 && Fin::balance($emp['S002']) === 250000, 'after the screen: two sheets paid, S002 settled at 43,000, then owed only the 2,500 bonus entered from the ledger');
+ok($n("SELECT COUNT(*) FROM att_fin_sheets WHERE kind = 'entry' AND status = 'posted'") === 1 && $n("SELECT COUNT(*) FROM att_fin_ledger WHERE line_kind = 'bonus' AND amount_paisa = 250000") === 1, '  the entry is posted once, as one bonus line');
 ok($n("SELECT COUNT(*) FROM att_fin_item_lines WHERE kind = 'deduction' AND label = 'Canteen' AND amount_paisa = 20000") === 3, 'the bulk line is on all three daily workers\' sheet');
 
 echo "\nPEOPLE FINANCE (web + screen): $P passed, $F failed\n";

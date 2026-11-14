@@ -136,7 +136,7 @@ page_header('People Finance');
 .fin .pill{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:3px;background:#eef1f5;color:#3b4a5a;white-space:nowrap}
 .fin .pill.waiting,.fin .pill.amend{background:var(--warn-bg);color:var(--warn-ink)}
 .fin .pill.approved{background:var(--sel);color:var(--pri)}
-.fin .pill.paid{background:#e7f4ea;color:var(--earn)}
+.fin .pill.paid,.fin .pill.posted{background:#e7f4ea;color:var(--earn)}
 .fin .pill.returned,.fin .pill.cancelled,.fin .pill.none{background:var(--bad-bg);color:var(--bad)}
 .fin .av{width:30px;height:30px;border-radius:50%;background:#e1e9f3;color:var(--navy);font-weight:700;font-size:11.5px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
 .fin .nm b{display:block;font-size:13px;font-weight:600}.fin .nm span{font-size:12px;color:var(--muted)}
@@ -220,6 +220,41 @@ page_header('People Finance');
 .fin table.stmt td{white-space:nowrap}.fin table.stmt td:nth-child(2){font-family:'IBM Plex Mono',ui-monospace,Consolas,monospace;font-size:12px}
 .fin table.stmt td:nth-child(3){white-space:normal;min-width:180px}
 .fin table.stmt tr.tot td{font-family:var(--ff);font-size:13px}
+/* Employee Ledger: filter panel, coloured action buttons, figures, navy-headed ledger */
+.fin .lggrid{display:grid;grid-template-columns:2fr 1.2fr 1.2fr 1fr 1fr 1fr;gap:10px;align-items:end}
+.fin .lgacts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fin .lgacts .btn{color:#fff;border:0;min-height:32px;padding:7px 14px}
+.fin .lgacts .act-earn{background:#1f7a3a}.fin .lgacts .act-earn:hover{background:#17602d}
+.fin .lgacts .act-ded{background:#d9730d}.fin .lgacts .act-ded:hover{background:#b85f08}
+.fin .lgacts .act-pay{background:var(--pri)}.fin .lgacts .act-pay:hover{background:var(--pri-d)}
+.fin .lgacts .act-adv{background:#6b46c1}.fin .lgacts .act-adv:hover{background:#5a37a8}
+.fin .lgtip{margin-left:auto;background:var(--sel);color:#123d6a;border:1px solid #c5dbf2;border-radius:4px;padding:6px 10px;font-size:12px}
+.fin .lgcards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.fin .lgcard{background:#fff;border:1px solid var(--line);border-left:4px solid var(--navy);border-radius:4px;padding:9px 12px;display:grid;gap:2px}
+.fin .lgcard span{font-size:12px;font-weight:600;color:var(--muted)}
+.fin .lgcard b{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--navy)}
+.fin .lgcard.k-earn{border-left-color:#1f7a3a;background:#f4faf5}.fin .lgcard.k-earn b{color:#1f7a3a}
+.fin .lgcard.k-ded{border-left-color:#d9730d;background:#fff8f1}.fin .lgcard.k-ded b{color:#b85f08}
+.fin .lgcard.k-pay{border-left-color:var(--pri);background:#f3f8fd}.fin .lgcard.k-pay b{color:var(--pri)}
+.fin .lghead .av{width:36px;height:36px}
+.fin table.stmt.lg th{background:var(--navy);color:#fff;border-bottom:0;font-size:12px;padding:8px 10px}
+.fin table.stmt.lg tr.open td{background:#e8f1fb;font-weight:600}
+.fin table.stmt.lg tr.tot td{background:#e8f1fb;border-top:1px solid #b9d2ee;font-weight:700}
+.fin table.stmt.lg td{font-size:13px}
+.fin table.stmt.lg td:nth-child(2){font-family:var(--ff);font-weight:500;font-size:12.5px}
+.fin table.stmt td.c-earn{color:#1f7a3a;font-weight:600}.fin table.stmt td.c-ded{color:#c2620a;font-weight:600}.fin table.stmt td.c-pay{color:var(--pri);font-weight:600}
+.fin table.stmt td.nil{color:#b6c0cb}
+.fin table.t.entry td{padding:5px 6px;vertical-align:middle}
+.fin table.t.entry input,.fin table.t.entry select{min-height:28px;padding:4px 7px}
+.fin table.t.entry input.n{text-align:right;font-weight:600;min-width:110px}
+.fin table.t.entry td:first-child input{min-width:210px}
+.fin table.t.entry select[aria-label=Type]{min-width:160px}
+.fin table.t.entry input.bad{border-color:var(--bad)}
+.fin table.t.entry .x{border:0;background:none;color:var(--bad);font-size:18px;cursor:pointer;padding:2px 6px}
+.fin table.t.entry select[hidden]{display:none}
+.fin table.t.entry td:nth-child(3) select{margin-top:4px}
+@media (max-width:1100px){.fin .lggrid{grid-template-columns:repeat(3,minmax(0,1fr))}.fin .lgcards{grid-template-columns:repeat(2,minmax(0,1fr))}.fin .lgtip{margin-left:0}}
+@media (max-width:620px){.fin .lggrid,.fin .lgcards{grid-template-columns:1fr}}
 
 /* dialogs */
 .fin-shade{position:fixed;inset:0;background:rgba(15,39,66,.42);z-index:900;display:flex;align-items:center;justify-content:center;padding:14px}
@@ -297,9 +332,9 @@ page_header('People Finance');
   var CSRF = <?= json_encode(csrf_token()) ?>;
   var body = document.getElementById('fin-body'), shade = document.getElementById('fin-shade'), toastEl = document.getElementById('fin-toast');
   var S = { caps: {}, depts: [], today: '', payDay: 4, tab: 'home', sheetFilter: 'waiting', counts: {} };
-  var KIND = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractors' };
-  var KIND1 = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractor' };
-  var STATUS = { waiting: 'Waiting for approval', approved: 'Approved — ready to pay', paid: 'Paid', returned: 'Sent back', cancelled: 'Cancelled' };
+  var KIND = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractors', entry: 'Entry' };
+  var KIND1 = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractor', entry: 'Entry' };
+  var STATUS = { waiting: 'Waiting for approval', approved: 'Approved — ready to pay', paid: 'Paid', returned: 'Sent back', cancelled: 'Cancelled', posted: 'Posted to ledger' };
   var DAYS = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   var ADD = { bonus: 'Bonus', other_earning: 'Other earning', deduction: 'Deduction' };
 
@@ -349,6 +384,7 @@ page_header('People Finance');
   var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function nice(s){ if (!s) return ''; var d = dt(String(s).slice(0, 10)); return d.getUTCDate() + ' ' + MON[d.getUTCMonth()] + ' ' + d.getUTCFullYear(); }
   function period(k, f, t){
+    if (k === 'entry') return nice(t);
     if (k === 'contract') return 'up to ' + nice(t);
     var a = dt(f), b = dt(t);
     if (k === 'salary' && a.getUTCDate() === 1 && addDays(t, 1).slice(8) === '01') return MON[a.getUTCMonth()] + ' ' + a.getUTCFullYear();
@@ -399,7 +435,7 @@ page_header('People Finance');
   }
 
   // ------------------------------------------------------------ tabs
-  var TABS = [['home', 'Home'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Ledger'], ['advances', 'Advances & loans']];
+  var TABS = [['home', 'Home'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Employee Ledger'], ['advances', 'Advances & loans']];
   function drawTabs(){
     var t = document.getElementById('fin-tabs'); t.textContent = '';
     TABS.forEach(function(x){
@@ -702,17 +738,17 @@ page_header('People Finance');
     call('GET', '/finance/sheets').then(function(r){
       if (!r.ok) return show([fail(r)]);
       var all = r.sheets, f = S.sheetFilter;
-      var chips = el('div', { class: 'seg', role: 'group', 'aria-label': 'Which sheets' }, [['waiting', 'Waiting'], ['approved', 'To pay'], ['paid', 'Paid'], ['closed', 'Sent back / cancelled'], ['all', 'All']].map(function(x){
+      var chips = el('div', { class: 'seg', role: 'group', 'aria-label': 'Which sheets' }, [['waiting', 'Waiting'], ['approved', 'To pay'], ['paid', 'Paid'], ['posted', 'Posted entries'], ['closed', 'Sent back / cancelled'], ['all', 'All']].map(function(x){
         var n = all.filter(function(s){ return match(s, x[0]); }).length;
         return el('button', { type: 'button', 'aria-pressed': f === x[0] ? 'true' : 'false', text: x[1] + ' ' + n, click: function(){ S.sheetFilter = x[0]; sheets(); } }); }));
       function match(s, k){ return k === 'all' || (k === 'closed' ? (s.status === 'returned' || s.status === 'cancelled') : s.status === k); }
       var list = all.filter(function(s){ return match(s, f); });
       var cards = el('div', { class: 'plist' }, list.map(function(s){
         return el('button', { type: 'button', class: 'cardx scard', click: function(){ sheet(s.id); } }, [
-          el('div', { class: 'av', text: s.kind === 'salary' ? 'S' : s.kind === 'daily' ? 'D' : 'C' }),
+          el('div', { class: 'av', text: s.kind === 'salary' ? 'S' : s.kind === 'daily' ? 'D' : s.kind === 'entry' ? 'E' : 'C' }),
           el('div', { class: 'nm' }, [el('b', { text: KIND[s.kind] + ' · ' + period(s.kind, s.period_from, s.period_to) }),
             el('span', { text: s.ref + ' · ' + s.people + (s.people === 1 ? ' person' : ' people') + ' · prepared by ' + (s.prepared_by_name || 'someone') + (s.amended ? ' · ' + s.amended + ' changed by hand' : '') })]),
-          el('div', { class: 'amt' }, [el('b', { text: rs(s.total_paisa) }), el('span', { class: 'pill ' + s.status, text: STATUS[s.status] })])]);
+          el('div', { class: 'amt' }, [el('b', { text: (s.total_paisa < 0 ? '−' : '') + rs(Math.abs(s.total_paisa)) }), el('span', { class: 'pill ' + s.status, text: STATUS[s.status] })])]);
       }));
       show([chips, list.length ? cards : el('div', { class: 'cardx empty', text: 'No pay sheets here.' })]);
     });
@@ -723,7 +759,9 @@ page_header('People Finance');
       if (!r.ok) return show([btn('← Pay sheets', function(){ sheets(); }, 'sm'), fail(r)]);
       var s = r.sheet, c = S.caps, models = {}, open = {};
       r.items.forEach(function(i){ models[i.employee_id] = newModel(i.method); });
-      var mayAmend = s.status === 'waiting' && (c.approve || r.own);
+      var isEntry = s.kind === 'entry', payEntry = isEntry && r.items.some(function(i){ return i.lines.some(function(l){ return l.side === 'carry'; }); });
+      var maySendBack = s.status === 'waiting' && (c.approve || r.own);
+      var mayAmend = maySendBack && !isEntry;
       var mayApprove = s.status === 'waiting' && c.approve && (!r.own || c.admin);
       var head = el('div', { class: 'cardx stack' }, [
         el('div', { class: 'row', style: 'justify-content:space-between' }, [
@@ -732,11 +770,14 @@ page_header('People Finance');
         el('div', { class: 'track3' }, [
           el('div', { class: 'done' }, [el('b', { text: '1 · Prepared' }), nice(s.prepared_at)]),
           el('div', { class: s.approved_at ? 'done' : '' }, [el('b', { text: '2 · Approved' }), s.approved_at ? nice(s.approved_at) : (s.status === 'waiting' ? 'waiting' : '—')]),
-          el('div', { class: s.status === 'paid' ? 'done' : '' }, [el('b', { text: '3 · Paid' }), s.pay_date && s.status === 'paid' ? nice(s.pay_date) : (s.status === 'approved' ? 'ready' : '—')])]),
+          isEntry && !payEntry ? el('div', { class: s.status === 'posted' ? 'done' : '' }, [el('b', { text: '3 · Posted to ledger' }), s.status === 'posted' ? nice(s.approved_at) : '—'])
+            : el('div', { class: s.status === 'paid' ? 'done' : '' }, [el('b', { text: '3 · Paid' }), s.pay_date && s.status === 'paid' ? nice(s.pay_date) : (s.status === 'approved' ? 'ready' : '—')])]),
         (s.status === 'returned' || s.status === 'cancelled') && s.return_reason ? el('div', { class: 'err', text: (s.status === 'returned' ? 'Sent back: ' : 'Cancelled: ') + s.return_reason }) : null,
         s.off_day_reason ? el('div', { class: 'why', text: 'Paid on a ' + DAYS[isoDay(s.pay_date)] + ', not the usual pay day: ' + s.off_day_reason }) : null,
         s.status === 'waiting' && r.own && c.approve && !c.admin ? el('div', { class: 'why', text: 'You prepared this sheet, so someone else must approve it.' }) : null,
-        el('div', { class: 'kv' }, [el('span', { text: 'By bank' }), el('b', { text: rs(r.bank_paisa) }), el('span', { text: 'In cash' }), el('b', { text: rs(r.cash_paisa) }), el('span', { text: 'Total to pay' }), el('b', { style: 'font-size:18px', text: 'Rs ' + rs(r.total_paisa) })])]);
+        isEntry && !payEntry
+          ? el('div', { class: 'kv' }, [el('span', { text: 'Entry date' }), el('b', { text: nice(s.period_to) }), el('span', { text: r.total_paisa < 0 ? 'Taken off what is owed' : 'Added to what is owed' }), el('b', { style: 'font-size:18px', text: 'Rs ' + rs(Math.abs(r.total_paisa)) })])
+          : el('div', { class: 'kv' }, [el('span', { text: 'By bank' }), el('b', { text: rs(r.bank_paisa) }), el('span', { text: 'In cash' }), el('b', { text: rs(r.cash_paisa) }), el('span', { text: 'Total to pay' }), el('b', { style: 'font-size:18px', text: 'Rs ' + rs(r.total_paisa) })])]);
       var listBox = el('div', { class: 'plist' }), bar = el('div', { class: 'sumbar', hidden: true });
       function drawList(){
         listBox.textContent = '';
@@ -784,10 +825,10 @@ page_header('People Finance');
       if (!editing) {
         if (mayAmend) acts.appendChild(btn('Amend', function(){ sheet(id, true); }));
         if (mayApprove) acts.appendChild(btn('Approve', function(){
-          modal([el('h2', { text: 'Approve this pay sheet?' }), el('p', { class: 'muted', text: r.items.length + (r.items.length === 1 ? ' person' : ' people') + ' · Rs ' + rs(r.total_paisa) + '. Once approved it cannot be amended; the earnings and deductions go into each person\'s statement and advances are recovered.' }),
-            el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Not yet', closeModal), btn('Approve', function(e){ e.target.disabled = true; act('approve', {}, 'Approved. Accounts can now pay it.').then(function(x){ if (x && !x.ok) { closeModal(); toast(x.error, true); } }); }, 'pri')])]);
+          modal([el('h2', { text: isEntry ? 'Approve this entry?' : 'Approve this pay sheet?' }), el('p', { class: 'muted', text: r.items.length + (r.items.length === 1 ? ' person' : ' people') + ' · Rs ' + rs(Math.abs(r.total_paisa)) + '. ' + (isEntry && !payEntry ? 'Once approved it goes into each person\'s ledger at once.' : 'Once approved it cannot be amended; the earnings and deductions go into each person\'s statement and advances are recovered.') }),
+            el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Not yet', closeModal), btn('Approve', function(e){ e.target.disabled = true; act('approve', {}, isEntry && !payEntry ? 'Approved and posted to the ledger.' : 'Approved. Accounts can now pay it.').then(function(x){ if (x && !x.ok) { closeModal(); toast(x.error, true); } }); }, 'pri')])]);
         }, 'pri'));
-        if (mayAmend) acts.appendChild(btn('Send back', function(){
+        if (maySendBack) acts.appendChild(btn('Send back', function(){
           ask('Send this sheet back', 'It is closed, and the people on it can be prepared again.', [{ k: 'reason', label: 'Why', wide: true }], 'Send back', function(v){ return act('return', v, 'Sent back.'); });
         }, 'danger'));
         if (s.status === 'approved' && c.pay) acts.appendChild(btn('Record payment', function(){
@@ -795,7 +836,7 @@ page_header('People Finance');
             [{ k: 'pay_date', label: 'Paid on', type: 'date', value: S.today }, { k: 'reason', label: 'Reason (only if not ' + DAYS[S.payDay] + ')', wide: true, placeholder: 'e.g. Eid holiday on ' + DAYS[S.payDay] }], 'Paid', function(v){ return act('pay', v, 'Payment recorded.'); });
           inputs.pay_date.max = S.today;
         }, 'pri'));
-        if ((s.status === 'approved' && c.approve) || (s.status === 'paid' && c.admin)) acts.appendChild(btn('Cancel sheet', function(){
+        if (((s.status === 'approved' || s.status === 'posted') && c.approve) || (s.status === 'paid' && c.admin)) acts.appendChild(btn(isEntry ? 'Cancel entry' : 'Cancel sheet', function(){
           ask('Cancel this ' + (s.status === 'paid' ? 'PAID ' : '') + 'sheet', 'Nothing is deleted: every line stays in the statements, struck through with your reason, and recovered advances are put back. The people can then be prepared again.',
             [{ k: 'reason', label: 'Why', wide: true }], 'Cancel the sheet', function(v){ return act('cancel', v, 'Sheet cancelled.'); });
         }, 'danger'));
@@ -1115,55 +1156,261 @@ page_header('People Finance');
   // ------------------------------------------------------------ ledger
   /* Everybody in one place, between two dates. A row opens that person's
      statement for the same dates. */
-  var LG = { from: '', to: '', dept: '', q: '', type: '' };
+  // ------------------------------------------------------- employee ledger
+  /* THE EMPLOYEE LEDGER. Without a person chosen: everybody between two dates
+     (owed before, earned, deducted, paid, owed at the end). With a person: their
+     statement — balance brought forward, every line with its reference, the
+     running balance and the period totals. Add Earning, Add Deduction and
+     Record Payment make an ENTRY that waits for a second person's approval;
+     nothing reaches the ledger before that. Click a line to open the pay sheet
+     or entry it came from. */
+  var LG = { from: '', to: '', dept: '', q: '', type: '', emp: null };
+  var PEOPLE = null;
+  function loadPeople(){
+    return PEOPLE ? Promise.resolve(PEOPLE) : call('GET', '/finance/people').then(function(r){ PEOPLE = r.ok ? r.people : []; return PEOPLE; });
+  }
+  function personLabel(p){ return p.full_name + ' (' + p.code + ')'; }
+  function findPerson(text){
+    var v = String(text || '').trim().toLowerCase(); if (!v || !PEOPLE) return null;
+    return PEOPLE.filter(function(p){ return personLabel(p).toLowerCase() === v || String(p.code).toLowerCase() === v || p.full_name.toLowerCase() === v; })[0] || null;
+  }
+  function peopleList(id){
+    var old = document.getElementById(id); if (old) old.remove();
+    return el('datalist', { id: id }, (PEOPLE || []).filter(function(p){ return +p.active; }).map(function(p){ return el('option', { value: personLabel(p), label: p.department_name + (p.pay_type ? ' · ' + KIND1[p.pay_type] : '') }); }));
+  }
+  function openSheet(id){ closeModal(); S.tab = 'sheets'; drawTabs(); try { history.replaceState(null, '', '#sheets'); } catch (e) {} sheet(id); }
+  function dash(v, cls){ return v ? el('td', { class: 'num ' + cls, text: rs(v) }) : el('td', { class: 'num nil', text: '—' }); }
+
   function ledger(){
     if (!LG.from) { LG.from = S.today.slice(0, 8) + '01'; LG.to = S.today; }
     show([el('p', { class: 'muted', text: 'Loading…' })]);
-    call('GET', '/finance/ledger', { from: LG.from, to: LG.to }).then(function(r){
-      var from = el('input', { type: 'date', value: LG.from, max: S.today, change: function(){ LG.from = from.value; ledger(); } });
-      var to = el('input', { type: 'date', value: LG.to, max: S.today, change: function(){ LG.to = to.value; ledger(); } });
-      var quick = el('div', { class: 'row' }, [btn('This month', function(){ LG.from = S.today.slice(0, 8) + '01'; LG.to = S.today; ledger(); }, 'sm'),
-        btn('Last month', function(){ var m = monthRange(prevMonth()); LG.from = m[0]; LG.to = m[1]; ledger(); }, 'sm'),
-        btn('This year', function(){ LG.from = S.today.slice(0, 4) + '-01-01'; LG.to = S.today; ledger(); }, 'sm'),
-        btn('Everything', function(){ LG.from = '2000-01-01'; LG.to = S.today; ledger(); }, 'sm')]);
-      var bar = el('div', { class: 'cardx stack' }, [el('div', { class: 'formgrid' }, [field('From', from), field('To', to), quick])]);
-      if (!r.ok) return show([bar, fail(r)]);
-      var dept = el('select', { 'aria-label': 'Department', change: function(){ LG.dept = dept.value; draw(); } }, [el('option', { value: '', text: 'All departments' })].concat(
-        Object.keys(r.rows.reduce(function(a, x){ a[x.department_name] = 1; return a; }, {})).sort().map(function(d){ return el('option', { value: d, text: d }); })));
-      dept.value = LG.dept; if (dept.value !== LG.dept) LG.dept = '';
-      var type = el('select', { 'aria-label': 'Paid as', change: function(){ LG.type = type.value; draw(); } }, [['', 'Every kind of pay'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractors']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
+    loadPeople().then(function(){
+      var c = S.caps;
+      var who = el('input', { type: 'search', list: 'fin-emps', placeholder: 'Everyone — or type a name or code', value: LG.emp ? personLabel(LG.emp) : '', 'aria-label': 'Employee' });
+      who.addEventListener('change', function(){ var p = findPerson(who.value); LG.emp = p; if (p || !who.value.trim()) ledger(); });
+      who.addEventListener('search', function(){ if (!who.value.trim()) { LG.emp = null; ledger(); } });
+      var from = el('input', { type: 'date', value: LG.from, max: S.today, 'aria-label': 'From', change: function(){ LG.from = from.value; ledger(); } });
+      var to = el('input', { type: 'date', value: LG.to, max: S.today, 'aria-label': 'To', change: function(){ LG.to = to.value; ledger(); } });
+      var dept = el('select', { 'aria-label': 'Department', disabled: !!LG.emp }, [el('option', { value: '', text: 'All departments' })].concat((S.depts || []).map(function(d){ return el('option', { value: d.name, text: d.name }); })));
+      dept.value = LG.dept;
+      var type = el('select', { 'aria-label': 'Paid as', disabled: !!LG.emp }, [['', 'Every kind of pay'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractors']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
       type.value = LG.type;
-      var search = el('input', { type: 'search', placeholder: 'Search name or code', value: LG.q, 'aria-label': 'Search', input: function(){ LG.q = search.value.toLowerCase(); draw(); } });
-      var tiles = el('div', { class: 'steps', style: 'grid-template-columns:repeat(auto-fit,minmax(150px,1fr))' }), box = el('div', { class: 'cardx scroll' });
-      function draw(){
-        var rows = r.rows.filter(function(x){ return (!LG.dept || x.department_name === LG.dept) && (!LG.type || x.pay_type === LG.type) && (!LG.q || (x.full_name + ' ' + x.code).toLowerCase().indexOf(LG.q) >= 0); });
+      var span = function(a, b){ LG.from = a; LG.to = b; ledger(); };
+      var expUrl = LG.emp ? API + encodeURIComponent('/finance/people/' + LG.emp.employee_id + '/statement/export') + '&from=' + LG.from + '&to=' + LG.to
+                          : API + encodeURIComponent('/finance/ledger/export') + '&from=' + LG.from + '&to=' + LG.to;
+      var filters = el('div', { class: 'cardx lgfilter' }, [
+        el('div', { class: 'lggrid' }, [field('Employee', who), field('Department', dept), field('Paid as', type), field('Account', el('input', { type: 'text', value: 'Wages payable', disabled: true })),
+          field('From', from), field('To', to)]),
+        el('div', { class: 'row', style: 'justify-content:space-between;margin-top:10px' }, [
+          el('div', { class: 'row' }, [btn('This month', function(){ span(S.today.slice(0, 8) + '01', S.today); }, 'sm'), btn('Last month', function(){ var m = monthRange(prevMonth()); span(m[0], m[1]); }, 'sm'),
+            btn('This year', function(){ span(S.today.slice(0, 4) + '-01-01', S.today); }, 'sm'), btn('Everything', function(){ span('2000-01-01', S.today); }, 'sm')]),
+          el('div', { class: 'row' }, [btn('Print / PDF', function(){ printLedger(); }, 'sm'), el('a', { class: 'btn sm', href: expUrl, text: 'Export Excel' })])])]);
+      var mayEnter = c.salary || c.wage;
+      var actions = el('div', { class: 'lgacts' }, [
+        mayEnter ? btn('+ Add Earning', function(){ entryForm('earning'); }, 'act-earn') : null,
+        mayEnter ? btn('− Add Deduction', function(){ entryForm('deduction'); }, 'act-ded') : null,
+        mayEnter ? btn('Record Payment', function(){ entryForm('payment'); }, 'act-pay') : null,
+        c.pay ? btn('Advance / Loan', function(){ give(LG.emp); }, 'act-adv') : null,
+        el('span', { class: 'lgtip', text: mayEnter ? 'Entries wait for a second person\'s approval. Click any line to open where it came from.' : 'Click any line to open where it came from.' })]);
+      var holder = el('div', { class: 'stack' }, [el('p', { class: 'muted', text: 'Loading…' })]);
+      show([peopleList('fin-emps'), filters, actions, holder]);
+      var printable = null;
+      function printLedger(){
+        if (!printable) return;
+        var box = document.getElementById('fin-print'); box.textContent = '';
+        box.appendChild(el('h1', { text: 'ZAS Textiles — ' + printable.title }));
+        box.appendChild(el('div', { text: printable.sub + ' · ' + nice(LG.from) + ' to ' + nice(LG.to) + ' · Wages payable · all amounts PKR' }));
+        box.appendChild(printable.table.cloneNode(true));
+        window.print();
+      }
+      if (LG.emp) return one(LG.emp);
+      dept.addEventListener('change', function(){ LG.dept = dept.value; ledger(); });
+      type.addEventListener('change', function(){ LG.type = type.value; ledger(); });
+      call('GET', '/finance/ledger', { from: LG.from, to: LG.to }).then(function(r){
+        holder.textContent = '';
+        if (!r.ok) return holder.appendChild(fail(r));
+        var rows = r.rows.filter(function(x){ return (!LG.dept || x.department_name === LG.dept) && (!LG.type || x.pay_type === LG.type); });
         var t = { b: 0, e: 0, d: 0, p: 0, c: 0 };
         rows.forEach(function(x){ t.b += x.before_paisa; t.e += x.earned; t.d += x.deducted; t.p += x.paid; t.c += x.closing_paisa; });
-        tiles.textContent = '';
-        [['Owed before ' + nice(LG.from), t.b, ''], ['Earned', t.e, 's2'], ['Deducted', t.d, ''], ['Paid', t.p, 's3'], ['Owed on ' + nice(LG.to), t.c, 's2']].forEach(function(x){
-          tiles.appendChild(el('div', { class: 'stepc ' + x[2], style: 'cursor:default' }, [el('i'), el('b', { style: 'font-size:19px', text: rs(x[1]) }), el('span', { text: x[0] })])); });
-        box.textContent = '';
-        if (!rows.length) return box.appendChild(el('div', { class: 'empty', text: 'Nothing in the ledger for these dates.' }));
+        holder.appendChild(cards([['Owed before ' + nice(LG.from), t.b, 'k-open'], ['Total earnings', t.e, 'k-earn'], ['Total deductions', t.d, 'k-ded'], ['Total payments', t.p, 'k-pay'], ['Owed on ' + nice(LG.to), t.c, 'k-bal']]));
+        if (!rows.length) return holder.appendChild(el('div', { class: 'cardx empty', text: 'Nothing in the ledger for these dates.' }));
         var tb = el('tbody');
         rows.forEach(function(x){
-          tb.appendChild(el('tr', { class: 'click', tabindex: '0', click: function(){ statement(x); }, keydown: function(e){ if (e.key === 'Enter') statement(x); } }, [
+          tb.appendChild(el('tr', { class: 'click', tabindex: '0', click: function(){ pick(x); }, keydown: function(e){ if (e.key === 'Enter') pick(x); } }, [
             el('td', {}, [el('b', { text: x.full_name }), el('div', { class: 'muted small', text: x.code + ' · ' + x.department_name + (x.pay_type ? ' · ' + KIND1[x.pay_type] : '') })]),
-            el('td', { class: 'num', text: rs(x.before_paisa) }), el('td', { class: 'num', style: 'color:var(--earn)', text: rs(x.earned) }), el('td', { class: 'num', style: 'color:var(--bad)', text: x.deducted ? rs(x.deducted) : '' }),
-            el('td', { class: 'num', style: 'color:var(--paid)', text: x.paid ? rs(x.paid) : '' }), el('td', { class: 'num' }, [el('b', { text: rs(x.closing_paisa) })])]));
+            el('td', { class: 'num', text: rs(x.before_paisa) }), dash(x.earned, 'c-earn'), dash(x.deducted, 'c-ded'), dash(x.paid, 'c-pay'), el('td', { class: 'num' }, [el('b', { text: rs(x.closing_paisa) })])]));
         });
-        tb.appendChild(el('tr', { class: 'tot' }, [el('td', {}, [el('b', { text: 'Total — ' + rows.length + (rows.length === 1 ? ' person' : ' people') })]), el('td', { class: 'num' }, [el('b', { text: rs(t.b) })]), el('td', { class: 'num' }, [el('b', { text: rs(t.e) })]),
-          el('td', { class: 'num' }, [el('b', { text: rs(t.d) })]), el('td', { class: 'num' }, [el('b', { text: rs(t.p) })]), el('td', { class: 'num' }, [el('b', { text: rs(t.c) })])]));
-        box.appendChild(el('table', { class: 't' }, [el('thead', {}, [el('tr', {}, ['Employee', 'Owed before', 'Earned', 'Deducted', 'Paid', 'Owed at end'].map(function(h, i){ return el('th', { style: i ? 'text-align:right' : null, text: h }); }))]), tb]));
+        tb.appendChild(el('tr', { class: 'tot' }, [el('td', {}, [el('b', { text: 'Total — ' + rows.length + (rows.length === 1 ? ' person' : ' people') })]), el('td', { class: 'num', text: rs(t.b) }),
+          el('td', { class: 'num c-earn', text: rs(t.e) }), el('td', { class: 'num c-ded', text: rs(t.d) }), el('td', { class: 'num c-pay', text: rs(t.p) }), el('td', { class: 'num', text: rs(t.c) })]));
+        var table = el('table', { class: 't stmt lg' }, [el('thead', {}, [el('tr', {}, ['Employee', 'Owed before (PKR)', 'Earnings (PKR)', 'Deductions (PKR)', 'Payments (PKR)', 'Owed at end (PKR)'].map(function(h, i){ return el('th', { style: i ? 'text-align:right' : null, text: h }); }))]), tb]);
+        printable = { title: 'Employee ledger — everyone', sub: rows.length + (rows.length === 1 ? ' person' : ' people'), table: table };
+        holder.appendChild(el('div', { class: 'cardx scroll' }, [table]));
+      });
+      function pick(x){ LG.emp = (PEOPLE || []).filter(function(p){ return p.employee_id === x.employee_id; })[0] || { employee_id: x.employee_id, full_name: x.full_name, code: x.code, department_name: x.department_name, pay_type: x.pay_type, active: 1 }; ledger(); }
+      function one(p){
+        call('GET', '/finance/people/' + p.employee_id + '/statement', { from: LG.from, to: LG.to }).then(function(r){
+          holder.textContent = '';
+          if (!r.ok) return holder.appendChild(fail(r));
+          holder.appendChild(el('div', { class: 'row lghead', style: 'justify-content:space-between' }, [
+            el('div', { class: 'row' }, [el('div', { class: 'av', text: initials(p.full_name) }), el('div', { class: 'nm' }, [el('b', { text: p.full_name }),
+              el('span', { text: p.code + ' · ' + p.department_name + (p.pay_type ? ' · ' + KIND1[p.pay_type] : '') + ' · Wages payable' })])]),
+            btn('← Everyone', function(){ LG.emp = null; ledger(); }, 'sm')]));
+          holder.appendChild(cards([['Opening balance', r.opening_paisa, 'k-open'], ['Total earnings', r.totals.earned, 'k-earn'], ['Total deductions', r.totals.deducted, 'k-ded'], ['Total payments', r.totals.paid, 'k-pay'], ['Closing balance', r.closing_paisa, 'k-bal']]));
+          var tb = el('tbody');
+          tb.appendChild(el('tr', { class: 'open' }, [el('td', { text: nice(r.from) }), el('td', { text: 'OPENING' }), el('td', {}, [el('b', { text: 'Balance brought forward' })]),
+            dash(0), dash(0), dash(0), el('td', { class: 'num' }, [el('b', { text: rs(r.opening_paisa) })])]));
+          r.rows.forEach(function(x){
+            var go2 = x.sheet_id ? function(){ openSheet(x.sheet_id); } : null;
+            tb.appendChild(el('tr', { class: go2 ? 'click' : null, tabindex: go2 ? '0' : null, title: go2 ? 'Open the pay sheet or entry this came from' : null, click: go2, keydown: go2 ? function(e){ if (e.key === 'Enter') go2(); } : null }, [
+              el('td', { text: nice(x.date) }), el('td', { text: x.ref }), el('td', { text: x.label + (x.kind === 'payment' && x.method ? ' · ' + (x.method === 'bank' ? 'bank' : 'cash') : '') }),
+              dash(x.earned, 'c-earn'), dash(x.deducted, 'c-ded'), dash(x.paid, 'c-pay'), el('td', { class: 'num' }, [el('b', { text: rs(x.balance) })])]));
+          });
+          if (!r.rows.length) tb.appendChild(el('tr', {}, [el('td', { colspan: '7', class: 'muted', text: 'No entries between these dates.' })]));
+          tb.appendChild(el('tr', { class: 'tot' }, [el('td', {}, [el('b', { text: 'TOTAL' })]), el('td', { text: 'PERIOD TOTALS' }), el('td', { class: 'muted', text: r.rows.length + (r.rows.length === 1 ? ' entry' : ' entries') }),
+            el('td', { class: 'num c-earn', text: rs(r.totals.earned) }), el('td', { class: 'num c-ded', text: rs(r.totals.deducted) }), el('td', { class: 'num c-pay', text: rs(r.totals.paid) }), el('td', { class: 'num', text: rs(r.closing_paisa) })]));
+          var table = el('table', { class: 't stmt lg' }, [el('thead', {}, [el('tr', {}, ['Date', 'Reference No.', 'Transaction description', 'Earnings (PKR)', 'Deductions (PKR)', 'Payments (PKR)', 'Running balance (PKR)'].map(function(h, i){ return el('th', { style: i > 2 ? 'text-align:right' : null, text: h }); }))]), tb]);
+          printable = { title: 'Employee ledger — ' + p.full_name + ' (' + p.code + ')', sub: p.department_name + (p.pay_type ? ' · ' + KIND1[p.pay_type] : ''), table: table };
+          holder.appendChild(el('div', { class: 'cardx scroll' }, [table]));
+        });
       }
-      bar.appendChild(el('div', { class: 'row' }, [el('div', { style: 'flex:1 1 150px' }, [dept]), el('div', { style: 'flex:1 1 150px' }, [type]), el('div', { style: 'flex:2 1 200px' }, [search]),
-        el('a', { class: 'btn', href: API + encodeURIComponent('/finance/ledger/export') + '&from=' + LG.from + '&to=' + LG.to, text: 'Download (Excel)' })]));
-      show([bar, tiles, el('p', { class: 'muted small', style: 'margin:0', text: 'Click a person for their statement between these dates. Cancelled lines are left out of the totals.' }), box]);
-      draw();
     });
   }
+  function cards(list){
+    return el('div', { class: 'lgcards' }, list.map(function(x){ return el('div', { class: 'lgcard ' + x[2] }, [el('span', { text: x[0] }), el('b', { text: 'PKR ' + rs(x[1]) })]); }));
+  }
+  /* Kept for the old way in: a person's statement in a dialog. */
   function statement(x){
     modal([el('div', { class: 'row', style: 'justify-content:space-between' }, [el('div', { class: 'nm' }, [el('b', { text: x.full_name + ' — ledger' }), el('span', { text: x.code + ' · ' + x.department_name + ' · Wages payable · all amounts PKR' })]), btn('Close', closeModal, 'sm')]),
-      statementView(x.employee_id, LG.from, LG.to)], true);
+      statementView(x.employee_id, LG.from || S.today.slice(0, 8) + '01', LG.to || S.today)], true);
+  }
+
+  /* ADD EARNING / ADD DEDUCTION / RECORD PAYMENT — one person or many.
+     One line per person (an earning or deduction may have several lines for
+     the same person). Sent as one entry, which waits for approval. */
+  var ETYPES = {
+    earning: [['overtime', 'Overtime'], ['production', 'Production incentive'], ['bonus', 'Bonus'], ['allowance', 'Allowance'], ['other_earning', 'Other earning']],
+    deduction: [['leave', 'Unpaid leave'], ['advance', 'Advance recovery'], ['loan', 'Loan recovery'], ['deduction', 'Other deduction']]
+  };
+  function entryForm(mode){
+    loadPeople().then(function(){
+      var title = { earning: 'Add earning', deduction: 'Add deduction', payment: 'Record payment' }[mode];
+      var note = { earning: 'Overtime, an incentive, a bonus or any other earning — for one person or many. It waits for approval; once approved it is in their ledger and is paid with their next pay, or by Record payment. Overtime that Attendance already has is added to the pay sheet by itself: enter here only what Attendance does not know.',
+                   deduction: 'Unpaid leave, advance or loan recovery, or any other deduction — for one person or many. It waits for approval; it can never take off more than is owed to the person. Absences that Attendance already has are taken off the pay sheet by itself.',
+                   payment: 'Pay part or all of what a person is owed, by cash or bank. It waits for approval like a pay sheet; then Accounts records the payment.' }[mode];
+      var date = el('input', { type: 'date', value: S.today, max: S.today });
+      var reason = el('input', { type: 'text', maxlength: 255, placeholder: mode === 'payment' ? 'e.g. Salary balance for October (optional)' : 'e.g. Eid bonus, Sunday overtime on order 5236 (needed)' });
+      var defType = el('select', {}, (ETYPES[mode] || []).map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
+      var tb = el('tbody'), errBox = el('div', { class: 'err', hidden: true }), totalB = el('b', { text: '0' });
+      var lines = [];
+      function addLine(p){
+        var L = { p: p || null, info: null };
+        var who = el('input', { type: 'text', list: 'fin-emps2', placeholder: 'Name or code', value: p ? personLabel(p) : '', 'aria-label': 'Employee' });
+        var amt = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: '0', 'aria-label': 'Amount' });
+        var tr = el('tr');
+        L.amt = amt; L.who = who; L.tr = tr;
+        var cells = [el('td', {}, [who])];
+        if (mode === 'payment') {
+          L.owed = el('td', { class: 'num muted', text: '—' });
+          L.method = el('select', { 'aria-label': 'Paid by' }, [el('option', { value: 'cash', text: 'Cash' }), el('option', { value: 'bank', text: 'Bank' })]);
+          cells.push(L.owed, el('td', {}, [amt]), el('td', {}, [L.method]));
+        } else {
+          L.type = el('select', { 'aria-label': 'Type' }, ETYPES[mode].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
+          L.type.value = defType.value;
+          L.label = el('input', { type: 'text', maxlength: 100, placeholder: 'Description (optional)', 'aria-label': 'Description' });
+          L.adv = el('select', { 'aria-label': 'Which advance or loan', hidden: true });
+          cells.push(el('td', {}, [L.type]), el('td', {}, [L.label, L.adv]), el('td', {}, [amt]));
+          L.type.addEventListener('change', function(){ info(); });
+        }
+        cells.push(el('td', {}, [el('button', { type: 'button', class: 'x', title: 'Remove this line', text: '×', click: function(){ lines.splice(lines.indexOf(L), 1); tr.remove(); sum(); } })]));
+        cells.forEach(function(td){ tr.appendChild(td); });
+        function info(){
+          if (L.adv) L.adv.hidden = true;
+          if (!L.p) { if (L.owed) L.owed.textContent = '—'; return; }
+          var need = mode === 'payment' || (L.type && (L.type.value === 'advance' || L.type.value === 'loan'));
+          if (!need) return;
+          (L.info ? Promise.resolve({ ok: true, x: L.info }) : call('GET', '/finance/people/' + L.p.employee_id + '/entry-info').then(function(x){ if (x.ok) L.info = x; return { ok: x.ok, x: x }; })).then(function(res){
+            if (!res.ok) return;
+            var x = res.x;
+            if (mode === 'payment') {
+              L.owed.textContent = rs(Math.max(0, x.free_paisa));
+              if (!amt.value) amt.value = x.free_paisa > 0 ? plain(x.free_paisa) : '';
+              L.method.value = x.method || 'cash'; sum();
+            } else {
+              var k = L.type.value, list = x.advances.filter(function(a){ return a.kind === k; });
+              L.adv.textContent = '';
+              L.adv.appendChild(el('option', { value: '', text: list.length ? 'Which ' + (k === 'loan' ? 'loan' : 'advance') + '?' : 'No open ' + (k === 'loan' ? 'loan' : 'advance') }));
+              list.forEach(function(a){ L.adv.appendChild(el('option', { value: String(a.id), text: 'Given ' + nice(a.given_on) + ' · ' + rs(a.left_paisa) + ' still owed' })); });
+              if (list.length === 1) { L.adv.value = String(list[0].id); if (!amt.value) amt.value = plain(Math.min(list[0].per_pay_paisa, list[0].left_paisa)); sum(); }
+              L.adv.hidden = false;
+            }
+          });
+        }
+        who.addEventListener('change', function(){ L.p = findPerson(who.value); L.info = null; who.classList.toggle('bad', !!who.value.trim() && !L.p); info(); sum(); });
+        amt.addEventListener('input', sum);
+        lines.push(L); tb.appendChild(tr);
+        if (p) info();
+        return L;
+      }
+      function sum(){
+        var t = 0; lines.forEach(function(L){ var v = toPaisa(L.amt.value); if (v) t += v; });
+        totalB.textContent = 'Rs ' + rs(t) + ' · ' + lines.filter(function(L){ return L.p; }).length + ' line' + (lines.filter(function(L){ return L.p; }).length === 1 ? '' : 's');
+      }
+      var dsel = el('select', { 'aria-label': 'Department to add' }, [el('option', { value: '', text: 'Add a whole department…' })].concat((S.depts || []).map(function(d){ return el('option', { value: d.name, text: d.name }); })));
+      dsel.addEventListener('change', function(){
+        var d = dsel.value; dsel.value = ''; if (!d) return;
+        var have = {}; lines.forEach(function(L){ if (L.p) have[L.p.employee_id] = 1; });
+        var add = PEOPLE.filter(function(p){ return +p.active && p.pay_type && p.department_name === d && !have[p.employee_id]; });
+        lines.filter(function(L){ return !L.p && !L.who.value.trim(); }).forEach(function(L){ lines.splice(lines.indexOf(L), 1); L.tr.remove(); });
+        add.forEach(function(p){ addLine(p); });
+        toast(add.length ? add.length + (add.length === 1 ? ' person added.' : ' people added.') : 'Nobody new in ' + d + '.'); sum();
+      });
+      var same = el('input', { type: 'text', inputmode: 'decimal', placeholder: 'Same amount for all', 'aria-label': 'Same amount for all' });
+      var fill = btn('Fill', function(){ if (toPaisa(same.value) === null) return; lines.forEach(function(L){ if (L.p) L.amt.value = same.value; }); sum(); }, 'sm');
+      var head = mode === 'payment' ? ['Employee', 'Owed now', 'Amount to pay', 'Paid by', ''] : ['Employee', 'Type', 'Description', 'Amount', ''];
+      var table = el('table', { class: 't entry' }, [el('thead', {}, [el('tr', {}, head.map(function(h, i){ return el('th', { style: (mode === 'payment' && i === 1) || (mode !== 'payment' && i === 3) || (mode === 'payment' && i === 2) ? 'text-align:right' : null, text: h }); }))]), tb]);
+      var save = btn(mode === 'payment' ? 'Send payment for approval' : 'Send for approval', function(){
+        errBox.hidden = true;
+        var rows = [], bad = null;
+        lines.forEach(function(L){
+          if (!L.p && !L.who.value.trim() && !L.amt.value.trim()) return;
+          if (!L.p) { bad = bad || 'Choose the employee on every line (pick a name from the list).'; return; }
+          var a = toPaisa(L.amt.value);
+          if (a === null || a <= 0) { bad = bad || L.p.full_name + ': give the amount.'; return; }
+          var row = { employee_id: L.p.employee_id, amount_paisa: a };
+          if (mode === 'payment') row.method = L.method.value;
+          else {
+            row.type = L.type.value; row.label = L.label.value.trim();
+            if (row.type === 'advance' || row.type === 'loan') { if (!L.adv.value) { bad = bad || L.p.full_name + ': choose which ' + (row.type === 'loan' ? 'loan' : 'advance') + '.'; return; } row.advance_id = +L.adv.value; }
+          }
+          rows.push(row);
+        });
+        if (!bad && !rows.length) bad = 'Add at least one person.';
+        if (!bad && mode !== 'payment' && !reason.value.trim()) bad = 'Say what it is for (the reason is kept on every line).';
+        if (bad) { errBox.textContent = bad; errBox.hidden = false; return; }
+        save.disabled = true;
+        call('POST', '/finance/entries', { mode: mode, date: date.value, reason: reason.value.trim(), rows: rows }).then(function(x){
+          save.disabled = false;
+          if (!x.ok) { errBox.textContent = x.error || 'That could not be saved.'; errBox.hidden = false; return; }
+          closeModal(); refreshCounts();
+          toast('Entry ' + x.ref + ' sent for approval — ' + x.people + (x.people === 1 ? ' person' : ' people') + ', Rs ' + rs(Math.abs(x.total_paisa)) + '.');
+          if (S.tab === 'ledger') ledger();
+        });
+      }, 'pri');
+      var box = modal([peopleList('fin-emps2'),
+        el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: title }), btn('Close', closeModal, 'sm')]),
+        el('p', { class: 'muted small', style: 'margin:0', text: note }),
+        el('div', { class: 'formgrid' }, [field('Date', date), mode === 'payment' ? null : field('Type for new lines', defType), field(mode === 'payment' ? 'Note' : 'Reason / what it is for', reason)].filter(Boolean)),
+        el('div', { class: 'scroll', style: 'max-height:46vh' }, [table]),
+        el('div', { class: 'row', style: 'justify-content:space-between' }, [el('div', { class: 'row' }, [btn('+ Add line', function(){ addLine(null).who.focus(); sum(); }, 'sm'), dsel]),
+          el('div', { class: 'row' }, [el('div', { style: 'width:170px' }, [same]), fill])]),
+        errBox,
+        el('div', { class: 'row', style: 'justify-content:space-between' }, [el('span', { class: 'muted small' }, ['Total: ', totalB]), el('div', { class: 'row' }, [btn('Close', closeModal), save])])], true);
+      box.classList.add('entrybox');
+      addLine(LG.emp && S.tab === 'ledger' ? LG.emp : null);
+      if (!LG.emp || S.tab !== 'ledger') addLine(null);
+      sum();
+      setTimeout(function(){ (lines[0].p ? lines[0].amt : lines[0].who).focus(); }, 30);
+    });
   }
 
   // ------------------------------------------------------------ advances

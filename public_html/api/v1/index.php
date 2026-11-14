@@ -1019,6 +1019,22 @@ try {
             admin_answer(Fin::cancelAdvance((int) $m[1], (string) Http::input('reason', ''), (int) $u['id']));
             break;
 
+        /* ADD EARNING / ADD DEDUCTION / RECORD PAYMENT from the Employee
+           Ledger: an entry sheet that waits for a second person's approval
+           (FinanceService::createEntry). */
+        case $method === 'POST' && $route === '/finance/entries':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            $rows = Http::input('rows', []);
+            admin_answer(Fin::createEntry((string) Http::input('mode', ''), (string) Http::input('date', ''),
+                is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [], (string) Http::input('reason', ''), $caps, (int) $u['id']));
+            break;
+
+        case $method === 'GET' && preg_match('#^/finance/people/(\d+)/entry-info$#', $route, $m) === 1:
+            [, $caps] = fin_caps();
+            admin_answer(Fin::entryInfo((int) $m[1], $caps));
+            break;
+
         case $method === 'GET' && $route === '/finance/preview':
             [, $caps] = fin_caps();
             admin_answer(Fin::preview((string) Http::input('kind', ''), (string) Http::input('from', ''), (string) Http::input('to', ''), $caps));

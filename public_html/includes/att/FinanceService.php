@@ -479,7 +479,7 @@ final class FinanceService
             return self::no('NOT_FOUND', 'No such employee.');
         }
         $lines = Db::all(
-            'SELECT l.id, l.entry_date, l.kind, l.line_kind, l.label, l.amount_paisa, l.method, l.source, l.cancelled_at, l.cancel_reason, s.ref AS sheet_ref
+            'SELECT l.id, l.entry_date, l.kind, l.line_kind, l.label, l.amount_paisa, l.method, l.source, l.cancelled_at, l.cancel_reason, l.sheet_id, s.ref AS sheet_ref
                FROM att_fin_ledger l LEFT JOIN att_fin_sheets s ON s.id = l.sheet_id
               WHERE l.employee_id = ? ORDER BY l.entry_date, l.id LIMIT 3000', [$employeeId]);
         $bal = 0;
@@ -535,7 +535,8 @@ final class FinanceService
             $e = $plus ? $l['amount_paisa'] : 0; $d = $l['kind'] === 'deduction' ? $l['amount_paisa'] : 0; $p = $l['kind'] === 'payment' ? $l['amount_paisa'] : 0;
             $t['earned'] += $e; $t['deducted'] += $d; $t['paid'] += $p;
             $rows[] = ['date' => $l['entry_date'], 'ref' => $l['ref'], 'label' => $l['label'] . ($l['sheet_ref'] && !str_contains((string) $l['label'], (string) $l['sheet_ref']) ? ' · ' . $l['sheet_ref'] : ''),
-                       'earned' => $e, 'deducted' => $d, 'paid' => $p, 'balance' => $bal];
+                       'earned' => $e, 'deducted' => $d, 'paid' => $p, 'balance' => $bal, 'sheet_id' => $l['sheet_id'] === null ? null : (int) $l['sheet_id'],
+                       'method' => $l['method'], 'kind' => $l['kind'], 'line_kind' => $l['line_kind']];
         }
         return ['ok' => true, 'employee' => $lg['employee'], 'from' => $from, 'to' => $to, 'opening_paisa' => $opening ?? $bal, 'rows' => $rows,
                 'totals' => $t, 'closing_paisa' => $bal];
@@ -813,7 +814,7 @@ final class FinanceService
             self::addOvertime($add, $id, (int) $e['ot_rate_paisa'], $from, $to);
         }
         // Money already owed from before this sheet: a contractor's production, or an unpaid balance.
-        $carry = self::balance($id);
+        $carry = self::owedFree($id);
         if ($carry > 0) {
             $add('carry', 'carry', 'carry', $kind === 'contract' ? 'Production booked, not yet paid' : 'Balance owed from before', $carry, $kind === 'contract' ? 'from Production' : 'from the ledger');
         }
@@ -1022,7 +1023,7 @@ final class FinanceService
     public static function sheets(array $caps, int $userId, ?string $status = null): array
     {
         $w = '1 = 1'; $p = [];
-        if ($status !== null && in_array($status, ['waiting', 'approved', 'paid', 'returned', 'cancelled'], true)) { $w .= ' AND s.status = ?'; $p[] = $status; }
+        if ($status !== null && in_array($status, ['waiting', 'approved', 'paid', 'returned', 'cancelled', 'posted'], true)) { $w .= ' AND s.status = ?'; $p[] = $status; }
         if ($caps['departments'] !== null) { $w .= ' AND s.prepared_by = ?'; $p[] = $userId; }     // a HOD sees the sheets they prepared
         if (!$caps['see_salary']) { $w .= " AND s.kind <> 'salary'"; }
         $users = Db::tableExists('users');
@@ -1081,6 +1082,9 @@ final class FinanceService
             }
             if ($s['status'] !== 'waiting') {
                 return self::no('ALREADY_DECIDED', 'This sheet is already ' . $s['status'] . ' and cannot be amended.');
+            }
+            if ($s['kind'] === 'entry') {
+                return self::no('VALIDATION', 'An entry is not amended. Send it back and enter it again.');
             }
             if (!$caps['approve'] && (int) $s['prepared_by'] !== $actorId) {
                 return self::no('FORBIDDEN', 'Only the person who prepared it, or an approver, can amend a waiting sheet.');
@@ -1148,7 +1152,7 @@ final class FinanceService
             $taking = [];
             foreach ($lines as $l) {
                 $amt = (int) $l['amount_paisa'];
-                if ($l['side'] === 'carry' && $amt > self::balance((int) $l['employee_id'])) {
+                if ($l['side'] === 'carry' && $amt > self::owedFree((int) $l['employee_id'], $id, false)) {
                     return self::no('STALE', $l['full_name'] . ': less is owed now than when this sheet was prepared. Send it back and prepare it again.');
                 }
                 if ($l['advance_id'] !== null && $amt > 0) {
@@ -1160,8 +1164,24 @@ final class FinanceService
                     }
                 }
             }
+            // An entry that takes money off must not leave anybody owing the company.
+            if ($s['kind'] === 'entry') {
+                $effect = [];
+                foreach ($lines as $l) {
+                    if ($l['side'] !== 'carry') {
+                        $effect[(int) $l['employee_id']] = ($effect[(int) $l['employee_id']] ?? 0) + ($l['side'] === 'deduct' ? -1 : 1) * (int) $l['amount_paisa'];
+                    }
+                }
+                foreach ($effect as $emp => $net) {
+                    if ($net < 0 && -$net > self::owedFree($emp, $id, false)) {
+                        return self::no('STALE', self::nameOf($emp) . ': less is owed now than this deduction. Send the entry back.');
+                    }
+                }
+            }
+            $hasPay = false;
             foreach ($lines as $l) {
                 $amt = (int) $l['amount_paisa'];
+                $hasPay = $hasPay || ($l['side'] === 'carry' && $amt > 0);
                 if ($l['side'] === 'carry' || $amt === 0) {
                     continue;                                   // already in the ledger, or nothing to post
                 }
@@ -1174,9 +1194,11 @@ final class FinanceService
                      mb_substr($l['label'] . ($l['reason'] !== null ? ' · ' . ($changed ? 'amended: ' : '') . $l['reason'] : ''), 0, 200), $amt, $id,
                      $l['advance_id'] === null ? null : (int) $l['advance_id'], 'sheet', $actorId]);
             }
-            Db::run("UPDATE att_fin_sheets SET status = 'approved', approved_by = ?, approved_at = ? WHERE id = ?", [$actorId, Time::sql(), $id]);
-            Audit::record('fin.sheet_approve', 'att_fin_sheet', $id, ['status' => 'waiting'], ['status' => 'approved'], $actorId);
-            return ['ok' => true, 'sheet_id' => $id, 'status' => 'approved'];
+            // An entry of earnings or deductions has nothing to hand over: it is posted and done.
+            $status = $s['kind'] === 'entry' && !$hasPay ? 'posted' : 'approved';
+            Db::run('UPDATE att_fin_sheets SET status = ?, approved_by = ?, approved_at = ? WHERE id = ?', [$status, $actorId, Time::sql(), $id]);
+            Audit::record('fin.sheet_approve', 'att_fin_sheet', $id, ['status' => 'waiting'], ['status' => $status], $actorId);
+            return ['ok' => true, 'sheet_id' => $id, 'status' => $status];
         });
     }
 
@@ -1219,11 +1241,11 @@ final class FinanceService
             if ($s === null) {
                 return self::no('NOT_FOUND', 'No such pay sheet.');
             }
-            if (!in_array($s['status'], ['approved', 'paid'], true)) {
+            if (!in_array($s['status'], ['approved', 'paid', 'posted'], true)) {
                 return self::no('ALREADY_DECIDED', $s['status'] === 'waiting' ? 'A sheet still waiting is sent back, not cancelled.' : 'This sheet is already ' . $s['status'] . '.');
             }
             if ($s['status'] === 'paid' ? !$caps['admin'] : !$caps['approve']) {
-                return self::no('FORBIDDEN', $s['status'] === 'paid' ? 'Only an administrator can cancel a sheet that has been paid.' : 'Only Admin or Audit can cancel an approved sheet.');
+                return self::no('FORBIDDEN', $s['status'] === 'paid' ? 'Only an administrator can cancel a sheet that has been paid.' : 'Only Admin or Audit can cancel an approved sheet or a posted entry.');
             }
             $why = mb_substr(trim($reason), 0, 255);
             foreach (Db::all("SELECT advance_id, SUM(amount_paisa) AS paisa FROM att_fin_ledger WHERE sheet_id = ? AND advance_id IS NOT NULL AND cancelled_at IS NULL GROUP BY advance_id", [$id]) as $r) {
@@ -1271,6 +1293,181 @@ final class FinanceService
         });
     }
 
+    // ------------------------------------------------------------- entries
+
+    /**
+     * ADD EARNING, ADD DEDUCTION, RECORD PAYMENT — from the Employee Ledger,
+     * for one person or many at once. Each is an ENTRY SHEET (kind 'entry',
+     * reference ENT-…) and goes the same road as a pay sheet: it waits, and a
+     * second person approves it. Nothing reaches the ledger before that.
+     *
+     *   earning / deduction  posted to the ledger on approval; the sheet is
+     *                        then 'posted' — what is owed is paid on the next
+     *                        pay sheet ("Balance owed from before") or by a
+     *                        payment entry.
+     *   payment              pays part or all of what is owed: approved, then
+     *                        Accounts records it, exactly like a pay sheet.
+     *
+     * Overtime and unpaid leave that Attendance knows about are already worked
+     * out on the pay sheet. An entry is for what Attendance does not know.
+     */
+    public const ENTRY_TYPES = [
+        'overtime' => ['earn', 'Overtime'], 'production' => ['earn', 'Production incentive'], 'bonus' => ['earn', 'Bonus'],
+        'allowance' => ['earn', 'Allowance'], 'other_earning' => ['earn', 'Other earning'],
+        'leave' => ['deduct', 'Unpaid leave'], 'advance' => ['deduct', 'Advance recovery'], 'loan' => ['deduct', 'Loan recovery'], 'deduction' => ['deduct', 'Other deduction'],
+    ];
+
+    /**
+     * What a person is owed and has not already been promised by a live sheet:
+     * the ledger balance, less what approved sheets will pay them, less what
+     * waiting sheets mean to pay out of that balance. Without this, two sheets
+     * could both pay the same money.
+     */
+    public static function owedFree(int $employeeId, ?int $exceptSheet = null, bool $countWaiting = true): int
+    {
+        $x = $exceptSheet ?? 0;
+        $approved = (int) Db::value(
+            "SELECT COALESCE(SUM(i.amount_paisa), 0) FROM att_fin_sheet_items i JOIN att_fin_sheets s ON s.id = i.sheet_id
+              WHERE i.employee_id = ? AND s.status = 'approved' AND i.amount_paisa > 0 AND s.id <> ?", [$employeeId, $x]);
+        $waiting = $countWaiting ? (int) Db::value(
+            "SELECT COALESCE(SUM(l.amount_paisa), 0) FROM att_fin_item_lines l JOIN att_fin_sheet_items i ON i.id = l.item_id JOIN att_fin_sheets s ON s.id = i.sheet_id
+              WHERE i.employee_id = ? AND s.status = 'waiting' AND l.side = 'carry' AND s.id <> ?", [$employeeId, $x]) : 0;
+        return self::balance($employeeId) - $approved - $waiting;
+    }
+
+    /** For the entry form: how a person is paid, what is owed and free to pay, and their open advances. */
+    public static function entryInfo(int $employeeId, array $caps): array
+    {
+        $e = Db::one('SELECT e.id, e.code, e.full_name, e.department_id, d.name AS department_name, f.pay_type, f.pay_method
+                        FROM att_employees e JOIN att_departments d ON d.id = e.department_id LEFT JOIN att_fin_profiles f ON f.employee_id = e.id WHERE e.id = ?', [$employeeId]);
+        if ($e === null || !self::inScope($caps['departments'], (int) $e['department_id']) || (!$caps['see_salary'] && $e['pay_type'] === 'salary')) {
+            return self::no('NOT_FOUND', 'No such employee.');
+        }
+        self::syncProduction();
+        return ['ok' => true, 'employee_id' => (int) $e['id'], 'pay_type' => $e['pay_type'], 'method' => $e['pay_method'] ?: 'cash',
+                'balance_paisa' => self::balance($employeeId), 'free_paisa' => self::owedFree($employeeId), 'may_enter' => self::mayEnter($caps, $e),
+                'advances' => array_values(array_filter(self::advancesFor($employeeId), static fn($a) => $a['status'] === 'active' && $a['left_paisa'] > 0))];
+    }
+
+    private static function mayEnter(array $caps, array $e): bool
+    {
+        $type = (string) ($e['pay_type'] ?? '');
+        if ($type === 'salary') {
+            return (bool) $caps['salary'];
+        }
+        return in_array($type, ['daily', 'contract'], true) && $caps['wage'] && self::inScope($caps['wage_departments'], (int) $e['department_id']);
+    }
+
+    private static function nameOf(int $employeeId): string
+    {
+        return (string) (Db::value('SELECT full_name FROM att_employees WHERE id = ?', [$employeeId]) ?: 'Someone');
+    }
+
+    /**
+     * @param list<array<string,mixed>> $rows employee_id, amount_paisa, and for an earning or a
+     *        deduction: type, reason, label?, advance_id?; for a payment: method?
+     */
+    public static function createEntry(string $mode, string $date, array $rows, string $reason, array $caps, int $actorId): array
+    {
+        if (!in_array($mode, ['earning', 'deduction', 'payment'], true)) {
+            return self::no('VALIDATION', 'Choose an earning, a deduction or a payment.');
+        }
+        if (!$caps['salary'] && !$caps['wage']) {
+            return self::no('FORBIDDEN', 'You cannot make entries for anybody.');
+        }
+        if (!self::isDate($date) || $date > self::today()) {
+            return self::no('VALIDATION', 'Give the date of the entry. It cannot be in the future.');
+        }
+        if ($rows === [] || count($rows) > 500) {
+            return self::no('VALIDATION', 'Add at least one person.');
+        }
+        $reason = mb_substr(trim($reason), 0, 255);
+        self::syncProduction();
+        return Db::tx(static function () use ($mode, $date, $rows, $reason, $caps, $actorId) {
+            $by = []; $taking = [];
+            foreach (array_values($rows) as $i => $r) {
+                $emp = (int) ($r['employee_id'] ?? 0);
+                $e = Db::one('SELECT e.id, e.full_name, e.department_id, f.pay_type, f.pay_method FROM att_employees e
+                                LEFT JOIN att_fin_profiles f ON f.employee_id = e.id WHERE e.id = ? FOR UPDATE', [$emp]);
+                if ($e === null) {
+                    return self::no('EMPLOYEE_NOT_FOUND', 'Line ' . ($i + 1) . ': choose the employee.');
+                }
+                $name = (string) $e['full_name'];
+                if (!self::mayEnter($caps, $e)) {
+                    return self::no('FORBIDDEN', $e['pay_type'] === null ? "$name has no pay set up yet. Set it up in Employees first." : "$name: you cannot make entries for this person.");
+                }
+                $amt = $r['amount_paisa'] ?? null;
+                if (!self::whole($amt) || (int) $amt <= 0) {
+                    return self::no('VALIDATION', "$name: give the amount.");
+                }
+                $amt = (int) $amt;
+                $b = $by[$emp] ?? ['name' => $name, 'lines' => [], 'method' => $e['pay_method'] ?: 'cash'];
+                $why = mb_substr(trim((string) ($r['reason'] ?? '')), 0, 255) ?: $reason;
+                if ($mode === 'payment') {
+                    if ($b['lines'] !== []) {
+                        return self::no('VALIDATION', "$name is on the list twice.");
+                    }
+                    $free = self::owedFree($emp);
+                    if ($amt > $free) {
+                        return self::no('VALIDATION', "$name: only Rs " . self::rupees(max(0, $free)) . ' is owed and not already on a pay sheet.');
+                    }
+                    $b['lines'][] = ['key' => 'carry', 'kind' => 'carry', 'side' => 'carry', 'label' => $amt === $free ? 'Payment of the balance owed' : 'Part payment of the balance owed',
+                                     'detail' => 'Rs ' . self::rupees($free) . ' owed when entered', 'calc_paisa' => $free, 'amount_paisa' => $amt, 'reason' => $why ?: null,
+                                     'advance_id' => null, 'amended_by' => $actorId, 'sort' => 0];
+                    if (in_array($r['method'] ?? null, ['bank', 'cash'], true)) {
+                        $b['method'] = $r['method'];
+                    }
+                } else {
+                    $t = (string) ($r['type'] ?? '');
+                    if (!isset(self::ENTRY_TYPES[$t]) || (self::ENTRY_TYPES[$t][0] === 'earn') !== ($mode === 'earning')) {
+                        return self::no('VALIDATION', "$name: choose what kind of " . ($mode === 'earning' ? 'earning' : 'deduction') . ' it is.');
+                    }
+                    if ($why === '') {
+                        return self::no('REASON_REQUIRED', "$name: say what it is for.");
+                    }
+                    $adv = null;
+                    if ($t === 'advance' || $t === 'loan') {
+                        $a = Db::one('SELECT id, kind, amount_paisa - recovered_paisa AS left_paisa, status FROM att_fin_advances WHERE id = ? AND employee_id = ? FOR UPDATE',
+                            [(int) ($r['advance_id'] ?? 0), $emp]);
+                        if ($a === null || $a['status'] !== 'active' || $a['kind'] !== $t) {
+                            return self::no('VALIDATION', "$name: choose which " . ($t === 'loan' ? 'loan' : 'advance') . ' is being recovered.');
+                        }
+                        $adv = (int) $a['id'];
+                        $taking[$adv] = ($taking[$adv] ?? 0) + $amt;
+                        if ($taking[$adv] > (int) $a['left_paisa']) {
+                            return self::no('VALIDATION', "$name: only Rs " . self::rupees((int) $a['left_paisa']) . ' of that ' . $t . ' is still owed.');
+                        }
+                    }
+                    $n = count($b['lines']);
+                    $b['lines'][] = ['key' => 'e:' . ($n + 1), 'kind' => $t, 'side' => self::ENTRY_TYPES[$t][0],
+                                     'label' => mb_substr(trim((string) ($r['label'] ?? '')), 0, 100) ?: self::ENTRY_TYPES[$t][1], 'detail' => 'entered by hand',
+                                     'calc_paisa' => $amt, 'amount_paisa' => $amt, 'reason' => $why, 'advance_id' => $adv, 'amended_by' => $actorId, 'sort' => $n];
+                }
+                $by[$emp] = $b;
+            }
+            if ($mode === 'deduction') {
+                foreach ($by as $emp => $b) {
+                    $free = self::owedFree($emp); $take = -self::net($b['lines']);
+                    if ($take > $free) {
+                        return self::no('VALIDATION', $b['name'] . ': only Rs ' . self::rupees(max(0, $free)) . ' is owed to them now, so Rs ' . self::rupees($take)
+                            . ' cannot be taken off. Deduct it on their next pay sheet instead.');
+                    }
+                }
+            }
+            $ref = self::nextRef('ENT');
+            Db::run('INSERT INTO att_fin_sheets (ref, kind, period_from, period_to, prepared_by) VALUES (?,?,?,?,?)', [$ref, 'entry', $date, $date, $actorId]);
+            $sheetId = Db::lastId(); $total = 0;
+            foreach ($by as $emp => $b) {
+                $net = self::net($b['lines']);
+                Db::run('INSERT INTO att_fin_sheet_items (sheet_id, employee_id, calc_paisa, amount_paisa, method) VALUES (?,?,?,?,?)', [$sheetId, $emp, $net, $net, $b['method']]);
+                self::storeLines(Db::lastId(), $b['lines']);
+                $total += $net;
+            }
+            Audit::record('fin.entry_prepare', 'att_fin_sheet', $sheetId, null, ['ref' => $ref, 'mode' => $mode, 'date' => $date, 'people' => count($by), 'total_paisa' => $total], $actorId);
+            return ['ok' => true, 'sheet_id' => $sheetId, 'ref' => $ref, 'mode' => $mode, 'people' => count($by), 'total_paisa' => $total];
+        });
+    }
+
     /** Home: what is owed, and how much is waiting at each step. */
     public static function overview(array $caps, int $userId): array
     {
@@ -1279,7 +1476,7 @@ final class FinanceService
         foreach ($people as $r) {
             if ($r['balance'] !== null) { $t['owed'] += max(0, (int) $r['balance']); $t['earned'] += (int) $r['earned']; $t['paid'] += (int) $r['paid']; }
         }
-        $count = ['waiting' => 0, 'approved' => 0, 'paid' => 0, 'returned' => 0, 'cancelled' => 0];
+        $count = ['waiting' => 0, 'approved' => 0, 'paid' => 0, 'returned' => 0, 'cancelled' => 0, 'posted' => 0];
         foreach (self::sheets($caps, $userId)['sheets'] as $s) { $count[$s['status']]++; }
         return ['ok' => true, 'today' => self::today(), 'owed_paisa' => $t['owed'], 'earned_paisa' => $t['earned'], 'paid_paisa' => $t['paid'],
                 'sheets' => $count, 'no_setup' => count(array_filter($people, static fn($r) => $r['pay_type'] === null && (int) $r['active'] === 1)),
@@ -1373,9 +1570,9 @@ final class FinanceService
         return false;
     }
 
-    private static function nextRef(): string
+    private static function nextRef(string $prefix = 'PAY'): string
     {
-        $day = 'PAY-' . (new DateTimeImmutable(self::today()))->format('ymd') . '-';
+        $day = $prefix . '-' . (new DateTimeImmutable(self::today()))->format('ymd') . '-';
         $n = (int) Db::value('SELECT COUNT(*) FROM att_fin_sheets WHERE ref LIKE ?', [$day . '%']);
         do {
             $ref = $day . str_pad((string) (++$n), 2, '0', STR_PAD_LEFT);
