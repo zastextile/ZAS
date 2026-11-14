@@ -97,7 +97,7 @@ function page_opens(string $href): bool {
         'shipment_board.php' => $office && ($zu('shiplog') || $zu('shippay') || $zu('shipcost')), 'exp_providers.php' => $office,
         'imp_register.php' => $office && $zu('imp'), 'imp_new.php' => $office && $zu('imp', 'c'),
         'imp_efs_recon.php' => $office && $zu('impefs'), 'imp_opening.php' => $office && $zu('impefs'),
-        'product_costing.php' => $office && $cost('view'), 'product_master.php' => $admin || $col, 'part_library.php' => $admin || $col,
+        'product_costing.php' => $office && $cost('view'), 'product_master.php' => $admin || $col, 'part_library.php' => $admin || $col, 'line_links.php' => $admin || $col,
         'products_csv.php' => $admin || $col, 'set_quantities_csv.php' => $admin || $col, 'cost_audit.php' => $admin, 'costing_items_link.php' => $admin,
         'production_my_work.php' => $prodAll, 'production_dashboard.php' => $prodAll, 'production_entry.php' => $prodAll,
         'production_reports.php' => $prodAll, 'production_workers.php' => $admin || $col, 'production_assembly.php' => $admin || $col,

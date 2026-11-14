@@ -180,6 +180,15 @@ exp_tab_strip($shipment, 'invoice');
 </style>
 <link rel="stylesheet" href="assets/css/lov.css?v=3">
 <script src="assets/js/lov.js?v=3"></script>
+<?php
+/* Parts in the product picker and the last price to this buyer — see
+   includes/linelinks.php. Loaded before the page registers its picker so it
+   can add to it; if it fails to load, the picker works exactly as before. */
+if (is_file(__DIR__ . '/includes/linelinks.php')) require_once __DIR__ . '/includes/linelinks.php';
+if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'idField' => 'item_id[]', 'partField' => 'part_id[]', 'rateSel' => '[data-c="rate"]',
+    'buyerSel' => 'input[name="buyer_name"]', 'curSel' => 'select[name="currency"]', 'lastUrl' => 'line_links.php?last=1&ship=' . (int)$shipment['id'],
+    'parts' => ll_parts(), 'rowParts' => ll_row_parts('shipment_items', 'shipment_id', (int)$shipment['id'])]);
+?>
 <script src="assets/js/grid.js?v=2"></script>
 
 <div class="topbar">

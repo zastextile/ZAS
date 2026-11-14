@@ -53,6 +53,11 @@ $editInvoice = can_edit_invoice($shipment);
 $saveAndSubmit = isset($_POST['save_and_submit']) && !is_staff() && $editInvoice && ($shipment['status'] !== 'approved_locked');
 $showRates = can_see_rates();
 
+/* Part links (includes/linelinks.php): the column is made sure of BEFORE the
+   transaction, because adding a column ends a transaction in MySQL. */
+if (is_file(__DIR__ . '/includes/linelinks.php')) require_once __DIR__ . '/includes/linelinks.php';
+$llOn = isset($_POST['part_id']) && function_exists('ll_ready') && ll_ready();
+
 try {
     db()->beginTransaction();
 
@@ -152,9 +157,14 @@ try {
             if ($lid > 0 && isset($oldLines[$lid]) && !isset($kept[$lid])) {
                 $stmtUpd->execute(array_merge($vals, [$lid, $id]));
                 $kept[$lid] = true;
+                $lineId = $lid;
             } else {
                 $stmtItem->execute(array_merge([$id], $vals));
+                $lineId = (int)db()->lastInsertId();
             }
+            /* A line is linked to a product OR to a part (for naming and
+               reports only). Only when the form sent part fields at all. */
+            if ($llOn) ll_set_part('shipment_items', $lineId, (int)(post_array('part_id')[$i] ?? 0), (int)($pids[$i] ?? 0));
             
             /* The per-line Department was removed from the invoice screen.
                It wrote to shipment_items.department, which nothing in the

@@ -13,7 +13,9 @@
  *               the same currency — and says so. Typing over it is free.
  *
  * The page says where things are through window.ZLL (see includes/
- * linelinks.php, ll_script()). Every row gets one hidden part field, so the
+ * linelinks.php, ll_script()). The last price is asked of line_links.php
+ * for the buyer and currency on the form AT THAT MOMENT, so a new invoice,
+ * or one whose buyer was just changed, gets the right figures. Every row gets one hidden part field, so the
  * posted list lines up with the row order exactly as product_id does. If this
  * file does not load, nothing is posted for parts and the server leaves every
  * existing part link alone.
@@ -22,7 +24,7 @@
   'use strict';
   var C = window.ZLL;
   if (!C || !window.LOV) return;
-  var PARTS = C.parts || [], LAST = C.last || {}, ROWP = C.rowParts || {};
+  var PARTS = C.parts || [], ROWP = C.rowParts || {}, LASTS = {};
   var norm = LOV.norm, esc = LOV.esc;
 
   function partById(id) { id = +id; for (var i = 0; i < PARTS.length; i++) if (PARTS[i].id === id) return PARTS[i]; return null; }
@@ -72,15 +74,30 @@
   function paintAll() { queued = false; rows().forEach(paint); }
   function later() { if (queued) return; queued = true; (window.requestAnimationFrame || setTimeout)(paintAll); }
 
+  /* What this buyer was last charged, per product ('p<id>') and part ('k<id>'), in this currency. */
+  function lastPrices(cb) {
+    var b = C.buyerSel && document.querySelector(C.buyerSel), c = C.curSel && document.querySelector(C.curSel);
+    var buyer = b ? String(b.value || '').trim() : '', cur = c ? String(c.value || '') : '';
+    if (!buyer || !cur || !C.lastUrl || !window.fetch) return cb({}, buyer);
+    var k = buyer.toLowerCase() + '|' + cur;
+    if (LASTS[k]) return cb(LASTS[k], buyer);
+    fetch(C.lastUrl + '&buyer=' + encodeURIComponent(buyer) + '&cur=' + encodeURIComponent(cur), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { LASTS[k] = j && j.ok ? (j.prices || {}) : {}; cb(LASTS[k], buyer); })
+      .catch(function () { cb({}, buyer); });
+  }
   function fillLast(tr, key) {
-    var v = LAST[key]; if (!v) return;
+    lastPrices(function (LAST, buyer) { putLast(tr, LAST[key], buyer); });
+  }
+  function putLast(tr, v, buyer) {
+    if (!v) return;
     var r = tr.querySelector(C.rateSel);
     if (!r || r.readOnly || r.disabled || parseFloat(String(r.value).replace(/,/g, '')) > 0) return;
     r.value = v;
     r.dispatchEvent(new Event('input', { bubbles: true }));
     var old = r.parentNode.querySelector('.zll-last'); if (old) old.remove();
     var note = document.createElement('div');
-    note.className = 'zll-last'; note.textContent = 'last price to ' + (C.who || 'this buyer');
+    note.className = 'zll-last'; note.textContent = 'last price to ' + (buyer || 'this buyer');
     r.parentNode.appendChild(note);
     r.addEventListener('input', function gone(e) { if (e.isTrusted) { note.remove(); r.removeEventListener('input', gone); } });
   }
@@ -96,7 +113,7 @@
       n.get = function (r, q) {
         if (!r.p || !r.p.zpart) return c.get(r, q);
         if (i === 0) return LOV.hl(r.p.name, q) + '<span class="zll-tag">Part</span>';
-        return /unit/i.test(c.label || '') ? esc(r.p.unit) : '&mdash;';
+        return /^unit$/i.test(c.label || '') ? esc(r.p.unit) : '&mdash;';
       };
       return n;
     });

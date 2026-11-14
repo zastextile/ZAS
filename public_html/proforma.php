@@ -250,6 +250,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
     if ($missing) { $_SESSION['error'] = pf_size_error($missing); redirect('proforma.php?id='.$pfid); }
 
     $existingIds = array_map('intval', array_column(db()->query("SELECT id FROM proforma_items WHERE proforma_id=".$pfid)->fetchAll(), 'id'));
+    if (is_file(__DIR__ . '/includes/linelinks.php')) require_once __DIR__ . '/includes/linelinks.php';
+    $llOn = isset($_POST['i_ptid']) && function_exists('ll_ready') && ll_ready(); $ptids = $_POST['i_ptid'] ?? [];
     /* product_id is the line's link to the Product Master, so production
        never has to work out which product a typed name meant. NULL when
        nothing was picked — which is how every line saved before this
@@ -272,6 +274,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
                            $q,pf_txt($units[$i]??'',40),$pr,round($q*$pr,2),$i+1]);
             $keptIds[]=(int)db()->lastInsertId();
         }
+        /* linked to a product OR a part (part: naming and reports only) */
+        if ($llOn) ll_set_part('proforma_items', (int)end($keptIds), (int)($ptids[$i] ?? 0), (int)($pids[$i] ?? 0));
     }
     $removeIds=array_diff($existingIds,$keptIds);
     if ($removeIds) { db()->exec("DELETE FROM proforma_items WHERE proforma_id=".$pfid." AND id IN (".implode(',',array_map('intval',$removeIds)).")"); }
@@ -907,6 +911,14 @@ if ($id) {
     table td{vertical-align:top}
     </style>
     <script src="assets/js/lov.js?v=3"></script>
+    <?php
+    /* Parts in the product picker and the last price to this customer — see includes/linelinks.php. */
+    if (is_file(__DIR__ . '/includes/linelinks.php')) require_once __DIR__ . '/includes/linelinks.php';
+    $llPf = (int)($pf['id'] ?? 0);
+    if (function_exists('ll_script')) echo ll_script(['tbody' => '#pfItems tbody', 'idField' => 'i_id[]', 'partField' => 'i_ptid[]', 'rateSel' => '[data-c="price"]',
+        'buyerSel' => 'input[name="customer_name"]', 'curSel' => 'select[name="currency"]', 'lastUrl' => 'line_links.php?last=1&pf=' . $llPf,
+        'parts' => ll_parts(), 'rowParts' => $llPf ? ll_row_parts('proforma_items', 'proforma_id', $llPf) : []]);
+    ?>
     <script src="assets/js/grid.js?v=2"></script>
     <script>
     function pfConfirmDelete(){

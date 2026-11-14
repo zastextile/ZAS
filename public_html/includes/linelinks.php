@@ -106,7 +106,7 @@ function ll_last_prices(string $buyer, string $currency, int $excludeShipmentId 
 /* The block a page prints so assets/js/linelinks.js can do its work. */
 function ll_script(array $cfg): string {
     return '<script>window.ZLL = ' . json_encode($cfg, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script>'
-         . '<script src="assets/js/linelinks.js?v=1"></script>';
+         . '<script src="assets/js/linelinks.js?v=3"></script>';
 }
 
 /* ---------------------------------------------------------------- link later */

@@ -107,6 +107,9 @@ function zas_menu(): array {
                 ['label' => 'Product Costing', 'href' => 'product_costing.php', 'show' => $office && $cost('view')],
                 ['label' => 'Product Master',  'href' => 'product_master.php',  'show' => $admin || $colleague],
                 ['label' => 'Part Library',    'href' => 'part_library.php',    'show' => $admin || $colleague],
+                /* Every invoice and proforma line typed without a link, with a
+                   suggestion each — link them in one sitting (line_links.php). */
+                ['label' => 'Link Lines to Products', 'href' => 'line_links.php', 'show' => $admin || $colleague],
                 /* The product list itself, out and back. The safety net before
                    a reset: whatever else is cleared, the products can return. */
                 ['label' => 'Products CSV',       'href' => 'products_csv.php',  'show' => $admin || $colleague],
