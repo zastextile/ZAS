@@ -357,6 +357,39 @@ ok($later['D003']['before_paisa'] === 300000 && $later['D003']['earned'] === 0 &
 ok(array_filter(Fin::ledgerSummary($H, '2026-03-01', '2026-03-05')['rows'], fn($r) => $r['pay_type'] === 'salary' || $r['department_name'] !== 'Stitching') === [], '  the HOD sees only their own department, and no salaried person');
 ok($code(Fin::ledgerSummary($C, '2026-03-05', '2026-03-01')) === 'VALIDATION', '  the dates must be in order');
 
+echo "12c. One form for an employee, and the ledger page\n";
+$A2 = Fin::caps($admin);
+$st1 = Fin::saveStaff([
+    ['code' => 'N100', 'full_name' => 'Nasir New', 'department' => 'Stitching', 'pay_type' => 'daily', 'daily_rate_paisa' => 130000, 'opening_paisa' => 800000],
+    ['full_name' => 'Auto Coded', 'department' => 'Dyeing', 'pay_type' => 'salary', 'basic_paisa' => 4500000, 'allowance_paisa' => 300000, 'pay_method' => 'bank', 'bank_account' => 'MCB 77'],
+    ['full_name' => 'No Department'],
+    ['code' => 'S001', 'full_name' => 'Clash Code', 'department' => 'Stitching'],
+], '', $A2, true, $admin);
+ok($st1['created'] === 2 && $st1['pay_saved'] === 2 && $st1['opening_saved'] === 1 && count($st1['errors']) === 2, 'ONE FORM, FOUR LINES: two people added with their pay, one opening balance; the line with no department and the one with a taken code are refused by name (' . json_encode([$st1['created'], $st1['pay_saved'], $st1['opening_saved'], count($st1['errors'])]) . ')');
+$nn = (int) Db::value("SELECT id FROM att_employees WHERE code = 'N100'");
+ok($nn > 0 && Fin::balance($nn) === 800000 && $n('SELECT daily_rate_paisa FROM att_fin_profiles WHERE employee_id = ?', [$nn]) === 130000, '  Nasir: on the roll, 1,300 a day, 8,000 owed from before — all from one line');
+$ac = Db::one("SELECT e.id, e.code, d.name FROM att_employees e JOIN att_departments d ON d.id = e.department_id WHERE e.full_name = 'Auto Coded'");
+ok($ac !== null && $ac['name'] === 'Dyeing' && preg_match('/^[A-Z]\d{3}$/', (string) $ac['code']) === 1, '  a line with no code is given the next number in the series in use (' . ($ac['code'] ?? '') . '), and a new department is created');
+ok($n("SELECT COUNT(*) FROM att_employees WHERE full_name IN ('No Department', 'Clash Code')") === 0, '  nothing was written for the refused lines');
+$again = Fin::saveStaff([['employee_id' => $nn, 'code' => 'N100', 'full_name' => 'Nasir New', 'department' => 'Stitching', 'pay_type' => 'daily', 'daily_rate_paisa' => 130000, 'opening_paisa' => 800000]], '', $A2, true, $admin);
+ok($again['ok'] && $again['created'] + $again['updated'] + $again['pay_saved'] + $again['opening_saved'] === 0 && $n('SELECT COUNT(*) FROM att_fin_profile_history WHERE employee_id = ?', [$nn]) === 1, '  saving the same line again changes nothing and writes no history');
+$mv = Fin::saveStaff([['employee_id' => $nn, 'full_name' => 'Nasir Naveed', 'department' => 'Packing', 'pay_type' => 'daily', 'daily_rate_paisa' => 140000]], 'Rate revised', $A2, true, $admin);
+ok($mv['updated'] === 1 && $mv['pay_saved'] === 1 && Db::value('SELECT full_name FROM att_employees WHERE id = ?', [$nn]) === 'Nasir Naveed' && Db::value('SELECT code FROM att_employees WHERE id = ?', [$nn]) === 'N100', '  an existing person is edited in the same form: name, department and rate — the code is kept when not given');
+ok(count(Fin::saveStaff([['employee_id' => $nn, 'pay_type' => 'daily', 'daily_rate_paisa' => 150000]], '', $A2, true, $admin)['errors']) === 1, '  a pay change with no reason is still refused');
+$noM = Fin::saveStaff([['full_name' => 'Sneak In', 'department' => 'Stitching'], ['employee_id' => $nn, 'full_name' => 'Renamed By Accounts', 'pay_type' => 'daily', 'daily_rate_paisa' => 140000]], '', $C, false, $acc);
+ok(count($noM['errors']) === 2 && $n("SELECT COUNT(*) FROM att_employees WHERE full_name IN ('Sneak In', 'Renamed By Accounts')") === 0, 'somebody who may set pay but not add employees cannot add or rename anyone through it');
+ok(count(Fin::saveStaff([['employee_id' => $emp['D003'], 'pay_type' => 'daily', 'daily_rate_paisa' => 125000]], 'x', $H, false, $hod)['errors']) === 1, 'a HOD cannot change another department\'s employee, or anybody\'s pay');
+ok(Fin::mayEditStaff($admin) && Fin::mayEditStaff($hr) && !Fin::mayEditStaff($acc) && !Fin::mayEditStaff($hod), 'adding and changing employees: Admin and HR');
+ok(Fin::nextCode() !== Fin::nextCode([Fin::nextCode()]), 'two new lines in one save get two different codes');
+$sm = Fin::statement($emp['D002'], '2026-03-01', '2026-03-05', $C);
+ok($sm['ok'] && $sm['opening_paisa'] === 0 && count($sm['rows']) === 3 && $sm['totals'] === ['earned' => 240000, 'deducted' => 100000, 'paid' => 140000] && $sm['closing_paisa'] === 0, 'LEDGER PAGE for D002, 1–5 March: brought forward 0, three lines, totals 2,400 / 1,000 / 1,400, balance 0');
+$refs = array_column($sm['rows'], 'ref');
+ok(preg_match('/^WAG-2603-\d{6}$/', $refs[0]) === 1 && preg_match('/^REC-2603-\d{6}$/', $refs[1]) === 1 && preg_match('/^PAY-2603-\d{6}$/', $refs[2]) === 1 && count(array_unique($refs)) === 3, '  every line has its own reference: WAG (wages), REC (advance recovery), PAY (payment) — ' . implode(', ', $refs));
+ok(array_column($sm['rows'], 'balance') === [240000, 140000, 0], '  and the balance after it');
+$sm2 = Fin::statement($emp['D003'], '2026-03-06', '2026-03-06', $C);
+ok($sm2['opening_paisa'] === 300000 && $sm2['rows'] === [] && $sm2['closing_paisa'] === 300000, '  a later window opens with the balance brought forward');
+ok($code(Fin::statement($emp['S001'], '2026-03-01', '2026-03-05', $H)) === 'NOT_FOUND', '  a HOD gets no statement for a salaried person');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

@@ -913,12 +913,57 @@ try {
            kind of sheet, whose department, their own sheet or not). */
         case $method === 'GET' && $route === '/finance/overview':
             [$u, $caps] = fin_caps();
-            admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps, 'departments' => Employees::departments()]);
+            admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps + ['staff' => Fin::mayEditStaff((int) $u['id'])], 'departments' => Employees::departments()]);
             break;
 
         case $method === 'GET' && $route === '/finance/people':
             [, $caps] = fin_caps();
             admin_answer(Fin::people($caps));
+            break;
+
+        /* ONE FORM FOR AN EMPLOYEE: the person, their pay and their opening
+           balance, for one or for many (FinanceService::saveStaff). */
+        case $method === 'POST' && $route === '/finance/staff':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            $rows = Http::input('rows', []);
+            admin_answer(Fin::saveStaff(is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [], (string) Http::input('reason', ''),
+                $caps, Fin::mayEditStaff((int) $u['id']), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/finance/staff/(\d+)/active$#', $route, $m) === 1:
+            Http::requireCsrf();
+            [$u] = fin_caps();
+            if (!Fin::mayEditStaff((int) $u['id'])) {
+                Http::fail('FORBIDDEN', 'Only HR or an admin can take somebody off the roll or put them back.', 403);
+            }
+            admin_answer(AdminService::setEmployeeActive((int) $m[1], (bool) Http::input('active', false), (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/finance/staff/workers':
+            [$u] = fin_caps();
+            if (!Fin::mayEditStaff((int) $u['id'])) {
+                Http::json(['ok' => true, 'available' => false, 'workers' => []]);
+            }
+            Http::json(AdminService::unlinkedWorkers());
+            break;
+
+        case $method === 'GET' && preg_match('#^/finance/people/(\d+)/statement(/export)?$#', $route, $m) === 1:
+            [, $caps] = fin_caps();
+            $today = Fin::today();
+            $stm = Fin::statement((int) $m[1], (string) Http::input('from', substr($today, 0, 8) . '01'), (string) Http::input('to', $today), $caps);
+            if (empty($m[2]) || !$stm['ok']) {
+                admin_answer($stm);
+            }
+            $rs = static fn(int $p): string => number_format($p / 100, 2, '.', '');
+            $out = [['Employee', $stm['employee']['full_name'], $stm['employee']['code'], '', '', '', ''], ['Account', 'Wages payable', '', '', '', '', ''],
+                    ['From', $stm['from'], 'To', $stm['to'], '', '', ''], ['Date', 'Reference', 'Description', 'Earnings', 'Deductions', 'Paid', 'Balance'],
+                    [$stm['from'], 'OPENING', 'Balance brought forward', '', '', '', $rs($stm['opening_paisa'])]];
+            foreach ($stm['rows'] as $r) {
+                $out[] = [$r['date'], $r['ref'], $r['label'], $rs($r['earned']), $rs($r['deducted']), $rs($r['paid']), $rs($r['balance'])];
+            }
+            $out[] = ['', 'PERIOD TOTALS', 'All entries in the selected dates', $rs($stm['totals']['earned']), $rs($stm['totals']['deducted']), $rs($stm['totals']['paid']), $rs($stm['closing_paisa'])];
+            send_csv('statement-' . $stm['employee']['code'] . '-' . $stm['from'] . '-to-' . $stm['to'] . '.csv', ['All amounts PKR', '', '', '', '', '', ''], $out);
             break;
 
         case $method === 'POST' && $route === '/finance/people/bulk-profile':

@@ -134,8 +134,10 @@ final class FinanceService
                FROM att_employees e
                JOIN att_departments d ON d.id = e.department_id
                LEFT JOIN att_fin_profiles f ON f.employee_id = e.id
-              WHERE (e.active = 1 OR f.employee_id IS NOT NULL) $w
+              WHERE 1 = 1 $w
               ORDER BY e.full_name LIMIT 5000", $p);
+        $opening = [];
+        foreach (Db::all("SELECT employee_id, amount_paisa FROM att_fin_ledger WHERE kind = 'opening' AND cancelled_at IS NULL") as $o) { $opening[(int) $o['employee_id']] = (int) $o['amount_paisa']; }
         $bal = self::balances();
         $onSheet = array_flip(array_map('intval', array_column(Db::all(
             "SELECT DISTINCT i.employee_id FROM att_fin_sheet_items i JOIN att_fin_sheets s ON s.id = i.sheet_id WHERE s.status IN ('waiting','approved')"), 'employee_id')));
@@ -147,13 +149,14 @@ final class FinanceService
             $b = $bal[$id] ?? ['earned' => 0, 'deducted' => 0, 'paid' => 0, 'balance' => 0];
             $r += $b;
             $r['on_sheet'] = isset($onSheet[$id]);
+            $r['opening_paisa'] = $opening[$id] ?? null;
             if (!$caps['setup'] && !$caps['pay'] && !$caps['approve']) {
                 $r['bank_account'] = null;                 // an account number is for the people who pay
             }
             if (!$caps['see_salary'] && $r['pay_type'] === 'salary') {
                 // Not for a HOD's eyes: the person is listed, the pay is not.
                 $r['basic_paisa'] = $r['allowance_paisa'] = null;
-                $r['earned'] = $r['deducted'] = $r['paid'] = $r['balance'] = null;
+                $r['earned'] = $r['deducted'] = $r['paid'] = $r['balance'] = $r['opening_paisa'] = null;
             }
         }
         unset($r);
@@ -238,6 +241,143 @@ final class FinanceService
         }
         return ['ok' => $saved > 0 || $errors === [], 'saved' => $saved, 'errors' => $errors,
                 'error' => $saved === 0 && $errors !== [] ? implode(' ', array_slice($errors, 0, 3)) : null];
+    }
+
+    /* ------------------------------------------------- one employee form
+
+       The employee (code, name, department, production code), how they are
+       paid, and what they were owed on day one used to be entered on two
+       different screens. saveStaff() takes all of it for many people in one
+       go — typed, or pasted from Excel — and sends each part through the rule
+       that already governs it: AdminService::saveEmployee() for the person,
+       saveProfile() for the pay, setOpening() for the balance. Nothing here
+       is a second copy of those rules.
+
+       A row that is refused is reported by name and the other rows are still
+       saved. Within one row the parts are done in that order and stop at the
+       first refusal, so a person is never given pay under a code that was
+       turned down. */
+
+    /** May this user add and change employees themselves (not only their pay)? */
+    public static function mayEditStaff(int $userId): bool
+    {
+        if (Roles::isAdmin($userId) || Roles::has($userId, Roles::HR)) {
+            return self::windowState($userId) === 'yes' || Roles::isAdmin($userId);
+        }
+        if (!function_exists('zu_can') || !function_exists('current_user')) {
+            return false;
+        }
+        $u = \current_user();
+        return is_array($u) && (int) ($u['id'] ?? 0) === $userId && \zu_can('attadm', 'u');
+    }
+
+    /** The next free employee code, continuing the numbering already in use (ZAS-007 → ZAS-008). */
+    public static function nextCode(array $alsoTaken = []): string
+    {
+        $taken = []; $families = [];
+        foreach (array_merge(array_column(Db::all('SELECT code FROM att_employees'), 'code'), $alsoTaken) as $c) {
+            $taken[mb_strtolower((string) $c)] = true;
+            if (preg_match('/^(.*?)(\d+)$/', (string) $c, $m)) {
+                $f = &$families[$m[1]];
+                $f = ['n' => max($f['n'] ?? 0, (int) $m[2]), 'w' => max($f['w'] ?? 0, strlen($m[2])), 'count' => ($f['count'] ?? 0) + 1];
+                unset($f);
+            }
+        }
+        $prefix = 'E'; $n = 0; $w = 3; $best = 0;
+        foreach ($families as $pre => $f) {
+            if ($f['count'] > $best) { $best = $f['count']; $prefix = (string) $pre; $n = $f['n']; $w = $f['w']; }
+        }
+        do { $code = $prefix . str_pad((string) (++$n), $w, '0', STR_PAD_LEFT); } while (isset($taken[mb_strtolower($code)]));
+        return $code;
+    }
+
+    /**
+     * @param list<array<string,mixed>> $rows each: employee_id?, code, full_name, department (name) or department_id, worker_code,
+     *        pay_type?, basic_paisa?, allowance_paisa?, daily_rate_paisa?, ot_rate_paisa?, pay_method?, bank_account?, opening_paisa?
+     */
+    public static function saveStaff(array $rows, string $reason, array $caps, bool $mayMaster, int $actorId): array
+    {
+        if ($rows === [] || count($rows) > 500) {
+            return self::no('VALIDATION', $rows === [] ? 'There is nothing to save.' : 'At most 500 people at a time.');
+        }
+        $depts = [];
+        foreach (Db::all('SELECT id, name FROM att_departments') as $d) { $depts[mb_strtolower(trim((string) $d['name']))] = (int) $d['id']; }
+        $created = 0; $updated = 0; $paySaved = 0; $opened = 0; $errors = []; $given = [];
+        foreach ($rows as $row) {
+            $id = (int) ($row['employee_id'] ?? 0);
+            $name = trim((string) ($row['full_name'] ?? ''));
+            $who = $name !== '' ? $name : ($id > 0 ? 'Employee #' . $id : 'A new line');
+            $fail = static function (string $msg) use (&$errors, $who): void { $errors[] = $who . ': ' . $msg; };
+
+            // ---- the person
+            $before = $id > 0 ? Db::one('SELECT * FROM att_employees WHERE id = ?', [$id]) : null;
+            if ($id > 0 && $before === null) { $fail('no longer exists.'); continue; }
+            if ($before !== null && !self::inScope($caps['departments'], (int) $before['department_id'])) { $fail('is not yours to change.'); continue; }
+            $deptId = (int) ($row['department_id'] ?? 0);
+            $deptName = trim((string) ($row['department'] ?? ''));
+            if ($deptId <= 0 && $deptName !== '') {
+                $deptId = $depts[mb_strtolower($deptName)] ?? 0;
+                if ($deptId <= 0) {
+                    if (!$mayMaster) { $fail('there is no department called "' . $deptName . '".'); continue; }
+                    if (mb_strlen($deptName) > 120) { $fail('the department name is too long.'); continue; }
+                    $deptId = Employees::createDepartment($deptName, $actorId);
+                    $depts[mb_strtolower($deptName)] = $deptId;
+                }
+            }
+            if ($deptId <= 0 && $before !== null) { $deptId = (int) $before['department_id']; }
+            $code = trim((string) ($row['code'] ?? ''));
+            if ($code === '') { $code = $before !== null ? (string) $before['code'] : self::nextCode($given); }
+            $worker = array_key_exists('worker_code', $row) ? trim((string) $row['worker_code']) : (string) ($before['worker_code'] ?? '');
+            if ($name === '' && $before !== null) { $name = (string) $before['full_name']; }
+
+            $masterChanged = $before === null
+                || $code !== (string) $before['code'] || $name !== (string) $before['full_name']
+                || $deptId !== (int) $before['department_id'] || $worker !== (string) ($before['worker_code'] ?? '');
+            if ($masterChanged) {
+                if (!$mayMaster) { $fail($before === null ? 'you cannot add employees. Ask HR or an admin.' : 'you can set pay, but not change the name, code or department.'); continue; }
+                $r = AdminService::saveEmployee($before === null ? null : $id,
+                    ['code' => $code, 'full_name' => $name, 'department_id' => $deptId, 'worker_code' => $worker, 'qr_payload' => (string) ($before['qr_payload'] ?? '')], $actorId);
+                if (!$r['ok']) { $fail((string) $r['error']); continue; }
+                if ($before === null) { $created++; $given[] = $code; } else { $updated++; }
+                $id = (int) $r['employee_id'];
+            }
+
+            // ---- how they are paid
+            $type = (string) ($row['pay_type'] ?? '');
+            if ($type !== '') {
+                if (!$caps['setup']) { $fail('saved, but you cannot set pay.'); continue; }
+                $new = ['pay_type' => $type];
+                foreach (['basic_paisa', 'allowance_paisa', 'daily_rate_paisa', 'ot_rate_paisa'] as $k) { $new[$k] = $row[$k] ?? 0; }
+                $new['pay_method'] = ($row['pay_method'] ?? 'cash') === 'bank' ? 'bank' : 'cash';
+                $new['bank_account'] = mb_substr(trim((string) ($row['bank_account'] ?? '')), 0, 60);
+                $old = Db::one('SELECT * FROM att_fin_profiles WHERE employee_id = ?', [$id]);
+                $same = $old !== null && $old['pay_type'] === $type && $old['pay_method'] === $new['pay_method'] && (string) ($old['bank_account'] ?? '') === $new['bank_account'];
+                foreach (['basic_paisa', 'allowance_paisa', 'daily_rate_paisa', 'ot_rate_paisa'] as $k) {
+                    $same = $same && self::whole($new[$k]) && (int) $old[$k] === (int) $new[$k];
+                }
+                if (!$same) {
+                    $r = self::saveProfile($id, $new, $reason, $actorId);
+                    if (!$r['ok']) { $fail('pay not saved — ' . $r['error']); continue; }
+                    $paySaved++;
+                }
+            }
+
+            // ---- what they were owed on day one
+            $open = $row['opening_paisa'] ?? null;
+            if ($open !== null && $open !== '') {
+                if (!$caps['pay']) { $fail('saved, but only Accounts or an admin can enter an opening balance.'); continue; }
+                if (!self::whole($open)) { $fail('the opening balance must be a number.'); continue; }
+                $has = Db::value("SELECT amount_paisa FROM att_fin_ledger WHERE source_key = ?", ['open:' . $id]);
+                if ($has === null || $has === false ? (int) $open > 0 : (int) $has !== (int) $open) {
+                    $r = self::setOpening($id, (int) $open, trim($reason) !== '' ? $reason : 'Entered with the employee list', $actorId);
+                    if (!$r['ok']) { $fail('opening balance not saved — ' . $r['error']); continue; }
+                    $opened++;
+                }
+            }
+        }
+        $done = $created + $updated + $paySaved + $opened;
+        return ['ok' => $done > 0 || $errors === [], 'created' => $created, 'updated' => $updated, 'pay_saved' => $paySaved, 'opening_saved' => $opened, 'errors' => $errors,
+                'error' => $done === 0 && $errors !== [] ? implode(' ', array_slice($errors, 0, 3)) : null];
     }
 
     /** What is owed today when the system starts being used. One per person; replaced, never added twice. */
@@ -349,10 +489,56 @@ final class FinanceService
                 $bal += in_array($l['kind'], ['opening', 'earning'], true) ? $l['amount_paisa'] : -$l['amount_paisa'];
             }
             $l['balance_paisa'] = $bal;
+            $l['ref'] = self::lineRef($l);
         }
         unset($l);
         return ['ok' => true, 'employee' => $e, 'lines' => $lines, 'balance_paisa' => $bal,
                 'advances' => self::advancesFor($employeeId)];
+    }
+
+    /**
+     * A reference for one statement line: what it is, the month, its number.
+     * SAL-2611-000042 is a basic-salary line of November 2026, ledger line 42.
+     * The number is the line's own id, so it never changes and never repeats.
+     */
+    public static function lineRef(array $l): string
+    {
+        $map = ['basic' => 'SAL', 'allowance' => 'ALW', 'daily' => 'WAG', 'overtime' => 'OT', 'production' => 'PRD', 'bonus' => 'BON', 'other_earning' => 'ERN',
+                'leave' => 'LVE', 'deduction' => 'DED', 'advance' => 'REC', 'loan' => 'LREC'];
+        $kind = (string) ($l['kind'] ?? '');
+        $pre = $kind === 'payment' ? 'PAY' : ($kind === 'opening' ? 'OPN' : ($map[(string) ($l['line_kind'] ?? '')] ?? ($kind === 'deduction' ? 'DED' : 'ERN')));
+        return $pre . '-' . substr(str_replace('-', '', (string) ($l['entry_date'] ?? '')), 2, 4) . '-' . str_pad((string) (int) ($l['id'] ?? 0), 6, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * One person's statement between two days, the way an accountant lays it
+     * out: the balance brought forward, each line with what it added, took
+     * away or paid and the balance after it, then the totals of the period.
+     * Cancelled lines are left out. Amounts in paisa.
+     */
+    public static function statement(int $employeeId, string $from, string $to, array $caps): array
+    {
+        if (!self::isDate($from) || !self::isDate($to) || $to < $from) {
+            return self::no('VALIDATION', 'Give the first and last day.');
+        }
+        $lg = self::ledger($employeeId, $caps);
+        if (!$lg['ok']) {
+            return $lg;
+        }
+        $bal = 0; $rows = []; $t = ['earned' => 0, 'deducted' => 0, 'paid' => 0];
+        foreach ($lg['lines'] as $l) {
+            if ($l['cancelled_at'] !== null || $l['entry_date'] > $to) { continue; }
+            $plus = in_array($l['kind'], ['opening', 'earning'], true);
+            if ($l['entry_date'] < $from) { $bal += $plus ? $l['amount_paisa'] : -$l['amount_paisa']; continue; }
+            if (!isset($opening)) { $opening = $bal; }
+            $bal += $plus ? $l['amount_paisa'] : -$l['amount_paisa'];
+            $e = $plus ? $l['amount_paisa'] : 0; $d = $l['kind'] === 'deduction' ? $l['amount_paisa'] : 0; $p = $l['kind'] === 'payment' ? $l['amount_paisa'] : 0;
+            $t['earned'] += $e; $t['deducted'] += $d; $t['paid'] += $p;
+            $rows[] = ['date' => $l['entry_date'], 'ref' => $l['ref'], 'label' => $l['label'] . ($l['sheet_ref'] ? ' · ' . $l['sheet_ref'] : ''),
+                       'earned' => $e, 'deducted' => $d, 'paid' => $p, 'balance' => $bal];
+        }
+        return ['ok' => true, 'employee' => $lg['employee'], 'from' => $from, 'to' => $to, 'opening_paisa' => $opening ?? $bal, 'rows' => $rows,
+                'totals' => $t, 'closing_paisa' => $bal];
     }
 
     /**

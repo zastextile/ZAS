@@ -294,7 +294,16 @@ page_header('Attendance — Setup');
       var st = el('select', { 'aria-label': 'Show', change: function(){ empFilter.state = st.value; empFilter.page = 1; list(); } },
         options([{ v: 'active', t: 'Active' }, { v: 'inactive', t: 'Inactive' }, { v: 'all', t: 'Everyone' }], 'v', 't', empFilter.state));
       var holder = el('div', {}, [el('p', { class: 'muted', text: 'Loading…' })]);
+      /* ONE FORM FOR EMPLOYEES. Adding and editing people — with their pay and
+         opening balance in the same line — now lives on People Finance ›
+         Employees. This tab is kept for what belongs to attendance alone:
+         the reference photo and the card. The two buttons below still work,
+         and write the very same employee list. */
       show([
+        el('div', { class: 'note', style: 'background:#eef8f3;border:1px solid #bfe0d3;border-radius:10px;padding:10px 13px;color:#17624d' }, [
+          el('strong', { text: 'Add and edit employees in one form: ' }),
+          el('a', { href: 'att_finance.php#people', style: 'font-weight:700;color:#17624d', text: 'People Finance › Employees →' }),
+          ' Code, name, department, how they are paid and their opening balance on one line, for many people at once, with paste from Excel. This tab stays for photos and cards.']),
         el('div', { class: 'bar' }, [q, d, st,
           CAN.c ? btn('Add employee', function(){ editEmployee(null); }, true) : null,
           CAN.c ? btn('Add many…', function(){ importDialog(); }) : null]),
