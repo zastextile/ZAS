@@ -547,6 +547,38 @@ const body = p => p.textContent('#fin-body');
     check('no script error (admin)', e8.length === 0, e8.join(' | '));
     await c8.close();
 
+    // ---- HR marks a week of attendance in the grid
+    const c9 = await browser.newContext({ viewport: { width: 1366, height: 900 }, timezoneId: 'Asia/Karachi', deviceScaleFactor: SHOTS ? 2 : 1 });
+    const hrp = await signIn(c9, 'hr@zas.test');
+    const e9 = []; hrp.on('pageerror', e => e9.push(e.message));
+    await hrp.goto(BASE + '/att_finance.php#mark');
+    await hrp.waitForSelector('table.mw');
+    check('MARK ATTENDANCE: HR has the tab and the week grid', (await hrp.locator('#fin-tabs button:has-text("Mark attendance")').count()) === 1 && (await hrp.locator('table.mw thead th.c').count()) === 7);
+    await hrp.click('#fin-body button:has-text("‹")');
+    await hrp.waitForFunction(() => document.querySelectorAll('table.mw .seg3').length > 0);
+    await hrp.click('#fin-body button:has-text("All Full for ticked")');
+    const hira = hrp.locator('table.mw tbody tr', { hasText: 'Hira Helper' });
+    await hira.locator('.seg3').nth(1).locator('button:has-text("H")').click();
+    await hira.locator('.seg3').nth(2).locator('button:has-text("A")').click();
+    await hrp.fill('#fin-body input[placeholder^="e.g. Gate scanner"]', 'From the paper register');
+    t = await hira.textContent();
+    check('  All Full, then one Half and one Absent: Hira shows 6 days less 1.5 — 5.5 days, wages worked out live', /5\.5/.test(t) && /6,050/.test(t), t);
+    await hrp.waitForTimeout(400); await shot(hrp, '18-mark-attendance');
+    await hrp.click('#fin-body button:has-text("Save attendance")');
+    await hrp.waitForFunction(() => /days? saved/.test(document.getElementById('fin-toast').textContent));
+    check('  saved: ' + (await hrp.textContent('#fin-toast')), true);
+    await hrp.waitForSelector('table.mw');
+    check('  after saving, the marks are the attendance (nothing left to save)', /Nothing changed yet/.test(await body(hrp)) && /5\.5/.test(await hrp.locator('table.mw tbody tr', { hasText: 'Hira Helper' }).textContent()));
+    check('  HR has no "Save and prepare wages" (HR does not prepare wages)', (await hrp.locator('#fin-body button:has-text("prepare wages")').count()) === 0);
+    check('no script error (mark attendance)', e9.length === 0, e9.join(' | '));
+    await c9.close();
+    const c10 = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+    const acp = await signIn(c10, 'acc@zas.test');
+    await acp.goto(BASE + '/att_finance.php');
+    await acp.waitForSelector('#fin-tabs button');
+    check('  Accounts does not see Mark attendance', (await acp.locator('#fin-tabs button:has-text("Mark attendance")').count()) === 0);
+    await c10.close();
+
     // ---- HOD
     const c4 = await browser.newContext({ viewport: { width: 1366, height: 900 } });
     const h = await signIn(c4, 'hod@zas.test');

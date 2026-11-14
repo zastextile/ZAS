@@ -464,6 +464,37 @@ $sv = Fin::saveStaff([['employee_id' => $emp['D002'], 'qr_payload' => 'CARD-D002
 ok($sv['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', 'the card text is kept from the same one form');
 ok(Fin::saveStaff([['employee_id' => $emp['D002'], 'full_name' => 'Dina Daily']], '', $A, true, $admin)['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', '  and a save that does not mention it leaves it alone');
 
+echo "12f. Mark attendance — a week of daily-wage workers on one screen (Admin and HR)\n";
+Fin::setToday('2026-03-12');
+$A = Fin::caps($admin); $R = Fin::caps($hr); $C = Fin::caps($acc); $H = Fin::caps($hod);
+ok($A['mark'] && $R['mark'] && !$C['mark'] && !$H['mark'], 'Admin and HR may mark attendance; Accounts and a HOD may not');
+ok($code(Fin::weekGrid('2026-03-06', 0, $C)) === 'FORBIDDEN' && $code(Fin::saveWeek([['employee_id' => $emp['D001'], 'day' => '2026-03-06', 'mark' => 'F']], [], 'x', $H, $hod)) === 'FORBIDDEN', '  and the server refuses the others');
+$came('D002', '2026-03-09');
+$g = Fin::weekGrid('2026-03-06', 0, $R);
+$gw = array_column($g['workers'], null, 'code');
+ok($g['ok'] && count($g['days']) === 7 && isset($gw['D001'], $gw['D002'], $gw['D003']) && !isset($gw['S001']) && !isset($gw['C001']), 'THE GRID: seven days, every daily-wage worker, nobody salaried or on contract');
+ok($gw['D002']['days']['2026-03-09']['lock'] === 'scan' && $gw['D002']['days']['2026-03-09']['mark'] === 'F', '  a day the gate scanner recorded is shown as scanned and locked');
+$T = ['full_in' => '08:00', 'full_out' => '18:00', 'half_in' => '08:00', 'half_out' => '11:30'];
+ok($code(Fin::saveWeek([['employee_id' => $emp['D001'], 'day' => '2026-03-06', 'mark' => 'F']], $T, '', $R, $hr)) === 'REASON_REQUIRED', 'marking needs a reason');
+ok($code(Fin::saveWeek([['employee_id' => $emp['D001'], 'day' => '2026-03-06', 'mark' => 'H']], ['half_out' => '13:00'] + $T, 'x', $R, $hr)) === 'VALIDATION', '  a "half day" long enough to count as a full day is refused');
+$sw = Fin::saveWeek([['employee_id' => $emp['D001'], 'day' => '2026-03-06', 'mark' => 'F'], ['employee_id' => $emp['D001'], 'day' => '2026-03-07', 'mark' => 'H'],
+                     ['employee_id' => $emp['D001'], 'day' => '2026-03-08', 'mark' => 'A'], ['employee_id' => $emp['D003'], 'day' => '2026-03-06', 'mark' => 'F']], $T, 'From the paper register', $R, $hr);
+ok($sw['ok'] && $sw['saved'] === 3 && $sw['errors'] === [], 'HR marks D001 Full, Half, Absent and D003 Full: three days saved (an absent day with nothing there needs nothing) — ' . json_encode($sw['errors'] ?? $sw));
+$dl = fn($code) => $line($row(Fin::preview('daily', '2026-03-06', '2026-03-12', Fin::caps($acc)), $emp[$code])['lines'] ?? [], 'daily');
+ok(($dl('D001')['label'] ?? '') === 'Daily wages · 1.5 days' && ($dl('D003')['label'] ?? '') === 'Daily wages · 1 day', '  Prepare pay counts them like scans: D001 1.5 days, D003 1 day');
+ok($n("SELECT COUNT(*) FROM att_corrections WHERE action = 'admin.entry_add' AND reason LIKE 'Marked in the week grid: From the paper register'") === 3, '  each marked day is an attendance entry with the reason, on record');
+Fin::saveWeek([['employee_id' => $emp['D001'], 'day' => '2026-03-07', 'mark' => 'F'], ['employee_id' => $emp['D001'], 'day' => '2026-03-06', 'mark' => 'A']], $T, 'Register re-checked', $R, $hr);
+$gw = array_column(Fin::weekGrid('2026-03-06', 0, $R)['workers'], null, 'code');
+ok($gw['D001']['days']['2026-03-07']['mark'] === 'F' && $gw['D001']['days']['2026-03-06']['mark'] === null
+   && $n("SELECT COUNT(*) FROM att_entry_cycles c JOIN att_shift_instances si ON si.id = c.shift_instance_id WHERE c.employee_id = ? AND si.work_date = '2026-03-07'", [$emp['D001']]) === 1,
+   '  changed again: Half becomes Full (one entry, not two), Full becomes Absent (the entry goes)');
+$bad = Fin::saveWeek([['employee_id' => $emp['D002'], 'day' => '2026-03-09', 'mark' => 'A'], ['employee_id' => $emp['D001'], 'day' => '2026-03-02', 'mark' => 'F'],
+                      ['employee_id' => $emp['D001'], 'day' => '2026-03-13', 'mark' => 'F'], ['employee_id' => $emp['S001'], 'day' => '2026-03-06', 'mark' => 'F']], $T, 'x', $R, $hr);
+ok($bad['saved'] === 0 && count($bad['errors']) === 4 && str_contains($bad['errors'][0], 'scanned at the gate') && str_contains($bad['errors'][1], 'already on pay sheet')
+   && str_contains($bad['errors'][2], 'not come yet') && str_contains($bad['errors'][3], 'not a daily-wage worker'),
+   '  never changed here: a scanned day, a day already on a pay sheet, a day to come, a salaried person — each says why');
+Fin::setToday('2026-03-05');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

@@ -95,6 +95,7 @@ final class FinanceService
         $wide    = $salary || $office || $approve || $pay || $setup || $view;
         $caps = [
             'salary' => $salary, 'wage' => $office || $hodOf !== [], 'approve' => $approve, 'pay' => $pay, 'setup' => $setup,
+            'mark' => $admin || $job(Roles::HR),          // the week attendance grid: Admin and HR
             'any' => $wide || $hodOf !== [], 'admin' => $admin,
             // A HOD prepares wages for their own people and never sees a salary.
             'see_salary' => $wide,
@@ -105,7 +106,7 @@ final class FinanceService
         // person may look (if their setting says so) but change nothing.
         $window = self::windowState($userId);
         if (!$admin && $window !== 'yes') {
-            foreach (['salary', 'wage', 'approve', 'pay', 'setup'] as $k) { $caps[$k] = false; }
+            foreach (['salary', 'wage', 'approve', 'pay', 'setup', 'mark'] as $k) { $caps[$k] = false; }
             if ($window !== 'ro') { $caps['any'] = false; }
         }
         return $caps;
@@ -1496,6 +1497,163 @@ final class FinanceService
             Audit::record('fin.entry_prepare', 'att_fin_sheet', $sheetId, null, ['ref' => $ref, 'mode' => $mode, 'date' => $date, 'people' => count($by), 'total_paisa' => $total], $actorId);
             return ['ok' => true, 'sheet_id' => $sheetId, 'ref' => $ref, 'mode' => $mode, 'people' => count($by), 'total_paisa' => $total];
         });
+    }
+
+    // ------------------------------------------------------- mark attendance
+
+    /**
+     * MARK ATTENDANCE — a week of daily-wage workers on one screen, Full, Half
+     * or Absent for each day, for Admin and HR. Each mark becomes an ordinary
+     * attendance entry (Setup › Entries, source "admin") with the reason and
+     * the name of who marked it, so daily wages count it exactly like a scan.
+     *
+     * Never touched here: a day the gate scanner recorded (that is fixed in
+     * Setup › Entries, one entry at a time), a day already on a daily-wages
+     * pay sheet (so no day is paid twice), and a day that has not come yet.
+     */
+    public static function weekGrid(string $from, int $deptId, array $caps): array
+    {
+        if (empty($caps['mark'])) {
+            return self::no('FORBIDDEN', 'Marking attendance is for Admin and HR.');
+        }
+        if (!self::isDate($from)) {
+            return self::no('VALIDATION', 'Choose the first day of the week.');
+        }
+        $to = (new DateTimeImmutable($from))->modify('+6 days')->format('Y-m-d');
+        $days = [];
+        for ($d = new DateTimeImmutable($from), $i = 0; $i < 7; $i++, $d = $d->modify('+1 day')) { $days[] = $d->format('Y-m-d'); }
+        $half = max(1, Policy::int('fin_half_day_minutes', 240));
+        $emps = Db::all(
+            "SELECT e.id AS employee_id, e.code, e.full_name, d.name AS department_name, f.daily_rate_paisa
+               FROM att_fin_profiles f JOIN att_employees e ON e.id = f.employee_id JOIN att_departments d ON d.id = e.department_id
+              WHERE f.pay_type = 'daily' AND e.active = 1" . ($deptId > 0 ? ' AND e.department_id = ?' : '') . '
+              ORDER BY d.name, e.full_name LIMIT 1000', $deptId > 0 ? [$deptId] : []);
+        $state = self::dayStates(array_map(static fn($e) => (int) $e['employee_id'], $emps), $from, $to);
+        $today = self::today();
+        foreach ($emps as &$e) {
+            $id = (int) $e['employee_id'];
+            $e['employee_id'] = $id; $e['daily_rate_paisa'] = (int) $e['daily_rate_paisa'];
+            $e['days'] = [];
+            foreach ($days as $day) {
+                $st = $state[$id][$day] ?? ['minutes' => 0, 'open' => 0, 'scanned' => 0, 'sheet' => null];
+                $mark = ($st['minutes'] >= $half || $st['open'] > 0) ? 'F' : ($st['minutes'] > 0 ? 'H' : null);
+                $lock = $day > $today ? 'future' : ($st['sheet'] !== null ? 'sheet' : ($st['scanned'] > 0 ? 'scan' : null));
+                $e['days'][$day] = ['mark' => $mark, 'minutes' => $st['minutes'], 'lock' => $lock, 'sheet' => $st['sheet']];
+            }
+        }
+        unset($e);
+        [$fi, $fo] = self::defaultShiftTimes();
+        $hi = $fi; $ho = (new DateTimeImmutable('2000-01-01 ' . $fi))->modify('+' . max(30, $half - 30) . ' minutes')->format('H:i');
+        return ['ok' => true, 'from' => $from, 'to' => $to, 'days' => $days, 'today' => $today, 'half_minutes' => $half,
+                'times' => ['full_in' => $fi, 'full_out' => $fo, 'half_in' => $hi, 'half_out' => $ho], 'workers' => $emps];
+    }
+
+    /** @return array<int,array<string,array{minutes:int,open:int,scanned:int,sheet:?string}>> */
+    private static function dayStates(array $ids, string $from, string $to): array
+    {
+        $out = [];
+        if ($ids === []) {
+            return $out;
+        }
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        foreach (Db::all(
+            "SELECT c.employee_id, si.work_date, COALESCE(SUM(c.present_minutes), 0) AS minutes, SUM(c.closed_at IS NULL) AS open_now,
+                    SUM(c.gate_in_event_id IS NOT NULL OR COALESCE(c.in_source, 'gate') <> 'admin') AS scanned
+               FROM att_entry_cycles c JOIN att_shift_instances si ON si.id = c.shift_instance_id
+              WHERE c.employee_id IN ($in) AND si.work_date BETWEEN ? AND ? GROUP BY c.employee_id, si.work_date", array_merge($ids, [$from, $to])) as $r) {
+            $out[(int) $r['employee_id']][(string) $r['work_date']] = ['minutes' => (int) $r['minutes'], 'open' => (int) $r['open_now'], 'scanned' => (int) $r['scanned'], 'sheet' => null];
+        }
+        foreach (Db::all(
+            "SELECT i.employee_id, s.ref, s.period_from, s.period_to FROM att_fin_sheet_items i JOIN att_fin_sheets s ON s.id = i.sheet_id
+              WHERE s.kind = 'daily' AND s.status IN ('waiting','approved','paid') AND s.period_from <= ? AND s.period_to >= ? AND i.employee_id IN ($in)",
+            array_merge([$to, $from], $ids)) as $r) {
+            for ($d = new DateTimeImmutable(max($from, (string) $r['period_from'])); $d->format('Y-m-d') <= min($to, (string) $r['period_to']); $d = $d->modify('+1 day')) {
+                $k = $d->format('Y-m-d');
+                $out[(int) $r['employee_id']][$k] = ($out[(int) $r['employee_id']][$k] ?? ['minutes' => 0, 'open' => 0, 'scanned' => 0, 'sheet' => null]);
+                $out[(int) $r['employee_id']][$k]['sheet'] = (string) $r['ref'];
+            }
+        }
+        return $out;
+    }
+
+    /** The default shift's start and end, or 08:00–18:00. @return array{0:string,1:string} */
+    private static function defaultShiftTimes(): array
+    {
+        $id = (int) Policy::get('default_shift_id', '');
+        $sh = $id > 0 ? Db::one('SELECT start_time, end_time FROM att_shifts WHERE id = ?', [$id]) : null;
+        if ($sh === null) {
+            return ['08:00', '18:00'];
+        }
+        return [substr((string) $sh['start_time'], 0, 5), substr((string) $sh['end_time'], 0, 5)];
+    }
+
+    /**
+     * @param list<array<string,mixed>> $marks employee_id, day (Y-m-d), mark F|H|A — only the days that change
+     * @param array<string,string> $times full_in, full_out, half_in, half_out (HH:MM, factory time)
+     */
+    public static function saveWeek(array $marks, array $times, string $reason, array $caps, int $actorId): array
+    {
+        if (empty($caps['mark'])) {
+            return self::no('FORBIDDEN', 'Marking attendance is for Admin and HR.');
+        }
+        $reason = mb_substr(trim($reason), 0, 200);
+        if ($reason === '') {
+            return self::no('REASON_REQUIRED', 'Say why the days are marked by hand (for example: from the paper register).');
+        }
+        if ($marks === [] || count($marks) > 3000) {
+            return self::no('VALIDATION', 'Mark at least one day.');
+        }
+        $t = [];
+        foreach (['full_in', 'full_out', 'half_in', 'half_out'] as $k) {
+            $v = (string) ($times[$k] ?? '');
+            if (preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v) !== 1) {
+                return self::no('VALIDATION', 'Give the times of a full day and of a half day, like 08:00.');
+            }
+            $t[$k] = $v;
+        }
+        $half = max(1, Policy::int('fin_half_day_minutes', 240));
+        $mins = static fn(string $a, string $b): int => (int) ((strtotime("2000-01-01 $b") - strtotime("2000-01-01 $a")) / 60);
+        if ($mins($t['full_in'], $t['full_out']) < $half) {
+            return self::no('VALIDATION', 'A full day must be at least ' . self::num($half / 60) . ' hours, or it counts as a half day.');
+        }
+        if ($mins($t['half_in'], $t['half_out']) <= 0 || $mins($t['half_in'], $t['half_out']) >= $half) {
+            return self::no('VALIDATION', 'A half day must be shorter than ' . self::num($half / 60) . ' hours, or it counts as a full day.');
+        }
+        $why = 'Marked in the week grid: ' . $reason;
+        $today = self::today();
+        $saved = 0; $errors = [];
+        foreach ($marks as $m) {
+            $id = (int) ($m['employee_id'] ?? 0); $day = (string) ($m['day'] ?? ''); $mark = (string) ($m['mark'] ?? '');
+            $e = Db::one("SELECT e.id, e.code, e.full_name FROM att_employees e JOIN att_fin_profiles f ON f.employee_id = e.id WHERE e.id = ? AND f.pay_type = 'daily' AND e.active = 1", [$id]);
+            $who = $e !== null ? $e['full_name'] : 'Employee #' . $id;
+            if ($e === null) { $errors[] = "$who is not a daily-wage worker on the roll."; continue; }
+            if (!self::isDate($day) || !in_array($mark, ['F', 'H', 'A'], true)) { $errors[] = "$who: a day was not understood."; continue; }
+            $label = $who . ', ' . (new DateTimeImmutable($day))->format('D j M');
+            if ($day > $today) { $errors[] = "$label: that day has not come yet."; continue; }
+            $st = self::dayStates([$id], $day, $day)[$id][$day] ?? ['minutes' => 0, 'open' => 0, 'scanned' => 0, 'sheet' => null];
+            if ($st['sheet'] !== null) { $errors[] = "$label: already on pay sheet {$st['sheet']}. Use Add Earning for a missed day."; continue; }
+            if ($st['scanned'] > 0) { $errors[] = "$label: scanned at the gate. Correct it in Setup › Entries."; continue; }
+            $own = array_map(static fn($r) => (int) $r['id'], Db::all(
+                "SELECT c.id FROM att_entry_cycles c JOIN att_shift_instances si ON si.id = c.shift_instance_id WHERE c.employee_id = ? AND si.work_date = ?", [$id, $day]));
+            if ($mark === 'A' && $own === []) { continue; }
+            try {
+                Db::tx(static function () use ($own, $mark, $e, $day, $t, $why, $actorId) {
+                    foreach ($own as $cid) {
+                        $r = EntryAdmin::delete($cid, $why, $actorId);
+                        if (!$r['ok']) { throw new \RuntimeException((string) $r['error']); }
+                    }
+                    if ($mark !== 'A') {
+                        [$a, $b] = $mark === 'F' ? [$t['full_in'], $t['full_out']] : [$t['half_in'], $t['half_out']];
+                        $r = EntryAdmin::add((string) $e['code'], Time::parse($day . 'T' . $a, 'Asia/Karachi'), Time::parse($day . 'T' . $b, 'Asia/Karachi'), $why, $actorId);
+                        if (!$r['ok']) { throw new \RuntimeException((string) $r['error']); }
+                    }
+                });
+                $saved++;
+            } catch (\RuntimeException $x) {
+                $errors[] = "$label: " . $x->getMessage();
+            }
+        }
+        return ['ok' => true, 'saved' => $saved, 'errors' => $errors];
     }
 
     /** Home: what is owed, and how much is waiting at each step. */

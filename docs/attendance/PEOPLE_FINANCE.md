@@ -117,3 +117,21 @@ can only take from that.
 
 Migration 0018 widens `att_fin_sheets.kind` (adds `entry`) and `status` (adds
 `posted`). Its rollback narrows them again only while no entry exists.
+
+## Mark attendance (week grid)
+
+People Finance › **Mark attendance**, for Admin and HR only (`caps.mark`). One
+week (Friday to Thursday) of daily-wage workers, one department or all: each
+day is F (full), H (half) or A (absent). "All Full for ticked" and "Fill a
+whole day…" mark many at once; days, rate and wages are shown live.
+
+Each changed day becomes an ordinary attendance entry (`EntryAdmin::add`,
+source `admin`) at the full-day or half-day times on the screen, with the
+reason ("Marked in the week grid: …") and the marker's name in
+`att_corrections`. Changing a marked day replaces its entry; A removes it.
+A half day must be shorter than `fin_half_day_minutes` and a full day at
+least that long, so wages count them as marked.
+
+Never changed in the grid: a day the gate scanner recorded (fix it in Setup ›
+Entries), a day already on a daily-wages pay sheet (no day is paid twice —
+use Add Earning for a missed day), and a day still to come.

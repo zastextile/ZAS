@@ -246,6 +246,24 @@ page_header('People Finance');
 .fin table.stmt td.nil{color:#b6c0cb}
 .fin .gatepic{width:120px;height:150px;border:1px solid var(--line);border-radius:4px;background:var(--soft);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;overflow:hidden;flex:0 0 auto}
 .fin .gatepic img{width:100%;height:100%;object-fit:cover}
+.fin .mwgrid{display:grid;grid-template-columns:auto 1fr auto auto 2fr;gap:10px;align-items:end}
+.fin .mwgrid input[type=time]{width:auto;min-width:96px}.fin .mwgrid input[type=date]{width:auto}
+.fin table.mw th.c,.fin table.mw td.c{text-align:center;padding-left:4px;padding-right:4px}
+.fin table.mw th .sub{display:block;font-size:10.5px;font-weight:500;opacity:.75}
+.fin .seg3{display:inline-flex;border:1px solid #b9c4d0;border-radius:4px;overflow:hidden;background:#fff}
+.fin .seg3.chg{outline:2px solid #e07b00;outline-offset:1px}
+.fin .seg3 button{width:26px;padding:4px 0;border:0;border-right:1px solid var(--line2);background:#fff;color:var(--muted);font:700 12px/1 var(--ff);cursor:pointer}
+.fin .seg3 button:last-child{border-right:0}.fin .seg3 button:hover{background:var(--hover)}
+.fin .seg3 button.f.on{background:#1f7a3a;color:#fff}.fin .seg3 button.h.on{background:#d9730d;color:#fff}.fin .seg3 button.a.on{background:#8a96a3;color:#fff}
+.fin .mwscan{display:inline-grid;line-height:1.1;color:var(--pri);font-weight:700;font-size:12px;background:#eef5fc;border:1px solid #c5dbf2;border-radius:4px;padding:3px 8px}
+.fin .mwscan small,.fin .mwsheet small{font-weight:500;font-size:10px;color:var(--muted)}
+.fin .mwsheet{display:inline-grid;line-height:1.1;color:#3b4a5a;font-weight:600;font-size:12px;background:#eef1f5;border:1px solid var(--line);border-radius:4px;padding:3px 8px}
+.fin .mwlock{color:#b6c0cb}
+.fin table.mw input[type=checkbox]{width:16px;height:16px;margin:0}
+.fin .mwkey{display:inline-block;width:18px;text-align:center;border-radius:3px;color:#fff;font-weight:700;font-size:11px;margin-left:8px}
+.fin .mwkey.f{background:#1f7a3a}.fin .mwkey.h{background:#d9730d}.fin .mwkey.a{background:#8a96a3}
+.fin .btn.go{background:#1f7a3a;border-color:#1f7a3a}.fin .btn.go:hover{background:#17602d}
+@media (max-width:1100px){.fin .mwgrid{grid-template-columns:1fr 1fr}}
 .fin table.t.entry td{padding:5px 6px;vertical-align:middle}
 .fin table.t.entry input,.fin table.t.entry select{min-height:28px;padding:4px 7px}
 .fin table.t.entry input.n{text-align:right;font-weight:600;min-width:110px}
@@ -437,11 +455,12 @@ page_header('People Finance');
   }
 
   // ------------------------------------------------------------ tabs
-  var TABS = [['home', 'Home'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Employee Ledger'], ['advances', 'Advances & loans']];
+  var TABS = [['home', 'Home'], ['mark', 'Mark attendance'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Employee Ledger'], ['advances', 'Advances & loans']];
   function drawTabs(){
     var t = document.getElementById('fin-tabs'); t.textContent = '';
     TABS.forEach(function(x){
       if (x[0] === 'prepare' && !S.caps.salary && !S.caps.wage) return;
+      if (x[0] === 'mark' && !S.caps.mark) return;
       var n = x[0] === 'sheets' ? (S.caps.approve ? S.counts.waiting : 0) + (S.caps.pay ? S.counts.approved : 0) : 0;
       t.appendChild(el('button', { type: 'button', role: 'tab', 'aria-selected': S.tab === x[0] ? 'true' : 'false', click: function(){ go(x[0]); } },
         [x[1], n ? el('span', { class: 'dot', text: String(n) }) : null]));
@@ -450,7 +469,7 @@ page_header('People Finance');
   function go(tab, arg){
     S.tab = tab; drawTabs();
     try { history.replaceState(null, '', '#' + tab); } catch (e) {}
-    ({ home: home, prepare: prepare, sheets: sheets, people: people, ledger: ledger, advances: advances })[tab](arg);
+    ({ home: home, mark: markWeek, prepare: prepare, sheets: sheets, people: people, ledger: ledger, advances: advances })[tab](arg);
   }
   function refreshCounts(){
     return call('GET', '/finance/overview').then(function(r){
@@ -1231,6 +1250,112 @@ page_header('People Finance');
   // ------------------------------------------------------------ ledger
   /* Everybody in one place, between two dates. A row opens that person's
      statement for the same dates. */
+  // ------------------------------------------------------- mark attendance
+  /* A WEEK OF DAILY-WAGE WORKERS ON ONE SCREEN — Admin and HR. Click F, H or A
+     for each day; days the gate scanner recorded, days already on a pay sheet
+     and days still to come are shown but cannot be changed here. One Save
+     makes an attendance entry for every marked day, with the reason. Daily
+     wages then count those days exactly like scanned ones. */
+  var MW = { from: '', dept: '', marks: {}, on: {}, times: null, reason: '' };
+  function markWeek(){
+    if (!S.caps.mark) return show([el('div', { class: 'cardx empty', text: 'Marking attendance is for Admin and HR.' })]);
+    if (!MW.from) { var end = S.today; while (isoDay(end) !== S.payDay) end = addDays(end, 1); MW.from = addDays(end, -6); }
+    show([el('p', { class: 'muted', text: 'Loading…' })]);
+    var dept = (S.depts || []).filter(function(d){ return d.name === MW.dept; })[0];
+    call('GET', '/finance/attendance', { from: MW.from, department_id: dept ? dept.id : '' }).then(function(r){
+      if (!r.ok) return show([fail(r)]);
+      if (!MW.times) MW.times = r.times;
+      var D = r.days, W = r.workers, half = r.half_minutes;
+      W.forEach(function(w){ if (MW.on[w.employee_id] === undefined) MW.on[w.employee_id] = true; });
+      function key(w, d){ return w.employee_id + '|' + d; }
+      function cur(w, d){ var k = key(w, d); return MW.marks[k] !== undefined ? MW.marks[k] : (w.days[d].mark || 'A'); }   // no attendance is absent
+      function free(w, d){ return !w.days[d].lock; }
+      function setMark(w, d, m){ var k = key(w, d); if (w.days[d].mark === m || (!w.days[d].mark && m === 'A')) delete MW.marks[k]; else MW.marks[k] = m; }
+      function value(w, d){ var m = cur(w, d); return m === 'F' ? 1 : m === 'H' ? 0.5 : 0; }
+      var wk = el('input', { type: 'date', value: MW.from, 'aria-label': 'First day of the week', change: function(){ if (wk.value) { MW.from = wk.value; MW.marks = {}; markWeek(); } } });
+      var deptSel = el('select', { 'aria-label': 'Department', change: function(){ MW.dept = deptSel.value; MW.marks = {}; markWeek(); } }, [el('option', { value: '', text: 'All departments' })].concat((S.depts || []).map(function(d){ return el('option', { value: d.name, text: d.name }); })));
+      deptSel.value = MW.dept;
+      var t = {}; ['full_in', 'full_out', 'half_in', 'half_out'].forEach(function(k){ t[k] = el('input', { type: 'time', value: MW.times[k], 'aria-label': k.replace('_', ' '), change: function(){ MW.times[k] = t[k].value; } }); });
+      var why = el('input', { type: 'text', maxlength: 200, value: MW.reason, placeholder: 'e.g. Gate scanner not used — from the paper register (needed)', input: function(){ MW.reason = why.value; } });
+      var hrs = (half / 60).toString().replace(/\.0+$/, '');
+      var head = el('div', { class: 'cardx' }, [
+        el('div', { class: 'mwgrid' }, [
+          field('Week (' + DAYS[isoDay(r.from)] + ' to ' + DAYS[isoDay(r.to)] + ')', el('div', { class: 'row', style: 'flex-wrap:nowrap;gap:4px' }, [btn('‹', function(){ MW.from = addDays(MW.from, -7); MW.marks = {}; markWeek(); }, 'sm', false), wk,
+            btn('›', function(){ MW.from = addDays(MW.from, 7); MW.marks = {}; markWeek(); }, 'sm')])),
+          field('Department', deptSel),
+          field('Full day', el('div', { class: 'row', style: 'flex-wrap:nowrap;gap:4px' }, [t.full_in, el('span', { class: 'muted', text: '–' }), t.full_out])),
+          field('Half day (under ' + hrs + ' h)', el('div', { class: 'row', style: 'flex-wrap:nowrap;gap:4px' }, [t.half_in, el('span', { class: 'muted', text: '–' }), t.half_out])),
+          field('Reason (kept on every day you mark)', why)]),
+        el('div', { class: 'row', style: 'justify-content:space-between;margin-top:10px' }, [
+          el('div', { class: 'row' }, [btn('All Full for ticked', function(){ W.forEach(function(w){ if (MW.on[w.employee_id]) D.forEach(function(d){ if (free(w, d)) setMark(w, d, 'F'); }); }); draw(); }, 'sm'),
+            btn('Fill a whole day…', function(){
+              ask('Fill a whole day', 'Sets the same mark for every ticked worker on that day. Days scanned at the gate or already paid stay as they are.',
+                [{ k: 'day', label: 'Day', type: 'select', options: D.filter(function(d){ return d <= r.today; }).map(function(d){ return [d, DAYS[isoDay(d)] + ' ' + nice(d)]; }) },
+                 { k: 'mark', label: 'Mark', type: 'select', options: [['F', 'Full day'], ['H', 'Half day'], ['A', 'Absent (e.g. holiday)']] }], 'Fill', function(v){
+                  W.forEach(function(w){ if (MW.on[w.employee_id] && free(w, v.day)) setMark(w, v.day, v.mark); }); closeModal(); draw(); return { ok: true }; });
+            }, 'sm'),
+            btn('Clear my marks', function(){ MW.marks = {}; draw(); }, 'sm')]),
+          el('span', { class: 'lgtip', text: 'Blue days were scanned at the gate; grey days are already on a pay sheet. Neither is changed here.' })])]);
+      var tableBox = el('div', { class: 'cardx scroll' }), foot = el('div', { class: 'row', style: 'justify-content:space-between' }), errBox = el('div', { class: 'err', hidden: true });
+      function draw(){
+        tableBox.textContent = '';
+        if (!W.length) { tableBox.appendChild(el('div', { class: 'empty', text: 'No daily-wage workers here. Set someone to "Daily wages" in Employees first.' })); }
+        else {
+          var all = el('input', { type: 'checkbox', checked: W.every(function(w){ return MW.on[w.employee_id]; }), 'aria-label': 'Tick everyone', change: function(){ W.forEach(function(w){ MW.on[w.employee_id] = all.checked; }); draw(); } });
+          var tb = el('tbody'), tot = { d: 0, p: 0 };
+          W.forEach(function(w){
+            var cb = el('input', { type: 'checkbox', checked: MW.on[w.employee_id], 'aria-label': 'Tick ' + w.full_name, change: function(){ MW.on[w.employee_id] = cb.checked; } });
+            var cells = D.map(function(d){
+              var x = w.days[d];
+              if (x.lock === 'future') return el('td', { class: 'c' }, [el('span', { class: 'mwlock', text: '—' })]);
+              if (x.lock === 'sheet') return el('td', { class: 'c' }, [el('span', { class: 'mwsheet', title: 'On pay sheet ' + x.sheet, text: x.mark ? (x.mark === 'F' ? 'Full' : 'Half') : 'Absent' }, [el('small', { text: x.sheet })])]);
+              if (x.lock === 'scan') return el('td', { class: 'c' }, [el('span', { class: 'mwscan', title: 'Recorded by the gate scanner' }, ['✓ ' + (Math.round(x.minutes / 6) / 10) + 'h', el('small', { text: 'scanned' })])]);
+              var m = cur(w, d), changed = MW.marks[key(w, d)] !== undefined;
+              return el('td', { class: 'c' }, [el('span', { class: 'seg3' + (changed ? ' chg' : ''), role: 'group', 'aria-label': w.full_name + ' ' + d }, ['F', 'H', 'A'].map(function(k){
+                return el('button', { type: 'button', class: k.toLowerCase() + (m === k ? ' on' : ''), 'aria-pressed': m === k ? 'true' : 'false', title: { F: 'Full day', H: 'Half day', A: 'Absent' }[k], text: k,
+                  click: function(){ setMark(w, d, k); draw(); } }); }))]);
+            });
+            var days = D.reduce(function(a, d){ return a + value(w, d); }, 0), pay = Math.round(days * w.daily_rate_paisa);
+            tot.d += days; tot.p += pay;
+            tb.appendChild(el('tr', {}, [el('td', {}, [cb]), el('td', {}, [el('b', { text: w.full_name }), el('div', { class: 'muted small', text: w.code + ' · ' + w.department_name })])].concat(cells,
+              [el('td', { class: 'num', text: String(days) }), el('td', { class: 'num', text: rs(w.daily_rate_paisa) }), el('td', { class: 'num' }, [el('b', { text: rs(pay) })])])));
+          });
+          tb.appendChild(el('tr', { class: 'tot' }, [el('td'), el('td', { text: 'Total — ' + W.length + (W.length === 1 ? ' worker' : ' workers') })].concat(D.map(function(){ return el('td'); }),
+            [el('td', { class: 'num', text: String(tot.d) }), el('td'), el('td', { class: 'num', text: rs(tot.p) })])));
+          tableBox.appendChild(el('table', { class: 't stmt lg mw' }, [el('thead', {}, [el('tr', {}, [el('th', {}, [all]), el('th', { text: 'Worker' })].concat(D.map(function(d){
+            return el('th', { class: 'c' }, [DAYS[isoDay(d)].slice(0, 3), el('span', { class: 'sub', text: nice(d).replace(/ \d{4}$/, '') })]); }),
+            [el('th', { style: 'text-align:right', text: 'Days' }), el('th', { style: 'text-align:right', text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Wages (PKR)' })]))]), tb]));
+        }
+        var n = Object.keys(MW.marks).length;
+        foot.textContent = '';
+        foot.appendChild(el('div', { class: 'row small muted' }, [el('span', { class: 'mwkey f', text: 'F' }), 'Full day', el('span', { class: 'mwkey h', text: 'H' }), 'Half day', el('span', { class: 'mwkey a', text: 'A' }), 'Absent',
+          el('span', { class: 'mwscan', style: 'padding:1px 6px', text: '✓' }), 'Scanned at the gate']));
+        foot.appendChild(el('div', { class: 'row' }, [el('span', { class: 'muted small', text: n ? n + (n === 1 ? ' day changed' : ' days changed') : 'Nothing changed yet' }),
+          btn('Save attendance', function(){ save(false); }, 'pri', !n),
+          S.caps.wage ? btn('Save and prepare wages →', function(){ save(true); }, 'pri go', !n && !W.length) : null]));
+      }
+      function save(thenPrepare){
+        errBox.hidden = true;
+        var marks = Object.keys(MW.marks).map(function(k){ var a = k.split('|'); return { employee_id: +a[0], day: a[1], mark: MW.marks[k] }; });
+        var go2 = function(){
+          if (!thenPrepare) return markWeek();
+          P.kind = 'daily'; P.custom = false; P.from = r.from; P.to = r.to > S.today ? S.today : r.to; P.models = {}; P.on = {}; P.open = {}; go('prepare');
+        };
+        if (!marks.length) return go2();
+        if (!MW.reason.trim()) { errBox.textContent = 'Give the reason first (for example: from the paper register).'; errBox.hidden = false; why.focus(); return; }
+        call('POST', '/finance/attendance', { marks: marks, times: MW.times, reason: MW.reason.trim() }).then(function(x){
+          if (!x.ok) { errBox.textContent = x.error || 'Nothing was saved.'; errBox.hidden = false; return; }
+          MW.marks = {};
+          if (x.errors && x.errors.length) { toast(x.saved + ' saved, ' + x.errors.length + ' not saved — see the list.', true); markWeek(); setTimeout(function(){ var b = document.querySelector('#fin-body .err'); if (b) { b.textContent = 'Not saved: ' + x.errors.join('  ·  '); b.hidden = false; } }, 400); return; }
+          toast(x.saved + (x.saved === 1 ? ' day saved.' : ' days saved.'));
+          go2();
+        });
+      }
+      show([head, errBox, tableBox, foot]);
+      draw();
+    });
+  }
+
   // ------------------------------------------------------- employee ledger
   /* THE EMPLOYEE LEDGER. Without a person chosen: everybody between two dates
      (owed before, earned, deducted, paid, owed at the end). With a person: their
@@ -1511,7 +1636,7 @@ page_header('People Finance');
   refreshCounts().then(function(r){
     if (!r.ok) return show([fail(r)]);
     var h = (location.hash || '').slice(1);
-    go(TABS.some(function(x){ return x[0] === h; }) && (h !== 'prepare' || S.caps.salary || S.caps.wage) ? h : 'home');
+    go(TABS.some(function(x){ return x[0] === h; }) && (h !== 'prepare' || S.caps.salary || S.caps.wage) && (h !== 'mark' || S.caps.mark) ? h : 'home');
   });
 })();
 </script>

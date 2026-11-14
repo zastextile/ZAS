@@ -1041,6 +1041,21 @@ try {
             admin_answer(Fin::entryInfo((int) $m[1], $caps));
             break;
 
+        /* MARK ATTENDANCE: a week of daily-wage workers, Full / Half / Absent
+           for each day — Admin and HR (FinanceService::weekGrid / saveWeek). */
+        case $method === 'GET' && $route === '/finance/attendance':
+            [, $caps] = fin_caps();
+            admin_answer(Fin::weekGrid((string) Http::input('from', ''), (int) Http::input('department_id', 0), $caps));
+            break;
+
+        case $method === 'POST' && $route === '/finance/attendance':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            $marks = Http::input('marks', []); $times = Http::input('times', []);
+            admin_answer(Fin::saveWeek(is_array($marks) ? array_values(array_filter($marks, 'is_array')) : [], is_array($times) ? $times : [],
+                (string) Http::input('reason', ''), $caps, (int) $u['id']));
+            break;
+
         case $method === 'GET' && $route === '/finance/preview':
             [, $caps] = fin_caps();
             admin_answer(Fin::preview((string) Http::input('kind', ''), (string) Http::input('from', ''), (string) Http::input('to', ''), $caps));
