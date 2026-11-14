@@ -189,7 +189,7 @@ $work = __DIR__ . '/.zattentries';
 @mkdir($work, 0777, true);
 file_put_contents($work . '/run.js', <<<'JS'
 const { chromium } = require('playwright');
-const BASE = process.argv[2];
+const BASE = process.argv[2]; const SHOTS = process.argv[3] || '';
 const out = [];
 const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra === undefined ? '' : String(extra) });
 async function signIn(ctx, email) {
@@ -212,6 +212,14 @@ async function signIn(ctx, email) {
     await p.waitForFunction(() => /Worker 2/.test(document.getElementById('atts-body').textContent));
     const t = await p.textContent('#atts-body');
     check('the administrator sees Setup › Entries with the day\'s entries', /Worker 1/.test(t) && /Worker 2/.test(t));
+    if (SHOTS) {                                      // pictures only, for explaining the screen
+      await p.screenshot({ path: SHOTS + '/entries-1-day.png', fullPage: true });
+      await p.click('#atts-body button:has-text("Add entry")');
+      await p.waitForSelector('#attsdlg[open]');
+      await p.screenshot({ path: SHOTS + '/entries-2-add.png' });
+      await p.click('#attsdlg-cancel');
+      await p.waitForFunction(() => !document.querySelector('#attsdlg[open]'));
+    }
     check('  an added entry says so; an edited one shows the scanned time', /added by administrator/.test(t) && /OUT scanned 17:00/.test(t), t.slice(0, 400));
     await p.locator('#atts-body tr', { hasText: 'Worker 2' }).locator('button:has-text("Edit")').click();
     await p.waitForSelector('#attsdlg[open]');
@@ -244,7 +252,7 @@ async function signIn(ctx, email) {
   console.log('RESULT' + JSON.stringify(out));
 })();
 JS);
-$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 180 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' 2>&1');
+$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 180 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('ENT_SHOTS') ?: '')) . ' 2>&1');
 $results = [];
 if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
 ok(count($results) >= 7, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
