@@ -534,7 +534,7 @@ final class FinanceService
             $bal += $plus ? $l['amount_paisa'] : -$l['amount_paisa'];
             $e = $plus ? $l['amount_paisa'] : 0; $d = $l['kind'] === 'deduction' ? $l['amount_paisa'] : 0; $p = $l['kind'] === 'payment' ? $l['amount_paisa'] : 0;
             $t['earned'] += $e; $t['deducted'] += $d; $t['paid'] += $p;
-            $rows[] = ['date' => $l['entry_date'], 'ref' => $l['ref'], 'label' => $l['label'] . ($l['sheet_ref'] ? ' · ' . $l['sheet_ref'] : ''),
+            $rows[] = ['date' => $l['entry_date'], 'ref' => $l['ref'], 'label' => $l['label'] . ($l['sheet_ref'] && !str_contains((string) $l['label'], (string) $l['sheet_ref']) ? ' · ' . $l['sheet_ref'] : ''),
                        'earned' => $e, 'deducted' => $d, 'paid' => $p, 'balance' => $bal];
         }
         return ['ok' => true, 'employee' => $lg['employee'], 'from' => $from, 'to' => $to, 'opening_paisa' => $opening ?? $bal, 'rows' => $rows,

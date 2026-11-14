@@ -393,6 +393,7 @@ const body = p => p.textContent('#fin-body');
     await m.waitForFunction(() => /Wages paid/.test(document.getElementById('fin-shade').textContent));
     t = await m.textContent('#fin-shade');
     check('Employees › Sami: one dialog with the person, the pay, and a ledger page with references and period totals', /Employee and pay/.test(t) && /Eid bonus/.test(t) && /Wages paid/.test(t) && /Balance brought forward/.test(t) && /PERIOD TOTALS/.test(t) && /PAY-\d{4}-\d{6}/.test(t), t.slice(0, 300));
+    check('  the sheet number is written once on a line, never twice', !/(PAY-\d{6}-\d+) · \1/.test(t), (t.match(/Wages paid[^\n]{0,60}/) || [''])[0]);
     await shot(m, '6-phone-person');
     await m.click('#fin-shade button:has-text("Close")');
     await m.click('#fin-tabs button:has-text("Ledger")');
@@ -442,6 +443,21 @@ const body = p => p.textContent('#fin-body');
     await r.waitForFunction(() => /38,000 a month \+ 2,000/.test(document.getElementById('fin-body').textContent) && /Hira Helper/.test(document.getElementById('fin-body').textContent));
     t = await body(r);
     check('ONE FORM, ONE SAVE: Nida changed to 38,000 a month + 2,000; Hira added with no code typed; both pasted people added, one into a new department', /Hira Helper/.test(t) && /Pasted One/.test(t) && /Pasted Two/.test(t) && /Weaving/.test(t) && /30,000 a month \+ 1,500/.test(t), t.slice(0, 400));
+    if (SHOTS) {                                          // pictures only: no checks hang on these steps
+      try {
+        await r.waitForTimeout(900); await shot(r, '9-employees');
+        await r.locator('tr.click', { hasText: 'Sami Salaried' }).click();
+        await r.waitForFunction(() => /Balance brought forward/.test(document.getElementById('fin-shade').textContent));
+        await r.waitForTimeout(600); await shot(r, '10-person-and-ledger');
+        await r.click('#fin-shade button:has-text("Close")');
+        await r.click('#fin-tabs button:has-text("Ledger")');
+        await r.waitForSelector('table.t tr.click');
+        await r.waitForTimeout(900); await shot(r, '11-ledger-tab');
+        await r.goto(BASE + '/att_setup.php#emp');
+        await r.waitForSelector('#atts-body table, #atts-body .note', { timeout: 8000 });
+        await shot(r, '12-setup-pointer');
+      } catch (e) { console.error('shots: ' + e.message); }
+    }
     check('no script error (HR)', e5.length === 0, e5.join(' | '));
     await c5.close();
 
