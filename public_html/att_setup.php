@@ -301,9 +301,9 @@ page_header('Attendance — Setup');
          and write the very same employee list. */
       show([
         el('div', { class: 'note', style: 'background:#eef8f3;border:1px solid #bfe0d3;border-radius:10px;padding:10px 13px;color:#17624d' }, [
-          el('strong', { text: 'Add and edit employees in one form: ' }),
+          el('strong', { text: 'Everything about an employee is now in one place: ' }),
           el('a', { href: 'att_finance.php#people', style: 'font-weight:700;color:#17624d', text: 'People Finance › Employees →' }),
-          ' Code, name, department, how they are paid and their opening balance on one line, for many people at once, with paste from Excel. This tab stays for photos and cards.']),
+          ' Code, name, department, card text, gate photo, pay, opening balance, ledger and advances — one person in one card, or many at once with paste from Excel. This tab still works and changes the same list.']),
         el('div', { class: 'bar' }, [q, d, st,
           CAN.c ? btn('Add employee', function(){ editEmployee(null); }, true) : null,
           CAN.c ? btn('Add many…', function(){ importDialog(); }) : null]),

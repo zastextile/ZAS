@@ -913,7 +913,7 @@ try {
            kind of sheet, whose department, their own sheet or not). */
         case $method === 'GET' && $route === '/finance/overview':
             [$u, $caps] = fin_caps();
-            admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps + ['staff' => Fin::mayEditStaff((int) $u['id'])], 'departments' => Employees::departments()]);
+            admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps + ['staff' => Fin::mayEditStaff((int) $u['id']), 'photo' => Roles::can('attadm', 'u')], 'departments' => Employees::departments()]);
             break;
 
         case $method === 'GET' && $route === '/finance/people':
@@ -1011,6 +1011,12 @@ try {
             Http::requireCsrf();
             [$u] = fin_caps('pay');
             admin_answer(Fin::giveAdvance(Http::body(), (int) $u['id']));
+            break;
+
+        case $method === 'POST' && preg_match('#^/finance/advances/(\d+)/change$#', $route, $m) === 1:
+            Http::requireCsrf();
+            [$u] = fin_caps('pay');
+            admin_answer(Fin::changeAdvance((int) $m[1], Http::input('per_pay_paisa'), (string) Http::input('reason', ''), (int) $u['id']));
             break;
 
         case $method === 'POST' && preg_match('#^/finance/advances/(\d+)/cancel$#', $route, $m) === 1:

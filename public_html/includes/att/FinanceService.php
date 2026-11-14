@@ -128,8 +128,8 @@ final class FinanceService
         self::syncProduction();
         [$w, $p] = self::deptWhere($caps['departments']);
         $rows = Db::all(
-            "SELECT e.id AS employee_id, e.code, e.full_name, e.active, d.name AS department_name, e.department_id, e.worker_code,
-                    (e.reference_photo_key IS NOT NULL) AS has_photo,
+            "SELECT e.id AS employee_id, e.code, e.full_name, e.active, d.name AS department_name, e.department_id, e.worker_code, e.qr_payload,
+                    (e.reference_photo_key IS NOT NULL) AS has_photo, (e.notice_ack_at IS NOT NULL) AS notice_given,
                     f.pay_type, f.basic_paisa, f.allowance_paisa, f.daily_rate_paisa, f.ot_rate_paisa, f.pay_method, f.bank_account
                FROM att_employees e
                JOIN att_departments d ON d.id = e.department_id
@@ -328,15 +328,16 @@ final class FinanceService
             $code = trim((string) ($row['code'] ?? ''));
             if ($code === '') { $code = $before !== null ? (string) $before['code'] : self::nextCode($given); }
             $worker = array_key_exists('worker_code', $row) ? trim((string) $row['worker_code']) : (string) ($before['worker_code'] ?? '');
+            $qr = array_key_exists('qr_payload', $row) ? trim((string) $row['qr_payload']) : (string) ($before['qr_payload'] ?? '');
             if ($name === '' && $before !== null) { $name = (string) $before['full_name']; }
 
             $masterChanged = $before === null
                 || $code !== (string) $before['code'] || $name !== (string) $before['full_name']
-                || $deptId !== (int) $before['department_id'] || $worker !== (string) ($before['worker_code'] ?? '');
+                || $deptId !== (int) $before['department_id'] || $worker !== (string) ($before['worker_code'] ?? '') || $qr !== (string) ($before['qr_payload'] ?? '');
             if ($masterChanged) {
                 if (!$mayMaster) { $fail($before === null ? 'you cannot add employees. Ask HR or an admin.' : 'you can set pay, but not change the name, code or department.'); continue; }
                 $r = AdminService::saveEmployee($before === null ? null : $id,
-                    ['code' => $code, 'full_name' => $name, 'department_id' => $deptId, 'worker_code' => $worker, 'qr_payload' => (string) ($before['qr_payload'] ?? '')], $actorId);
+                    ['code' => $code, 'full_name' => $name, 'department_id' => $deptId, 'worker_code' => $worker, 'qr_payload' => $qr], $actorId);
                 if (!$r['ok']) { $fail((string) $r['error']); continue; }
                 if ($before === null) { $created++; $given[] = $code; } else { $updated++; }
                 $id = (int) $r['employee_id'];
@@ -655,7 +656,7 @@ final class FinanceService
 
     public static function advancesFor(int $employeeId): array
     {
-        $rows = Db::all("SELECT id, kind, amount_paisa, per_pay_paisa, recovered_paisa, given_on, method, note, status FROM att_fin_advances
+        $rows = Db::all("SELECT id, employee_id, kind, amount_paisa, per_pay_paisa, recovered_paisa, given_on, method, note, status FROM att_fin_advances
                           WHERE employee_id = ? AND status <> 'cancelled' ORDER BY id", [$employeeId]);
         foreach ($rows as &$r) {
             foreach (['amount_paisa', 'per_pay_paisa', 'recovered_paisa'] as $k) { $r[$k] = (int) $r[$k]; }
@@ -708,6 +709,35 @@ final class FinanceService
         $id = Db::lastId();
         Audit::record('fin.advance_give', 'att_fin_advance', $id, null, ['employee_id' => $emp, 'kind' => $kind, 'amount_paisa' => (int) $amt, 'per_pay_paisa' => (int) $per], $actorId);
         return ['ok' => true, 'advance_id' => $id];
+    }
+
+    /**
+     * Change how much of an advance or loan is recovered from each pay — or
+     * pause it (0). What was given and what was recovered never change here:
+     * recovering more at once is an "Advance/Loan recovery" deduction entry,
+     * giving more is a new advance. The reason is kept in the audit trail.
+     */
+    public static function changeAdvance(int $id, mixed $perPay, string $reason, int $actorId): array
+    {
+        if (trim($reason) === '') {
+            return self::no('REASON_REQUIRED', 'Say why the plan changes.');
+        }
+        return Db::tx(static function () use ($id, $perPay, $reason, $actorId) {
+            $a = Db::one('SELECT * FROM att_fin_advances WHERE id = ? FOR UPDATE', [$id]);
+            if ($a === null) {
+                return self::no('NOT_FOUND', 'No such advance or loan.');
+            }
+            if ($a['status'] !== 'active') {
+                return self::no('ALREADY_DECIDED', 'Only an advance or loan still being recovered can be changed.');
+            }
+            $left = (int) $a['amount_paisa'] - (int) $a['recovered_paisa'];
+            if (!self::whole($perPay) || (int) $perPay > $left) {
+                return self::no('VALIDATION', 'From each pay: between 0 (to pause) and the Rs ' . self::rupees($left) . ' still owed.');
+            }
+            Db::run('UPDATE att_fin_advances SET per_pay_paisa = ? WHERE id = ?', [(int) $perPay, $id]);
+            Audit::record('fin.advance_change', 'att_fin_advance', $id, ['per_pay_paisa' => (int) $a['per_pay_paisa']], ['per_pay_paisa' => (int) $perPay], $actorId, mb_substr(trim($reason), 0, 255));
+            return ['ok' => true, 'advance_id' => $id, 'per_pay_paisa' => (int) $perPay];
+        });
     }
 
     public static function cancelAdvance(int $id, string $reason, int $actorId): array

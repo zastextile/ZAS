@@ -451,6 +451,19 @@ $e5 = Fin::createEntry('earning', '2026-03-05', [['employee_id' => $emp['D001'],
 ok($e5['ok'], 'a HOD may enter an incentive for their own department\'s daily worker');
 ok($code(Fin::approve($e5['sheet_id'], $H, $hod)) === 'FORBIDDEN' && Fin::sendBack($e5['sheet_id'], 'Wrong amount', $H, $hod)['ok'], '  but not approve it; they can take it back');
 
+echo "12e. Changing an advance's plan, and the card text in the one form\n";
+ok($code(Fin::changeAdvance($adv, 20000, '', $acc)) === 'REASON_REQUIRED', 'changing a plan needs a reason');
+ok($code(Fin::changeAdvance($adv, 999999999, 'x', $acc)) === 'VALIDATION', '  never more from each pay than is still owed');
+ok(Fin::changeAdvance($adv, 0, 'Eid month: no recovery', $acc)['ok'] && $n('SELECT per_pay_paisa FROM att_fin_advances WHERE id = ?', [$adv]) === 0, '  0 pauses the recovery');
+$pz = $row(Fin::preview('daily', '2026-02-27', '2026-03-05', $C), $emp['D001']);
+ok($pz === null || $line($pz['lines'], 'adv:' . $adv) === null, '  and a paused loan puts no recovery line on the next sheet');
+ok(Fin::changeAdvance($adv, 25000, 'Back to normal', $acc)['ok'] && $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'fin.advance_change'") >= 2, '  the plan can be set again; every change is in the audit trail');
+$cx = Fin::cancelAdvance($adv, 'x', $acc);
+ok(!$cx['ok'], '  a loan with something already recovered cannot simply be cancelled');
+$sv = Fin::saveStaff([['employee_id' => $emp['D002'], 'qr_payload' => 'CARD-D002-X']], '', $A, true, $admin);
+ok($sv['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', 'the card text is kept from the same one form');
+ok(Fin::saveStaff([['employee_id' => $emp['D002'], 'full_name' => 'Dina Daily']], '', $A, true, $admin)['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', '  and a save that does not mention it leaves it alone');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

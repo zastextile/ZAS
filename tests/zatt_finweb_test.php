@@ -493,6 +493,19 @@ const body = p => p.textContent('#fin-body');
     await g.waitForSelector('#fin-shade table.entry');
     check('  Record Payment shows what each person is owed and how they are paid', (await g.locator('#fin-shade table.entry th').allTextContents()).join('|').includes('Owed now'));
     await g.click('#fin-shade button:has-text("Close")');
+    await g.click('#fin-tabs button:has-text("Advances")');
+    await g.waitForSelector('#fin-body button:has-text("Change plan")');
+    check('ADVANCES: each open advance or loan has Change plan and Recover now', (await g.locator('#fin-body button:has-text("Recover now")').count()) >= 1);
+    await g.locator('#fin-body button:has-text("Recover now")').first().click();
+    await g.waitForSelector('#fin-shade table.entry');
+    await g.waitForFunction(() => { const s = document.querySelector('#fin-shade select[aria-label="Which advance or loan"]'); return s && !s.hidden && s.value !== ''; });
+    check('  Recover now opens Add deduction with the person and that advance already chosen', /Add deduction/.test(await g.textContent('#fin-shade h2')) && (await g.inputValue('#fin-shade input[aria-label=Amount]')) !== '');
+    await g.waitForTimeout(300); await shot(g, '16-recover-now');
+    await g.click('#fin-shade button:has-text("Close")');
+    await g.locator('#fin-body button:has-text("Change plan")').first().click();
+    await g.waitForSelector('#fin-shade input');
+    check('  Change plan asks for the amount from each pay (0 pauses) and a reason', /0 to pause/.test(await g.textContent('#fin-shade')));
+    await g.click('#fin-shade button:has-text("Close")');
     check('no script error (ledger, Accounts)', e6.length === 0, e6.join(' | '));
     await c6.close();
     const c7 = await browser.newContext({ viewport: { width: 1366, height: 900 }, timezoneId: 'Asia/Karachi', deviceScaleFactor: SHOTS ? 2 : 1 });
@@ -519,6 +532,20 @@ const body = p => p.textContent('#fin-body');
     check('  clicking the line opens the entry it came from', true);
     check('no script error (ledger, Audit)', e7.length === 0, e7.join(' | '));
     await c7.close();
+
+    // ---- ADMIN: everything about one person in one card, the gate photo included
+    const c8 = await browser.newContext({ viewport: { width: 1366, height: 900 }, deviceScaleFactor: SHOTS ? 2 : 1 });
+    const ad = await signIn(c8, 'admin@zas.test');
+    const e8 = []; ad.on('pageerror', e => e8.push(e.message));
+    await ad.goto(BASE + '/att_finance.php#people');
+    await ad.waitForSelector('table.t tr.click');
+    await ad.locator('tr.click', { hasText: 'Sami Salaried' }).click();
+    await ad.waitForFunction(() => /Photo for the gate/.test(document.getElementById('fin-shade').textContent));
+    t = await ad.textContent('#fin-shade');
+    check('ONE CARD (admin): code, name, department, card text, pay, the gate photo, the ledger and advances', /Card text/.test(t) && /Photo for the gate/.test(t) && /Employee and pay/.test(t) && /Advances & loans/.test(t));
+    await ad.waitForTimeout(400); await shot(ad, '17-one-card-admin');
+    check('no script error (admin)', e8.length === 0, e8.join(' | '));
+    await c8.close();
 
     // ---- HOD
     const c4 = await browser.newContext({ viewport: { width: 1366, height: 900 } });

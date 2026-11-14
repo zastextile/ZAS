@@ -244,6 +244,8 @@ page_header('People Finance');
 .fin table.stmt.lg td:nth-child(2){font-family:var(--ff);font-weight:500;font-size:12.5px}
 .fin table.stmt td.c-earn{color:#1f7a3a;font-weight:600}.fin table.stmt td.c-ded{color:#c2620a;font-weight:600}.fin table.stmt td.c-pay{color:var(--pri);font-weight:600}
 .fin table.stmt td.nil{color:#b6c0cb}
+.fin .gatepic{width:120px;height:150px;border:1px solid var(--line);border-radius:4px;background:var(--soft);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;overflow:hidden;flex:0 0 auto}
+.fin .gatepic img{width:100%;height:100%;object-fit:cover}
 .fin table.t.entry td{padding:5px 6px;vertical-align:middle}
 .fin table.t.entry input,.fin table.t.entry select{min-height:28px;padding:4px 7px}
 .fin table.t.entry input.n{text-align:right;font-weight:600;min-width:110px}
@@ -843,7 +845,10 @@ page_header('People Finance');
         acts.appendChild(btn('Print pay slips', function(){ printSlips(r); }));
         acts.appendChild(el('a', { class: 'btn', href: API + encodeURIComponent('/finance/sheets/' + id + '/export'), text: 'Download (Excel)' }));
         acts.appendChild(btn('Show all lines', function(){ var any = r.items.some(function(i){ return !open[i.employee_id]; }); r.items.forEach(function(i){ open[i.employee_id] = any; }); drawList(); }, 'sm'));
-      } else r.items.forEach(function(i){ open[i.employee_id] = r.items.length <= 3; });
+      } else {
+        r.items.forEach(function(i){ open[i.employee_id] = r.items.length <= 3; });
+        acts.appendChild(btn('Open everyone', function(){ var any = r.items.some(function(i){ return !open[i.employee_id]; }); r.items.forEach(function(i){ open[i.employee_id] = any; }); drawList(); }, 'sm'));
+      }
       show([acts, head, editing ? el('div', { class: 'why', text: 'Amending: open a person, change any line and say why. Basic salary is fixed. Nothing is saved until you press Save amendments.' }) : null, listBox, bar]);
       drawList(); sums();
     });
@@ -946,7 +951,8 @@ page_header('People Finance');
       el('div', { class: 'nm' }, [el('b', { text: p.full_name }), el('span', { text: p.code + ' · ' + p.department_name + (+p.active ? '' : ' · left the company') })])]), btn('Close', closeModal, 'sm')])];
     if (c.staff || c.setup) {
       var m = { code: el('input', { type: 'text', maxlength: 40, value: p.code, disabled: !c.staff }), name: el('input', { type: 'text', maxlength: 160, value: p.full_name, disabled: !c.staff }),
-        dept: el('input', { type: 'text', list: 'fin-depts', maxlength: 120, value: p.department_name, disabled: !c.staff }), worker: el('input', { type: 'text', maxlength: 40, value: p.worker_code || '', disabled: !c.staff }) };
+        dept: el('input', { type: 'text', list: 'fin-depts', maxlength: 120, value: p.department_name, disabled: !c.staff }), worker: el('input', { type: 'text', maxlength: 40, value: p.worker_code || '', disabled: !c.staff }),
+        qr: el('input', { type: 'text', maxlength: 190, value: p.qr_payload || '', disabled: !c.staff, placeholder: 'Only if the card scans as something else' }) };
       var type = el('select', { disabled: !c.setup }, [['', '— not set —'], ['salary', 'Fixed salary (monthly)'], ['daily', 'Daily wages (weekly)'], ['contract', 'Contractor (by production)']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
       type.value = p.pay_type || '';
       var money = function(v){ return el('input', { type: 'text', inputmode: 'decimal', value: v ? plain(v) : '', disabled: !c.setup }); };
@@ -963,13 +969,13 @@ page_header('People Finance');
           return call('POST', '/finance/staff/' + id + '/active', { active: !+p.active, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast('Saved.'); people(); } return x; }); });
       }, 'sm danger') : null;
       kids.push(el('div', { class: 'cardx stack' }, [el('h3', { text: 'Employee and pay' }),
-        el('div', { class: 'formgrid' }, [field('Code', m.code), field('Name', m.name), field('Department', m.dept), field('Production worker code', m.worker),
+        el('div', { class: 'formgrid' }, [field('Code', m.code), field('Name', m.name), field('Department', m.dept), field('Production worker code', m.worker), field('Card text', m.qr),
           field('Paid as', type), w.basic, w.allow, w.daily, w.ot, field('Paid by', f.method), w.bank, field('Reason', f.reason)]),
         el('p', { class: 'muted small', style: 'margin:0', text: 'A contractor is paid from Production: give the same code here as in Production › Workers (or leave it blank to use the employee code). The overtime rate is used only for approved, checked overtime that Accounts has not already priced.' }), e1,
         el('div', { class: 'row', style: 'justify-content:space-between' }, [left || el('span'), btn('Save', function(ev){
           var num = function(i){ var v = i.value.trim(); return v === '' ? 0 : toPaisa(v); };
           var row = { employee_id: id };
-          if (c.staff) { row.code = m.code.value.trim(); row.full_name = m.name.value.trim(); row.department = m.dept.value.trim(); row.worker_code = m.worker.value.trim(); }
+          if (c.staff) { row.code = m.code.value.trim(); row.full_name = m.name.value.trim(); row.department = m.dept.value.trim(); row.worker_code = m.worker.value.trim(); row.qr_payload = m.qr.value.trim(); }
           if (c.setup && type.value) {
             row.pay_type = type.value; row.basic_paisa = num(f.basic); row.allowance_paisa = num(f.allow); row.daily_rate_paisa = num(f.daily); row.ot_rate_paisa = num(f.ot); row.pay_method = f.method.value; row.bank_account = f.bank.value.trim();
             if ([row.basic_paisa, row.allowance_paisa, row.daily_rate_paisa, row.ot_rate_paisa].indexOf(null) >= 0) { e1.textContent = 'Amounts are numbers like 45000 or 1200.50.'; e1.hidden = false; return; }
@@ -983,6 +989,7 @@ page_header('People Finance');
           });
         }, 'pri')])]));
     }
+    if (c.photo) kids.push(photoCard(p));
     kids.push(el('div', { class: 'cardx stack' }, [el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h3', { text: 'Ledger' }),
       c.pay ? btn('Opening balance', function(){ ask('Opening balance for ' + p.full_name, 'What the company owed this person on the day you start using this screen. Entered again, it replaces the old figure. Money the person owes is an advance instead.',
         [{ k: 'amt', label: 'Amount owed to them', money: true, value: p.opening_paisa ? plain(p.opening_paisa) : '' }, { k: 'reason', label: 'Where the figure comes from', wide: true, placeholder: 'e.g. wage register, page 14' }], 'Save', function(v){
@@ -998,13 +1005,81 @@ page_header('People Finance');
       r.advances.forEach(function(a){ advBox.appendChild(advRow(a, false)); });
     });
   }
+  /* THE GATE PHOTO, in the same card as everything else about the person.
+     The same upload as Attendance › Setup: cropped and made small on the
+     server; the original is not kept. */
+  function photoSrc(id){ return API + encodeURIComponent('/admin/employees/photo') + '&id=' + encodeURIComponent(id) + '&t=' + Date.now(); }
+  function sendFile(route, fields, file){
+    var form = new FormData();
+    Object.keys(fields).forEach(function(k){ form.append(k, fields[k]); });
+    form.append('photo', file, 'photo');
+    return fetch(API + encodeURIComponent(route), { method: 'POST', credentials: 'same-origin', headers: { 'Accept': 'application/json', 'X-CSRF-Token': CSRF }, body: form })
+      .then(function(r){ return r.json().catch(function(){ return { ok: false, error: r.status === 413 ? 'That picture is too large to upload.' : 'The server sent something unreadable.' }; }); })
+      .catch(function(){ return { ok: false, error: 'The server could not be reached.' }; });
+  }
+  function shrink(file){
+    return new Promise(function(resolve){
+      if (!window.createImageBitmap) return resolve(file);
+      createImageBitmap(file, { imageOrientation: 'from-image' }).then(function(bmp){
+        var scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+        if (scale === 1 && file.size < 1500000) return resolve(file);
+        var cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(bmp.width * scale)); cv.height = Math.max(1, Math.round(bmp.height * scale));
+        cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+        cv.toBlob(function(b){ resolve(b && b.size < file.size ? b : file); }, 'image/jpeg', 0.88);
+      }).catch(function(){ resolve(file); });
+    });
+  }
+  function photoCard(p){
+    var has = +p.has_photo === 1, told = +p.notice_given === 1;
+    var pic = el('div', { class: 'gatepic' }, [has ? el('img', { alt: 'Photo on file for ' + p.full_name, src: photoSrc(p.employee_id) }) : el('span', { text: 'No photo yet' })]);
+    var file = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', 'aria-label': 'Choose a photo' });
+    var notice = el('input', { type: 'checkbox' }), msg = el('div', { class: 'small muted' });
+    var save = btn('Save photo', function(){
+      var f = file.files && file.files[0];
+      if (!f) { msg.textContent = 'Choose a picture first.'; return; }
+      if (!told && !notice.checked) { msg.textContent = 'Tick that the employee has been told their photo is kept for attendance.'; return; }
+      save.disabled = true; msg.textContent = 'Saving…';
+      shrink(f).then(function(small){ return sendFile('/admin/employees/photo', { id: p.employee_id, notice_given: '1' }, small); }).then(function(r){
+        save.disabled = false;
+        if (!r.ok) { msg.textContent = r.error || 'The photo was not saved.'; return; }
+        p.has_photo = 1; p.notice_given = 1; has = true; told = true;
+        pic.textContent = ''; pic.appendChild(el('img', { alt: 'Photo on file for ' + p.full_name, src: photoSrc(p.employee_id) }));
+        msg.textContent = 'Saved. This is what the gate will see.'; PEOPLE = null;
+      });
+    }, 'sm pri');
+    var remove = btn('Remove photo', function(){
+      ask('Remove the photo of ' + p.full_name, 'The gate will show no picture for this person until a new one is saved.', [{ k: 'reason', label: 'Why', wide: true }], 'Remove', function(v){
+        return call('POST', '/admin/employees/photo/remove', { id: p.employee_id, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast('Photo removed.'); PEOPLE = null; people(); } return x; });
+      });
+    }, 'sm danger');
+    return el('div', { class: 'cardx' }, [el('h3', { text: 'Photo for the gate' }), el('div', { class: 'row', style: 'align-items:flex-start;gap:14px' }, [pic,
+      el('div', { class: 'stack', style: 'flex:1 1 260px;gap:8px' }, [field(has ? 'Replace the photo' : 'Photo — JPG, PNG or WebP', file),
+        told ? el('div', { class: 'small muted', text: 'This employee has been told their photo is kept for attendance.' }) : el('label', { class: 'small', style: 'display:flex;gap:6px;align-items:center' }, [notice, 'This employee has been told their photo will be kept for attendance']),
+        el('div', { class: 'row' }, [save, has ? remove : null]), msg])])]);
+  }
+
   function advRow(a, withName){
     var pct = a.amount_paisa ? Math.round(a.recovered_paisa * 100 / a.amount_paisa) : 0;
     return el('div', { class: 'row', style: 'justify-content:space-between;padding:8px 0;border-top:1px solid var(--soft)' }, [
       el('div', { class: 'nm', style: 'flex:1 1 200px' }, [el('b', { text: (withName ? a.full_name + ' · ' : '') + (a.kind === 'loan' ? 'Loan' : 'Advance') + ' ' + rs(a.amount_paisa) }),
-        el('span', { text: (withName ? a.code + ' · ' + a.department_name + ' · ' : '') + 'given ' + nice(a.given_on) + ' · ' + rs(a.per_pay_paisa) + ' from each pay' + (a.note ? ' · ' + a.note : '') })]),
+        el('span', { text: (withName ? a.code + ' · ' + a.department_name + ' · ' : '') + 'given ' + nice(a.given_on) + ' · ' + (a.status === 'active' && !a.per_pay_paisa ? 'recovery paused' : rs(a.per_pay_paisa) + ' from each pay') + (a.note ? ' · ' + a.note : '') })]),
       el('div', { style: 'flex:1 1 120px' }, [el('div', { class: 'bar-r' }, [el('i', { style: 'width:' + pct + '%' })]), el('div', { class: 'small muted', text: rs(a.recovered_paisa) + ' recovered' })]),
       el('div', { class: 'num' }, [el('b', { text: rs(a.left_paisa) }), el('div', { class: 'small muted', text: a.status === 'closed' ? 'cleared' : 'still owed' })]),
+      S.caps.pay && a.status === 'active' ? btn('Change plan', function(){
+        ask('Change the plan — ' + (a.kind === 'loan' ? 'loan' : 'advance') + ' of ' + rs(a.amount_paisa), 'Rs ' + rs(a.left_paisa) + ' is still owed. Set how much comes off each pay from now on, or 0 to pause the recovery (for example in Eid month).',
+          [{ k: 'per', label: 'From each pay', money: true, value: plain(a.per_pay_paisa) }, { k: 'reason', label: 'Why', wide: true }], 'Save', function(v){
+            var per = v.per === '' ? null : toPaisa(v.per); if (per === null) return { ok: false, error: 'Give an amount, or 0 to pause.' };
+            return call('POST', '/finance/advances/' + a.id + '/change', { per_pay_paisa: per, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast(per ? 'Plan changed.' : 'Recovery paused.'); if (S.tab === 'advances') advances(); } return x; });
+          });
+      }, 'sm') : null,
+      (S.caps.salary || S.caps.wage) && a.status === 'active' ? btn('Recover now', function(){
+        loadPeople().then(function(){
+          var who = PEOPLE.filter(function(x){ return +x.employee_id === +a.employee_id; })[0];
+          if (!who) return toast('That person is not in your list.', true);
+          entryForm('deduction', { p: who, type: a.kind, advance_id: a.id });
+        });
+      }, 'sm') : null,
       S.caps.pay && a.status === 'active' && a.recovered_paisa === 0 ? btn('Cancel', function(){
         ask('Cancel this ' + a.kind, 'Only possible because nothing has been recovered yet.', [{ k: 'reason', label: 'Why', wide: true }], 'Cancel it', function(v){
           return call('POST', '/finance/advances/' + a.id + '/cancel', v).then(function(x){ if (x.ok) { closeModal(); toast('Cancelled.'); if (S.tab === 'advances') advances(); } return x; }); });
@@ -1246,7 +1321,7 @@ page_header('People Finance');
         printable = { title: 'Employee ledger — everyone', sub: rows.length + (rows.length === 1 ? ' person' : ' people'), table: table };
         holder.appendChild(el('div', { class: 'cardx scroll' }, [table]));
       });
-      function pick(x){ LG.emp = (PEOPLE || []).filter(function(p){ return p.employee_id === x.employee_id; })[0] || { employee_id: x.employee_id, full_name: x.full_name, code: x.code, department_name: x.department_name, pay_type: x.pay_type, active: 1 }; ledger(); }
+      function pick(x){ LG.emp = (PEOPLE || []).filter(function(p){ return +p.employee_id === +x.employee_id; })[0] || { employee_id: x.employee_id, full_name: x.full_name, code: x.code, department_name: x.department_name, pay_type: x.pay_type, active: 1 }; ledger(); }
       function one(p){
         call('GET', '/finance/people/' + p.employee_id + '/statement', { from: LG.from, to: LG.to }).then(function(r){
           holder.textContent = '';
@@ -1291,7 +1366,7 @@ page_header('People Finance');
     earning: [['overtime', 'Overtime'], ['production', 'Production incentive'], ['bonus', 'Bonus'], ['allowance', 'Allowance'], ['other_earning', 'Other earning']],
     deduction: [['leave', 'Unpaid leave'], ['advance', 'Advance recovery'], ['loan', 'Loan recovery'], ['deduction', 'Other deduction']]
   };
-  function entryForm(mode){
+  function entryForm(mode, preset){
     loadPeople().then(function(){
       var title = { earning: 'Add earning', deduction: 'Add deduction', payment: 'Record payment' }[mode];
       var note = { earning: 'Overtime, an incentive, a bonus or any other earning — for one person or many. It waits for approval; once approved it is in their ledger and is paid with their next pay, or by Record payment. Overtime that Attendance already has is added to the pay sheet by itself: enter here only what Attendance does not know.',
@@ -1302,7 +1377,7 @@ page_header('People Finance');
       var defType = el('select', {}, (ETYPES[mode] || []).map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
       var tb = el('tbody'), errBox = el('div', { class: 'err', hidden: true }), totalB = el('b', { text: '0' });
       var lines = [];
-      function addLine(p){
+      function addLine(p, pre){
         var L = { p: p || null, info: null };
         var who = el('input', { type: 'text', list: 'fin-emps2', placeholder: 'Name or code', value: p ? personLabel(p) : '', 'aria-label': 'Employee' });
         var amt = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: '0', 'aria-label': 'Amount' });
@@ -1315,7 +1390,7 @@ page_header('People Finance');
           cells.push(L.owed, el('td', {}, [amt]), el('td', {}, [L.method]));
         } else {
           L.type = el('select', { 'aria-label': 'Type' }, ETYPES[mode].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
-          L.type.value = defType.value;
+          L.type.value = pre && pre.type ? pre.type : defType.value;
           L.label = el('input', { type: 'text', maxlength: 100, placeholder: 'Description (optional)', 'aria-label': 'Description' });
           L.adv = el('select', { 'aria-label': 'Which advance or loan', hidden: true });
           cells.push(el('td', {}, [L.type]), el('td', {}, [L.label, L.adv]), el('td', {}, [amt]));
@@ -1340,7 +1415,8 @@ page_header('People Finance');
               L.adv.textContent = '';
               L.adv.appendChild(el('option', { value: '', text: list.length ? 'Which ' + (k === 'loan' ? 'loan' : 'advance') + '?' : 'No open ' + (k === 'loan' ? 'loan' : 'advance') }));
               list.forEach(function(a){ L.adv.appendChild(el('option', { value: String(a.id), text: 'Given ' + nice(a.given_on) + ' · ' + rs(a.left_paisa) + ' still owed' })); });
-              if (list.length === 1) { L.adv.value = String(list[0].id); if (!amt.value) amt.value = plain(Math.min(list[0].per_pay_paisa, list[0].left_paisa)); sum(); }
+              var want = pre && pre.advance_id ? list.filter(function(a){ return +a.id === +pre.advance_id; })[0] : (list.length === 1 ? list[0] : null);
+              if (want) { L.adv.value = String(want.id); if (!amt.value) amt.value = plain(Math.min(want.per_pay_paisa || want.left_paisa, want.left_paisa)); sum(); }
               L.adv.hidden = false;
             }
           });
@@ -1358,8 +1434,8 @@ page_header('People Finance');
       var dsel = el('select', { 'aria-label': 'Department to add' }, [el('option', { value: '', text: 'Add a whole department…' })].concat((S.depts || []).map(function(d){ return el('option', { value: d.name, text: d.name }); })));
       dsel.addEventListener('change', function(){
         var d = dsel.value; dsel.value = ''; if (!d) return;
-        var have = {}; lines.forEach(function(L){ if (L.p) have[L.p.employee_id] = 1; });
-        var add = PEOPLE.filter(function(p){ return +p.active && p.pay_type && p.department_name === d && !have[p.employee_id]; });
+        var have = {}; lines.forEach(function(L){ if (L.p) have[+L.p.employee_id] = 1; });
+        var add = PEOPLE.filter(function(p){ return +p.active && p.pay_type && p.department_name === d && !have[+p.employee_id]; });
         lines.filter(function(L){ return !L.p && !L.who.value.trim(); }).forEach(function(L){ lines.splice(lines.indexOf(L), 1); L.tr.remove(); });
         add.forEach(function(p){ addLine(p); });
         toast(add.length ? add.length + (add.length === 1 ? ' person added.' : ' people added.') : 'Nobody new in ' + d + '.'); sum();
@@ -1406,9 +1482,13 @@ page_header('People Finance');
         errBox,
         el('div', { class: 'row', style: 'justify-content:space-between' }, [el('span', { class: 'muted small' }, ['Total: ', totalB]), el('div', { class: 'row' }, [btn('Close', closeModal), save])])], true);
       box.classList.add('entrybox');
-      addLine(LG.emp && S.tab === 'ledger' ? LG.emp : null);
-      if (!LG.emp || S.tab !== 'ledger') addLine(null);
+      if (preset) { if (preset.type) defType.value = preset.type; addLine(preset.p, preset); }
+      else {
+        addLine(LG.emp && S.tab === 'ledger' ? LG.emp : null);
+        if (!LG.emp || S.tab !== 'ledger') addLine(null);
+      }
       sum();
+      if (preset) reason.value = 'Recovery taken early';
       setTimeout(function(){ (lines[0].p ? lines[0].amt : lines[0].who).focus(); }, 30);
     });
   }
