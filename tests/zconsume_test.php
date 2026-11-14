@@ -111,5 +111,10 @@ ok(str_contains($ic, "tr.closest('#outT') ? document.getElementById('addo') : do
 ok(str_contains($ic, 'if(window.LOV && LOV.isOpen && LOV.isOpen()) return;'),
    'an open picker still owns Enter');
 
+ok(str_contains($ic, "tr._fifoT = setTimeout(function(){ refifo(tr); }, 300);") && !str_contains($ic, "get(tr,'.hMode').value='fifo'; refifo(tr); });"),
+   'typing a quantity asks for FIFO lots 300 ms after the typing stops, not on every key');
+ok(str_contains($ic, 'var seq = tr._fifoSeq = (tr._fifoSeq || 0) + 1;') && str_contains($ic, 'if(seq !== tr._fifoSeq) return;'),
+   '  and an older answer that arrives late is ignored, so the lots shown are for the quantity on screen');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

@@ -382,5 +382,8 @@ ok(str_contains($op, "cannot be dated in the future"),
 /* A posted document is reversed, never deleted — both stay. */
 ok(str_contains($op, "Only a draft can be deleted"), 'only a draft can be deleted');
 
+ok(str_contains($op, "tr._ohT = setTimeout(function(){ refresh(tr); }, 300);"), 'the lot box asks for the stock on hand 300 ms after the typing stops');
+ok(str_contains($op, 'if (keyOf(tr) !== asked) return;'), '  and a late answer for an earlier lot is not shown on the lot typed since');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

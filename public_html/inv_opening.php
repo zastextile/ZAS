@@ -472,8 +472,11 @@ page_header('Opening Stock');
       + 'there, so if that balance is the same goods you are counting now, it will double. This does not stop '
       + 'the entry — a different store or a different lot is a perfectly good reason.<br>' + flagged.join('<br>');
   }
+  /* The answer is used only if the line still asks the same question —
+     a slow reply for an earlier lot never lands on the lot typed since. */
   function refresh(tr){
-    loadOnhand(tr, function(q){ tr.dataset.onhand = (q === null ? '' : q); paint(); });
+    var asked = keyOf(tr);
+    loadOnhand(tr, function(q){ if (keyOf(tr) !== asked) return; tr.dataset.onhand = (q === null ? '' : q); paint(); });
   }
 
   LOV.register('opitem', {
@@ -527,7 +530,8 @@ page_header('Opening Stock');
 
   tb.addEventListener('input', function(e){
     paint();
-    if (e.target.classList.contains('lot')) refresh(e.target.closest('tr'));
+    /* the lot box asks the server 300 ms after the typing stops, not on every key */
+    if (e.target.classList.contains('lot')) { var tr = e.target.closest('tr'); clearTimeout(tr._ohT); tr._ohT = setTimeout(function(){ refresh(tr); }, 300); }
   });
   tb.addEventListener('change', function(e){
     if (e.target.classList.contains('st')) refresh(e.target.closest('tr'));

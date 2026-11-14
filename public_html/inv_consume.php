@@ -916,9 +916,13 @@ flash();
     var mid = +get(tr,'select.mat').value;
     var want = num(get(tr,'.iqty').value) + num(get(tr,'.iw').value);
     var i = idxOf(tr);
+    /* Only the newest question counts: typing 1, 12, 120 sends three, and
+       the answer for 12 must not land after the one for 120. */
+    var seq = tr._fifoSeq = (tr._fifoSeq || 0) + 1;
     if(!mid || want<=0){ ALLOC[i]=[]; paint(tr); return; }
     fetch('inv_consume.php?ajax=fifo&material_id='+mid+'&qty='+encodeURIComponent(want))
       .then(function(r){return r.json()}).then(function(d){
+        if(seq !== tr._fifoSeq) return;              // an older answer, already overtaken
         if(!d.ok) return;
         ALLOC[i] = d.alloc || [];
         tr.dataset.short = d.short || 0;
@@ -1224,7 +1228,8 @@ flash();
       applyMaterialScope(); fillStandardQty(tr); refifo(tr);
     });
     ['.iqty','.iw'].forEach(function(s){
-      get(tr,s).addEventListener('input', function(){ get(tr,'.hMode').value='fifo'; refifo(tr); });
+      /* asked 300 ms after the typing stops, not on every key */
+      get(tr,s).addEventListener('input', function(){ get(tr,'.hMode').value='fifo'; clearTimeout(tr._fifoT); tr._fifoT = setTimeout(function(){ refifo(tr); }, 300); });
     });
     get(tr,'.pick').addEventListener('click', function(){ openPicker(tr); });
     get(tr,'.refifo').addEventListener('click', function(){ get(tr,'.hMode').value='fifo'; get(tr,'.hRsn').value=''; refifo(tr); });
