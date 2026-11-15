@@ -70,8 +70,10 @@ $admin = $mk('Admin Person', 'admin@zas.test', 'admin');
 $day = Shifts::create(['name' => 'Day', 'start_time' => '09:00', 'end_time' => '17:00', 'grace_in_minutes' => 10, 'grace_out_minutes' => 10]);
 Policy::set('default_shift_id', (string) $day, null, 'string');
 Policy::set('auto_out_enabled', '0', null, 'bool'); Policy::flush();
-$depts = ['Stitching' => 10, 'Packing' => 8, 'Cutting' => 6];
-$special = ['S001' => 'Absent Thrice', 'S002' => 'Often Late', 'P001' => 'Short Days'];
+$depts = ['Stitching' => 10, 'Packing' => 8, 'Cutting' => 8];
+$special = ['S001' => 'Absent Thrice', 'S002' => 'Often Late', 'P001' => 'Short Days', 'C007' => 'Mostly Away', 'C008' => 'Has Left'];
+$awayDays = [3, 5, 7, 10, 14, 17, 21, 24];          // Mostly Away: 8 days not come, scattered
+/* Has Left stopped coming on the 15th and was marked as left: on the roll the figures leave them out */
 $people = [];
 foreach ($depts as $dn => $cnt) {
     $did = Employees::createDepartment($dn);
@@ -83,28 +85,34 @@ foreach ($depts as $dn => $cnt) {
 $k = fn(string $local) => new DateTimeImmutable($local, new DateTimeZone('Asia/Karachi'));
 mt_srand(7);
 $exp = ['rows' => 0, 'worked' => 0, 'late' => 0, 'absent' => 0, 'absentOf' => []];
+$act = ['rows' => 0, 'worked' => 0, 'late' => 0, 'absent' => 0];
 for ($d = 1; $d <= 31; $d++) {
     $date = sprintf('2026-10-%02d', $d);
     if ((int) (new DateTimeImmutable($date))->format('w') === 0) { continue; }            // Sunday: no shift
     foreach ($people as $c => $id) {
         Db::run('INSERT INTO att_shift_instances (employee_id, shift_id, work_date, starts_at, ends_at) VALUES (?, ?, ?, ?, ?)',
             [$id, $day, $date, $date . ' 04:00:00', $date . ' 12:00:00']);
-        $exp['rows']++;
-        $absent = ($c === 'S001' && in_array($d, [12, 13, 14], true)) || ($c !== 'S001' && mt_rand(1, 100) <= 5);
-        if ($absent) { $exp['absent']++; $exp['absentOf'][$c][] = $d; continue; }
-        $late = ($c === 'S002' && in_array($d, [2, 6, 9, 16, 20, 27], true)) || ($c !== 'S002' && mt_rand(1, 100) <= 6);
+        $exp['rows']++; $on = $c !== 'C008'; if ($on) { $act['rows']++; }
+        $absent = ($c === 'S001' && in_array($d, [12, 13, 14], true)) || ($c === 'C007' && in_array($d, $awayDays, true)) || ($c === 'C008' && $d >= 15)
+            || (!in_array($c, ['S001', 'C007', 'C008'], true) && mt_rand(1, 100) <= 5);
+        if ($absent) { $exp['absent']++; if ($on) { $act['absent']++; } $exp['absentOf'][$c][] = $d; continue; }
+        $late = ($c === 'S002' && in_array($d, [2, 6, 9, 16, 20, 27], true)) || (!in_array($c, ['S002', 'C007', 'C008'], true) && mt_rand(1, 100) <= 6);
         $in = $late ? sprintf('09:%02d', mt_rand(15, 45)) : sprintf('08:%02d', mt_rand(35, 59));
         $out = ($c === 'P001' && in_array($d, [5, 8, 19, 22], true)) ? '13:00' : sprintf('17:%02d', mt_rand(0, 25));
         $r = E::add($c, $k("$date $in"), $k("$date $out"), 'October demo', $admin);
         if (!$r['ok']) { echo "seed failed $c $date: {$r['error']}\n"; }
         $exp['worked']++; if ($late) { $exp['late']++; }
+        if ($on) { $act['worked']++; if ($late) { $act['late']++; } }
     }
 }
+Db::run("UPDATE att_employees SET active = 0 WHERE code = 'C008'");
 $rep = R::attendance(['from' => '2026-10-01', 'to' => '2026-10-31'], null);
 ok($rep['ok'] && count($rep['rows']) === $exp['rows'] && $rep['totals']['absent'] === $exp['absent'] && $rep['totals']['late'] === $exp['late'],
-   'a month for 24 people: ' . $exp['rows'] . ' shift days, ' . $exp['absent'] . ' not come, ' . $exp['late'] . ' late — the report agrees');
-$rate = round(1000 * $exp['worked'] / $exp['rows']) / 10;
-$punc = round(1000 * ($exp['worked'] - $exp['late']) / $exp['worked']) / 10;
+   'a month for 26 people (one has since left): ' . $exp['rows'] . ' shift days, ' . $exp['absent'] . ' not come, ' . $exp['late'] . ' late — the report agrees');
+ok(count(array_filter($rep['rows'], fn($x) => $x['employee_active'] === 0)) === 27, '  each line says whether the person is still on the roll');
+$rate = round(1000 * $act['worked'] / $act['rows']) / 10;
+$punc = round(1000 * ($act['worked'] - $act['late']) / $act['worked']) / 10;
+$rateAll = round(1000 * $exp['worked'] / $exp['rows']) / 10;
 $fmt = fn(float $v) => rtrim(rtrim(number_format($v, 1, '.', ''), '0'), '.');
 
 echo "2. In a browser\n";
@@ -150,6 +158,14 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     check('  "Absent several days in a row" names Absent Thrice — 3 days in a row', /Absent Thrice[\s\S]*3 days in a row/.test(await p.textContent('#ins-absent')), await p.textContent('#ins-absent').catch(() => ''));
     check('  "Often late" names Often Late — 6 times', /Often Late[\s\S]*6 times/.test(await p.textContent('#ins-late')));
     check('  "Short days" names Short Days — 4 days', /Short Days[\s\S]*4 days/.test(await p.textContent('#ins-short')));
+    const most = await p.locator('#ins-most li').allTextContents();
+    check('MOSTLY ABSENT: Mostly Away first — 8 of 27 days · 30%; Has Left (left the company) is not counted', /^Mostly Away[\s\S]*8 of 27 days · 30%/.test(most[0] || '') && !most.some(t => /Has Left/.test(t)), most.slice(0, 3).join(' | '));
+    check('  the tick box offers "Include 1 person who left", off', /Include 1 person who left/.test(await p.textContent('label.lefttog')) && !(await p.isChecked('#with-left')));
+    await p.check('#with-left');
+    const most2 = await p.locator('#ins-most li').allTextContents();
+    check('  ticked: Has Left comes in at the top (15 days) and the rate falls to ' + EXP.rateAll + '%', /^Has Left[\s\S]*15 of 27 days/.test(most2[0] || '') && (await p.textContent('#ins-tiles')).includes(EXP.rateAll + '%'), most2.slice(0, 2).join(' | '));
+    if (SHOTS) { await p.mouse.move(5, 5); await p.locator('#ins-most').screenshot({ path: SHOTS + '/mostly-absent-with-left.png' }); }
+    await p.uncheck('#with-left');
     if (SHOTS) { await p.mouse.move(5, 5); await p.waitForTimeout(100); await p.screenshot({ path: SHOTS + '/insights.png', fullPage: true }); }
     await p.locator('#ins-late li', { hasText: 'Often Late' }).click(); await loaded(p);
     await p.waitForSelector('#attr-body .seg button[data-v=lines][aria-pressed=true]');
@@ -160,7 +176,10 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     await p.fill('#r-month', '2026-10'); await p.click('#r-show');
     await p.waitForSelector('#reg-box table.reg');
     const people = await p.locator('#reg-box tbody tr:not(.grp)').count();
-    check('REGISTER: one line per person (24), grouped by department', people === 24 && (await p.locator('#reg-box tr.grp').count()) === 3, people);
+    check('REGISTER: one line per person on the roll (25), grouped by department', people === 25 && (await p.locator('#reg-box tr.grp').count()) === 3, people);
+    await p.check('#with-left');
+    check('  with "Include … who left" ticked: 26', (await p.locator('#reg-box tbody tr:not(.grp)').count()) === 26);
+    await p.uncheck('#with-left');
     check('  31 day columns', (await p.locator('#reg-box thead th.d').count()) === 31);
     check('  every absence is an A, every late day an L', (await p.locator('#reg-box td.kA').count()) === EXP.absent && (await p.locator('#reg-box td.kL').count()) === EXP.late,
       (await p.locator('#reg-box td.kA').count()) + ' A, ' + (await p.locator('#reg-box td.kL').count()) + ' L');
@@ -168,12 +187,12 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     const cells = await row.locator('td.d').allTextContents();
     check('  Absent Thrice: A on the 12th, 13th and 14th; Sundays have no shift', cells[11] === 'A' && cells[12] === 'A' && cells[13] === 'A' && cells[3] === '·', cells.join(''));
     check('  hovering a box says IN, OUT and hours', /IN \d\d:\d\d · OUT \d\d:\d\d/.test(await row.locator('td.kP').first().getAttribute('title')));
-    check('  totals and the bottom line', /24 people/.test(await p.textContent('#reg-box tfoot')));
+    check('  totals and the bottom line', /25 people/.test(await p.textContent('#reg-box tfoot')));
     const regFit = await p.evaluate(() => { const b = document.getElementById('reg-box'); return b.scrollWidth - b.clientWidth; });
     check('  the whole month and its totals fit at 1366 px (no sliding)', regFit <= 1, '+' + regFit + 'px');
     const [dl] = await Promise.all([p.waitForEvent('download'), p.click('#r-csv')]);
     const fs = require('fs'); const csv = fs.readFileSync(await dl.path(), 'utf8');
-    check('  Download gives the register as a CSV file for Excel', dl.suggestedFilename() === 'attendance-register-2026-10.csv' && csv.split('\n').length === 25 && /Absent Thrice/.test(csv), dl.suggestedFilename());
+    check('  Download gives the register as a CSV file for Excel', dl.suggestedFilename() === 'attendance-register-2026-10.csv' && csv.split('\n').length === 26 && /Absent Thrice/.test(csv) && !/Has Left/.test(csv), dl.suggestedFilename());
     if (SHOTS) await p.screenshot({ path: SHOTS + '/register.png', fullPage: true });
     check('no script error', errs.length === 0, errs.join(' | '));
     await ctx.close();
@@ -197,11 +216,11 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
 })();
 JS);
 $days = (int) Db::value('SELECT COUNT(DISTINCT work_date) FROM att_shift_instances');
-$expJs = json_encode(['rate' => $fmt($rate), 'punc' => $fmt($punc), 'days' => $days, 'absent' => $exp['absent'], 'late' => $exp['late']]);
+$expJs = json_encode(['rate' => $fmt($rate), 'punc' => $fmt($punc), 'rateAll' => $fmt($rateAll), 'days' => $days, 'absent' => $act['absent'], 'late' => $act['late']]);
 $raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 240 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('INS_SHOTS') ?: '')) . ' ' . escapeshellarg($expJs) . ' 2>&1');
 $results = [];
 if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
-ok(count($results) >= 15, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+ok(count($results) >= 19, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
 foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
 
 echo "\nINSIGHTS AND REGISTER: $P passed, $F failed\n";

@@ -248,7 +248,7 @@ final class ReportService
         $rows = Db::all(
             "SELECT si.id AS shift_instance_id, si.work_date, si.starts_at, si.ends_at, si.source AS shift_source,
                     s.name AS shift_name, s.grace_in_minutes, s.grace_out_minutes,
-                    e.id AS employee_id, e.code AS employee_code, e.full_name, d.name AS department_name,
+                    e.id AS employee_id, e.code AS employee_code, e.full_name, e.active AS employee_active, d.name AS department_name,
                     COUNT(c.id) AS entries, MIN(c.opened_at) AS first_in, MAX(c.closed_at) AS last_out,
                     SUM(CASE WHEN c.id IS NOT NULL AND c.closed_at IS NULL THEN 1 ELSE 0 END) AS open_entries,
                     COALESCE(SUM(c.present_minutes), 0) AS present_minutes,
@@ -277,6 +277,7 @@ final class ReportService
             $r['unconfirmed'] = (int) $r['unconfirmed'];
             $r['corrected'] = (int) $r['corrected'];
             $r['auto_out'] = (int) $r['auto_out'];       // entries closed by the system: no OUT was scanned
+            $r['employee_active'] = (int) $r['employee_active'];   // 0 = left the company; the screens leave them out unless asked
             $r['late_minutes'] = 0;
             $r['early_minutes'] = 0;
             if ($r['entries'] === 0) {

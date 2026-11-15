@@ -158,6 +158,8 @@ page_header('Attendance — Reports');
 .ctip{position:fixed;z-index:999;pointer-events:none;background:#0f2742;color:#fff;border-radius:4px;padding:6px 9px;font:400 12px/1.4 'IBM Plex Sans','Segoe UI',system-ui,sans-serif;box-shadow:0 6px 16px rgba(15,39,66,.25);max-width:260px}
 .ctip b{font-weight:600}
 .attr .wl{list-style:none;margin:0;padding:0}
+.attr .lefttog{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink);white-space:nowrap;cursor:pointer}
+.attr .lefttog input{width:15px;height:15px;margin:0;min-height:0}
 .attr .wl li{display:flex;justify-content:space-between;gap:10px;align-items:baseline;padding:7px 12px;border-bottom:1px solid var(--line2);font-size:12.5px;cursor:pointer}
 .attr .wl li:hover{background:var(--hover)}.attr .wl li:last-child{border-bottom:0}
 .attr .wl .v{font-weight:600;color:var(--bad);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -448,10 +450,11 @@ page_header('Attendance — Reports');
         el('span', { class: 'lbl', text: 'Narrow' }),
         select('f-dept', 'Department', [['', 'All departments']].concat(deptNames.map(function(n){ return [n, n]; })), function(v){ AF.dept = v; paint(); }),
         select('f-status', 'Status', [['', 'Every line'], ['present', 'Came (worked)'], ['absent', 'Did not come'], ['late', 'Late'], ['early', 'Left early'], ['inside', 'Still inside'], ['auto', 'Not scanned out'], ['unconf', 'Not confirmed by HOD'], ['ot', 'With overtime']], function(v){ AF.status = v; paint(); }),
-        el('span', { class: 'sep' }), download('/reports/attendance'), printBtn()]);
+        leftToggle(all, function(){ paint(); }), el('span', { class: 'sep' }), download('/reports/attendance'), printBtn()]);
       narrow.querySelector('#f-dept').value = AF.dept; narrow.querySelector('#f-status').value = AF.status;
 
       function keep(x){
+        if (!onRoll(x)) return false;
         if (AF.dept && x.department_name !== AF.dept) return false;
         switch (AF.status) {
           case 'present': return x.status !== 'absent';
@@ -628,6 +631,19 @@ page_header('Attendance — Reports');
   }
 
   // -------------------------------------------------------- shared bits
+  /* People who left the company are left out of Insights, Attendance and the
+     register unless this is ticked — their old absences would only lower the
+     figures. The tick box shows only when someone in the dates has left. */
+  var WITH_LEFT = false;
+  function onRoll(x){ return WITH_LEFT || x.employee_active === undefined || +x.employee_active === 1; }
+  function leftToggle(rows, repaint){
+    var gone = {}; rows.forEach(function(x){ if (x.employee_active !== undefined && !+x.employee_active) gone[x.employee_code] = 1; });
+    var n = Object.keys(gone).length;
+    if (!n) return null;
+    var cb = el('input', { type: 'checkbox', id: 'with-left', change: function(){ WITH_LEFT = cb.checked; repaint(); } });
+    cb.checked = WITH_LEFT;
+    return el('label', { class: 'lefttog', title: 'People marked as left the company' }, [cb, ' Include ' + n + (n === 1 ? ' person' : ' people') + ' who left']);
+  }
   /* Factory-time minutes of the day for an ISO time (Asia/Karachi is UTC+5, no summer time). */
   function khiMin(iso){ var d = new Date(iso); if (isNaN(d)) return null; var m = (d.getUTCHours() * 60 + d.getUTCMinutes() + 300) % 1440; return m; }
   function clock(m){ return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); }
@@ -700,10 +716,10 @@ page_header('Attendance — Reports');
       var names = deptsOf(r.rows); if (IF.dept && names.indexOf(IF.dept) < 0) IF.dept = '';
       var holder = el('div', { style: 'display:grid;gap:12px;min-width:0' });
       var narrow = el('div', { class: 'bar' }, [el('span', { class: 'lbl', text: 'Narrow' }),
-        select('i-dept', 'Department', [['', 'All departments']].concat(names.map(function(n){ return [n, n]; })), function(v){ IF.dept = v; paint(); }), el('span', { class: 'sep' }), printBtn()]);
+        select('i-dept', 'Department', [['', 'All departments']].concat(names.map(function(n){ return [n, n]; })), function(v){ IF.dept = v; paint(); }), leftToggle(r.rows, function(){ paint(); }), el('span', { class: 'sep' }), printBtn()]);
       narrow.querySelector('#i-dept').value = IF.dept;
       function paint(){
-        var rows = r.rows.filter(function(x){ return !IF.dept || x.department_name === IF.dept; });
+        var rows = r.rows.filter(function(x){ return onRoll(x) && (!IF.dept || x.department_name === IF.dept); });
         holder.textContent = '';
         if (!rows.length) { holder.appendChild(none('Nothing in these dates.', 'ins-none')); return; }
         var worked = rows.filter(function(x){ return x.status !== 'absent'; });
@@ -751,7 +767,8 @@ page_header('Attendance — Reports');
         /* 4. who needs a word: repeated absence, often late, short days */
         var P = {};
         rows.slice().sort(function(a, b){ return a.work_date < b.work_date ? -1 : 1; }).forEach(function(x){
-          var e = P[x.employee_code] || (P[x.employee_code] = { code: x.employee_code, name: x.full_name, dept: x.department_name, run: 0, best: 0, lastRun: '', late: 0, lateMin: 0, ab: 0, short: 0 });
+          var e = P[x.employee_code] || (P[x.employee_code] = { code: x.employee_code, name: x.full_name, dept: x.department_name, run: 0, best: 0, lastRun: '', late: 0, lateMin: 0, ab: 0, short: 0, n: 0 });
+          e.n++;
           if (x.status === 'absent') { e.ab++; e.run++; if (e.run > e.best) { e.best = e.run; e.lastRun = x.work_date; } } else e.run = 0;
           if (x.late_minutes > 0) { e.late++; e.lateMin += +x.late_minutes; }
           var shiftMin = x.starts_at && x.ends_at ? (new Date(x.ends_at) - new Date(x.starts_at)) / 60000 : 0;
@@ -764,14 +781,16 @@ page_header('Attendance — Reports');
             li.addEventListener('click', function(){ F.employee = e.code; try { localStorage.setItem('attr-seg-att', 'lines'); } catch (x) {} go('att'); });
             return li; })) : none(empty)], { flush: true });
         }
-        holder.appendChild(el('div', { class: 'cols3' }, [
+        holder.appendChild(el('div', { class: 'cols2' }, [
+          watchList('ins-most', 'Mostly absent', people.filter(function(e){ return e.ab >= 2; }).sort(function(a, b){ return b.ab - a.ab || b.ab / b.n - a.ab / a.n; }),
+            function(e){ return e.ab + ' of ' + e.n + ' days · ' + Math.round(100 * e.ab / e.n) + '%'; }, 'Nobody missed two shift days or more.'),
           watchList('ins-absent', 'Absent several days in a row', people.filter(function(e){ return e.best >= 2; }).sort(function(a, b){ return b.best - a.best || b.ab - a.ab; }),
             function(e){ return e.best + ' days in a row · ' + e.ab + ' in all'; }, 'Nobody missed two shift days in a row.'),
           watchList('ins-late', 'Often late', people.filter(function(e){ return e.late >= 3; }).sort(function(a, b){ return b.late - a.late || b.lateMin - a.lateMin; }),
             function(e){ return e.late + ' times · ' + mins(e.lateMin); }, 'Nobody was late three times or more.'),
           watchList('ins-short', 'Short days', people.filter(function(e){ return e.short >= 2; }).sort(function(a, b){ return b.short - a.short; }),
             function(e){ return e.short + ' days under ¾ of the shift'; }, 'Nobody worked under ¾ of their shift twice or more.')]));
-        holder.appendChild(el('p', { class: 'note', text: 'Punctuality = days on time ÷ days worked. Short day = present less than three quarters of the shift (a permission or a half day may explain it). Click a name to see their days.' }));
+        holder.appendChild(el('p', { class: 'note', text: 'Only people on the roll are counted' + (WITH_LEFT ? ' — and, as ticked, those who left' : '; tick "Include … who left" to add those who left the company') + '. Mostly absent = most shift days not come (two or more). Punctuality = days on time ÷ days worked. Short day = present less than three quarters of the shift (a permission or a half day may explain it). Click a name to see their days.' }));
       }
       paint();
       show([bar, narrow, holder]);
@@ -800,7 +819,7 @@ page_header('Attendance — Reports');
       var dsel = select('r-dept', 'Department', [['', 'All departments']].concat(names.map(function(n){ return [n, n]; })), function(v){ RF.dept = v; paint(); });
       dsel.value = RF.dept;
       var csvBtn = el('button', { type: 'button', class: 'act', id: 'r-csv', text: 'Download (CSV)' });
-      head.appendChild(dsel); head.appendChild(el('span', { class: 'sep' })); head.appendChild(csvBtn); head.appendChild(printBtn());
+      head.appendChild(dsel); var lt = leftToggle(r.rows, function(){ paint(); }); if (lt) head.appendChild(lt); head.appendChild(el('span', { class: 'sep' })); head.appendChild(csvBtn); head.appendChild(printBtn());
       function code(x){
         if (x.status === 'absent') return 'A';
         if (x.status === 'inside') return x.late_minutes > 0 ? 'L' : 'I';
@@ -808,7 +827,7 @@ page_header('Attendance — Reports');
         return 'P';
       }
       function paint(){
-        var rows = r.rows.filter(function(x){ return !RF.dept || x.department_name === RF.dept; });
+        var rows = r.rows.filter(function(x){ return onRoll(x) && (!RF.dept || x.department_name === RF.dept); });
         var E = {};
         rows.forEach(function(x){
           var e = E[x.employee_code] || (E[x.employee_code] = { code: x.employee_code, name: x.full_name, dept: x.department_name, d: {}, P: 0, L: 0, A: 0, m: 0 });
