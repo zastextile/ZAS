@@ -617,7 +617,7 @@ const body = p => p.textContent('#fin-body');
     await c10.close();
 
     // ---- HOD
-    const c4 = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+    const c4 = await browser.newContext({ viewport: { width: 1366, height: 900 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     const h = await signIn(c4, 'hod@zas.test');
     await h.goto(BASE + '/att_finance.php#prepare');
     await h.waitForSelector('.seg');
@@ -634,8 +634,10 @@ const body = p => p.textContent('#fin-body');
     await pin.nth(0).fill('20'); await pin.nth(1).fill('12.5');
     check('  ± Production adjustment: 20 pieces × 12.50 works out 250', (await pin.nth(2).inputValue()) === '250', await pin.nth(2).inputValue());
     await pin.nth(3).fill('20 pieces rejected in checking');
+    await h.waitForTimeout(300); await shot(h, '22-production-adjust-form');
     await h.click('#fin-shade button:has-text("Add to sheet")');
     await h.waitForFunction(() => document.getElementById('fin-shade').hidden);
+    await h.waitForTimeout(300); await shot(h, '23-production-adjust-on-sheet');
     t = await h.locator('.prow.open').textContent();
     check('  it becomes its own line on the sheet, taken off the pay; the booked figure is untouched', /Production adjustment · 20 × 12\.5/.test(await h.evaluate(() => [...document.querySelectorAll('.prow.open input')].map(i => i.value).join('|'))) && /1 line changed/.test(t), t.slice(0, 200));
     await c4.close();
