@@ -865,7 +865,8 @@ final class AdminService
 
         $perms = [];
         if (Db::tableExists('zu_perm')) {
-            foreach (Db::all("SELECT user_id, module, actions FROM zu_perm WHERE module LIKE 'att%'") as $p) {
+            /* every module a job is judged by: attendance (att…) and People Finance (fin… — the Audit job) */
+            foreach (Db::all("SELECT user_id, module, actions FROM zu_perm WHERE module LIKE 'att%' OR module LIKE 'fin%'") as $p) {
                 $perms[(int) $p['user_id']][(string) $p['module']] = (string) $p['actions'];
             }
         }

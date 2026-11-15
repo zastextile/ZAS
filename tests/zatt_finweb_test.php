@@ -170,6 +170,9 @@ $gj = req($as, 'POST', '/admin/jobs/grant', ['user_id' => $aud, 'role' => 'audit
 ok($gj['status'] === 200 && Roles::has($aud, Roles::AUDIT), 'the administrator gives the Audit job on Setup › People (' . $gj['status'] . ')');
 ok(str_contains((string) Db::value("SELECT actions FROM zu_perm WHERE user_id = ? AND module = 'finapp'", [$aud]), 'u'), '  and "Approve Pay Sheets" is ticked for them in User Access');
 ok(in_array('Audit', array_column(AdminService::users()['jobs'], 'label'), true), '  Audit is one of the jobs on the People tab');
+$audRow = array_values(array_filter(AdminService::users()['users'], fn($u) => (int) $u['id'] === (int) $aud))[0] ?? ['jobs' => []];
+$audJob = array_values(array_filter($audRow['jobs'], fn($j) => $j['role'] === 'audit'))[0] ?? null;
+ok($audJob !== null && $audJob['working'] === true, '  and the People tab shows it as working (green), not "(not working)" — its permission is a People Finance one');
 $pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'finpay', 'vu')")->execute([$tick]);
 $sx = ['acc' => sess('acc@zas.test'), 'hr' => sess('hr@zas.test'), 'aud' => sess('audit@zas.test'), 'hod' => sess('hod@zas.test'), 'gk' => sess('gate@zas.test'), 'tick' => sess('tick@zas.test')];
 ok(req($sx['gk'], 'GET', '/finance/overview')['status'] === 403 && page($sx['gk'], 'att_finance.php')['status'] === 403, 'a gatekeeper is refused by the API and by the page');
