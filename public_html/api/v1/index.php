@@ -951,6 +951,17 @@ try {
             admin_answer(AdminService::setEmployeeActive((int) $m[1], (bool) Http::input('active', false), (string) Http::input('reason', ''), (int) $u['id']));
             break;
 
+        /* Many people at once from People Finance › Employees: left / back on the roll (HR or admin), delete (admin). */
+        case $method === 'POST' && $route === '/finance/staff/bulk':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            if (!Fin::mayEditStaff((int) $u['id'])) {
+                Http::fail('FORBIDDEN', 'Only HR or an admin can change many employees at once.', 403);
+            }
+            $ids = Http::input('ids', []);
+            admin_answer(Fin::bulkStaff(is_array($ids) ? $ids : [], (string) Http::input('action', ''), (string) Http::input('reason', ''), (bool) $caps['admin'], (int) $u['id']));
+            break;
+
         case $method === 'GET' && $route === '/finance/staff/workers':
             [$u] = fin_caps();
             if (!Fin::mayEditStaff((int) $u['id'])) {

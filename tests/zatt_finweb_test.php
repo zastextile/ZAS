@@ -552,14 +552,34 @@ const body = p => p.textContent('#fin-body');
     await ad.goto(BASE + '/att_finance.php#people');
     await ad.waitForSelector('table.t tr.click');
     // the employee list sorts by any column: Owed now ▼ (largest first), then Employee ▲ (A→Z)
-    const colVals = (i) => ad.evaluate((i) => [...document.querySelectorAll('#fin-body table.t.sortable tbody tr')].map(r => window.ZSort.value(r.cells[i])), i);
+    const colVals = (h) => ad.evaluate((h) => { const t = document.querySelector('#fin-body table.t.sortable'); const i = [...t.tHead.rows[0].cells].findIndex(th => th.textContent.startsWith(h));
+      return [...t.tBodies[0].rows].map(r => window.ZSort.value(r.cells[i])); }, h);
     await ad.click('#fin-body table.t.sortable th:has-text("Owed now")'); await ad.click('#fin-body table.t.sortable th:has-text("Owed now")');
-    const owed = await colVals(3);
+    const owed = await colVals('Owed now');
     await ad.click('#fin-body table.t.sortable th:has-text("Employee")');
-    const names = await colVals(0);
+    const names = await colVals('Employee');
     check('EMPLOYEES: sortable titles — Owed now ▼ largest first, Employee ▲ A to Z', owed.length > 2 && owed.every((v, i) => i === 0 || owed[i - 1] >= v) && names.every((v, i) => i === 0 || names[i - 1].localeCompare(v) <= 0)
       && (await ad.getAttribute('#fin-body table.t.sortable th:has-text("Employee")', 'aria-sort')) === 'ascending', JSON.stringify([owed, names]));
     await shot(ad, '26-employees-sorted');
+    // tick many: a bar appears with one action for all; today's chip on every line
+    check('EMPLOYEES: every line has today\'s chip (inside / came / did not come / not in today / left)', (await ad.locator('#fin-body tbody tr').count()) === (await ad.locator('#fin-body tbody tr .tchip').count()));
+    check('  the bar is hidden until someone is ticked', await ad.locator('#fin-body .selbar').isHidden());
+    await ad.locator('#fin-body tbody tr', { hasText: 'Pasted One' }).locator('td.tick input').check();
+    await ad.locator('#fin-body tbody tr', { hasText: 'Pasted Two' }).locator('td.tick input').check();
+    const bar = await ad.textContent('#fin-body .selbar');
+    check('  ticking two shows "2 people ticked" with Mark as left and (admin) Delete — and does not open the card', /2 people ticked/.test(bar) && /Mark as left/.test(bar) && /Delete \(entered by mistake\)/.test(bar) && await ad.locator('#fin-shade').isHidden(), bar);
+    await shot(ad, '27-employees-ticked');
+    await ad.click('#fin-body .selbar button:has-text("Untick all")');
+    check('  Untick all hides the bar again', await ad.locator('#fin-body .selbar').isHidden());
+    await ad.click('#fin-body button:has-text("Edit these in one form")');
+    await ad.waitForSelector('#fin-shade table.staff');
+    const heads = (await ad.locator('#fin-shade table.staff thead th').allTextContents()).join('|');
+    check('ONE FORM: Opening advance / loan, Recover each pay and State come after Opening balance', /Opening balance\|Opening advance \/ loan\|Recover each pay\|State/.test(heads), heads);
+    check('  "Same for all ticked" can set State', (await ad.locator('#fin-shade select[aria-label="Fill: on the roll or left"]').count()) === 1);
+    await ad.locator('#fin-shade .scroll').evaluate(b => { b.scrollLeft = b.scrollWidth; });
+    await shot(ad, '28-one-form-state-advance');
+    await ad.click('#fin-shade button:has-text("Close")');
+    await ad.waitForFunction(() => document.getElementById('fin-shade').hidden);
     await ad.locator('tr.click', { hasText: 'Sami Salaried' }).click();
     await ad.waitForFunction(() => /Photo for the gate/.test(document.getElementById('fin-shade').textContent));
     t = await ad.textContent('#fin-shade');

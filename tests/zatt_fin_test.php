@@ -614,6 +614,48 @@ $hd = Employees::createDepartment('Has A HOD');
 Roles::grant($hr, Roles::HOD, $hd);
 ok(str_contains((string) (AdminService::deleteDepartment($hd, 'x', $admin)['error'] ?? ''), 'job given to a user'), '  one a HOD is tied to says so, and stays');
 
+echo "12j. One place for employees: opening advance, on the roll / left, many at once, today\n";
+$A = Fin::caps($admin); $C = Fin::caps($acc); $R = Fin::caps($hr);
+$oa = Employees::create(['code' => 'OA01', 'full_name' => 'Owes Before', 'department_id' => $dS]);
+$ob = Employees::create(['code' => 'OA02', 'full_name' => 'Also Owes', 'department_id' => $dS]);
+$sv = Fin::saveStaff([['employee_id' => $oa, 'opening_advance_paisa' => 3000000, 'opening_advance_per_pay_paisa' => 500000]], 'Old register p.3', $R, true, $hr);
+ok(($sv['opening_advances'] ?? 0) === 0 && str_contains(implode(' ', $sv['errors']), 'only Accounts or an admin'), 'HR cannot enter an opening advance (money owed is for Accounts / admin)');
+$sv = Fin::saveStaff([['employee_id' => $oa, 'opening_advance_paisa' => 3000000, 'opening_advance_per_pay_paisa' => 500000], ['employee_id' => $ob, 'opening_advance_paisa' => 1000000]], 'Old register p.3', $C, false, $acc);
+$adv = Db::one("SELECT * FROM att_fin_advances WHERE employee_id = ?", [$oa]);
+ok($sv['opening_advances'] === 1 && $adv !== null && (int) $adv['amount_paisa'] === 3000000 && (int) $adv['per_pay_paisa'] === 500000 && str_starts_with((string) $adv['note'], 'Opening') && $adv['status'] === 'active',
+   'OPENING ADVANCE: Rs 30,000 owed from before becomes one advance, Rs 5,000 recovered from each pay, marked "Opening"');
+ok(str_contains(implode(' ', $sv['errors']), 'how much of the opening advance to recover'), '  without "recover each pay" it is refused for that person only — ' . implode(' ', $sv['errors']));
+ok($n('SELECT COUNT(*) FROM att_fin_ledger WHERE employee_id = ?', [$oa]) === 0, '  no cash leaves today: nothing is written to the pay ledger');
+$sv = Fin::saveStaff([['employee_id' => $oa, 'opening_advance_paisa' => 3000000, 'opening_advance_per_pay_paisa' => 500000]], '', $C, false, $acc);
+ok($sv['opening_advances'] === 0 && $sv['errors'] === [] && $n('SELECT COUNT(*) FROM att_fin_advances WHERE employee_id = ?', [$oa]) === 1, '  saving the form again does not add it twice');
+$sv = Fin::saveStaff([['employee_id' => $oa, 'opening_advance_paisa' => 4000000, 'opening_advance_per_pay_paisa' => 500000]], '', $C, false, $acc);
+ok(str_contains(implode(' ', $sv['errors']), 'Change it under Advances & loans'), '  a different figure is refused: it is changed under Advances & loans');
+$pp = array_values(array_filter(Fin::people($A)['people'], fn($p) => (int) $p['employee_id'] === $oa))[0];
+ok((int) $pp['advance_left_paisa'] === 3000000 && (int) $pp['advance_per_pay_paisa'] === 500000 && (int) $pp['opening_advance_paisa'] === 3000000, 'the Employees list carries what is left of their advances and the opening advance');
+ok(array_key_exists('today', $pp), '  and today\'s attendance (empty for someone not scanned today)');
+$hp = array_values(array_filter(Fin::people(Fin::caps($hod))['people'], fn($p) => (int) $p['employee_id'] === $emp['S001']))[0] ?? null;
+ok($hp === null || $hp['advance_left_paisa'] === null, '  a HOD does not see a salaried person\'s advances');
+$sv = Fin::saveStaff([['employee_id' => $ob, 'active' => false]], '', $R, true, $hr);
+ok(str_contains(implode(' ', $sv['errors']), 'Say why'), 'ON THE ROLL / LEFT in the one form: marking someone as left needs a reason');
+$sv = Fin::saveStaff([['employee_id' => $ob, 'active' => false]], 'Resigned', $R, true, $hr);
+ok($sv['state_changed'] === 1 && $n('SELECT active FROM att_employees WHERE id = ?', [$ob]) === 0, '  with one, HR marks them as left');
+$sv = Fin::saveStaff([['employee_id' => $ob, 'active' => false]], 'Resigned', $C, false, $acc);
+ok($sv['state_changed'] === 0 && $sv['errors'] === [], '  saving the same state again changes nothing');
+ok(str_contains(implode(' ', Fin::saveStaff([['employee_id' => $ob, 'active' => true]], 'Back', $C, false, $acc)['errors']), 'only HR or an admin'), '  Accounts cannot change who is on the roll');
+// many at once
+$m1 = Employees::create(['code' => 'MX01', 'full_name' => 'Many One', 'department_id' => $dS]);
+$m2 = Employees::create(['code' => 'MX02', 'full_name' => 'Many Two', 'department_id' => $dS]);
+ok($code(Fin::bulkStaff([$m1, $m2], 'left', '', false, $hr)) === 'REASON_REQUIRED', 'MANY AT ONCE: needs one reason');
+$bl = Fin::bulkStaff([$m1, $m2, $emp['D001']], 'left', 'Season over', false, $hr);
+ok($bl['ok'] && $bl['done'] === 3 && $n('SELECT COUNT(*) FROM att_employees WHERE id IN (?,?) AND active = 0', [$m1, $m2]) === 2, '  HR marks three people as left in one go');
+$bb = Fin::bulkStaff([$m1, $m2, $emp['D001']], 'back', 'Back for the season', false, $hr);
+ok($bb['done'] === 3 && $n('SELECT COUNT(*) FROM att_employees WHERE id IN (?,?,?) AND active = 1', [$m1, $m2, $emp['D001']]) === 3, '  and brings them back');
+ok($code(Fin::bulkStaff([$m1], 'delete', 'x', false, $hr)) === 'FORBIDDEN', '  HR cannot delete');
+$bd = Fin::bulkStaff([$m1, $m2, $emp['D001']], 'delete', 'Test lines', true, $admin);
+ok($bd['done'] === 2 && count($bd['refused']) === 1 && $bd['refused'][0]['employee_id'] === $emp['D001'] && str_contains($bd['refused'][0]['error'], 'Mark as left')
+   && $n('SELECT COUNT(*) FROM att_employees WHERE id IN (?,?)', [$m1, $m2]) === 0 && $n('SELECT COUNT(*) FROM att_employees WHERE id = ?', [$emp['D001']]) === 1,
+   '  the admin deletes the two entered by mistake; the one with history is skipped and named, with the reason');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

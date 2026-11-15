@@ -153,6 +153,17 @@ final class FinanceService
         $bal = self::balances();
         $onSheet = array_flip(array_map('intval', array_column(Db::all(
             "SELECT DISTINCT i.employee_id FROM att_fin_sheet_items i JOIN att_fin_sheets s ON s.id = i.sheet_id WHERE s.status IN ('waiting','approved')"), 'employee_id')));
+        /* advances and loans still being recovered, and the one brought in on day one */
+        $adv = [];
+        foreach (Db::all("SELECT employee_id, SUM(amount_paisa - recovered_paisa) AS left_paisa, SUM(per_pay_paisa) AS per_pay
+                            FROM att_fin_advances WHERE status = 'active' GROUP BY employee_id") as $a) {
+            $adv[(int) $a['employee_id']] = ['left' => (int) $a['left_paisa'], 'per' => (int) $a['per_pay']];
+        }
+        $openAdv = [];
+        foreach (Db::all("SELECT employee_id, amount_paisa, per_pay_paisa FROM att_fin_advances WHERE note LIKE 'Opening%' AND status <> 'cancelled' ORDER BY id") as $a) {
+            $openAdv[(int) $a['employee_id']] = ['amount' => (int) $a['amount_paisa'], 'per' => (int) $a['per_pay_paisa']];
+        }
+        $today = self::todayAttendance($caps['departments']);
         foreach ($rows as &$r) {
             $id = (int) $r['employee_id'];
             foreach (['basic_paisa', 'allowance_paisa', 'daily_rate_paisa', 'ot_rate_paisa'] as $k) {
@@ -162,6 +173,11 @@ final class FinanceService
             $r += $b;
             $r['on_sheet'] = isset($onSheet[$id]);
             $r['opening_paisa'] = $opening[$id] ?? null;
+            $r['advance_left_paisa'] = $adv[$id]['left'] ?? 0;
+            $r['advance_per_pay_paisa'] = $adv[$id]['per'] ?? 0;
+            $r['opening_advance_paisa'] = $openAdv[$id]['amount'] ?? null;
+            $r['opening_advance_per_pay_paisa'] = $openAdv[$id]['per'] ?? null;
+            $r['today'] = $today[(string) $r['code']] ?? null;
             if (!$caps['setup'] && !$caps['pay'] && !$caps['approve']) {
                 $r['bank_account'] = null;                 // an account number is for the people who pay
             }
@@ -169,10 +185,67 @@ final class FinanceService
                 // Not for a HOD's eyes: the person is listed, the pay is not.
                 $r['basic_paisa'] = $r['allowance_paisa'] = null;
                 $r['earned'] = $r['deducted'] = $r['paid'] = $r['balance'] = $r['opening_paisa'] = null;
+                $r['advance_left_paisa'] = $r['advance_per_pay_paisa'] = $r['opening_advance_paisa'] = $r['opening_advance_per_pay_paisa'] = null;
             }
         }
         unset($r);
         return ['ok' => true, 'people' => $rows];
+    }
+
+    /**
+     * Today, for each employee (by code): inside now, the first IN, how late,
+     * or "had a shift and did not come". The same figures as Reports › Today,
+     * read from ReportService so the two screens can never disagree.
+     * @return array<string,array<string,mixed>>
+     */
+    private static function todayAttendance(?array $departments): array
+    {
+        $out = [];
+        try {
+            $day = self::today();
+            $r = ReportService::attendance(['from' => $day, 'to' => $day], $departments);
+            foreach ($r['ok'] ? $r['rows'] : [] as $x) {
+                $prev = $out[(string) $x['employee_code']] ?? null;
+                if ($prev !== null && $prev['status'] !== 'absent') { continue; }        // two shifts in a day: the one they came for
+                $out[(string) $x['employee_code']] = ['status' => (string) $x['status'], 'first_in' => $x['first_in'] ?? null,
+                    'late_minutes' => (int) ($x['late_minutes'] ?? 0), 'last_out' => $x['last_out'] ?? null];
+            }
+        } catch (\Throwable $e) {
+            return [];                                                              // the list still opens without today's figures
+        }
+        return $out;
+    }
+
+    /**
+     * Many people at once from the Employees list: mark as left, bring back
+     * on the roll, or delete (entered by mistake). One reason for all. Each
+     * person goes through the same single-person rule, so a refusal (inside
+     * now, has history) is reported per person and the others still go.
+     * @param list<int> $ids
+     */
+    public static function bulkStaff(array $ids, string $action, string $reason, bool $isAdmin, int $actorId): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($i) => $i > 0)));
+        if ($ids === [] || count($ids) > 500) {
+            return self::no('VALIDATION', $ids === [] ? 'Tick at least one person.' : 'At most 500 people at a time.');
+        }
+        if (!in_array($action, ['left', 'back', 'delete'], true)) {
+            return self::no('VALIDATION', 'Unknown action.');
+        }
+        if ($action === 'delete' && !$isAdmin) {
+            return self::no('FORBIDDEN', 'Only an administrator can delete an employee.');
+        }
+        if (trim($reason) === '') {
+            return self::no('REASON_REQUIRED', 'Say why — it is kept with every person changed.');
+        }
+        $done = 0; $refused = [];
+        foreach ($ids as $id) {
+            $name = (string) (Db::value('SELECT full_name FROM att_employees WHERE id = ?', [$id]) ?: ('Employee #' . $id));
+            $r = $action === 'delete' ? AdminService::deleteEmployee($id, $reason, $actorId)
+                : AdminService::setEmployeeActive($id, $action === 'back', $reason, $actorId);
+            if ($r['ok']) { $done++; } else { $refused[] = ['employee_id' => $id, 'name' => $name, 'error' => (string) ($r['error'] ?? 'Not done.')]; }
+        }
+        return ['ok' => true, 'done' => $done, 'refused' => $refused];
     }
 
     /** @param array<string,mixed> $in */
@@ -305,7 +378,9 @@ final class FinanceService
 
     /**
      * @param list<array<string,mixed>> $rows each: employee_id?, code, full_name, department (name) or department_id, worker_code,
-     *        pay_type?, basic_paisa?, allowance_paisa?, daily_rate_paisa?, ot_rate_paisa?, pay_method?, bank_account?, opening_paisa?
+     *        pay_type?, basic_paisa?, allowance_paisa?, daily_rate_paisa?, ot_rate_paisa?, pay_method?, bank_account?, opening_paisa?,
+     *        opening_advance_paisa?, opening_advance_per_pay_paisa?, opening_advance_kind? (money they owed from before the system:
+     *        becomes ONE advance, recovered from each pay; no cash leaves today), active? (on the roll / left the company)
      */
     public static function saveStaff(array $rows, string $reason, array $caps, bool $mayMaster, int $actorId): array
     {
@@ -314,7 +389,7 @@ final class FinanceService
         }
         $depts = [];
         foreach (Db::all('SELECT id, name FROM att_departments') as $d) { $depts[mb_strtolower(trim((string) $d['name']))] = (int) $d['id']; }
-        $created = 0; $updated = 0; $paySaved = 0; $opened = 0; $errors = []; $given = [];
+        $created = 0; $updated = 0; $paySaved = 0; $opened = 0; $advOpened = 0; $stateChanged = 0; $errors = []; $given = [];
         foreach ($rows as $row) {
             $id = (int) ($row['employee_id'] ?? 0);
             $name = trim((string) ($row['full_name'] ?? ''));
@@ -387,9 +462,39 @@ final class FinanceService
                     $opened++;
                 }
             }
+
+            // ---- what they owed the company on day one: an advance or loan from before the system
+            $oa = $row['opening_advance_paisa'] ?? null;
+            if ($oa !== null && $oa !== '' && (int) $oa !== 0) {
+                if (!$caps['pay']) { $fail('saved, but only Accounts or an admin can enter an opening advance.'); continue; }
+                $per = $row['opening_advance_per_pay_paisa'] ?? null;
+                if (!self::whole($oa) || (int) $oa < 0) { $fail('the opening advance must be a number, more than zero.'); continue; }
+                $had = Db::one("SELECT amount_paisa FROM att_fin_advances WHERE employee_id = ? AND note LIKE 'Opening%' AND status <> 'cancelled' ORDER BY id DESC LIMIT 1", [$id]);
+                if ($had !== null) {
+                    if ((int) $had['amount_paisa'] !== (int) $oa) {
+                        $fail('already has an opening advance of ' . number_format((int) $had['amount_paisa'] / 100) . '. Change it under Advances & loans.');
+                    }
+                } else {
+                    if (!self::whole($per) || (int) $per <= 0) { $fail('give how much of the opening advance to recover from each pay.'); continue; }
+                    $r = self::giveAdvance(['employee_id' => $id, 'kind' => ($row['opening_advance_kind'] ?? '') === 'loan' ? 'loan' : 'advance', 'amount_paisa' => (int) $oa, 'per_pay_paisa' => (int) $per,
+                        'given_on' => self::today(), 'method' => 'cash',
+                        'note' => mb_substr('Opening — owed from before the system' . (trim($reason) !== '' ? ' · ' . trim($reason) : ''), 0, 255)], $actorId);
+                    if (!$r['ok']) { $fail('opening advance not saved — ' . $r['error']); continue; }
+                    $advOpened++;
+                }
+            }
+
+            // ---- on the roll, or left the company
+            if ($before !== null && array_key_exists('active', $row) && $row['active'] !== null && (bool) $row['active'] !== ((int) $before['active'] === 1)) {
+                if (!$mayMaster) { $fail('only HR or an admin can take somebody off the roll or put them back.'); continue; }
+                $r = AdminService::setEmployeeActive($id, (bool) $row['active'], $reason, $actorId);
+                if (!$r['ok']) { $fail((string) $r['error']); continue; }
+                $stateChanged++;
+            }
         }
-        $done = $created + $updated + $paySaved + $opened;
-        return ['ok' => $done > 0 || $errors === [], 'created' => $created, 'updated' => $updated, 'pay_saved' => $paySaved, 'opening_saved' => $opened, 'errors' => $errors,
+        $done = $created + $updated + $paySaved + $opened + $advOpened + $stateChanged;
+        return ['ok' => $done > 0 || $errors === [], 'created' => $created, 'updated' => $updated, 'pay_saved' => $paySaved, 'opening_saved' => $opened,
+                'opening_advances' => $advOpened, 'state_changed' => $stateChanged, 'errors' => $errors,
                 'error' => $done === 0 && $errors !== [] ? implode(' ', array_slice($errors, 0, 3)) : null];
     }
 

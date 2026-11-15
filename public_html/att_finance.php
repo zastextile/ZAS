@@ -69,6 +69,15 @@ page_header('People Finance');
 .fin .tabs button[aria-selected=true]{color:var(--pri);border-bottom-color:var(--pri)}
 .fin .tabs .dot{display:inline-block;min-width:18px;padding:2px 5px;margin-left:6px;border-radius:3px;background:var(--owed);color:#fff;font-size:11px;font-weight:700;line-height:1.2}
 #fin-body{padding:14px 16px 18px}
+/* Employees list: the tick column, the bar that appears when someone is ticked, today's chip, the advance line */
+.fin td.tick,.fin th.tick{width:30px;padding-right:0}
+.fin td.tick input,.fin th.tick input{width:16px;height:16px;margin:0;vertical-align:middle}
+.fin .selbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--sel);border:1px solid #c5dbf2;border-radius:4px;padding:7px 10px}
+.fin .selbar b{color:var(--navy);font-size:12.5px;margin-right:4px}
+.fin .tchip{display:inline-block;margin-left:2px;padding:0 6px;border-radius:3px;font-size:11px;font-weight:600;line-height:17px;white-space:nowrap;vertical-align:1px}
+.fin .tchip.in{background:#e1edf9;color:#17467c}.fin .tchip.done{background:#e7f4ec;color:#107e3e}.fin .tchip.bad{background:var(--bad-bg);color:var(--bad)}
+.fin .tchip.none{background:#eef1f5;color:var(--muted)}.fin .tchip.off{background:#e3e6ea;color:#4b5563}
+.fin .advline{font-size:11.5px;color:var(--owed);font-weight:600;margin-top:2px;white-space:nowrap}
 .fin .stack{display:grid;gap:12px}
 .fin .cardx{background:#fff;border:1px solid var(--line);border-radius:4px;padding:12px 14px;min-width:0}
 .fin .cardx.scroll{padding:0}
@@ -951,20 +960,68 @@ page_header('People Finance');
       dept.value = PF.dept;
       var search = el('input', { type: 'search', placeholder: 'Search name or code', value: PF.q, 'aria-label': 'Search', input: function(){ PF.q = search.value.toLowerCase(); draw(); } });
       var box = el('div', { class: 'cardx scroll' });
+      /* Admin and HR tick many people; a small bar then offers one action for all of them. */
+      var tickOn = !!S.caps.staff;
+      PF.sel = PF.sel || {};
+      var selBar = el('div', { class: 'selbar', hidden: true });
+      function selIds(){ return Object.keys(PF.sel).filter(function(k){ return PF.sel[k]; }).map(Number); }
+      function paintSel(){
+        var ids = selIds(), n = ids.length;
+        selBar.hidden = !n; selBar.textContent = '';
+        if (!n) return;
+        var picked = r.people.filter(function(p){ return PF.sel[p.employee_id]; });
+        var anyOn = picked.some(function(p){ return +p.active; }), anyOff = picked.some(function(p){ return !+p.active; });
+        function act(action, title, text, okText){
+          ask(title, text, [{ k: 'reason', label: 'Reason (kept with every person)', wide: true }], okText, function(v){
+            return call('POST', '/finance/staff/bulk', { ids: selIds(), action: action, reason: v.reason }).then(function(x){
+              if (!x.ok) return x;
+              PF.sel = {}; PEOPLE = null;
+              if (x.refused && x.refused.length) {
+                closeModal();
+                ask(x.done + ' done · ' + x.refused.length + ' not done', x.refused.slice(0, 12).map(function(f){ return f.name + ' — ' + f.error; }).join('  ·  ') + (x.refused.length > 12 ? '  · and ' + (x.refused.length - 12) + ' more' : ''), [], 'OK', function(){ closeModal(); return { ok: true }; });
+              } else { closeModal(); toast(x.done + (x.done === 1 ? ' person' : ' people') + ' done.'); }
+              people(); return { ok: true };
+            });
+          });
+        }
+        selBar.appendChild(el('b', { text: n + (n === 1 ? ' person ticked' : ' people ticked') }));
+        if (anyOn) selBar.appendChild(btn('Mark as left', function(){ act('left', 'Mark ' + n + (n === 1 ? ' person' : ' people') + ' as left', 'They stay in every record and statement; they can no longer be scanned in or put on a new pay sheet. Someone inside the factory now is skipped and listed.', 'Mark as left'); }, 'sm'));
+        if (anyOff) selBar.appendChild(btn('Bring back on the roll', function(){ act('back', 'Bring ' + n + (n === 1 ? ' person' : ' people') + ' back on the roll', 'They can be scanned in and put on pay sheets again.', 'Bring back'); }, 'sm'));
+        if (S.caps.delete_staff) selBar.appendChild(btn('Delete (entered by mistake)', function(){ act('delete', 'Delete ' + n + (n === 1 ? ' person' : ' people') + '?', 'Only those with nothing on record — no scan, no attendance, nothing in pay, no advance — are deleted. Anyone with history is skipped and listed: mark them as left instead.', 'Delete'); }, 'sm danger'));
+        selBar.appendChild(btn('Untick all', function(){ PF.sel = {}; draw(); }, 'sm'));
+      }
+      /* today, in one short chip on the code line */
+      function todayChip(p){
+        var t = p.today;
+        if (!+p.active) return el('span', { class: 'tchip off', text: 'Left' });
+        if (!t) return el('span', { class: 'tchip none', text: 'Not in today' });
+        if (t.status === 'inside') return el('span', { class: 'tchip in', text: 'Inside · came ' + hm(t.first_in) + (t.late_minutes ? ' · late ' + mins(t.late_minutes) : '') });
+        if (t.status === 'absent') return el('span', { class: 'tchip bad', text: 'Did not come' });
+        return el('span', { class: 'tchip done', text: 'Came ' + hm(t.first_in) + (t.late_minutes ? ' · late ' + mins(t.late_minutes) : '') + ' · out ' + hm(t.last_out) });
+      }
+      function hm(iso){ if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Karachi', hour: '2-digit', minute: '2-digit' }); }
+      function mins(m){ m = +m || 0; return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + 'm'; }
       function draw(){
         var rows = shownNow();
         box.textContent = '';
-        if (!rows.length) return box.appendChild(el('div', { class: 'empty', text: 'Nobody here.' }));
+        if (!rows.length) { paintSel(); return box.appendChild(el('div', { class: 'empty', text: 'Nobody here.' })); }
         var tb = el('tbody');
         rows.forEach(function(p){
           var rate = p.pay_type === 'salary' ? (p.basic_paisa === null ? 'hidden' : rs(p.basic_paisa) + ' a month' + (p.allowance_paisa ? ' + ' + rs(p.allowance_paisa) : ''))
             : p.pay_type === 'daily' ? rs(p.daily_rate_paisa) + ' a day' : p.pay_type === 'contract' ? 'by production' : '';
+          var cb = tickOn ? el('input', { type: 'checkbox', 'aria-label': 'Tick ' + p.full_name, click: function(e){ e.stopPropagation(); }, change: function(){ PF.sel[p.employee_id] = cb.checked; paintSel(); } }) : null;
+          if (cb) cb.checked = !!PF.sel[p.employee_id];
+          var adv = +p.advance_left_paisa ? el('div', { class: 'advline', text: 'Advance left ' + rs(p.advance_left_paisa) + ' · ' + rs(p.advance_per_pay_paisa) + ' a pay' }) : null;
           tb.appendChild(el('tr', { class: 'click', tabindex: '0', click: function(){ person(p); }, keydown: function(e){ if (e.key === 'Enter') person(p); } }, [
-            el('td', { 'data-sort': p.full_name }, [el('b', { text: p.full_name }), el('div', { class: 'muted small', text: p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + (+p.active ? '' : ' · left') })]),
+            tickOn ? el('td', { class: 'tick' }, [cb]) : null,
+            el('td', { 'data-sort': p.full_name }, [el('b', { text: p.full_name }), el('div', { class: 'muted small' }, [p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + ' ', todayChip(p)])]),
             el('td', {}, [el('span', { class: 'pill ' + (p.pay_type ? '' : 'none'), text: p.pay_type ? KIND1[p.pay_type] : 'Not set up' })]),
-            el('td', { text: rate, 'data-sort': p.pay_type === 'salary' ? (p.basic_paisa === null ? '' : +p.basic_paisa + (+p.allowance_paisa || 0)) : p.pay_type === 'daily' ? +p.daily_rate_paisa : '' }), el('td', { class: 'num', 'data-sort': +p.balance || 0 }, [el('b', { text: rs(p.balance) }), p.on_sheet ? el('div', {}, [el('span', { class: 'pill waiting', text: 'on a sheet' })]) : null])]));
+            el('td', { text: rate, 'data-sort': p.pay_type === 'salary' ? (p.basic_paisa === null ? '' : +p.basic_paisa + (+p.allowance_paisa || 0)) : p.pay_type === 'daily' ? +p.daily_rate_paisa : '' }), el('td', { class: 'num', 'data-sort': +p.balance || 0 }, [el('b', { text: rs(p.balance) }), p.on_sheet ? el('div', {}, [el('span', { class: 'pill waiting', text: 'on a sheet' })]) : null, adv])]));
         });
-        box.appendChild(el('table', { class: 't sortable' }, [el('thead', {}, [el('tr', {}, [el('th', { text: 'Employee' }), el('th', { text: 'Paid as' }), el('th', { text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Owed now' })])]), tb]));
+        var all = tickOn ? el('input', { type: 'checkbox', 'aria-label': 'Tick everyone listed', change: function(){ rows.forEach(function(p){ PF.sel[p.employee_id] = all.checked; }); draw(); } }) : null;
+        if (all) all.checked = rows.every(function(p){ return PF.sel[p.employee_id]; });
+        box.appendChild(el('table', { class: 't sortable' }, [el('thead', {}, [el('tr', {}, [tickOn ? el('th', { class: 'tick' }, [all]) : null, el('th', { text: 'Employee' }), el('th', { text: 'Paid as' }), el('th', { text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Owed now' })])]), tb]));
+        paintSel();
       }
       function shownNow(){ return r.people.filter(function(p){ return onState(p) && (PF.type === '' || (PF.type === 'none' ? !p.pay_type : p.pay_type === PF.type)) && (!PF.dept || p.department_name === PF.dept) && (!PF.q || (p.full_name + ' ' + p.code).toLowerCase().indexOf(PF.q) >= 0); }); }
       var left = r.people.filter(function(p){ return !+p.active; }).length;
@@ -973,7 +1030,7 @@ page_header('People Finance');
       state.value = PF.state;
       show([seg, el('div', { class: 'row' }, [el('div', { style: 'flex:0 1 190px' }, [state]), el('div', { style: 'flex:1 1 160px' }, [dept]), el('div', { style: 'flex:2 1 220px' }, [search]),
         S.caps.staff ? btn('+ New employees', function(){ staffForm([], 8); }, 'pri') : null,
-        (S.caps.staff || S.caps.setup) ? btn('Edit these in one form', function(){ staffForm(shownNow(), S.caps.staff ? 3 : 0); }) : null]), box]);
+        (S.caps.staff || S.caps.setup) ? btn('Edit these in one form', function(){ staffForm(shownNow(), S.caps.staff ? 3 : 0); }) : null]), selBar, box]);
       draw();
     });
   }
@@ -1221,7 +1278,7 @@ page_header('People Finance');
      paid, what they were owed on day one. Type it, or copy a block of cells in
      Excel and paste it into the first cell. Existing people are edited in the
      same grid; empty lines at the bottom are for new people. One Save. */
-  var SF_COLS = ['code', 'name', 'dept', 'worker', 'type', 'amt', 'alw', 'ot', 'method', 'bank', 'open'];
+  var SF_COLS = ['code', 'name', 'dept', 'worker', 'type', 'amt', 'alw', 'ot', 'method', 'bank', 'open', 'oadv', 'oper', 'state'];
   function staffForm(list, blanks){
     var c = S.caps;
     if (list.length > 300) list = list.slice(0, 300);
@@ -1241,7 +1298,13 @@ page_header('People Finance');
         amt: txt(p.pay_type === 'salary' ? (p.basic_paisa ? plain(p.basic_paisa) : '') : (p.daily_rate_paisa ? plain(p.daily_rate_paisa) : ''), 14, !c.setup || hide, '', 'n'),
         alw: txt(p.allowance_paisa ? plain(p.allowance_paisa) : '', 14, !c.setup || hide, '', 'n'), ot: txt(p.ot_rate_paisa ? plain(p.ot_rate_paisa) : '', 14, !c.setup || hide, '', 'n'),
         method: el('select', { disabled: !c.setup || hide }, [el('option', { value: 'cash', text: 'Cash' }), el('option', { value: 'bank', text: 'Bank' })]),
-        bank: txt(p.bank_account, 60, !c.setup || hide), open: txt(p.opening_paisa ? plain(p.opening_paisa) : '', 14, !c.pay || hide, '', 'n') };
+        bank: txt(p.bank_account, 60, !c.setup || hide), open: txt(p.opening_paisa ? plain(p.opening_paisa) : '', 14, !c.pay || hide, '', 'n'),
+        /* money they owed the company on day one (an advance or loan from before): becomes one advance, recovered from each pay.
+           Once entered it is changed under Advances & loans, so here it is shown and locked. */
+        oadv: txt(p.opening_advance_paisa ? plain(p.opening_advance_paisa) : '', 14, !c.pay || hide || !!p.opening_advance_paisa, '', 'n'),
+        oper: txt(p.opening_advance_per_pay_paisa ? plain(p.opening_advance_per_pay_paisa) : '', 14, !c.pay || hide || !!p.opening_advance_paisa, '', 'n'),
+        state: el('select', { disabled: isNew || !c.staff }, [el('option', { value: 'on', text: 'On roll' }), el('option', { value: 'left', text: 'Left' })]) };
+      o.state.value = isNew || +p.active ? 'on' : 'left';
       o.type.value = p.pay_type || ''; o.method.value = p.pay_method || 'cash';
       o.vis = function(){ var t = o.type.value, off = !c.setup || hide; o.amt.disabled = off || t === 'contract' || t === ''; o.alw.disabled = off || t !== 'salary'; o.ot.disabled = off || t === 'contract' || t === '';
         o.amt.placeholder = t === 'salary' ? 'per month' : t === 'daily' ? 'per day' : ''; o.bank.disabled = off || o.method.value !== 'bank'; };
@@ -1269,7 +1332,8 @@ page_header('People Finance');
           var k = SF_COLS[c0 + j]; if (!k) return; var inp = o[k]; v = v.trim();
           if (k === 'type') { if (!o.type.disabled) o.type.value = typeOf(v); o.vis(); return; }
           if (k === 'method') { if (!o.method.disabled) o.method.value = /bank/i.test(v) ? 'bank' : 'cash'; o.vis(); return; }
-          if (!inp.disabled || k === 'amt' || k === 'alw' || k === 'ot' || k === 'bank') inp.value = (k === 'amt' || k === 'alw' || k === 'ot' || k === 'open') ? v.replace(/,/g, '') : v;
+          if (k === 'state') { if (!o.state.disabled) o.state.value = /left|inactive|off|no/i.test(v) ? 'left' : 'on'; return; }
+          if (!inp.disabled || k === 'amt' || k === 'alw' || k === 'ot' || k === 'bank') inp.value = (k === 'amt' || k === 'alw' || k === 'ot' || k === 'open' || k === 'oadv' || k === 'oper') ? v.replace(/,/g, '') : v;
         });
         o.vis(); o.cb.checked = true;
       });
@@ -1280,11 +1344,12 @@ page_header('People Finance');
     var fT = el('select', { 'aria-label': 'Fill: paid as' }, [['', 'Paid as…'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractor']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
     var fD = deptSelect('', { 'aria-label': 'Fill: department', 'data-ph': 'Department…' }), fA = el('input', { type: 'text', inputmode: 'decimal', placeholder: 'Salary / day rate', 'aria-label': 'Fill: amount' });
     var fM = el('select', { 'aria-label': 'Fill: paid by' }, [el('option', { value: '', text: 'Paid by…' }), el('option', { value: 'cash', text: 'Cash' }), el('option', { value: 'bank', text: 'Bank' })]);
-    var reason = el('input', { type: 'text', maxlength: 255, placeholder: 'Reason (needed only when changing pay that was already set)' });
+    var fS = el('select', { 'aria-label': 'Fill: on the roll or left' }, [el('option', { value: '', text: 'State…' }), el('option', { value: 'on', text: 'On the roll' }), el('option', { value: 'left', text: 'Left' })]);
+    var reason = el('input', { type: 'text', maxlength: 255, placeholder: 'Reason (needed when changing pay that was already set, or marking someone as Left)' });
     var errBox = el('div', { class: 'err', hidden: true }), countEl = el('span', { class: 'muted small' });
     function count(){ var n = rows.filter(function(o){ return o.cb.checked; }).length; countEl.textContent = n ? n + (n === 1 ? ' line' : ' lines') + ' to save' : 'Nothing changed yet'; }
     var save = btn('Save', function(){
-      var out = [], bad = '';
+      var out = [], bad = '', anyLeft = false;
       rows.forEach(function(o){
         if (!o.cb.checked) return;
         var who = o.name.value.trim() || 'A line with no name';
@@ -1301,14 +1366,24 @@ page_header('People Finance');
           row.pay_method = o.method.value; row.bank_account = o.bank.value.trim();
         }
         if (c.pay && !o.open.disabled && o.open.value.trim() !== '') { var op = toPaisa(o.open.value.trim().replace(/,/g, '')); if (op === null) { bad = bad || who + ': the opening balance is a number.'; return; } row.opening_paisa = op; }
+        if (c.pay && !o.oadv.disabled && o.oadv.value.trim() !== '') {
+          var oa = toPaisa(o.oadv.value.trim().replace(/,/g, '')), pp = toPaisa(o.oper.value.trim().replace(/,/g, ''));
+          if (oa === null || oa <= 0) { bad = bad || who + ': the opening advance is a number like 25000.'; return; }
+          if (pp === null || pp <= 0) { bad = bad || who + ': give how much of the opening advance to recover from each pay.'; return; }
+          if (pp > oa) { bad = bad || who + ': the recovery each pay cannot be more than the advance.'; return; }
+          row.opening_advance_paisa = oa; row.opening_advance_per_pay_paisa = pp;
+        }
+        if (!o.isNew && c.staff && !o.state.disabled && (o.state.value === 'on') !== !!+o.p.active) { row.active = o.state.value === 'on'; if (!row.active) anyLeft = true; }
         out.push(row);
       });
+      if (!bad && anyLeft && !reason.value.trim()) bad = 'Give a reason in the box below for those marked as Left — it is kept with each of them.';
       if (bad) { errBox.textContent = bad; errBox.hidden = false; return; }
       if (!out.length) { errBox.textContent = 'Nothing to save: type in a line, or tick the lines you changed.'; errBox.hidden = false; return; }
       save.disabled = true; errBox.hidden = true;
       call('POST', '/finance/staff', { rows: out, reason: reason.value.trim() }).then(function(x){
         save.disabled = false;
-        var did = [x.created && x.created + ' added', x.updated && x.updated + ' changed', x.pay_saved && x.pay_saved + ' pay set', x.opening_saved && x.opening_saved + ' opening balance' + (x.opening_saved === 1 ? '' : 's')].filter(Boolean).join(', ');
+        var did = [x.created && x.created + ' added', x.updated && x.updated + ' changed', x.pay_saved && x.pay_saved + ' pay set', x.opening_saved && x.opening_saved + ' opening balance' + (x.opening_saved === 1 ? '' : 's'),
+          x.opening_advances && x.opening_advances + ' opening advance' + (x.opening_advances === 1 ? '' : 's'), x.state_changed && x.state_changed + ' on the roll / left changed'].filter(Boolean).join(', ');
         if (did) toast(did + '.' + (x.errors && x.errors.length ? ' ' + x.errors.length + ' not saved — see the list.' : ''));
         if (x.errors && x.errors.length) { errBox.textContent = x.errors.slice(0, 8).join('  ·  ') + (x.errors.length > 8 ? '  · and ' + (x.errors.length - 8) + ' more' : ''); errBox.hidden = false; if (did) refreshCounts(); return; }
         if (!x.ok) { errBox.textContent = x.error || 'Nothing was saved.'; errBox.hidden = false; return; }
@@ -1317,8 +1392,8 @@ page_header('People Finance');
       });
     }, 'pri');
     var tools = el('div', { class: 'row' }, [el('b', { class: 'small', text: 'Same for all ticked:' }), c.staff ? el('div', { style: 'flex:1 1 130px' }, [fD]) : null, c.setup ? el('div', { style: 'flex:1 1 120px' }, [fT]) : null,
-      c.setup ? el('div', { style: 'flex:1 1 120px' }, [fA]) : null, c.setup ? el('div', { style: 'flex:1 1 100px' }, [fM]) : null,
-      btn('Fill', function(){ rows.forEach(function(o){ if (!o.cb.checked) return; if (fD.value.trim() && !o.dept.disabled) o.dept.value = fD.value.trim(); if (fT.value && !o.type.disabled) o.type.value = fT.value; o.vis();
+      c.setup ? el('div', { style: 'flex:1 1 120px' }, [fA]) : null, c.setup ? el('div', { style: 'flex:1 1 100px' }, [fM]) : null, c.staff ? el('div', { style: 'flex:1 1 100px' }, [fS]) : null,
+      btn('Fill', function(){ rows.forEach(function(o){ if (!o.cb.checked) return; if (fD.value.trim() && !o.dept.disabled) o.dept.value = fD.value.trim(); if (fT.value && !o.type.disabled) o.type.value = fT.value; if (fS.value && !o.state.disabled) o.state.value = fS.value; o.vis();
         if (fA.value.trim() && !o.amt.disabled) o.amt.value = fA.value.trim(); if (fM.value && !o.method.disabled) o.method.value = fM.value; o.vis(); }); }, 'sm'),
       c.staff ? btn('+ 5 lines', function(){ for (var i = 0; i < 5; i++) addRow(null); }, 'sm') : null,
       c.staff ? btn('Bring in production workers', function(ev){
@@ -1332,10 +1407,10 @@ page_header('People Finance');
         });
       }, 'sm') : null]);
     modal([deptList(), el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: list.length ? 'Employees — one form' : 'New employees' }), btn('Close', closeModal, 'sm')]),
-      el('p', { class: 'muted small', style: 'margin:0', text: 'One line per person: who they are, how they are paid, and what they were owed on day one. Copy cells in Excel and paste into the first cell to fill many lines. Leave Code empty and the next number is given. A line is saved when it is ticked; typing in it ticks it.' }),
+      el('p', { class: 'muted small', style: 'margin:0', text: 'One line per person: who they are, how they are paid, and what they were owed on day one — or owed the company (opening advance / loan, recovered from each pay). Copy cells in Excel and paste into the first cell to fill many lines. Leave Code empty and the next number is given. A line is saved when it is ticked; typing in it ticks it.' }),
       el('div', { class: 'cardx' }, [tools]),
       el('div', { class: 'scroll', style: 'max-height:50vh' }, [el('table', { class: 't bulk staff' }, [el('thead', {}, [el('tr', {}, [el('th', {}, [all])].concat(
-        ['Code', 'Name', 'Department', 'Production code', 'Paid as', 'Salary / day rate', 'Allowance', 'Overtime / hour', 'Paid by', 'Bank account', 'Opening balance'].map(function(h){ return el('th', { text: h }); })))]), rowsEl])]),
+        ['Code', 'Name', 'Department', 'Production code', 'Paid as', 'Salary / day rate', 'Allowance', 'Overtime / hour', 'Paid by', 'Bank account', 'Opening balance', 'Opening advance / loan', 'Recover each pay', 'State'].map(function(h){ return el('th', { text: h }); })))]), rowsEl])]),
       reason, errBox, el('div', { class: 'row', style: 'justify-content:space-between' }, [countEl, save])], true).classList.add('xwide');
     count();
   }
