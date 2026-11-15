@@ -143,7 +143,49 @@ page_header('Attendance — Reports');
 .attr .watch b{min-width:26px;text-align:center;padding:2px 6px;border-radius:3px;background:var(--good-bg);color:var(--good);font-variant-numeric:tabular-nums}
 .attr .watch b.hot{background:var(--bad);color:#fff}
 .attr .legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--muted)}
-@media (max-width:980px){.attr .cols{grid-template-columns:minmax(0,1fr)}}
+/* Insights: charts (one hue for counts; green/amber reserved for on time / late, always with a legend) */
+.attr .cols2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.attr .cols3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.attr svg.chart{display:block;width:100%;height:auto;padding:8px 10px 0}
+.attr svg.chart .grid{stroke:var(--line2);stroke-width:1}.attr svg.chart .base{stroke:#b9c4d0;stroke-width:1}
+.attr svg.chart .ax{font:500 10.5px var(--ff);fill:var(--muted)}
+.attr svg.chart .bar.p{fill:var(--pri)}.attr svg.chart .bar.late{fill:#d97706}
+.attr svg.chart .hit{fill:transparent;cursor:default}.attr svg.chart .hit:hover{fill:rgba(10,95,180,.06)}
+.attr .panel .note{padding:4px 12px 10px}
+.attr .clegend{display:flex;flex-wrap:wrap;gap:14px;padding:4px 12px 10px;font-size:11.5px;color:var(--muted)}
+.attr .clegend .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.attr .clegend .sw.p{background:var(--pri)}.attr .clegend .sw.late{background:#d97706}
+.ctip{position:fixed;z-index:999;pointer-events:none;background:#0f2742;color:#fff;border-radius:4px;padding:6px 9px;font:400 12px/1.4 'IBM Plex Sans','Segoe UI',system-ui,sans-serif;box-shadow:0 6px 16px rgba(15,39,66,.25);max-width:260px}
+.ctip b{font-weight:600}
+.attr .wl{list-style:none;margin:0;padding:0}
+.attr .wl li{display:flex;justify-content:space-between;gap:10px;align-items:baseline;padding:7px 12px;border-bottom:1px solid var(--line2);font-size:12.5px;cursor:pointer}
+.attr .wl li:hover{background:var(--hover)}.attr .wl li:last-child{border-bottom:0}
+.attr .wl .v{font-weight:600;color:var(--bad);white-space:nowrap;font-variant-numeric:tabular-nums}
+/* Monthly register */
+.attr table.reg{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:100%}
+.attr table.reg th,.attr table.reg td{padding:4px 0;text-align:center;border-bottom:1px solid var(--line2);white-space:nowrap}
+.attr table.reg th.d,.attr table.reg td.d{width:24px;min-width:24px;max-width:24px;padding-left:0;padding-right:0;border-left:1px solid var(--line2)}
+.attr table.reg th.d span{display:block;font-size:9.5px;font-weight:500;opacity:.75}
+.attr table.reg th.sun{background:#24405f}.attr table.reg td.sun{background:#f6f7f9}
+.attr table.reg th.fut{opacity:.55}
+.attr table.reg .who{text-align:left;padding:4px 10px 4px 12px;position:sticky;left:0;z-index:2;background:#fff;min-width:150px;max-width:190px;white-space:normal;line-height:1.25;border-right:1px solid var(--line)}
+.attr table.reg th.who{background:var(--navy);z-index:3}
+.attr table.reg .who .c{display:block;font:500 10.5px 'IBM Plex Mono',ui-monospace,monospace;color:var(--muted)}
+.attr table.reg .tot{padding:4px 7px;min-width:40px;text-align:right;font-variant-numeric:tabular-nums}
+.attr table.reg th.tot{padding-right:7px!important}
+.attr table.reg td.kP{color:var(--good);font-weight:600}
+.attr table.reg td.kL{background:var(--warn-bg)!important;color:var(--warn);font-weight:700}
+.attr table.reg td.kA{background:var(--bad-bg)!important;color:var(--bad);font-weight:700}
+.attr table.reg td.kI{background:var(--info-bg)!important;color:#17467c;font-weight:700}
+.attr table.reg td.off{color:#b9c4d0}
+.attr table.reg tr.grp td{background:var(--head)!important;text-align:left;font-weight:600;color:var(--navy);padding:5px 12px;position:sticky;left:0}
+.attr table.reg tbody tr:hover td{background:var(--hover)}
+.attr table.reg tfoot td{font-weight:600;background:var(--head)}
+.attr .reglegend{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--muted)}
+.attr .reglegend i{display:inline-block;min-width:18px;text-align:center;font-style:normal;font-weight:700;border-radius:3px;margin-right:4px;padding:0 3px}
+.attr .reglegend i.kP{color:var(--good)}.attr .reglegend i.kL{background:var(--warn-bg);color:var(--warn)}.attr .reglegend i.kA{background:var(--bad-bg);color:var(--bad)}.attr .reglegend i.kI{background:var(--info-bg);color:#17467c}.attr .reglegend i.off{color:#b9c4d0}
+@media print{.attr table.reg{font-size:9px}.attr table.reg th.d,.attr table.reg td.d{width:18px;min-width:18px}.attr .reg .who{position:static}.ctip{display:none}@page{size:landscape;margin:8mm}}
+@media (max-width:980px){.attr .cols{grid-template-columns:minmax(0,1fr)}.attr .cols2,.attr .cols3{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:820px){.content{padding:12px}#attr-body{padding:12px}.attr .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.attr input[type=search]{min-width:0;flex:1 1 140px}.attr .bar .sep{display:none}}
 @media print{
   .sidebar,.nav,.attr .tabs,.attr .bar,.attr .acts,.attr .segwrap,.topbar .lead{display:none!important}
@@ -267,7 +309,8 @@ page_header('Attendance — Reports');
   function printBtn(){ return el('button', { type: 'button', class: 'act', text: 'Print', click: function(){ window.print(); } }); }
 
   // ---------------------------------------------------------------- tabs
-  var TABS = [{ id: 'today', label: 'Today', draw: drawToday }, { id: 'att', label: 'Attendance', draw: drawAttendance }, { id: 'mov', label: 'Movements', draw: drawMovements }];
+  var TABS = [{ id: 'today', label: 'Today', draw: drawToday }, { id: 'ins', label: 'Insights', draw: drawInsights }, { id: 'att', label: 'Attendance', draw: drawAttendance },
+    { id: 'reg', label: 'Monthly register', draw: drawRegister }, { id: 'mov', label: 'Movements', draw: drawMovements }];
   if (CAN_OT) TABS.push({ id: 'ot', label: 'Overtime', draw: drawOvertime });
   function go(id){
     if (timer) { clearInterval(timer); timer = null; }
@@ -581,6 +624,240 @@ page_header('Attendance — Reports');
             x.verification_status === 'verified' ? hrs(x.actual_minutes) : pill(x.verification_status), x.rate_type ? x.rate_type + ' ' + x.manual_rate : '', x.amount || '', pill(x.payroll_status === 'none' ? 'pending' : x.payroll_status, x.payroll_status)];
         }, { wrap: [1, 2, 3], keys: { 0: function(x){ return x.work_date; }, 1: function(x){ return x.full_name; }, 4: function(x){ return x.estimated_minutes; }, 6: function(x){ return x.approved_minutes || ''; }, 7: function(x){ return x.verification_status === 'verified' ? x.actual_minutes : ''; } } })], { flush: true }) : null,
         r.truncated ? el('p', { class: 'err', text: 'Only the first 20000 lines are shown. Choose fewer days.' }) : null]);
+    });
+  }
+
+  // -------------------------------------------------------- shared bits
+  /* Factory-time minutes of the day for an ISO time (Asia/Karachi is UTC+5, no summer time). */
+  function khiMin(iso){ var d = new Date(iso); if (isNaN(d)) return null; var m = (d.getUTCHours() * 60 + d.getUTCMinutes() + 300) % 1440; return m; }
+  function clock(m){ return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); }
+  function deptsOf(rows){ return rows.map(function(x){ return x.department_name; }).filter(function(v, i, a){ return a.indexOf(v) === i; }).sort(); }
+  function saveCsv(name, head, lines){
+    var esc = function(v){ v = v === null || v === undefined ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var blob = new Blob(['﻿' + [head].concat(lines).map(function(l){ return l.map(esc).join(','); }).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var a = el('a', { href: URL.createObjectURL(blob), download: name }); document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  function sv(tag, attrs, kids){ var n = document.createElementNS(SVGNS, tag); Object.keys(attrs || {}).forEach(function(k){ n.setAttribute(k, attrs[k]); }); (kids || []).forEach(function(c){ if (c) n.appendChild(c); }); return n; }
+  /* one floating tip for every chart on the page */
+  var tipEl = null;
+  function tip(e, html){
+    if (!tipEl) { tipEl = el('div', { class: 'ctip', role: 'status' }); document.body.appendChild(tipEl); }
+    if (html === null) { tipEl.hidden = true; return; }
+    tipEl.textContent = ''; html.forEach(function(line, i){ tipEl.appendChild(i ? el('div', { text: line }) : el('b', { text: line })); });
+    tipEl.hidden = false;
+    var x = Math.min(window.innerWidth - tipEl.offsetWidth - 8, e.clientX + 12), y = e.clientY - tipEl.offsetHeight - 10;
+    tipEl.style.left = Math.max(8, x) + 'px'; tipEl.style.top = (y < 8 ? e.clientY + 16 : y) + 'px';
+  }
+  /* Vertical bars, one measure, one scale (0 to max), labelled ends on hover.
+     bars: [{ label, parts:[{ v, cls, name }], tip:[lines] }]. Stacked parts share the bar, 2px gap between them. */
+  function barChart(bars, opts){
+    opts = opts || {};
+    var W = 720, H = 220, L = 34, R = 8, T = 10, B = 26, iw = W - L - R, ih = H - T - B;
+    var max = opts.max || niceMax(Math.max(1, Math.max.apply(null, bars.map(function(b){ return b.parts.reduce(function(a, p){ return a + p.v; }, 0); }))));
+    var step = iw / Math.max(1, bars.length), bw = Math.max(3, Math.min(34, step * 0.62));
+    var g = sv('g');
+    [0, 0.5, 1].forEach(function(f){
+      var y = T + ih - ih * f;
+      g.appendChild(sv('line', { x1: L, x2: W - R, y1: y, y2: y, class: f ? 'grid' : 'base' }));
+      var t = sv('text', { x: L - 6, y: y + 4, class: 'ax', 'text-anchor': 'end' }); t.textContent = opts.fmt ? opts.fmt(max * f) : Math.round(max * f); g.appendChild(t);
+    });
+    var every = Math.ceil(bars.length / 16);
+    bars.forEach(function(b, i){
+      var x = L + step * i + (step - bw) / 2, y0 = T + ih, total = 0;
+      b.parts.forEach(function(p, j){
+        if (!p.v) return;
+        var h = ih * p.v / max, y = y0 - h - (total ? 2 : 0);
+        total += p.v;
+        var top = j === b.parts.length - 1 || b.parts.slice(j + 1).every(function(q){ return !q.v; });
+        var r = Math.min(4, bw / 2, h / 2);
+        var d = top ? 'M' + x + ',' + (y + h) + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y + 'H' + (x + bw - r) + 'Q' + (x + bw) + ',' + y + ' ' + (x + bw) + ',' + (y + r) + 'V' + (y + h) + 'Z'
+                    : 'M' + x + ',' + (y + h) + 'V' + y + 'H' + (x + bw) + 'V' + (y + h) + 'Z';
+        g.appendChild(sv('path', { d: d, class: 'bar ' + (p.cls || '') }));
+        y0 = y;
+      });
+      if (i % every === 0) { var t = sv('text', { x: L + step * i + step / 2, y: H - 8, class: 'ax', 'text-anchor': 'middle' }); t.textContent = b.label; g.appendChild(t); }
+      var hit = sv('rect', { x: L + step * i, y: T, width: step, height: ih, class: 'hit' });
+      hit.addEventListener('mousemove', function(e){ tip(e, b.tip); }); hit.addEventListener('mouseleave', function(e){ tip(e, null); });
+      g.appendChild(hit);
+    });
+    return sv('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'chart', role: 'img', 'aria-label': opts.title || 'chart' }, [g]);
+  }
+  /* the axis ends on a round number: 1, 2, 5 × 10ⁿ (and its half is a round number too) */
+  function niceMax(v){ var p = Math.pow(10, Math.floor(Math.log10(v))); return [1, 2, 4, 5, 10].map(function(m){ return m * p; }).filter(function(m){ return m >= v; })[0]; }
+  function legend(items){ return el('div', { class: 'clegend' }, items.map(function(it){ return el('span', {}, [el('i', { class: 'sw ' + it[0] }), it[1]]); })); }
+
+  // ------------------------------------------------------------- insights
+  /* What a manager asks of attendance: is it getting better or worse, when
+     do people actually arrive, which department is weak, and who keeps
+     being absent or late. Everything from the same attendance lines as the
+     Attendance tab (closed IN–OUT entries; late against each person's shift). */
+  var IF = { dept: '' };
+  function drawInsights(){
+    var bar = filters(drawInsights, false);
+    get('/reports/attendance', F).then(function(r){
+      if (!r.ok) return show([bar, el('p', { class: 'err', text: r.error })]);
+      var names = deptsOf(r.rows); if (IF.dept && names.indexOf(IF.dept) < 0) IF.dept = '';
+      var holder = el('div', { style: 'display:grid;gap:12px;min-width:0' });
+      var narrow = el('div', { class: 'bar' }, [el('span', { class: 'lbl', text: 'Narrow' }),
+        select('i-dept', 'Department', [['', 'All departments']].concat(names.map(function(n){ return [n, n]; })), function(v){ IF.dept = v; paint(); }), el('span', { class: 'sep' }), printBtn()]);
+      narrow.querySelector('#i-dept').value = IF.dept;
+      function paint(){
+        var rows = r.rows.filter(function(x){ return !IF.dept || x.department_name === IF.dept; });
+        holder.textContent = '';
+        if (!rows.length) { holder.appendChild(none('Nothing in these dates.', 'ins-none')); return; }
+        var worked = rows.filter(function(x){ return x.status !== 'absent'; });
+        var onTime = worked.filter(function(x){ return !(x.late_minutes > 0); }).length;
+        var mins_ = worked.reduce(function(a, x){ return a + (+x.present_minutes || 0); }, 0);
+        var closed = worked.filter(function(x){ return +x.present_minutes > 0; }).length;
+        var absent = rows.length - worked.length;
+        var att = pct(worked.length, rows.length), pun = pct(onTime, worked.length);
+        holder.appendChild(el('div', { class: 'tiles', id: 'ins-tiles' }, [
+          tile(att === null ? '—' : att + '%', 'Attendance rate', 'good', null, worked.length + ' of ' + rows.length + ' shift days', att),
+          tile(pun === null ? '—' : pun + '%', 'Punctuality', pun !== null && pun < 90 ? 'warn' : 'info', null, onTime + ' of ' + worked.length + ' days on time', pun),
+          tile(closed ? mins(Math.round(mins_ / closed)) : '—', 'Average day', '', null, 'IN to OUT, closed days'),
+          tile(absent, 'Days not come', absent ? 'hot' : '', null, 'had a shift'),
+          tile(worked.length - onTime, 'Late days', worked.length - onTime ? 'hot' : '', null, mins(worked.reduce(function(a, x){ return a + (+x.late_minutes || 0); }, 0)) + ' late in all')]));
+
+        /* 1. day by day: attendance rate */
+        var byDay = {};
+        rows.forEach(function(x){ var d = byDay[x.work_date] || (byDay[x.work_date] = { n: 0, w: 0, late: 0 }); d.n++; if (x.status !== 'absent') { d.w++; if (x.late_minutes > 0) d.late++; } });
+        var days = Object.keys(byDay).sort();
+        var trend = barChart(days.map(function(d){ var v = byDay[d], p = pct(v.w, v.n) || 0;
+          return { label: d.slice(8, 10) + '/' + d.slice(5, 7), parts: [{ v: p, cls: 'p' }], tip: [day(d), 'Attendance ' + p + '%', v.w + ' came of ' + v.n + ' with a shift', v.late + ' late'] }; }),
+          { max: 100, fmt: function(v){ return Math.round(v) + '%'; }, title: 'Attendance rate by day' });
+
+        /* 2. when people arrive: first IN in 10-minute steps, on time vs late */
+        var bins = {};
+        worked.forEach(function(x){ var m = x.first_in ? khiMin(x.first_in) : null; if (m === null) return; var k = Math.floor(m / 10) * 10; var b = bins[k] || (bins[k] = { on: 0, late: 0 }); if (x.late_minutes > 0) b.late++; else b.on++; });
+        var keys = Object.keys(bins).map(Number).sort(function(a, b){ return a - b; });
+        if (keys.length > 1) { var full = []; for (var k = keys[0]; k <= keys[keys.length - 1]; k += 10) full.push(k); keys = full; }
+        var arrive = keys.length ? barChart(keys.map(function(k){ var b = bins[k] || { on: 0, late: 0 };
+          return { label: clock(k), parts: [{ v: b.on, cls: 'p' }, { v: b.late, cls: 'late' }], tip: [clock(k) + '–' + clock(k + 9), b.on + ' on time', b.late + ' late'] }; }), { title: 'Arrivals by time' }) : none('No IN scanned in these dates.');
+
+        holder.appendChild(el('div', { class: 'cols2' }, [
+          panel('Attendance rate by day', days.length + ' day' + (days.length === 1 ? '' : 's'), [trend, el('p', { class: 'note', text: 'Came in ÷ had a shift, each day. Hover a bar for the numbers.' })], { id: 'ins-trend' }),
+          panel('When people arrive', 'first IN of the day', [arrive, legend([['p', 'On time'], ['late', 'Late (after their shift start + allowance)']])], { id: 'ins-arrive' })]));
+
+        /* 3. departments side by side */
+        var D = {};
+        rows.forEach(function(x){ var g = D[x.department_name] || (D[x.department_name] = { n: 0, w: 0, on: 0, m: 0, c: 0, ab: 0, people: {} });
+          g.n++; g.people[x.employee_code] = 1; if (x.status === 'absent') g.ab++; else { g.w++; if (!(x.late_minutes > 0)) g.on++; if (+x.present_minutes > 0) { g.m += +x.present_minutes; g.c++; } } });
+        var dl = Object.keys(D).sort().map(function(k){ var g = D[k]; g.name = k; return g; });
+        holder.appendChild(panel('Department scorecard', dl.length + ' department' + (dl.length === 1 ? '' : 's'), [table(['Department', '#People', '#Shift days', '#Attendance', '#Punctuality', '#Average day', '#Days not come'], dl, function(g){
+          return [el('b', { text: g.name }), Object.keys(g.people).length, g.n, rate(g.w, g.n), rate(g.on, g.w), g.c ? mins(Math.round(g.m / g.c)) : '—', g.ab ? el('span', { class: 'flag', text: String(g.ab) }) : '0'];
+        }, { id: 'ins-dept', wrap: [0], keys: { 3: function(g){ return g.n ? g.w / g.n : ''; }, 4: function(g){ return g.w ? g.on / g.w : ''; }, 5: function(g){ return g.c ? g.m / g.c : ''; } } })], { flush: true }));
+
+        /* 4. who needs a word: repeated absence, often late, short days */
+        var P = {};
+        rows.slice().sort(function(a, b){ return a.work_date < b.work_date ? -1 : 1; }).forEach(function(x){
+          var e = P[x.employee_code] || (P[x.employee_code] = { code: x.employee_code, name: x.full_name, dept: x.department_name, run: 0, best: 0, lastRun: '', late: 0, lateMin: 0, ab: 0, short: 0 });
+          if (x.status === 'absent') { e.ab++; e.run++; if (e.run > e.best) { e.best = e.run; e.lastRun = x.work_date; } } else e.run = 0;
+          if (x.late_minutes > 0) { e.late++; e.lateMin += +x.late_minutes; }
+          var shiftMin = x.starts_at && x.ends_at ? (new Date(x.ends_at) - new Date(x.starts_at)) / 60000 : 0;
+          if (x.status === 'present' && shiftMin > 0 && +x.present_minutes > 0 && +x.present_minutes < shiftMin * 0.75) e.short++;
+        });
+        var people = Object.keys(P).map(function(k){ return P[k]; });
+        function watchList(id, title, list, line, empty){
+          return panel(title, list.length ? list.length + (list.length === 1 ? ' person' : ' people') : null, [list.length ? el('ul', { class: 'wl', id: id }, list.slice(0, 10).map(function(e){
+            var li = el('li', { title: 'Show their days' }, [el('span', {}, [el('b', { text: e.name }), el('span', { class: 'muted', text: ' ' + e.code + ' · ' + e.dept })]), el('span', { class: 'v', text: line(e) })]);
+            li.addEventListener('click', function(){ F.employee = e.code; try { localStorage.setItem('attr-seg-att', 'lines'); } catch (x) {} go('att'); });
+            return li; })) : none(empty)], { flush: true });
+        }
+        holder.appendChild(el('div', { class: 'cols3' }, [
+          watchList('ins-absent', 'Absent several days in a row', people.filter(function(e){ return e.best >= 2; }).sort(function(a, b){ return b.best - a.best || b.ab - a.ab; }),
+            function(e){ return e.best + ' days in a row · ' + e.ab + ' in all'; }, 'Nobody missed two shift days in a row.'),
+          watchList('ins-late', 'Often late', people.filter(function(e){ return e.late >= 3; }).sort(function(a, b){ return b.late - a.late || b.lateMin - a.lateMin; }),
+            function(e){ return e.late + ' times · ' + mins(e.lateMin); }, 'Nobody was late three times or more.'),
+          watchList('ins-short', 'Short days', people.filter(function(e){ return e.short >= 2; }).sort(function(a, b){ return b.short - a.short; }),
+            function(e){ return e.short + ' days under ¾ of the shift'; }, 'Nobody worked under ¾ of their shift twice or more.')]));
+        holder.appendChild(el('p', { class: 'note', text: 'Punctuality = days on time ÷ days worked. Short day = present less than three quarters of the shift (a permission or a half day may explain it). Click a name to see their days.' }));
+      }
+      paint();
+      show([bar, narrow, holder]);
+    });
+  }
+
+  // ----------------------------------------------------- monthly register
+  /* The classic attendance register: one line per person, one column per
+     day of the month, a letter in each box, totals at the end. Prints on
+     one landscape page per ~25 people. */
+  var RF = { month: '', dept: '', q: '' };
+  function drawRegister(){
+    if (!RF.month) { var t0 = khi(); RF.month = t0.getFullYear() + '-' + ('0' + (t0.getMonth() + 1)).slice(-2); }
+    var y = +RF.month.slice(0, 4), mo = +RF.month.slice(5, 7), last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    var from = RF.month + '-01', to = RF.month + '-' + ('0' + last).slice(-2), today = iso(khi());
+    if (to > today) to = today < from ? from : today;
+    var month = el('input', { type: 'month', value: RF.month, id: 'r-month', 'aria-label': 'Month' });
+    var qbox = el('input', { type: 'search', value: RF.q, id: 'r-q', placeholder: 'Employee code or name' });
+    var head = el('div', { class: 'bar' }, [el('span', { class: 'lbl', text: 'Month' }), month,
+      el('button', { type: 'button', class: 'act primary', id: 'r-show', text: 'Show', click: function(){ RF.month = month.value || RF.month; RF.q = qbox.value; drawRegister(); } }), qbox]);
+    qbox.addEventListener('keydown', function(e){ if (e.key === 'Enter') { RF.q = qbox.value; drawRegister(); } });
+    get('/reports/attendance', { from: from, to: to, employee: RF.q }).then(function(r){
+      if (!r.ok) return show([head, el('p', { class: 'err', text: r.error })]);
+      var names = deptsOf(r.rows); if (RF.dept && names.indexOf(RF.dept) < 0) RF.dept = '';
+      var holder = el('div', { style: 'display:grid;gap:12px;min-width:0' });
+      var dsel = select('r-dept', 'Department', [['', 'All departments']].concat(names.map(function(n){ return [n, n]; })), function(v){ RF.dept = v; paint(); });
+      dsel.value = RF.dept;
+      var csvBtn = el('button', { type: 'button', class: 'act', id: 'r-csv', text: 'Download (CSV)' });
+      head.appendChild(dsel); head.appendChild(el('span', { class: 'sep' })); head.appendChild(csvBtn); head.appendChild(printBtn());
+      function code(x){
+        if (x.status === 'absent') return 'A';
+        if (x.status === 'inside') return x.late_minutes > 0 ? 'L' : 'I';
+        if (x.late_minutes > 0) return 'L';
+        return 'P';
+      }
+      function paint(){
+        var rows = r.rows.filter(function(x){ return !RF.dept || x.department_name === RF.dept; });
+        var E = {};
+        rows.forEach(function(x){
+          var e = E[x.employee_code] || (E[x.employee_code] = { code: x.employee_code, name: x.full_name, dept: x.department_name, d: {}, P: 0, L: 0, A: 0, m: 0 });
+          var c = code(x), dd = +x.work_date.slice(8, 10);
+          if (e.d[dd] && e.d[dd].c !== 'A') return;                       // two shifts in a day: keep the one they came for
+          e.d[dd] = { c: c, x: x };
+        });
+        var list = Object.keys(E).map(function(k){ var e = E[k];
+          Object.keys(e.d).forEach(function(dd){ var c = e.d[dd].c; if (c === 'A') e.A++; else { e.P++; if (c === 'L') e.L++; } e.m += +e.d[dd].x.present_minutes || 0; });
+          return e; }).sort(function(a, b){ return a.dept.localeCompare(b.dept) || a.name.localeCompare(b.name); });
+        holder.textContent = '';
+        if (!list.length) { holder.appendChild(none('Nobody had a shift in this month' + (RF.q ? ' matching "' + RF.q + '"' : '') + '.', 'reg-none')); return; }
+        var lastDay = +to.slice(8, 10), wd = function(dd){ return new Date(Date.UTC(y, mo - 1, dd)).getUTCDay(); };
+        var thead = el('tr', {}, [el('th', { class: 'who', text: 'Employee' })]);
+        for (var dd = 1; dd <= last; dd++) thead.appendChild(el('th', { class: 'd' + (wd(dd) === 0 ? ' sun' : '') + (dd > lastDay ? ' fut' : '') }, [String(dd), el('span', { text: 'SMTWTFS'.charAt(wd(dd)) })]));
+        ['Present', 'Late', 'Absent', 'Hours', 'Rate'].forEach(function(h){ thead.appendChild(el('th', { class: 'n tot', text: h })); });
+        var tb = el('tbody'), dept = null, colN = last + 6;
+        var sum = { P: 0, L: 0, A: 0, m: 0 };
+        list.forEach(function(e){
+          if (e.dept !== dept) { dept = e.dept; tb.appendChild(el('tr', { class: 'grp' }, [el('td', { colspan: String(colN), text: dept })])); }
+          var tr = el('tr', {}, [el('td', { class: 'who' }, [el('span', { class: 'c', text: e.code }), el('b', { text: e.name })])]);
+          for (var dd = 1; dd <= last; dd++) {
+            var v = e.d[dd], cls = 'd' + (wd(dd) === 0 ? ' sun' : '');
+            if (!v) { tr.appendChild(el('td', { class: cls + ' off', text: dd > lastDay ? '' : '·' })); continue; }
+            var x = v.x;
+            var td = el('td', { class: cls + ' k' + v.c, text: v.c });
+            td.title = day(x.work_date) + ' · ' + (v.c === 'A' ? 'had a shift, did not come' : 'IN ' + hm(x.first_in) + (x.last_out ? ' · OUT ' + hm(x.last_out) : ' · inside') + ' · ' + mins(x.present_minutes) + (x.late_minutes > 0 ? ' · late ' + mins(x.late_minutes) : '') + (x.early_minutes > 0 ? ' · left ' + mins(x.early_minutes) + ' early' : '') + (x.auto_out ? ' · OUT not scanned' : ''));
+            tr.appendChild(td);
+          }
+          sum.P += e.P; sum.L += e.L; sum.A += e.A; sum.m += e.m;
+          [e.P, e.L || '0', e.A ? el('span', { class: 'flag', text: String(e.A) }) : '0', (e.m / 60).toFixed(1), (pct(e.P, e.P + e.A) || 0) + '%'].forEach(function(v){ tr.appendChild(el('td', { class: 'n tot' }, [typeof v === 'object' ? v : String(v)])); });
+          tb.appendChild(tr);
+        });
+        var tf = el('tr', {}, [el('td', { class: 'who', text: list.length + (list.length === 1 ? ' person' : ' people') })]);
+        for (var d2 = 1; d2 <= last; d2++) { var came = 0, had = 0; list.forEach(function(e){ var v = e.d[d2]; if (v) { had++; if (v.c !== 'A') came++; } }); tf.appendChild(el('td', { class: 'd', title: had ? came + ' of ' + had + ' came' : '', text: had ? String(came) : '' })); }
+        [sum.P, sum.L, sum.A, Math.round(sum.m / 60).toLocaleString('en-US'), (pct(sum.P, sum.P + sum.A) || 0) + '%'].forEach(function(v){ tf.appendChild(el('td', { class: 'n tot', text: String(v) })); });
+        var tbl = el('table', { class: 'reg' }, [el('thead', {}, [thead]), tb, el('tfoot', {}, [tf])]);
+        holder.appendChild(el('section', { class: 'panel' }, [
+          el('div', { class: 'ph' }, [el('h3', { text: 'Attendance register · ' + new Date(Date.UTC(y, mo - 1, 1)).toLocaleDateString('en-GB', { timeZone: 'UTC', month: 'long', year: 'numeric' }) + (RF.dept ? ' · ' + RF.dept : '') }),
+            el('div', { class: 'reglegend' }, [['kP', 'P', 'present'], ['kL', 'L', 'late'], ['kA', 'A', 'did not come'], ['kI', 'I', 'inside now'], ['off', '·', 'no shift / day off']].map(function(k){ return el('span', {}, [el('i', { class: k[0], text: k[1] }), k[2]]); }))]),
+          el('div', { class: 'pb flush' }, [el('div', { class: 'scroll', id: 'reg-box' }, [tbl])])]));
+        holder.appendChild(el('p', { class: 'note', text: 'Hover a box for IN, OUT, hours and minutes late. The bottom line counts who came each day. Hours are closed IN–OUT entries. A blank day with "·" had no shift (day off, or not yet on the roll).' }));
+        csvBtn.onclick = function(){
+          var h = ['Code', 'Name', 'Department']; for (var dd = 1; dd <= last; dd++) h.push(String(dd)); h = h.concat(['Present', 'Late', 'Absent', 'Hours', 'Rate %']);
+          saveCsv('attendance-register-' + RF.month + '.csv', h, list.map(function(e){ var l = [e.code, e.name, e.dept]; for (var dd = 1; dd <= last; dd++) l.push(e.d[dd] ? e.d[dd].c : ''); return l.concat([e.P, e.L, e.A, (Math.round(e.m / 6) / 10), pct(e.P, e.P + e.A) || 0]); }));
+        };
+      }
+      paint();
+      show([head, holder]);
     });
   }
 
