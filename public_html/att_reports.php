@@ -186,6 +186,61 @@ page_header('Attendance — Reports');
 .attr .reglegend{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--muted)}
 .attr .reglegend i{display:inline-block;min-width:18px;text-align:center;font-style:normal;font-weight:700;border-radius:3px;margin-right:4px;padding:0 3px}
 .attr .reglegend i.kP{color:var(--good)}.attr .reglegend i.kL{background:var(--warn-bg);color:var(--warn)}.attr .reglegend i.kA{background:var(--bad-bg);color:var(--bad)}.attr .reglegend i.kI{background:var(--info-bg);color:#17467c}.attr .reglegend i.off{color:#b9c4d0}
+/* ---------------- Live: faces ---------------- */
+.attr .live-head .when{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.attr .livedot{width:9px;height:9px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 0 rgba(22,163,74,.6);animation:lvp 2s infinite}
+@keyframes lvp{0%{box-shadow:0 0 0 0 rgba(22,163,74,.55)}70%{box-shadow:0 0 0 8px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}
+@media (prefers-reduced-motion:reduce){.attr .livedot{animation:none}}
+.attr .clk{font:600 15px 'IBM Plex Mono',ui-monospace,monospace;color:var(--navy);font-variant-numeric:tabular-nums}
+.attr .live-k .tile b{display:flex;align-items:center;gap:6px}
+.attr .arw{font-style:normal;font-size:16px;line-height:1;width:22px;height:22px;border-radius:50%;display:inline-grid;place-items:center}
+.attr .arw.in{background:var(--good-bg);color:var(--good)}.attr .arw.out{background:var(--warn-bg);color:var(--warn)}
+.attr .liverow{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(220px,.7fr);gap:12px;align-items:stretch}
+.attr .flow{display:flex;flex-wrap:wrap;gap:10px 6px;padding:12px}
+.attr .pf{display:flex;flex-direction:column;align-items:center;text-align:center;width:84px;min-width:0}
+.attr .pf.big{width:96px}
+.attr .pf b{font-size:12px;font-weight:600;line-height:1.25;margin-top:6px;max-width:100%;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.attr .pf .m{font-size:11px;color:var(--muted);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.attr .av{position:relative;border-radius:50%;background:#e3eaf3 center/cover no-repeat;display:grid;place-items:center;color:#33475f;font-weight:600;box-shadow:0 0 0 3px #fff,0 0 0 5px var(--line)}
+.attr .av.s52{width:52px;height:52px;font-size:16px}.attr .av.s64{width:64px;height:64px;font-size:19px}
+.attr .av.has span{visibility:hidden}
+.attr .av.g{box-shadow:0 0 0 3px #fff,0 0 0 5px #16a34a}.attr .av.o{box-shadow:0 0 0 3px #fff,0 0 0 5px #d97706}
+.attr .av.b{box-shadow:0 0 0 3px #fff,0 0 0 5px #0a5fb4}.attr .av.x{box-shadow:0 0 0 3px #fff,0 0 0 5px #b9c4d0;filter:grayscale(.35)}
+.attr .more{align-self:center;font-weight:600;color:var(--muted);padding:0 8px}
+.attr .livering .pb{display:flex;flex-direction:column;align-items:center;gap:8px}
+.attr svg.ring{width:150px;height:150px}
+.attr svg.ring .trk{fill:none;stroke:var(--line2);stroke-width:14}
+.attr svg.ring .val{fill:none;stroke:#16a34a;stroke-width:14;stroke-linecap:round}
+.attr svg.ring .big{font:600 26px var(--ff);fill:var(--navy)}.attr svg.ring .sm{font:500 11px var(--ff);fill:var(--muted)}
+.attr .rleg{display:grid;gap:4px;font-size:12.5px;width:100%}
+.attr .rleg span{display:flex;align-items:center;gap:6px}.attr .rleg b{margin-left:auto;font-variant-numeric:tabular-nums}
+.attr .rleg .sw{display:inline-block;width:10px;height:10px;border-radius:2px}.attr .rleg .sw.p{background:#16a34a}.attr .rleg .sw.n{background:var(--line2);box-shadow:inset 0 0 0 1px #b9c4d0}.attr .rleg .sw.i{background:var(--pri)}
+.attr .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.attr .chips button{border:1px solid #b9c4d0;background:#fff;border-radius:99px;padding:5px 11px;font:600 12px var(--ff);color:var(--ink);cursor:pointer}
+.attr .chips button .c{margin-left:6px;color:var(--muted);font-weight:500}
+.attr .chips button[aria-pressed=true]{background:var(--pri);border-color:var(--pri);color:#fff}.attr .chips button[aria-pressed=true] .c{color:#dbe9f8}
+.attr .facegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:14px 8px;justify-items:center}
+.attr .ph input[type=search]{min-width:0;width:220px;max-width:100%}
+.attr .dstrip{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;padding:12px}
+.attr .dcard{border:1px solid var(--line);border-radius:4px;padding:9px 11px;display:grid;gap:3px}
+.attr .dcard .big{font-size:22px;font-weight:600;color:var(--navy);font-variant-numeric:tabular-nums}.attr .dcard .m{font-size:11.5px;color:var(--muted)}
+.attr .dcard .meter{height:5px;border-radius:2px;background:var(--line2);overflow:hidden}.attr .dcard .meter i{display:block;height:100%;background:#16a34a}
+.attr details.gonebox summary{cursor:pointer;list-style:none}.attr details.gonebox summary::-webkit-details-marker{display:none}
+.attr details.gonebox summary h3::before{content:'▸ ';color:var(--muted)}.attr details.gonebox[open] summary h3::before{content:'▾ '}
+@media (max-width:980px){.attr .liverow{grid-template-columns:minmax(0,1fr)}}
+/* wall screen: the same page, dark, full screen, for a TV */
+.attr.wall{--ink:#e6edf6;--muted:#9fb1c7;--line:#2a3f5c;--line2:#203450;--head:#13243b;--hover:#1a2f4b;--navy:#e6edf6;--good-bg:#12351f;--warn-bg:#3a2a10;--bad-bg:#3b1414;--info-bg:#132c4b;
+  background:#0b1726;color:var(--ink);border-color:#0b1726;min-height:100vh;overflow:auto}
+.attr.wall .tabs{display:none}
+.attr.wall .panel,.attr.wall .tile,.attr.wall .dcard{background:#10213a;border-color:#22385a}
+.attr.wall .tile b,.attr.wall .clk,.attr.wall svg.ring .big{color:#fff;fill:#fff}
+.attr.wall .av{background-color:#1d3354;color:#cfe0f5;box-shadow:0 0 0 3px #10213a,0 0 0 5px #2a3f5c}
+.attr.wall .av.g{box-shadow:0 0 0 3px #10213a,0 0 0 5px #22c55e}.attr.wall .av.o{box-shadow:0 0 0 3px #10213a,0 0 0 5px #f59e0b}
+.attr.wall .av.b{box-shadow:0 0 0 3px #10213a,0 0 0 5px #3b8ee8}.attr.wall .av.x{box-shadow:0 0 0 3px #10213a,0 0 0 5px #4b607d}
+.attr.wall .act{background:#10213a;color:#cfe0f5;border-color:#2a3f5c}
+.attr.wall .chips button{background:#10213a;color:#e6edf6;border-color:#2a3f5c}.attr.wall .chips button[aria-pressed=true]{background:#3b8ee8;border-color:#3b8ee8}
+.attr.wall input{background:#10213a;color:#e6edf6;border-color:#2a3f5c}
+.attr.wall .note{display:none}
 @media print{.attr table.reg{font-size:9px}.attr table.reg th.d,.attr table.reg td.d{width:18px;min-width:18px}.attr .reg .who{position:static}.ctip{display:none}@page{size:landscape;margin:8mm}}
 @media (max-width:980px){.attr .cols{grid-template-columns:minmax(0,1fr)}.attr .cols2,.attr .cols3{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:820px){.content{padding:12px}#attr-body{padding:12px}.attr .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.attr input[type=search]{min-width:0;flex:1 1 140px}.attr .bar .sep{display:none}}
@@ -311,11 +366,13 @@ page_header('Attendance — Reports');
   function printBtn(){ return el('button', { type: 'button', class: 'act', text: 'Print', click: function(){ window.print(); } }); }
 
   // ---------------------------------------------------------------- tabs
-  var TABS = [{ id: 'today', label: 'Today', draw: drawToday }, { id: 'ins', label: 'Insights', draw: drawInsights }, { id: 'att', label: 'Attendance', draw: drawAttendance },
+  var TABS = [{ id: 'today', label: 'Today', draw: drawToday }, { id: 'live', label: 'Live', draw: drawLive }, { id: 'ins', label: 'Insights', draw: drawInsights }, { id: 'att', label: 'Attendance', draw: drawAttendance },
     { id: 'reg', label: 'Monthly register', draw: drawRegister }, { id: 'mov', label: 'Movements', draw: drawMovements }];
   if (CAN_OT) TABS.push({ id: 'ot', label: 'Overtime', draw: drawOvertime });
   function go(id){
     if (timer) { clearInterval(timer); timer = null; }
+    if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+    if (id !== 'live') document.getElementById('attr').classList.remove('wall');
     Array.prototype.forEach.call(document.querySelectorAll('#attr-tabs button'), function(b){ b.setAttribute('aria-selected', b.dataset.tab === id ? 'true' : 'false'); });
     show([el('p', { class: 'muted', text: 'Loading…' })]);
     TABS.filter(function(t){ return t.id === id; })[0].draw();
@@ -876,6 +933,132 @@ page_header('Attendance — Reports');
       paint();
       show([head, holder]);
     });
+  }
+
+  // ----------------------------------------------------------------- live
+  /* The gate as it is now, with faces. Refreshes every 30 seconds while the
+     tab is open and the screen is on. A face is the employee's reference
+     photo, fetched once per visit through /reports/live/photo (department
+     check, every view audited) and kept only in this page's memory — never
+     a link, never stored in the browser. "Hide faces" shows initials only,
+     for a screen that visitors can see. "Wall screen" fills the screen in a
+     dark theme for a TV at the office. */
+  var clockTimer = null, FACES = {}, faceQueue = [], faceBusy = 0, LV = { dept: '', q: '' };
+  var HIDE = false; try { HIDE = localStorage.getItem('attr-hide-faces') === '1'; } catch (e) {}
+  function initials(n){ return String(n || '?').trim().split(/\s+/).slice(0, 2).map(function(w){ return w.charAt(0).toUpperCase(); }).join(''); }
+  function pumpFaces(){
+    while (faceBusy < 4 && faceQueue.length) {
+      var job = faceQueue.shift(), id = job.id;
+      if (FACES[id] !== undefined && FACES[id] !== 'loading') { job.done(FACES[id]); continue; }
+      if (FACES[id] === 'loading') { (FACES['w' + id] = FACES['w' + id] || []).push(job.done); continue; }
+      FACES[id] = 'loading'; faceBusy++;
+      (function(id, done){
+        fetch(q('/reports/live/photo', { id: id }), { credentials: 'same-origin' })
+          .then(function(r){ return r.ok ? r.blob() : null; }).catch(function(){ return null; })
+          .then(function(b){
+            FACES[id] = b ? URL.createObjectURL(b) : null; faceBusy--;
+            done(FACES[id]); (FACES['w' + id] || []).forEach(function(f){ f(FACES[id]); }); delete FACES['w' + id];
+            pumpFaces();
+          });
+      })(id, job.done);
+    }
+  }
+  var seen = 'IntersectionObserver' in window ? new IntersectionObserver(function(list){
+    list.forEach(function(en){ if (!en.isIntersecting) return; seen.unobserve(en.target); var t = en.target; faceQueue.push({ id: +t.dataset.id, done: function(url){ if (url) { t.style.backgroundImage = 'url(' + url + ')'; t.classList.add('has'); } } }); pumpFaces(); });
+  }, { rootMargin: '200px' }) : null;
+  function face(p, size, ring){
+    var av = el('div', { class: 'av ' + (ring || '') + ' s' + size, 'data-id': String(p.employee_id), 'aria-hidden': 'true' }, [el('span', { text: initials(p.full_name) })]);
+    if (!HIDE && p.has_photo) {
+      if (FACES[p.employee_id]) { av.style.backgroundImage = 'url(' + FACES[p.employee_id] + ')'; av.classList.add('has'); }
+      else if (seen) seen.observe(av);
+    }
+    return av;
+  }
+  function person(p, ring, sub, cls){
+    return el('div', { class: 'pf ' + (cls || ''), title: p.full_name + ' · ' + p.employee_code + ' · ' + p.department_name }, [face(p, cls === 'big' ? 64 : 52, ring),
+      el('b', { text: p.full_name }), el('span', { class: 'm', text: sub })]);
+  }
+  function ringChart(pctV, a, b){
+    var r = 52, c = 2 * Math.PI * r, f = Math.max(0, Math.min(100, pctV || 0)) / 100;
+    return sv('svg', { viewBox: '0 0 140 140', class: 'ring', role: 'img', 'aria-label': (pctV || 0) + '% present' }, [
+      sv('circle', { cx: 70, cy: 70, r: r, class: 'trk' }),
+      sv('circle', { cx: 70, cy: 70, r: r, class: 'val', 'stroke-dasharray': (c * f) + ' ' + c, transform: 'rotate(-90 70 70)' }),
+      (function(){ var t = sv('text', { x: 70, y: 70, class: 'big', 'text-anchor': 'middle' }); t.textContent = (pctV === null ? '—' : pctV) + (pctV === null ? '' : '%'); return t; })(),
+      (function(){ var t = sv('text', { x: 70, y: 92, class: 'sm', 'text-anchor': 'middle' }); t.textContent = 'present today'; return t; })()]);
+  }
+  function drawLive(){
+    var wrap = document.getElementById('attr');
+    get('/reports/live').then(function(d){
+      if (!d.ok) return show([el('p', { class: 'err', text: d.error || 'Could not load.' })]);
+      if (d.empty_scope) return show([el('p', { class: 'muted', text: 'You are not the HOD of a department, so there is nobody to show.' })]);
+      var clock = el('b', { class: 'clk', id: 'live-clock' });
+      function tick(){ var t = new Date(); clock.textContent = t.toLocaleTimeString('en-GB', { timeZone: 'Asia/Karachi', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+      tick(); if (clockTimer) clearInterval(clockTimer); clockTimer = setInterval(tick, 1000);
+      var hideBtn = el('button', { type: 'button', class: 'act', id: 'live-hide', 'aria-pressed': HIDE ? 'true' : 'false', text: HIDE ? 'Show faces' : 'Hide faces', click: function(){ HIDE = !HIDE; try { localStorage.setItem('attr-hide-faces', HIDE ? '1' : '0'); } catch (e) {} drawLive(); } });
+      var wallBtn = el('button', { type: 'button', class: 'act', id: 'live-wall', text: wrap.classList.contains('wall') ? 'Leave wall screen' : 'Wall screen', click: function(){
+        var on = !wrap.classList.contains('wall'); wrap.classList.toggle('wall', on);
+        try { if (on && wrap.requestFullscreen) wrap.requestFullscreen(); else if (!on && document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
+        drawLive(); } });
+      var strip = el('div', { class: 'strip live-head' }, [
+        el('div', { class: 'when' }, [el('span', { class: 'livedot', 'aria-hidden': 'true' }), el('b', { text: longDay(d.today) }), clock, el('span', { class: 'muted', text: ' · updates every 30 seconds' })]),
+        el('div', { class: 'acts' }, [hideBtn, wallBtn])]);
+
+      var pres = pct(d.came_in, d.active_employees);
+      var kpis = el('div', { class: 'tiles live-k' }, [
+        tile(el('b', {}, [el('i', { class: 'arw in', text: '→' }), String(d.incoming.length)]), 'Incoming', 'good', 'live-in', 'IN in the last ' + d.window_minutes + ' min'),
+        tile(d.inside_now, 'Inside now', 'info', 'live-inside', 'in the factory'),
+        tile(el('b', {}, [el('i', { class: 'arw out', text: '←' }), String(d.outgoing.length)]), 'Outgoing', 'warn', 'live-out', 'OUT in the last ' + d.window_minutes + ' min'),
+        tile(d.gone_home, 'Gone home', '', 'live-gone', 'came today, out now'),
+        tile(d.not_in, 'Not in today', d.not_in ? 'hot' : '', 'live-notin', 'of ' + d.active_employees + ' on the roll')]);
+
+      function flow(list, ring, empty, id){
+        return list.length ? el('div', { class: 'flow', id: id }, list.slice(0, 14).map(function(p){ return person(p, ring, hm(p.at) + ' · ' + p.department_name); }).concat(list.length > 14 ? [el('div', { class: 'more', text: '+' + (list.length - 14) })] : []))
+                           : el('div', { class: 'empty', id: id, text: empty });
+      }
+      var donut = el('section', { class: 'panel livering' }, [el('div', { class: 'ph' }, [el('h3', { text: 'Present today' })]),
+        el('div', { class: 'pb' }, [ringChart(pres), el('div', { class: 'rleg' }, [
+          el('span', {}, [el('i', { class: 'sw p' }), 'Came in ', el('b', { text: String(d.came_in) })]),
+          el('span', {}, [el('i', { class: 'sw n' }), 'Not in yet ', el('b', { text: String(d.not_in) })]),
+          el('span', {}, [el('i', { class: 'sw i' }), 'Inside now ', el('b', { text: String(d.inside_now) })])])])]);
+      var row2 = el('div', { class: 'liverow' }, [
+        panel('Incoming', 'checked IN · last ' + d.window_minutes + ' min', [flow(d.incoming, 'g', 'Nobody came in in the last ' + d.window_minutes + ' minutes.', 'live-flow-in')], { flush: true }),
+        panel('Outgoing', 'checked OUT · last ' + d.window_minutes + ' min', [flow(d.outgoing, 'o', 'Nobody went out in the last ' + d.window_minutes + ' minutes.', 'live-flow-out')], { flush: true }),
+        donut]);
+
+      /* everyone inside, by department */
+      var names = d.by_department.filter(function(x){ return x.inside; }).map(function(x){ return x.department_name; });
+      if (LV.dept && names.indexOf(LV.dept) < 0) LV.dept = '';
+      var grid = el('div', { class: 'facegrid', id: 'live-grid' });
+      var qbox = el('input', { type: 'search', placeholder: 'Find a name or code', value: LV.q, 'aria-label': 'Find a name or code' });
+      function paintGrid(){
+        grid.textContent = '';
+        var q_ = LV.q.trim().toLowerCase();
+        var list = d.inside.filter(function(p){ return (!LV.dept || p.department_name === LV.dept) && (!q_ || (p.full_name + ' ' + p.employee_code).toLowerCase().indexOf(q_) >= 0); });
+        if (!list.length) return grid.appendChild(el('div', { class: 'empty', text: d.inside.length ? 'Nobody matches.' : 'Nobody is inside the factory now.' }));
+        list.forEach(function(p){ grid.appendChild(person(p, 'b', 'since ' + hm(p.since), 'big')); });
+      }
+      qbox.addEventListener('input', function(){ LV.q = qbox.value; paintGrid(); });
+      var chips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Department' }, [['', 'All', d.inside_now]].concat(d.by_department.filter(function(x){ return x.inside; }).map(function(x){ return [x.department_name, x.department_name, x.inside]; })).map(function(c){
+        var b = el('button', { type: 'button', 'aria-pressed': LV.dept === c[0] ? 'true' : 'false', click: function(){ LV.dept = c[0]; Array.prototype.forEach.call(chips.children, function(x){ x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); }); paintGrid(); } }, [c[1], el('span', { class: 'c', text: String(c[2]) })]);
+        return b; }));
+      paintGrid();
+      var insidePanel = el('section', { class: 'panel', id: 'live-inside-panel' }, [
+        el('div', { class: 'ph' }, [el('h3', { text: 'Inside the factory — ' + d.inside_now + (d.inside_now === 1 ? ' person' : ' people') }), qbox]),
+        el('div', { class: 'pb' }, [chips, grid])]);
+
+      var deptStrip = panel('By department', null, [el('div', { class: 'dstrip' }, d.by_department.map(function(x){
+        var p_ = pct(x.came_in, x.active);
+        return el('div', { class: 'dcard' }, [el('b', { text: x.department_name }),
+          el('div', { class: 'dn' }, [el('span', { class: 'big', text: String(x.inside) }), el('span', { class: 'm', text: ' inside · ' + x.came_in + ' of ' + x.active + ' came' })]),
+          el('div', { class: 'meter' }, [el('i', { style: 'width:' + (p_ || 0) + '%' })]), el('span', { class: 'm', text: (p_ === null ? '—' : p_ + '%') + ' present' })]); }))]);
+
+      var gone = d.gone.length ? el('details', { class: 'panel gonebox' }, [el('summary', { class: 'ph' }, [el('h3', { text: 'Gone home today — ' + d.gone.length }), el('span', { class: 'n', text: 'came in today, out now' })]),
+        el('div', { class: 'pb' }, [el('div', { class: 'flow' }, d.gone.slice(0, 60).map(function(p){ return person(p, 'x', 'out ' + hm(p.at)); }))])]) : null;
+
+      show([strip, kpis, row2, insidePanel, deptStrip, gone,
+        el('p', { class: 'note', text: 'A face is the employee\'s own photo on file, shown only to people allowed to see that department; every view is recorded. Use "Hide faces" on a screen visitors can see.' })]);
+    });
+    timer = setInterval(function(){ if (!document.hidden) drawLive(); }, 30000);
   }
 
   var first = (location.hash || '').slice(1);

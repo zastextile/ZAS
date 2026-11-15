@@ -143,7 +143,7 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     const errs = []; p.on('pageerror', e => errs.push(e.message));
     await p.goto(BASE + '/att_reports.php#ins'); await loaded(p);
     const tabs = (await p.locator('#attr-tabs button').allTextContents()).join('|');
-    check('the reports have Insights and Monthly register beside the old tabs', /^Today\|Insights\|Attendance\|Monthly register\|Movements/.test(tabs), tabs);
+    check('the reports have Insights and Monthly register beside the old tabs', /^Today\|Live\|Insights\|Attendance\|Monthly register\|Movements/.test(tabs), tabs);
     await p.fill('#f-from', '2026-10-01'); await p.fill('#f-to', '2026-10-31'); await p.click('#f-show');
     await p.waitForSelector('#ins-tiles'); await p.waitForTimeout(200);
     const tiles = await p.textContent('#ins-tiles');

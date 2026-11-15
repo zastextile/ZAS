@@ -840,6 +840,27 @@ try {
             Http::json(ReportService::dashboard(report_scope((int) $u['id'])));
             break;
 
+        /* Live: who is coming, inside, going — for the Live tab. */
+        case $method === 'GET' && $route === '/reports/live':
+            $u = Http::requirePermission('attrep', 'v');
+            auto_out_if_due();
+            Http::json(ReportService::live(report_scope((int) $u['id'])));
+            break;
+
+        /* A face on the Live tab: the reference photo itself (never a link),
+           only for someone the viewer may report on, each view audited. */
+        case $method === 'GET' && $route === '/reports/live/photo':
+            $u = Http::requirePermission('attrep', 'v');
+            Http::rateLimit('livephoto:user:' . (int) $u['id'], 2400, 600);
+            $id = (int) Http::input('id', 0);
+            $dept = Db::value('SELECT department_id FROM att_employees WHERE id = ?', [$id]);
+            $scope = report_scope((int) $u['id']);
+            if ($dept === null || $dept === false || ($scope !== null && !in_array((int) $dept, $scope, true))) {
+                Http::fail('NOT_FOUND', 'No such employee.', 404);
+            }
+            send_image(PhotoService::reference($id, (int) $u['id'], 'live dashboard'));
+            break;
+
         case $method === 'GET' && in_array($route, ['/reports/attendance', '/reports/movements', '/reports/overtime'], true):
             $u = Http::requirePermission('attrep', 'v');
             if ($route === '/reports/overtime' && !Roles::can('attotap', 'v') && !Roles::can('attpay', 'v') && !Roles::can('attot', 'v')) {

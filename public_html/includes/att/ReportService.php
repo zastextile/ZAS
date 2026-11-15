@@ -159,6 +159,91 @@ final class ReportService
     }
 
     /**
+     * LIVE — the gate as it is now, for the Live tab (faces on screen).
+     *
+     *   incoming   came IN in the last WINDOW minutes, newest first
+     *   inside     every entry still open — in the factory now
+     *   outgoing   went OUT in the last WINDOW minutes and not back in
+     *   gone home  came in today and is not inside now
+     *   not in     on the roll, no entry today (days off included)
+     *
+     * Names, codes, departments, times and whether a photo is on file. The
+     * photos themselves are fetched one by one through /reports/live/photo,
+     * with the same department check, each view in the audit log.
+     */
+    public const LIVE_WINDOW = 30;
+
+    public static function live(?array $scope): array
+    {
+        $today = self::today();
+        [$from, $to] = self::utcRange($today, $today);
+        [$dw, $dp] = self::deptWhere($scope, 'e.department_id');
+        if ($dw === false) {
+            return ['ok' => true, 'today' => $today, 'empty_scope' => true];
+        }
+        $now = self::nowUtc();
+        $since = Time::sql($now->modify('-' . self::LIVE_WINDOW . ' minutes'));
+        $utcZ = new DateTimeZone('UTC');
+        $iso = fn($v) => $v === null ? null : Time::iso(new DateTimeImmutable((string) $v, $utcZ));
+        $person = "e.id AS employee_id, e.code AS employee_code, e.full_name, d.name AS department_name, (e.reference_photo_key IS NOT NULL) AS has_photo";
+        $fix = function (array $rows) use ($iso): array {
+            foreach ($rows as &$r) {
+                $r['employee_id'] = (int) $r['employee_id']; $r['has_photo'] = (int) $r['has_photo'] === 1;
+                foreach (['at', 'since'] as $k) { if (array_key_exists($k, $r)) { $r[$k] = $iso($r[$k]); } }
+            }
+            unset($r);
+            return $rows;
+        };
+
+        $inside = $fix(Db::all(
+            "SELECT $person, c.opened_at AS since
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
+              WHERE c.closed_at IS NULL $dw ORDER BY d.name, e.full_name LIMIT 2000", $dp));
+        $incoming = $fix(Db::all(
+            "SELECT $person, c.opened_at AS at
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
+              WHERE c.opened_at >= ? $dw ORDER BY c.opened_at DESC LIMIT 60", array_merge([$since], $dp)));
+        $outgoing = $fix(Db::all(
+            "SELECT $person, c.closed_at AS at, c.close_source
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
+              WHERE c.closed_at >= ? $dw
+                AND NOT EXISTS (SELECT 1 FROM att_entry_cycles o WHERE o.employee_id = c.employee_id AND o.closed_at IS NULL)
+              ORDER BY c.closed_at DESC LIMIT 60", array_merge([$since], $dp)));
+        $gone = $fix(Db::all(
+            "SELECT $person, MAX(c.closed_at) AS at
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
+              WHERE c.opened_at >= ? AND c.opened_at < ? $dw
+                AND NOT EXISTS (SELECT 1 FROM att_entry_cycles o WHERE o.employee_id = c.employee_id AND o.closed_at IS NULL)
+              GROUP BY e.id, e.code, e.full_name, d.name, e.reference_photo_key ORDER BY at DESC LIMIT 500", array_merge([$from, $to], $dp)));
+
+        $depts = [];
+        foreach (Db::all("SELECT d.name AS department_name, COUNT(*) AS active FROM att_employees e JOIN att_departments d ON d.id = e.department_id
+                           WHERE e.active = 1 $dw GROUP BY d.id, d.name ORDER BY d.name", $dp) as $r) {
+            $depts[$r['department_name']] = ['department_name' => $r['department_name'], 'active' => (int) $r['active'], 'came_in' => 0, 'inside' => 0];
+        }
+        foreach (Db::all("SELECT d.name AS department_name, COUNT(DISTINCT c.employee_id) AS n
+                            FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
+                           WHERE c.opened_at >= ? AND c.opened_at < ? $dw GROUP BY d.id, d.name", array_merge([$from, $to], $dp)) as $r) {
+            $depts[$r['department_name']] ??= ['department_name' => $r['department_name'], 'active' => 0, 'came_in' => 0, 'inside' => 0];
+            $depts[$r['department_name']]['came_in'] = (int) $r['n'];
+        }
+        foreach ($inside as $r) {
+            $depts[$r['department_name']] ??= ['department_name' => $r['department_name'], 'active' => 0, 'came_in' => 0, 'inside' => 0];
+            $depts[$r['department_name']]['inside']++;
+        }
+        ksort($depts, SORT_NATURAL | SORT_FLAG_CASE);
+        $active = array_sum(array_column($depts, 'active'));
+        $came = array_sum(array_column($depts, 'came_in'));
+        return [
+            'ok' => true, 'today' => $today, 'generated_at' => Time::iso($now), 'window_minutes' => self::LIVE_WINDOW,
+            'active_employees' => $active, 'came_in' => $came, 'inside_now' => count($inside),
+            'gone_home' => count($gone), 'not_in' => max(0, $active - $came),
+            'incoming' => $incoming, 'outgoing' => $outgoing, 'inside' => $inside, 'gone' => $gone,
+            'by_department' => array_values($depts),
+        ];
+    }
+
+    /**
      * Blueprint §7: "monitoring for sync backlog, unpaired events, clock
      * drift, failed R2 uploads and backup failures". The server cannot see
      * what is still on a phone; what it can see is a phone that has gone
