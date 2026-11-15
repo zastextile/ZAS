@@ -544,6 +544,55 @@ ok($last['closed'] && $n('SELECT status = \'cancelled\' FROM att_fin_sheets WHER
 ok($code(Fin::removeFromSheet($ap['sheet_id'], $emp['D002'], 'x', $A, $admin)) === 'ALREADY_DECIDED', '  never from a sheet that has been paid: money has been handed over');
 Fin::setToday('2026-03-05');
 
+echo "12h. Production adjustment for many contractors: pieces x rate, a fixed amount, a percentage, or a corrected line\n";
+Fin::setToday('2026-03-12');
+$A = Fin::caps($admin); $R = Fin::caps($hr); $C = Fin::caps($acc); $H = Fin::caps($hod); $U = Fin::caps($aud); $G = Fin::caps($gk);
+$pdo->exec("INSERT INTO zp_workers (worker_code, worker_name) VALUES ('W002', 'Bilal Bulk')");
+$w2 = (int) $pdo->lastInsertId();
+Db::run("UPDATE att_employees SET worker_code = 'W002' WHERE id = ?", [$n1]);
+Fin::saveProfile($n1, ['pay_type' => 'contract', 'pay_method' => 'cash'], 'Now paid by production', $acc);
+$pdo->exec("INSERT INTO zp_entries (entry_date, worker_id, qty, rate_applied, amount) VALUES ('2026-03-10', $w2, 1200, 8, 9600.00), ('2026-03-11', $w2, 200, 12.5, 2500.00), ('2026-03-10', 1, 100, 10, 1000.00)");
+$pb = Fin::productionBill('2026-03-01', '2026-03-12', 0, $R);
+$pc = array_column($pb['contractors'], null, 'code');
+ok($pb['ok'] && isset($pc['C001'], $pc['B001']) && $pc['B001']['booked_paisa'] === 1210000 && (float) $pc['B001']['booked_qty'] === 1400.0 && count($pc['B001']['lines']) === 2,
+   'THE BILL: every contractor with what Production booked between the dates — pieces, amount and each line (HR may see it)');
+ok($code(Fin::productionBill('2026-03-01', '2026-03-12', 0, $G)) === 'FORBIDDEN' && $code(Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n1, 'parts' => [['kind' => 'fixed', 'amount_paisa' => -100]]]], 'x', $G, $gk)) === 'FORBIDDEN', '  not for someone with no finance job');
+$l2 = $pc['B001']['lines'][1]['id'];
+$b = Fin::balance($n1); $sheets0 = $n('SELECT COUNT(*) FROM att_fin_sheets');
+ok($code(Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n1, 'parts' => [['kind' => 'line', 'entry_id' => $l2, 'qty' => 180, 'rate' => 12.5]]]], '', $C, $acc)) === 'REASON_REQUIRED', 'an adjustment needs a reason');
+ok($code(Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n1, 'parts' => [['kind' => 'line', 'entry_id' => $l2, 'qty' => 200, 'rate' => 12.5]]]], 'x', $C, $acc)) === 'VALIDATION', '  correcting a line to what it already is changes nothing');
+$a1 = Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n1, 'parts' => [['kind' => 'line', 'entry_id' => $l2, 'qty' => 180, 'rate' => 12.5]]]], '20 pieces rejected in checking', $C, $acc);
+ok($a1['ok'] && $a1['taken_off']['status'] === 'posted' && $a1['taken_off']['total_paisa'] === 25000 && $a1['added'] === null && Fin::balance($n1) === $b - 25000,
+   'A CORRECTED LINE: 200 x 12.50 booked, 180 correct — 250 is taken off at once (Accounts), worked out on the server');
+ok((float) Db::value('SELECT qty FROM zp_entries WHERE id = ?', [$l2]) === 200.0, '  what Production booked is not changed');
+$lab = (string) Db::value("SELECT label FROM att_fin_ledger WHERE sheet_id = ? AND employee_id = ?", [$a1['taken_off']['sheet_id'], $n1]);
+ok(str_contains($lab, 'Production adjustment') && str_contains($lab, '200 × 12.5 → 180 × 12.5') && str_contains($lab, '20 pieces rejected'), '  the ledger line says exactly what was corrected and why — ' . $lab);
+$b = Fin::balance($n1); $bk = Fin::balance($emp['C001']);
+$a2 = Fin::adjustProduction('2026-03-01', '2026-03-12', [
+    ['employee_id' => $n1, 'reason' => 'Rate agreed 8.50, booked at 8.00', 'parts' => [['kind' => 'pieces', 'qty' => 1200, 'rate' => 0.5]]],
+    ['employee_id' => $emp['C001'], 'parts' => [['kind' => 'fixed', 'amount_paisa' => -10000]]]], 'Month-end check', $C, $acc);
+ok($a2['ok'] && ($a2['added']['status'] ?? '') === 'waiting' && $a2['added']['total_paisa'] === 60000 && $a2['taken_off']['status'] === 'posted' && $a2['taken_off']['total_paisa'] === 10000
+   && Fin::balance($n1) === $b && Fin::balance($emp['C001']) === $bk - 10000, 'MANY AT ONCE: +600 for one (1,200 x 0.50 — waits for approval), a fixed −100 for another (taken off at once) — ' . ($a2['error'] ?? ''));
+ok($n("SELECT COUNT(*) FROM att_fin_item_lines l JOIN att_fin_sheet_items i ON i.id = l.item_id WHERE i.sheet_id = ? AND l.reason = 'Rate agreed 8.50, booked at 8.00'", [(int) ($a2['added']['sheet_id'] ?? 0)]) === 1
+   && $n("SELECT COUNT(*) FROM att_fin_item_lines l JOIN att_fin_sheet_items i ON i.id = l.item_id WHERE i.sheet_id = ? AND l.reason = 'Month-end check'", [(int) ($a2['taken_off']['sheet_id'] ?? 0)]) === 1, '  a line\'s own reason, or the one reason for all');
+Fin::approve((int) ($a2['added']['sheet_id'] ?? 0), $U, $aud);
+$b = Fin::balance($n1);
+$a3 = Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n1, 'parts' => [['kind' => 'percent', 'pct' => -2]]]], 'Quality penalty, 2% of the bill', $R, $hr);
+ok($a3['ok'] && $a3['taken_off']['total_paisa'] === 24200 && Fin::balance($n1) === $b - 24200, 'A PERCENTAGE: 2% of the 12,100 booked = 242, taken off (HR)');
+ok(str_contains((string) Db::value("SELECT label FROM att_fin_ledger WHERE sheet_id = ?", [$a3['taken_off']['sheet_id']]), '2% of 12,100'), '  and the line says "2% of 12,100"');
+$b = Fin::balance($n1);
+$a4 = Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n1, 'parts' => [['kind' => 'pieces', 'qty' => -40, 'rate' => 5], ['kind' => 'fixed', 'amount_paisa' => 30000]]]], 'Recount', $A, $admin, true);
+ok($a4['taken_off']['status'] === 'posted' && $a4['added']['status'] === 'posted' && Fin::balance($n1) === $b - 20000 + 30000, 'THE ADMINISTRATOR, one step: −200 (−40 x 5.00) and +300, both posted');
+$cnt = $n('SELECT COUNT(*) FROM att_fin_sheets'); $b = Fin::balance($n1); $bk = Fin::balance($emp['C001']);
+$bad = Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $emp['C001'], 'parts' => [['kind' => 'fixed', 'amount_paisa' => -5000]]], ['employee_id' => $n1, 'parts' => [['kind' => 'fixed', 'amount_paisa' => -99999999]]]], 'x', $C, $acc);
+ok(!$bad['ok'] && str_contains((string) $bad['error'], 'cannot be taken off') && $n('SELECT COUNT(*) FROM att_fin_sheets') === $cnt && Fin::balance($n1) === $b && Fin::balance($emp['C001']) === $bk,
+   'ALL OR NOTHING: one contractor\'s deduction is more than they are owed, so nothing is saved for anybody');
+ok($code(Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $emp['D001'], 'parts' => [['kind' => 'fixed', 'amount_paisa' => -100]]]], 'x', $C, $acc)) === 'VALIDATION', '  only a contractor linked to Production');
+ok($code(Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n1, 'parts' => [['kind' => 'line', 'entry_id' => 1, 'qty' => 1, 'rate' => 1]]]], 'x', $C, $acc)) === 'VALIDATION', '  and only their own lines: another contractor\'s line is refused');
+$hb = Fin::productionBill('2026-03-01', '2026-03-12', 0, $H);
+ok($hb['ok'] && array_filter($hb['contractors'], fn($c) => $c['department_name'] !== 'Stitching') === [], '  a HOD sees and adjusts only their own department\'s contractors');
+Fin::setToday('2026-03-05');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

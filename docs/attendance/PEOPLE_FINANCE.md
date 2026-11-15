@@ -163,3 +163,20 @@ another live sheet (`owedFree`).
 
 **Mark attendance › Fill days…** sets one mark on one or several days for
 every ticked worker.
+
+## Production adjustment for many contractors
+
+Employee Ledger › **± Production adjustment** (and Prepare pay › Contractors ›
+"± Production adjustment (many)"), for Admin, Accounts, HR and Audit, and a
+HOD for their own department. One line per contractor linked to Production,
+with what was booked between two days. Per line: pieces × rate, a fixed
+amount, or "Show lines" to correct the pieces or the rate of any booked line.
+"Same for all ticked" fills a fixed amount — or, with the **%** switch on, a
+percentage of each contractor's own booked amount.
+
+The browser sends only what was typed; `FinanceService::adjustProduction`
+works out every figure from Production's own records (`productionLines`).
+What Production booked is never changed: what is taken off becomes one
+deduction entry and what is added one earning entry, with the usual rules
+(deduction never more than is owed and posted at once for the office;
+earning waits unless the administrator approves now). All of it or none.

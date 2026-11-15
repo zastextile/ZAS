@@ -229,6 +229,18 @@ page_header('People Finance');
 .fin .lgacts .act-ded{background:#d9730d}.fin .lgacts .act-ded:hover{background:#b85f08}
 .fin .lgacts .act-pay{background:var(--pri)}.fin .lgacts .act-pay:hover{background:var(--pri-d)}
 .fin .lgacts .act-adv{background:#6b46c1}.fin .lgacts .act-adv:hover{background:#5a37a8}
+.fin .lgacts .act-prod{background:#0f766e}.fin .lgacts .act-prod:hover{background:#0b5f59}
+.fin table.t.entry.padj td{padding:5px 6px}
+.fin table.t.entry.padj input.n{min-width:0;width:96px}
+.fin table.t.entry.padj td:nth-child(8) input{min-width:200px}
+.fin table.t.entry.padj input.chg{border-color:#e07b00;background:var(--warn-bg)}
+.fin table.t.entry.padj tr.sub td{background:#f7fafd;border-bottom:1px solid #e3ebf5;font-size:12.5px}
+.fin table.t.entry.padj tr.sub.h td{font-size:11px;font-weight:600;color:var(--muted);padding-top:4px;padding-bottom:4px}
+.fin table.t.entry.padj tr.sub td:first-child{box-shadow:inset 3px 0 0 var(--pri)}
+.fin table.t.entry.padj .tog{border:0;background:none;color:var(--pri);font:600 12px/1 var(--ff);cursor:pointer;white-space:nowrap;padding:4px}
+.fin table.t.entry.padj td.c-earn{color:#1f7a3a;font-weight:700}.fin table.t.entry.padj td.c-ded{color:#c2620a;font-weight:700}.fin table.t.entry.padj td.nil{color:#b6c0cb}
+.fin table.t.entry.padj input[type=checkbox]{width:15px;height:15px;min-width:0;min-height:0;padding:0}
+.fin .btn.pct[aria-pressed=true]{background:var(--pri);border-color:var(--pri);color:#fff}
 .fin .lgtip{margin-left:auto;background:var(--sel);color:#123d6a;border:1px solid #c5dbf2;border-radius:4px;padding:6px 10px;font-size:12px}
 .fin .lgcards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
 .fin .lgcard{background:#fff;border:1px solid var(--line);border-left:4px solid var(--navy);border-radius:4px;padding:9px 12px;display:grid;gap:2px}
@@ -700,7 +712,8 @@ page_header('People Finance');
     var tools = el('div', { class: 'row' }, [el('div', { style: 'flex:1 1 160px' }, [dept]), el('div', { style: 'flex:2 1 200px' }, [search]),
       btn('Tick all shown', function(){ shown().forEach(function(r){ P.on[r.employee_id] = true; }); draw(); }, 'sm'),
       btn('Untick all', function(){ P.on = {}; draw(); }, 'sm'),
-      btn('Add a line to everyone ticked', bulk, 'sm')]);
+      btn('Add a line to everyone ticked', bulk, 'sm'),
+      P.kind === 'contract' ? btn('± Production adjustment (many)', function(){ prodAdjust(); }, 'sm') : null]);
     show([el('div', { class: 'cardx stack' }, [el('div', { class: 'row', style: 'justify-content:space-between' }, [seg, el('span', { class: 'pill', text: period(P.kind, P.from, P.to) })]), dates]),
           el('div', { class: 'cardx' }, [tools]), listBox, bar]);
     function shown(){ return P.rows.filter(function(r){ return (!P.dept || r.department_name === P.dept) && (!P.q || (r.full_name + ' ' + r.code).toLowerCase().indexOf(P.q) >= 0); }); }
@@ -1284,6 +1297,177 @@ page_header('People Finance');
   // ------------------------------------------------------------ ledger
   /* Everybody in one place, between two dates. A row opens that person's
      statement for the same dates. */
+  // ------------------------------------------------- production adjustment
+  /* MANY CONTRACTORS IN ONE GRID. One line per contractor with what Production
+     booked between two days. Adjust by pieces x rate, by a fixed amount, by a
+     percentage of what was booked, or open the contractor's lines and correct
+     the pieces or the rate of any of them. The figures shown while typing are
+     a courtesy; the server works every one out again from Production's own
+     records, and what Production booked is never changed. */
+  var PA = { from: '', to: '', dept: '' };
+  function prodAdjust(){
+    if (!PA.from) { PA.from = S.today.slice(0, 8) + '01'; PA.to = S.today; }
+    var num = function(v){ v = String(v === null || v === undefined ? '' : v).replace(/,/g, '').trim(); if (v === '' || v === '-' ) return null; var n = Number(v); return isFinite(n) ? n : NaN; };
+    var paisa = function(n){ return Math.round(n * 100); };
+    var signed = function(p){ return (p > 0 ? '+' : '') + rs(p); };
+    var from = el('input', { type: 'date', value: PA.from, max: S.today }), to = el('input', { type: 'date', value: PA.to, max: S.today });
+    var dept = el('select', {}, [el('option', { value: '', text: 'All departments' })].concat((S.depts || []).map(function(d){ return el('option', { value: String(d.id), text: d.name }); })));
+    dept.value = PA.dept;
+    var reason = el('input', { type: 'text', maxlength: 255, placeholder: 'e.g. Checked against the packing count (needed)' });
+    var dir = el('select', { 'aria-label': 'Take off or add' }, [el('option', { value: '-1', text: 'Take off (less to pay)' }), el('option', { value: '1', text: 'Add (more to pay)' })]);
+    var same = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: 'Amount', 'aria-label': 'Same for all ticked' });
+    var pctOn = false;
+    var pctBtn = el('button', { type: 'button', class: 'btn sm pct', 'aria-pressed': 'false', title: 'Switch between a fixed amount and a percentage of what was booked', text: '%' });
+    var pctHint = el('span', { class: 'muted small', hidden: true, text: 'percent of each contractor\'s booked amount' });
+    pctBtn.addEventListener('click', function(){ pctOn = !pctOn; pctBtn.setAttribute('aria-pressed', pctOn ? 'true' : 'false'); pctHint.hidden = !pctOn; same.placeholder = pctOn ? 'Percent, e.g. 2' : 'Amount'; });
+    var holder = el('div', { class: 'scroll', style: 'max-height:50vh' }, [el('p', { class: 'muted', text: 'Loading…' })]);
+    var errBox = el('div', { class: 'err', hidden: true }), sumText = el('span', { class: 'muted small' });
+    var R = [];
+    function rowAdj(r){
+      var t = 0, bad = false;
+      Object.keys(r.edits).forEach(function(id){
+        var l = r.c.lines.filter(function(x){ return x.id === +id; })[0], e = r.edits[id]; if (!l) return;
+        var q = num(e.qty), rt = num(e.rate);
+        if (q !== q || rt !== rt || q === null || rt === null || q < 0 || rt < 0) { bad = true; return; }
+        t += paisa(q * rt) - l.amount_paisa;
+      });
+      var q2 = num(r.pieces.value), r2 = num(r.rate.value);
+      if (q2 !== null || r2 !== null) { if (q2 === null || r2 === null || q2 !== q2 || r2 !== r2 || r2 < 0) bad = true; else t += paisa(q2 * r2); }
+      var f = num(r.fixed.value);
+      if (f !== null) { if (f !== f) bad = true; else t += r.pct !== null ? Math.round(r.c.booked_paisa * r.pct / 100) : paisa(f); }
+      return { t: t, bad: bad };
+    }
+    function paint(){
+      var off = 0, on = 0, nOff = 0, nOn = 0, bad = false, tot = 0;
+      R.forEach(function(r){
+        var a = rowAdj(r);
+        r.adj.textContent = a.bad ? 'check' : (a.t ? signed(a.t) : '—');
+        r.adj.className = 'num ' + (a.bad ? 'c-ded' : a.t < 0 ? 'c-ded' : a.t > 0 ? 'c-earn' : 'nil');
+        r.now.textContent = rs(r.c.booked_paisa + a.t);
+        if (a.bad) bad = true;
+        if (a.t < 0) { off += a.t; nOff++; } else if (a.t > 0) { on += a.t; nOn++; }
+        tot += a.t;
+      });
+      sumText.textContent = (nOff || nOn) ? [nOff ? nOff + ' taken off (' + signed(off) + ')' : '', nOn ? nOn + ' added (' + signed(on) + ')' : ''].filter(Boolean).join(' · ') : 'Nothing adjusted yet';
+      totAdj.textContent = tot ? signed(tot) : '—';
+      totNow.textContent = rs(R.reduce(function(a, r){ return a + r.c.booked_paisa; }, 0) + tot);
+      save.disabled = bad || !(nOff || nOn); if (saveNow) saveNow.disabled = save.disabled;
+    }
+    var totAdj = el('td', { class: 'num' }), totNow = el('td', { class: 'num' });
+    function drawLines(r){
+      r.sub.forEach(function(n){ n.remove(); }); r.sub = [];
+      r.tog.textContent = r.open ? '▾ Hide lines' : '▸ Show lines';
+      r.pieces.hidden = r.rate.hidden = false;
+      if (!r.open) return;
+      var after = r.tr;
+      var add = function(tr){ after.parentNode.insertBefore(tr, after.nextSibling); after = tr; r.sub.push(tr); };
+      add(el('tr', { class: 'sub h' }, [el('td'), el('td', { text: 'Date · Product · Operation' }), el('td', { class: 'num', text: 'Pieces' }), el('td', { class: 'num', text: 'Amount' }),
+        el('td', { class: 'num', text: 'Correct pieces' }), el('td', { class: 'num', text: 'Correct rate' }), el('td', { class: 'num', text: 'Booked rate' }), el('td'), el('td', { class: 'num', text: 'Difference' }), el('td'), el('td')]));
+      if (!r.c.lines.length) add(el('tr', { class: 'sub' }, [el('td'), el('td', { colspan: '10', class: 'muted', text: 'Production booked nothing for this contractor between these dates.' })]));
+      r.c.lines.forEach(function(l){
+        var e = r.edits[l.id];
+        var q = el('input', { type: 'text', inputmode: 'decimal', class: 'n' + (e ? ' chg' : ''), value: e ? e.qty : String(l.qty), 'aria-label': 'Correct pieces' });
+        var rt = el('input', { type: 'text', inputmode: 'decimal', class: 'n' + (e ? ' chg' : ''), value: e ? e.rate : String(l.rate), 'aria-label': 'Correct rate' });
+        var diff = el('td', { class: 'num' });
+        function sync(){
+          var nq = num(q.value), nr = num(rt.value), same2 = nq === l.qty && nr === l.rate;
+          if (same2) delete r.edits[l.id]; else r.edits[l.id] = { qty: q.value, rate: rt.value };
+          q.classList.toggle('chg', nq !== l.qty); rt.classList.toggle('chg', nr !== l.rate);
+          var okN = nq !== null && nr !== null && nq === nq && nr === nr && nq >= 0 && nr >= 0, d = okN ? paisa(nq * nr) - l.amount_paisa : 0;
+          diff.textContent = !okN ? 'check' : (d ? signed(d) : '0'); diff.className = 'num ' + (!okN || d < 0 ? 'c-ded' : d > 0 ? 'c-earn' : 'nil');
+          paint();
+        }
+        q.addEventListener('input', sync); rt.addEventListener('input', sync);
+        add(el('tr', { class: 'sub' }, [el('td'), el('td', { text: nice(l.date).replace(/ \d{4}$/, '') + ' · ' + l.what }), el('td', { class: 'num', text: String(l.qty) }), el('td', { class: 'num', text: rs(l.amount_paisa) }),
+          el('td', { class: 'num' }, [q]), el('td', { class: 'num' }, [rt]), el('td', { class: 'num', text: String(l.rate) }), el('td'), diff, el('td'), el('td')]));
+        sync();
+      });
+    }
+    var loadSeq = 0;
+    function load(){
+      PA.from = from.value; PA.to = to.value; PA.dept = dept.value;
+      holder.textContent = ''; holder.appendChild(el('p', { class: 'muted', text: 'Loading…' })); R = [];
+      var mine = ++loadSeq;                              // only the newest answer may fill the grid
+      call('GET', '/finance/production', { from: PA.from, to: PA.to, department_id: PA.dept }).then(function(x){
+        if (mine !== loadSeq) return;
+        holder.textContent = '';
+        if (!x.ok) return holder.appendChild(fail(x));
+        if (!x.contractors.length) return holder.appendChild(el('div', { class: 'empty', text: 'No contractor linked to Production here. In Employees, set the person to "Contractor" with their production worker code.' }));
+        var tb = el('tbody');
+        x.contractors.forEach(function(c){
+          var r = { c: c, edits: {}, pct: null, open: false, sub: [] };
+          r.cb = el('input', { type: 'checkbox', checked: true, 'aria-label': 'Tick ' + c.full_name });
+          r.pieces = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: '± pieces', 'aria-label': 'Pieces' });
+          r.rate = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: 'rate', 'aria-label': 'Rate' });
+          r.fixed = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: '± amount', 'aria-label': 'Fixed amount' });
+          r.why = el('input', { type: 'text', maxlength: 255, placeholder: 'same as above', 'aria-label': 'Reason for this line' });
+          r.adj = el('td', { class: 'num nil', text: '—' }); r.now = el('b', { text: rs(c.booked_paisa) });
+          r.tog = el('button', { type: 'button', class: 'tog', text: '▸ Show lines', click: function(){ r.open = !r.open; drawLines(r); } });
+          [r.pieces, r.rate].forEach(function(i){ i.addEventListener('input', function(){ i.classList.toggle('chg', i.value.trim() !== ''); paint(); }); });
+          r.fixed.addEventListener('input', function(){ r.pct = null; r.fixed.classList.toggle('chg', r.fixed.value.trim() !== ''); r.fixed.title = ''; paint(); });
+          r.tr = el('tr', {}, [el('td', {}, [r.cb]), el('td', {}, [el('b', { text: c.full_name }), el('div', { class: 'muted small', text: c.code + ' · ' + c.department_name })]),
+            el('td', { class: 'num', text: String(c.booked_qty) }), el('td', { class: 'num', text: rs(c.booked_paisa) }), el('td', { class: 'num' }, [r.pieces]), el('td', { class: 'num' }, [r.rate]),
+            el('td', { class: 'num' }, [r.fixed]), el('td', {}, [r.why]), r.adj, el('td', { class: 'num' }, [r.now]), el('td', {}, [r.tog])]);
+          tb.appendChild(r.tr); R.push(r);
+        });
+        tb.appendChild(el('tr', { class: 'tot' }, [el('td'), el('td', { text: 'Total — ' + x.contractors.length + (x.contractors.length === 1 ? ' contractor' : ' contractors') }),
+          el('td', { class: 'num', text: String(Math.round(x.contractors.reduce(function(a, c){ return a + c.booked_qty; }, 0) * 100) / 100) }), el('td', { class: 'num', text: rs(x.contractors.reduce(function(a, c){ return a + c.booked_paisa; }, 0)) }),
+          el('td'), el('td'), el('td'), el('td'), totAdj, totNow, el('td')]));
+        holder.appendChild(el('table', { class: 't entry padj' }, [el('thead', {}, [el('tr', {}, [['', 0], ['Contractor', 0], ['Booked pieces', 1], ['Booked amount', 1], ['Pieces ±', 1], ['Rate', 1], ['Fixed amount ±', 1], ['Reason for this line (optional)', 0], ['Adjustment', 1], ['New amount', 1], ['', 0]].map(function(h){
+          return el('th', { style: h[1] ? 'text-align:right' : null, text: h[0] }); }))]), tb]));
+        paint();
+      });
+    }
+    function send(now){
+      errBox.hidden = true;
+      var rows = [];
+      R.forEach(function(r){
+        var parts = [];
+        Object.keys(r.edits).forEach(function(id){ parts.push({ kind: 'line', entry_id: +id, qty: num(r.edits[id].qty), rate: num(r.edits[id].rate) }); });
+        var q = num(r.pieces.value), rt = num(r.rate.value); if (q !== null && rt !== null) parts.push({ kind: 'pieces', qty: q, rate: rt });
+        var f = num(r.fixed.value); if (f !== null) parts.push(r.pct !== null ? { kind: 'percent', pct: r.pct } : { kind: 'fixed', amount_paisa: paisa(f) });
+        if (parts.length) rows.push({ employee_id: r.c.employee_id, reason: r.why.value.trim(), parts: parts });
+      });
+      if (!rows.length) { errBox.textContent = 'Nothing is adjusted yet.'; errBox.hidden = false; return; }
+      save.disabled = true; if (saveNow) saveNow.disabled = true;
+      call('POST', '/finance/production/adjust', { from: PA.from, to: PA.to, reason: reason.value.trim(), rows: rows, approve_now: !!now }).then(function(x){
+        save.disabled = false; if (saveNow) saveNow.disabled = false;
+        if (!x.ok) { errBox.textContent = x.error || 'Nothing was saved.'; errBox.hidden = false; return; }
+        var say = function(e, word){ return e ? word + ' Rs ' + rs(e.total_paisa) + ' (' + e.ref + ', ' + ({ posted: 'posted', waiting: 'waiting for approval', approved: 'approved' }[e.status] || e.status) + ')' : ''; };
+        closeModal(); refreshCounts(); toast([say(x.taken_off, 'Taken off'), say(x.added, 'Added')].filter(Boolean).join(' · ') + '.');
+        if (S.tab === 'ledger') ledger(); else if (S.tab === 'prepare') prepare();
+      });
+    }
+    var save = btn('Save adjustments', function(){ send(false); }, 'pri'), saveNow = S.caps.admin ? btn('Save and approve now', function(){ send(true); }, 'pri go') : null;
+    [from, to, dept].forEach(function(i){ i.addEventListener('change', load); });
+    var box = modal([
+      el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Production adjustment — contractors' }), btn('Close', closeModal, 'sm')]),
+      el('p', { class: 'muted small', style: 'margin:0', text: 'Change the pieces or the rate of what Production booked, for one contractor or many, or give a fixed amount. What Production booked is never changed: each difference becomes its own line in the contractor\'s ledger, with the reason and your name.' }),
+      el('div', { class: 'formgrid', style: 'grid-template-columns:150px 150px 1fr 2fr' }, [field('Production from', from), field('to', to), field('Department', dept), field('Reason (one for every line; a line can have its own)', reason)]),
+      el('div', { class: 'cardx row', style: 'justify-content:space-between;padding:8px 12px' }, [
+        el('div', { class: 'row' }, [el('b', { class: 'muted small', text: 'Same for all ticked:' }), el('div', { style: 'width:190px' }, [dir]), el('div', { style: 'width:120px' }, [same]), pctBtn,
+          btn('Fill', function(){
+            var v = num(same.value); if (v === null || v !== v || v <= 0) return;
+            var sg = +dir.value;
+            R.forEach(function(r){ if (!r.cb.checked) return;
+              if (pctOn) {                                   // a percentage of what THIS contractor had booked
+                var amt = Math.round(r.c.booked_paisa * v / 100);
+                r.pct = amt ? sg * v : null; r.fixed.value = amt ? (sg < 0 ? '-' : '') + plain(amt) : ''; r.fixed.title = amt ? v + '% of ' + rs(r.c.booked_paisa) : '';
+              } else { r.pct = null; r.fixed.value = (sg < 0 ? '-' : '') + String(v); r.fixed.title = ''; }
+              r.fixed.classList.toggle('chg', r.fixed.value !== '');
+            });
+            paint();
+          }, 'sm'), pctHint]),
+        el('div', { class: 'row' }, [btn('Tick all', function(){ var any = R.some(function(r){ return !r.cb.checked; }); R.forEach(function(r){ r.cb.checked = any; }); }, 'sm'),
+          btn('Show all lines', function(){ R.forEach(function(r){ r.open = true; drawLines(r); }); }, 'sm'), btn('Hide all lines', function(){ R.forEach(function(r){ r.open = false; drawLines(r); }); }, 'sm')])]),
+      holder,
+      el('div', { class: 'why', style: 'background:var(--sel);border-color:#c5dbf2;border-left-color:var(--pri);color:#123d6a', text: 'Taken off (−): ' + (S.caps.direct_deduct ? 'saved at once.' : 'waits for approval.') + ' Added (+): waits for approval' + (S.caps.admin ? ' — or use "Save and approve now".' : '.') + ' A deduction can never be more than the contractor is owed.' }),
+      errBox,
+      el('div', { class: 'row', style: 'justify-content:space-between' }, [sumText, el('div', { class: 'row' }, [btn('Close', closeModal), save, saveNow])])], true);
+    box.classList.add('xwide');
+    load();
+  }
+
   // ------------------------------------------------------- mark attendance
   /* A WEEK OF DAILY-WAGE WORKERS ON ONE SCREEN — Admin and HR. Click F, H or A
      for each day; days the gate scanner recorded, days already on a pay sheet
@@ -1455,6 +1639,7 @@ page_header('People Finance');
         mayEnter ? btn('− Add Deduction', function(){ entryForm('deduction'); }, 'act-ded') : null,
         mayEnter ? btn('Record Payment', function(){ entryForm('payment'); }, 'act-pay') : null,
         c.pay ? btn('Advance / Loan', function(){ give(LG.emp); }, 'act-adv') : null,
+        (c.adjust || c.wage) ? btn('± Production adjustment', function(){ prodAdjust(); }, 'act-prod') : null,
         el('span', { class: 'lgtip', text: mayEnter ? (c.direct_deduct ? 'Earnings and payments wait for approval; a deduction is taken off at once.' : 'Entries wait for a second person\'s approval.') + ' Click any line to open where it came from.' : 'Click any line to open where it came from.' })]);
       var holder = el('div', { class: 'stack' }, [el('p', { class: 'muted', text: 'Loading…' })]);
       show([peopleList('fin-emps'), filters, actions, holder]);

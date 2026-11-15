@@ -1600,6 +1600,154 @@ final class FinanceService
         });
     }
 
+    // ------------------------------------------------- production adjustment
+
+    /**
+     * WHAT PRODUCTION BOOKED for each contractor between two days — pieces,
+     * amount and every line (date, product, operation, pieces, rate) — for the
+     * adjustment grid. For Admin, Accounts, HR and Audit, and a HOD for their
+     * own department.
+     */
+    public static function productionBill(string $from, string $to, int $deptId, array $caps): array
+    {
+        if (empty($caps['adjust']) && empty($caps['wage'])) {
+            return self::no('FORBIDDEN', 'Production adjustments are for Admin, Accounts, HR and Audit.');
+        }
+        if (!self::isDate($from) || !self::isDate($to) || $to < $from) {
+            return self::no('VALIDATION', 'Give the first and last day.');
+        }
+        if (!Db::tableExists('zp_workers') || !Db::tableExists('zp_entries')) {
+            return ['ok' => true, 'from' => $from, 'to' => $to, 'contractors' => []];
+        }
+        self::syncProduction();
+        $scope = !empty($caps['adjust']) ? null : $caps['wage_departments'];
+        $workers = self::contractWorkers();
+        $out = [];
+        foreach (Db::all("SELECT e.id AS employee_id, e.code, e.full_name, e.department_id, d.name AS department_name FROM att_fin_profiles f
+                            JOIN att_employees e ON e.id = f.employee_id JOIN att_departments d ON d.id = e.department_id
+                           WHERE f.pay_type = 'contract' AND e.active = 1 ORDER BY d.name, e.full_name") as $e) {
+            $id = (int) $e['employee_id'];
+            if (!isset($workers[$id]) || !self::inScope($scope, (int) $e['department_id']) || ($deptId > 0 && (int) $e['department_id'] !== $deptId)) {
+                continue;
+            }
+            $lines = self::productionLines($workers[$id], $from, $to);
+            $qty = 0.0; $paisa = 0;
+            foreach ($lines as $l) { $qty += $l['qty']; $paisa += $l['amount_paisa']; }
+            $out[] = ['employee_id' => $id, 'code' => $e['code'], 'full_name' => $e['full_name'], 'department_name' => $e['department_name'],
+                      'booked_qty' => round($qty, 2), 'booked_paisa' => $paisa, 'owed_paisa' => self::owedFree($id), 'lines' => $lines];
+        }
+        return ['ok' => true, 'from' => $from, 'to' => $to, 'contractors' => $out];
+    }
+
+    /** @return list<array{id:int,date:string,what:string,qty:float,rate:float,amount_paisa:int}> */
+    private static function productionLines(int $workerId, string $from, string $to, ?int $onlyId = null): array
+    {
+        $prod = Db::tableExists('products'); $ops = Db::tableExists('zp_part_ops');
+        $rows = Db::all(
+            'SELECT z.id, z.entry_date, z.qty, z.rate_applied, z.amount, ' . ($prod ? 'p.name' : 'NULL') . ' AS product_name, ' . ($ops ? 'o.operation_name' : 'NULL') . ' AS op_name
+               FROM zp_entries z' . ($prod ? ' LEFT JOIN products p ON p.id = z.product_id' : '') . ($ops ? ' LEFT JOIN zp_part_ops o ON o.id = z.op_id' : '') . "
+              WHERE z.worker_id = ? AND z.status = 'active' AND z.entry_date BETWEEN ? AND ?" . ($onlyId !== null ? ' AND z.id = ?' : '') . '
+              ORDER BY z.entry_date, z.id LIMIT 2000', $onlyId !== null ? [$workerId, $from, $to, $onlyId] : [$workerId, $from, $to]);
+        return array_map(static fn($r) => ['id' => (int) $r['id'], 'date' => (string) $r['entry_date'],
+            'what' => trim(implode(' · ', array_filter([(string) ($r['product_name'] ?? ''), (string) ($r['op_name'] ?? '')]))) ?: 'Production',
+            'qty' => (float) $r['qty'], 'rate' => (float) $r['rate_applied'], 'amount_paisa' => (int) round((float) $r['amount'] * 100)], $rows);
+    }
+
+    /**
+     * Save a grid of production adjustments. Every figure is worked out HERE,
+     * from what Production holds — the browser sends only what was typed:
+     *
+     *   line     a booked line with its corrected pieces and/or rate; the
+     *            adjustment is corrected pieces x corrected rate, less what
+     *            was booked
+     *   pieces   pieces (+ or -) x a rate
+     *   fixed    an amount (+ or -)
+     *   percent  a percentage (+ or -) of what was booked between the dates
+     *
+     * What Production booked is never changed. What is taken off becomes one
+     * deduction entry, what is added one earning entry (the same entries as
+     * Add deduction / Add earning, with the same rules: a deduction never more
+     * than is owed, posted at once for the office; an earning waits, unless
+     * the administrator approves it in the same step). All of it or none.
+     *
+     * @param list<array<string,mixed>> $rows employee_id, reason?, parts: list of {kind, ...}
+     */
+    public static function adjustProduction(string $from, string $to, array $rows, string $reason, array $caps, int $actorId, bool $approveNow = false): array
+    {
+        if (empty($caps['adjust']) && empty($caps['wage'])) {
+            return self::no('FORBIDDEN', 'Production adjustments are for Admin, Accounts, HR and Audit.');
+        }
+        if (!self::isDate($from) || !self::isDate($to) || $to < $from) {
+            return self::no('VALIDATION', 'Give the first and last day.');
+        }
+        if ($rows === [] || count($rows) > 500) {
+            return self::no('VALIDATION', 'Adjust at least one contractor.');
+        }
+        $reason = mb_substr(trim($reason), 0, 255);
+        $workers = Db::tableExists('zp_workers') ? self::contractWorkers() : [];
+        $money = static fn(int $p): string => ($p < 0 ? '−' : '') . self::rupees(abs($p));
+        $num = static fn($v): ?float => is_numeric($v) ? (float) $v : null;
+        $take = []; $give = [];
+        foreach (array_values($rows) as $row) {
+            $emp = (int) ($row['employee_id'] ?? 0);
+            $name = self::nameOf($emp);
+            if (!isset($workers[$emp])) {
+                return self::no('VALIDATION', "$name is not a contractor linked to Production.");
+            }
+            $why = mb_substr(trim((string) ($row['reason'] ?? '')), 0, 255) ?: $reason;
+            foreach ((array) ($row['parts'] ?? []) as $part) {
+                $kind = (string) ($part['kind'] ?? ''); $paisa = 0; $label = 'Production adjustment';
+                if ($kind === 'line') {
+                    $l = self::productionLines($workers[$emp], '1900-01-01', '2999-12-31', (int) ($part['entry_id'] ?? 0))[0] ?? null;
+                    $q = $num($part['qty'] ?? null); $r = $num($part['rate'] ?? null);
+                    if ($l === null) { return self::no('VALIDATION', "$name: one of the production lines is no longer there. Open the grid again."); }
+                    if ($q === null || $r === null || $q < 0 || $r < 0) { return self::no('VALIDATION', "$name: give the correct pieces and rate as numbers."); }
+                    $paisa = (int) round($q * $r * 100) - $l['amount_paisa'];
+                    $label .= ' · ' . (new DateTimeImmutable($l['date']))->format('j M') . ' ' . $l['what'] . ': ' . self::num($l['qty']) . ' × ' . self::num($l['rate']) . ' → ' . self::num($q) . ' × ' . self::num($r);
+                } elseif ($kind === 'pieces') {
+                    $q = $num($part['qty'] ?? null); $r = $num($part['rate'] ?? null);
+                    if ($q === null || $r === null || $r < 0) { return self::no('VALIDATION', "$name: give the pieces and the rate as numbers."); }
+                    $paisa = (int) round($q * $r * 100);
+                    $label .= ' · ' . ($q < 0 ? '−' : '') . self::num(abs($q)) . ' × ' . self::num($r);
+                } elseif ($kind === 'fixed') {
+                    $a = $part['amount_paisa'] ?? null;
+                    if (!is_int($a) && !(is_string($a) && preg_match('/^-?\d{1,13}$/', $a) === 1)) { return self::no('VALIDATION', "$name: give the amount as a number."); }
+                    $paisa = (int) $a;
+                } elseif ($kind === 'percent') {
+                    $pc = $num($part['pct'] ?? null);
+                    if ($pc === null || abs($pc) > 100) { return self::no('VALIDATION', "$name: a percentage is between −100 and 100."); }
+                    $booked = array_sum(array_column(self::productionLines($workers[$emp], $from, $to), 'amount_paisa'));
+                    $paisa = (int) round($booked * $pc / 100);
+                    $label .= ' · ' . self::num(abs($pc)) . '% of ' . self::rupees($booked);      // taken off or added: the entry says which
+                } else {
+                    return self::no('VALIDATION', "$name: that adjustment was not understood.");
+                }
+                if ($paisa === 0) { continue; }
+                if ($why === '') { return self::no('REASON_REQUIRED', "$name: say why (" . $money($paisa) . ').'); }
+                $line = ['employee_id' => $emp, 'label' => mb_substr($label, 0, 100), 'amount_paisa' => abs($paisa), 'reason' => $why];
+                if ($paisa < 0) { $take[] = $line + ['type' => 'deduction']; } else { $give[] = $line + ['type' => 'other_earning']; }
+            }
+        }
+        if ($take === [] && $give === []) {
+            return self::no('VALIDATION', 'Nothing was changed: every adjustment comes to zero.');
+        }
+        $date = min($to, self::today());
+        try {
+            return Db::tx(static function () use ($take, $give, $date, $reason, $caps, $actorId, $approveNow) {
+                $out = ['ok' => true, 'taken_off' => null, 'added' => null];
+                foreach ([['taken_off', 'deduction', $take], ['added', 'earning', $give]] as [$key, $mode, $lines]) {
+                    if ($lines === []) { continue; }
+                    $r = self::createEntry($mode, $date, $lines, $reason, $caps, $actorId, $approveNow);
+                    if (!$r['ok']) { throw new FinStop((string) $r['error']); }
+                    $out[$key] = ['ref' => $r['ref'], 'status' => $r['status'], 'people' => $r['people'], 'total_paisa' => abs((int) $r['total_paisa']), 'sheet_id' => $r['sheet_id']];
+                }
+                return $out;
+            });
+        } catch (FinStop $e) {
+            return self::no('VALIDATION', $e->getMessage());
+        }
+    }
+
     // ------------------------------------------------------- mark attendance
 
     /**

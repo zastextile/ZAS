@@ -121,6 +121,11 @@ Fin::saveProfile($emp['C001'], ['pay_type' => 'contract'], '', $admin);
 foreach ([0, 1, 2] as $i) { $came('D001', $fri->modify("+$i day")->format('Y-m-d')); }
 $came('D002', $wFrom); $came('D003', $wFrom);
 $pdo->exec("INSERT INTO zp_workers (worker_code, worker_name) VALUES ('W001', 'Kamran Contractor')");
+/* names for the production lines, as the real tables hold them */
+$pdo->exec("CREATE TABLE products (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(200) NOT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1)");
+$pdo->exec("INSERT INTO products (name) VALUES ('Thermal Blanket')");
+$pdo->exec("CREATE TABLE zp_part_ops (id INT AUTO_INCREMENT PRIMARY KEY, part_id INT NOT NULL DEFAULT 1, operation_name VARCHAR(120) NOT NULL)");
+$pdo->exec("INSERT INTO zp_part_ops (operation_name) VALUES ('Stitching')");
 $pdo->prepare("INSERT INTO zp_entries (entry_date, worker_id, qty, rate_applied, amount) VALUES (?, 1, 100, 50, 5000.00)")->execute([$wFrom]);
 $adv = Fin::giveAdvance(['employee_id' => $emp['S001'], 'amount_paisa' => 1000000, 'per_pay_paisa' => 250000, 'given_on' => $mFrom], $admin);
 
@@ -469,7 +474,7 @@ const body = p => p.textContent('#fin-body');
     const e6 = []; g.on('pageerror', e => e6.push(e.message));
     await g.goto(BASE + '/att_finance.php#ledger');
     await g.waitForSelector('table.lg tr.click');
-    check('EMPLOYEE LEDGER: the four buttons, the figures and everyone in one table', (await g.locator('.lgacts button').count()) === 4 && (await g.locator('.lgcard').count()) === 5 && /Total —/.test(await body(g)));
+    check('EMPLOYEE LEDGER: the five buttons, the figures and everyone in one table', (await g.locator('.lgacts button').count()) === 5 && (await g.locator('.lgcard').count()) === 5 && /Total —/.test(await body(g)));
     await g.waitForTimeout(500); await shot(g, '13-ledger-everyone');
     await g.click('.lgacts button:has-text("Add Earning")');
     await g.waitForSelector('#fin-shade table.entry');
@@ -581,6 +586,39 @@ const body = p => p.textContent('#fin-body');
     await ad.click('#fin-shade button.pri:has-text("Fill")');
     await ad.waitForFunction(() => document.getElementById('fin-shade').hidden);
     check('  the three days are filled for every ticked worker', /days changed/.test(await body(ad)));
+    // the many-contractor production adjustment grid
+    await ad.click('#fin-tabs button:has-text("Employee Ledger")');
+    await ad.waitForSelector('.lgacts');
+    await ad.click('.lgacts button:has-text("Production adjustment")');
+    await ad.waitForSelector('#fin-shade table.padj');
+    await ad.locator('#fin-shade input[type=date]').first().fill(M_FROM);
+    await ad.locator('#fin-shade input[type=date]').first().dispatchEvent('change');
+    await ad.locator('#fin-shade input[type=date]').first().dispatchEvent('change');      // twice quickly: only the newest answer may fill the grid
+    await ad.waitForFunction(() => { const r = [...document.querySelectorAll('#fin-shade table.padj tbody tr')].find(tr => /Kamran Contractor/.test(tr.textContent)); return r && /5,000/.test(r.textContent); });
+    const kr = ad.locator('#fin-shade table.padj tbody tr', { hasText: 'Kamran Contractor' });
+    await ad.waitForTimeout(800);
+    check('PRODUCTION ADJUSTMENT GRID: each contractor with what Production booked (Kamran: 100 pieces, 5,000) — once, however fast the dates change', /100/.test(await kr.textContent()) && /5,000/.test(await kr.textContent()) && (await kr.count()) === 1, await kr.count());
+    await kr.locator('button.tog').click();
+    await ad.waitForSelector('#fin-shade table.padj tr.sub input[aria-label="Correct pieces"]');
+    check('  Show lines opens the bill: date, product, operation, pieces, rate', /Thermal Blanket · Stitching/.test(await ad.textContent('#fin-shade table.padj')));
+    await ad.fill('#fin-shade table.padj tr.sub input[aria-label="Correct pieces"]', '90');
+    check('  correcting 100 pieces to 90 at 50.00 works out −500 at once', /−500/.test(await kr.textContent()), await kr.textContent());
+    await ad.fill('#fin-shade input[aria-label="Same for all ticked"]', '2');
+    await ad.click('#fin-shade button.pct');
+    check('  the % switch turns the amount into a percentage, and says of what', (await ad.getAttribute('#fin-shade button.pct', 'aria-pressed')) === 'true' && /percent of each contractor/.test(await ad.textContent('#fin-shade')));
+    await ad.click('#fin-shade .cardx button:has-text("Fill")');
+    check('  Fill: 2% of the 5,000 booked = 100 taken off, for every ticked contractor', (await kr.locator('input[aria-label="Fixed amount"]').inputValue()) === '-100' && /−600/.test(await kr.textContent()), await kr.locator('input[aria-label="Fixed amount"]').inputValue());
+    await ad.fill('#fin-shade input[placeholder^="e.g. Checked"]', 'Checked against the packing count');
+    await ad.waitForTimeout(300); await shot(ad, '24-production-grid');
+    await ad.click('#fin-shade button:has-text("Save and approve now")');
+    await ad.waitForFunction(() => document.getElementById('fin-shade').hidden && /Taken off/.test(document.getElementById('fin-toast').textContent));
+    const tt = await ad.textContent('#fin-toast');
+    check('  saved and posted at once: Rs 600 taken off (500 for the corrected line + 2%) — ' + tt, /Taken off Rs 600 \(ENT-\d{6}-\d{2}, posted\)/.test(tt), tt);
+    await ad.locator('table.lg tr.click', { hasText: 'Kamran Contractor' }).click();
+    await ad.waitForFunction(() => /Balance brought forward/.test(document.getElementById('fin-body').textContent) && /Production adjustment/.test(document.getElementById('fin-body').textContent));
+    t = await body(ad);
+    check('  Kamran\'s ledger has both lines, each saying what and why', /100 × 50 → 90 × 50/.test(t) && /2% of 5,000/.test(t) && /Checked against the packing count/.test(t), t.slice(0, 500));
+    await ad.waitForTimeout(300); await shot(ad, '25-production-ledger');
     check('no script error (admin)', e8.length === 0, e8.join(' | '));
     await c8.close();
 
@@ -654,7 +692,7 @@ if (preg_match('/RESULT(\[.*\])/s', $outp, $mm)) {
     ok(false, 'the browser test produced a result: ' . substr($outp, 0, 400));
 }
 ok($n("SELECT COUNT(*) FROM att_fin_sheets WHERE status = 'paid'") === 2 && Fin::balance($emp['S002']) === 250000, 'after the screen: two sheets paid, S002 settled at 43,000, then owed only the 2,500 bonus entered from the ledger');
-ok($n("SELECT COUNT(*) FROM att_fin_sheets WHERE kind = 'entry' AND status = 'posted'") === 2 && $n("SELECT COUNT(*) FROM att_fin_ledger WHERE line_kind = 'bonus' AND amount_paisa = 250000") === 1
+ok($n("SELECT COUNT(*) FROM att_fin_sheets WHERE kind = 'entry' AND status = 'posted'") === 3 && $n("SELECT COUNT(*) FROM att_fin_ledger WHERE line_kind = 'bonus' AND amount_paisa = 250000") === 1
    && $n("SELECT COUNT(*) FROM att_fin_ledger WHERE line_kind = 'production' AND source = 'sheet' AND amount_paisa = 75000") === 1, '  each entry is posted once: the bonus Audit approved, and the incentive the administrator approved in one step');
 ok($n("SELECT COUNT(*) FROM att_fin_item_lines WHERE kind = 'deduction' AND label = 'Canteen' AND amount_paisa = 20000") === 3, 'the bulk line is on all three daily workers\' sheet');
 

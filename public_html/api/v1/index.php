@@ -1057,6 +1057,23 @@ try {
                 (string) Http::input('reason', ''), $caps, (int) $u['id']));
             break;
 
+        /* PRODUCTION ADJUSTMENT for many contractors: what Production booked,
+           and the corrections typed against it (FinanceService::productionBill
+           / adjustProduction — every figure is worked out on the server). */
+        case $method === 'GET' && $route === '/finance/production':
+            [, $caps] = fin_caps();
+            $today = Fin::today();
+            admin_answer(Fin::productionBill((string) Http::input('from', substr($today, 0, 8) . '01'), (string) Http::input('to', $today), (int) Http::input('department_id', 0), $caps));
+            break;
+
+        case $method === 'POST' && $route === '/finance/production/adjust':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            $rows = Http::input('rows', []);
+            admin_answer(Fin::adjustProduction((string) Http::input('from', ''), (string) Http::input('to', ''), is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [],
+                (string) Http::input('reason', ''), $caps, (int) $u['id'], Http::input('approve_now', false) === true));
+            break;
+
         case $method === 'GET' && $route === '/finance/preview':
             [, $caps] = fin_caps();
             admin_answer(Fin::preview((string) Http::input('kind', ''), (string) Http::input('from', ''), (string) Http::input('to', ''), $caps));
