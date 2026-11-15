@@ -158,14 +158,11 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     check('  "Absent several days in a row" names Absent Thrice — 3 days in a row', /Absent Thrice[\s\S]*3 days in a row/.test(await p.textContent('#ins-absent')), await p.textContent('#ins-absent').catch(() => ''));
     check('  "Often late" names Often Late — 6 times', /Often Late[\s\S]*6 times/.test(await p.textContent('#ins-late')));
     check('  "Short days" names Short Days — 4 days', /Short Days[\s\S]*4 days/.test(await p.textContent('#ins-short')));
-    const most = await p.locator('#ins-most li').allTextContents();
-    check('MOSTLY ABSENT: Mostly Away first — 8 of 27 days · 30%; Has Left (left the company) is not counted', /^Mostly Away[\s\S]*8 of 27 days · 30%/.test(most[0] || '') && !most.some(t => /Has Left/.test(t)), most.slice(0, 3).join(' | '));
-    check('  the tick box offers "Include 1 person who left", off', /Include 1 person who left/.test(await p.textContent('label.lefttog')) && !(await p.isChecked('#with-left')));
+    check('PEOPLE WHO LEFT: Has Left is not counted; the tick box offers "Include 1 person who left", off', !/Has Left/.test(await p.textContent('#attr-body')) && /Include 1 person who left/.test(await p.textContent('label.lefttog')) && !(await p.isChecked('#with-left')));
     await p.check('#with-left');
-    const most2 = await p.locator('#ins-most li').allTextContents();
-    check('  ticked: Has Left comes in at the top (15 days) and the rate falls to ' + EXP.rateAll + '%', /^Has Left[\s\S]*15 of 27 days/.test(most2[0] || '') && (await p.textContent('#ins-tiles')).includes(EXP.rateAll + '%'), most2.slice(0, 2).join(' | '));
-    if (SHOTS) { await p.mouse.move(5, 5); await p.locator('#ins-most').screenshot({ path: SHOTS + '/mostly-absent-with-left.png' }); }
+    check('  ticked: they come back in and the rate falls to ' + EXP.rateAll + '%', (await p.textContent('#ins-tiles')).includes(EXP.rateAll + '%') && /Has Left/.test(await p.textContent('#ins-absent')));
     await p.uncheck('#with-left');
+    check('  there is no "Mostly absent" list — three balanced lists', (await p.locator('#ins-most').count()) === 0 && (await p.locator('.cols3 .panel').count()) === 3);
     if (SHOTS) { await p.mouse.move(5, 5); await p.waitForTimeout(100); await p.screenshot({ path: SHOTS + '/insights.png', fullPage: true }); }
     await p.locator('#ins-late li', { hasText: 'Often Late' }).click(); await loaded(p);
     await p.waitForSelector('#attr-body .seg button[data-v=lines][aria-pressed=true]');

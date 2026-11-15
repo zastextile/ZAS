@@ -781,16 +781,14 @@ page_header('Attendance — Reports');
             li.addEventListener('click', function(){ F.employee = e.code; try { localStorage.setItem('attr-seg-att', 'lines'); } catch (x) {} go('att'); });
             return li; })) : none(empty)], { flush: true });
         }
-        holder.appendChild(el('div', { class: 'cols2' }, [
-          watchList('ins-most', 'Mostly absent', people.filter(function(e){ return e.ab >= 2; }).sort(function(a, b){ return b.ab - a.ab || b.ab / b.n - a.ab / a.n; }),
-            function(e){ return e.ab + ' of ' + e.n + ' days · ' + Math.round(100 * e.ab / e.n) + '%'; }, 'Nobody missed two shift days or more.'),
+        holder.appendChild(el('div', { class: 'cols3' }, [
           watchList('ins-absent', 'Absent several days in a row', people.filter(function(e){ return e.best >= 2; }).sort(function(a, b){ return b.best - a.best || b.ab - a.ab; }),
             function(e){ return e.best + ' days in a row · ' + e.ab + ' in all'; }, 'Nobody missed two shift days in a row.'),
           watchList('ins-late', 'Often late', people.filter(function(e){ return e.late >= 3; }).sort(function(a, b){ return b.late - a.late || b.lateMin - a.lateMin; }),
             function(e){ return e.late + ' times · ' + mins(e.lateMin); }, 'Nobody was late three times or more.'),
           watchList('ins-short', 'Short days', people.filter(function(e){ return e.short >= 2; }).sort(function(a, b){ return b.short - a.short; }),
             function(e){ return e.short + ' days under ¾ of the shift'; }, 'Nobody worked under ¾ of their shift twice or more.')]));
-        holder.appendChild(el('p', { class: 'note', text: 'Only people on the roll are counted' + (WITH_LEFT ? ' — and, as ticked, those who left' : '; tick "Include … who left" to add those who left the company') + '. Mostly absent = most shift days not come (two or more). Punctuality = days on time ÷ days worked. Short day = present less than three quarters of the shift (a permission or a half day may explain it). Click a name to see their days.' }));
+        holder.appendChild(el('p', { class: 'note', text: 'Only people on the roll are counted' + (WITH_LEFT ? ' — and, as ticked, those who left' : '; tick "Include … who left" to add those who left the company') + '. Punctuality = days on time ÷ days worked. Short day = present less than three quarters of the shift (a permission or a half day may explain it). Click a name to see their days.' }));
       }
       paint();
       show([bar, narrow, holder]);
