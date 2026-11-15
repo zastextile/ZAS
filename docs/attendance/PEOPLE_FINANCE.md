@@ -135,3 +135,31 @@ least that long, so wages count them as marked.
 Never changed in the grid: a day the gate scanner recorded (fix it in Setup ›
 Entries), a day already on a daily-wages pay sheet (no day is paid twice —
 use Add Earning for a missed day), and a day still to come.
+
+## Who needs a second person, and who does not
+
+| Action | Second person? |
+|---|---|
+| Give an advance or loan, change its plan, opening balance, mark attendance | No — direct, with the reason |
+| **Deduction entry** (penalty, unpaid leave, other deduction, recovery taken early) | **No for Admin, Accounts, HR, Audit** (`caps.direct_deduct`): posted at once — an adjustment, never money going out, never more than is owed. A HOD's still waits. Policy `fin_direct_deductions = 0` switches this off. |
+| Earning entry, payment entry, pay sheets | Yes — except the **administrator**, who may "approve now" in the same step (a payment is then also recorded as paid). Decided on the server from who is signed in. |
+
+Adjustment entries (Add earning / Add deduction) may be made for anybody —
+wage and contract people included — by Admin, Accounts, HR and Audit
+(`caps.adjust`).
+
+**Taking one person off a sheet** (`removeFromSheet`): from a waiting sheet,
+by the approver, an admin or whoever prepared it; from an approved or posted
+one, by Admin or Audit — their ledger lines are struck through with the reason
+and recovered advances are put back. Never from a paid sheet. When the last
+person goes the sheet is closed.
+
+**A contractor's production** is never retyped on a pay sheet: it is corrected
+in Production (the ledger follows), or adjusted on the sheet with
+"± Production adjustment" — pieces × rate, added or taken off, its own line
+with the reason. Booked production is offered once: a contractor has one open
+sheet at a time, and a sheet only carries what is owed and not already on
+another live sheet (`owedFree`).
+
+**Mark attendance › Fill days…** sets one mark on one or several days for
+every ticked worker.

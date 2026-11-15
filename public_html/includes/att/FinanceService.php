@@ -37,6 +37,11 @@ use DateTimeZone;
  *
  * Money is whole paisa (int). Amounts cross the API as paisa too.
  */
+/** Thrown inside a transaction to undo all of it and say why (never a database error). */
+final class FinStop extends \Exception
+{
+}
+
 final class FinanceService
 {
     public const KINDS = ['salary', 'daily', 'contract'];
@@ -96,6 +101,12 @@ final class FinanceService
         $caps = [
             'salary' => $salary, 'wage' => $office || $hodOf !== [], 'approve' => $approve, 'pay' => $pay, 'setup' => $setup,
             'mark' => $admin || $job(Roles::HR),          // the week attendance grid: Admin and HR
+            // A deduction entry (penalty, unpaid leave, a recovery taken early) is an
+            // adjustment, not a payment: the office posts it at once. A HOD's still waits.
+            'direct_deduct' => ($admin || $job(Roles::ACCOUNTS, Roles::HR, Roles::AUDIT)) && Policy::get('fin_direct_deductions', '1') !== '0',
+            // Adjustment entries (Add earning / Add deduction) for anybody, wage and
+            // contract people included: the office — Admin, Accounts, HR, Audit.
+            'adjust' => $admin || $job(Roles::ACCOUNTS, Roles::HR, Roles::AUDIT),
             'any' => $wide || $hodOf !== [], 'admin' => $admin,
             // A HOD prepares wages for their own people and never sees a salary.
             'see_salary' => $wide,
@@ -106,7 +117,7 @@ final class FinanceService
         // person may look (if their setting says so) but change nothing.
         $window = self::windowState($userId);
         if (!$admin && $window !== 'yes') {
-            foreach (['salary', 'wage', 'approve', 'pay', 'setup', 'mark'] as $k) { $caps[$k] = false; }
+            foreach (['salary', 'wage', 'approve', 'pay', 'setup', 'mark', 'direct_deduct', 'adjust'] as $k) { $caps[$k] = false; }
             if ($window !== 'ro') { $caps['any'] = false; }
         }
         return $caps;
@@ -1160,12 +1171,12 @@ final class FinanceService
         });
     }
 
-    public static function approve(int $id, array $caps, int $actorId): array
+    public static function approve(int $id, array $caps, int $actorId, bool $direct = false): array
     {
-        if (!$caps['approve']) {
+        if (!$direct && !$caps['approve']) {
             return self::no('FORBIDDEN', 'Only Admin or Audit can approve a pay sheet.');
         }
-        return Db::tx(static function () use ($id, $caps, $actorId) {
+        return Db::tx(static function () use ($id, $caps, $actorId, $direct) {
             $s = Db::one('SELECT * FROM att_fin_sheets WHERE id = ? FOR UPDATE', [$id]);
             if ($s === null) {
                 return self::no('NOT_FOUND', 'No such pay sheet.');
@@ -1173,7 +1184,7 @@ final class FinanceService
             if ($s['status'] !== 'waiting') {
                 return self::no('ALREADY_DECIDED', 'This sheet is already ' . $s['status'] . '.');
             }
-            if ((int) $s['prepared_by'] === $actorId && !$caps['admin']) {
+            if (!$direct && (int) $s['prepared_by'] === $actorId && !$caps['admin']) {
                 return self::no('FORBIDDEN', 'You prepared this sheet, so someone else must approve it.');
             }
             $date = min((string) $s['period_to'], self::today());
@@ -1386,7 +1397,10 @@ final class FinanceService
         if ($type === 'salary') {
             return (bool) $caps['salary'];
         }
-        return in_array($type, ['daily', 'contract'], true) && $caps['wage'] && self::inScope($caps['wage_departments'], (int) $e['department_id']);
+        if (!in_array($type, ['daily', 'contract'], true)) {
+            return false;
+        }
+        return !empty($caps['adjust']) || ($caps['wage'] && self::inScope($caps['wage_departments'], (int) $e['department_id']));
     }
 
     private static function nameOf(int $employeeId): string
@@ -1398,7 +1412,16 @@ final class FinanceService
      * @param list<array<string,mixed>> $rows employee_id, amount_paisa, and for an earning or a
      *        deduction: type, reason, label?, advance_id?; for a payment: method?
      */
-    public static function createEntry(string $mode, string $date, array $rows, string $reason, array $caps, int $actorId): array
+    public static function createEntry(string $mode, string $date, array $rows, string $reason, array $caps, int $actorId, bool $approveNow = false): array
+    {
+        try {
+            return self::createEntryTx($mode, $date, $rows, $reason, $caps, $actorId, $approveNow);
+        } catch (FinStop $e) {
+            return self::no('VALIDATION', $e->getMessage());        // everything was rolled back
+        }
+    }
+
+    private static function createEntryTx(string $mode, string $date, array $rows, string $reason, array $caps, int $actorId, bool $approveNow): array
     {
         if (!in_array($mode, ['earning', 'deduction', 'payment'], true)) {
             return self::no('VALIDATION', 'Choose an earning, a deduction or a payment.');
@@ -1414,7 +1437,7 @@ final class FinanceService
         }
         $reason = mb_substr(trim($reason), 0, 255);
         self::syncProduction();
-        return Db::tx(static function () use ($mode, $date, $rows, $reason, $caps, $actorId) {
+        return Db::tx(static function () use ($mode, $date, $rows, $reason, $caps, $actorId, $approveNow) {
             $by = []; $taking = [];
             foreach (array_values($rows) as $i => $r) {
                 $emp = (int) ($r['employee_id'] ?? 0);
@@ -1495,7 +1518,85 @@ final class FinanceService
                 $total += $net;
             }
             Audit::record('fin.entry_prepare', 'att_fin_sheet', $sheetId, null, ['ref' => $ref, 'mode' => $mode, 'date' => $date, 'people' => count($by), 'total_paisa' => $total], $actorId);
-            return ['ok' => true, 'sheet_id' => $sheetId, 'ref' => $ref, 'mode' => $mode, 'people' => count($by), 'total_paisa' => $total];
+            /* WITHOUT A SECOND PERSON, in two cases only:
+                 · a DEDUCTION entered by the office (Admin, Accounts, HR, Audit): an
+                   adjustment, never money going out, and never more than is owed;
+                 · anything the ADMINISTRATOR asks to approve now — and a payment is
+                   then recorded as paid in the same step.
+               Both are decided here, on the server, from who is signed in. */
+            $status = 'waiting';
+            $direct = $mode === 'deduction' && !empty($caps['direct_deduct']);
+            if ($direct || ($approveNow && $caps['admin'])) {
+                $r = self::approve($sheetId, $caps, $actorId, true);
+                if (!$r['ok']) { throw new FinStop((string) $r['error']); }
+                $status = (string) $r['status'];
+                if ($mode === 'payment') {
+                    $payDay = (int) (new DateTimeImmutable($date))->format('N') === Policy::int('fin_pay_weekday', 4);
+                    $r = self::pay($sheetId, $date, $payDay ? '' : ($reason !== '' ? $reason : 'Paid at once by the administrator'), $caps, $actorId);
+                    if (!$r['ok']) { throw new FinStop((string) $r['error']); }
+                    $status = 'paid';
+                }
+                Audit::record('fin.entry_direct', 'att_fin_sheet', $sheetId, null, ['ref' => $ref, 'mode' => $mode, 'status' => $status, 'by' => $direct ? 'office deduction' : 'administrator'], $actorId);
+            }
+            return ['ok' => true, 'sheet_id' => $sheetId, 'ref' => $ref, 'mode' => $mode, 'people' => count($by), 'total_paisa' => $total, 'status' => $status];
+        });
+    }
+
+    /**
+     * TAKE ONE PERSON OFF A SHEET — a wrong line among many, without sending
+     * the whole sheet back and entering everybody again.
+     *
+     *   waiting            the person simply leaves the sheet (nothing was in
+     *                      the ledger yet). The approver, an admin, or whoever
+     *                      prepared it.
+     *   approved / posted  their lines are struck through in the ledger with
+     *                      the reason, and what was recovered from their
+     *                      advances is put back. Admin or Audit.
+     *   paid               not here: money has been handed over. An admin
+     *                      cancels the sheet.
+     *
+     * When the last person goes, the sheet is closed. A copy of what was
+     * removed is kept in the audit trail.
+     */
+    public static function removeFromSheet(int $id, int $employeeId, string $reason, array $caps, int $actorId): array
+    {
+        $why = mb_substr(trim($reason), 0, 255);
+        if ($why === '') {
+            return self::no('REASON_REQUIRED', 'Say why this person is taken off — the reason is kept.');
+        }
+        return Db::tx(static function () use ($id, $employeeId, $why, $caps, $actorId) {
+            $s = Db::one('SELECT * FROM att_fin_sheets WHERE id = ? FOR UPDATE', [$id]);
+            if ($s === null) {
+                return self::no('NOT_FOUND', 'No such pay sheet.');
+            }
+            $live = in_array($s['status'], ['approved', 'posted'], true);
+            if ($s['status'] !== 'waiting' && !$live) {
+                return self::no('ALREADY_DECIDED', $s['status'] === 'paid' ? 'This sheet has been paid. An administrator can cancel the whole sheet.' : 'This sheet is already ' . $s['status'] . '.');
+            }
+            if ($live ? !$caps['approve'] : (!$caps['approve'] && (int) $s['prepared_by'] !== $actorId)) {
+                return self::no('FORBIDDEN', $live ? 'Only Admin or Audit can take someone off an approved sheet.' : 'Only an approver, or the person who prepared it, can take someone off a waiting sheet.');
+            }
+            $item = Db::one('SELECT i.*, e.full_name FROM att_fin_sheet_items i JOIN att_employees e ON e.id = i.employee_id WHERE i.sheet_id = ? AND i.employee_id = ? FOR UPDATE', [$id, $employeeId]);
+            if ($item === null) {
+                return self::no('NOT_FOUND', 'That person is not on this sheet.');
+            }
+            $lines = Db::all('SELECT line_key, kind, side, label, amount_paisa, reason, advance_id FROM att_fin_item_lines WHERE item_id = ? ORDER BY sort, id', [(int) $item['id']]);
+            if ($live) {
+                foreach (Db::all('SELECT advance_id, SUM(amount_paisa) AS paisa FROM att_fin_ledger WHERE sheet_id = ? AND employee_id = ? AND advance_id IS NOT NULL AND cancelled_at IS NULL GROUP BY advance_id', [$id, $employeeId]) as $r) {
+                    Db::run("UPDATE att_fin_advances SET recovered_paisa = GREATEST(0, recovered_paisa - ?), status = IF(status = 'closed', 'active', status) WHERE id = ?", [(int) $r['paisa'], (int) $r['advance_id']]);
+                }
+                Db::run('UPDATE att_fin_ledger SET cancelled_at = ?, cancelled_by = ?, cancel_reason = ? WHERE sheet_id = ? AND employee_id = ? AND cancelled_at IS NULL', [Time::sql(), $actorId, $why, $id, $employeeId]);
+            }
+            Db::run('DELETE FROM att_fin_item_lines WHERE item_id = ?', [(int) $item['id']]);
+            Db::run('DELETE FROM att_fin_sheet_items WHERE id = ?', [(int) $item['id']]);
+            $left = (int) Db::value('SELECT COUNT(*) FROM att_fin_sheet_items WHERE sheet_id = ?', [$id]);
+            if ($left === 0) {
+                Db::run('UPDATE att_fin_sheets SET status = ?, returned_by = ?, returned_at = ?, return_reason = ? WHERE id = ?',
+                    [$live ? 'cancelled' : 'returned', $actorId, Time::sql(), mb_substr('Everyone was taken off: ' . $why, 0, 255), $id]);
+            }
+            Audit::record('fin.sheet_remove_person', 'att_fin_sheet', $id, ['employee_id' => $employeeId, 'name' => $item['full_name'], 'amount_paisa' => (int) $item['amount_paisa'], 'was' => $s['status'], 'lines' => $lines],
+                ['people_left' => $left], $actorId, $why);
+            return ['ok' => true, 'sheet_id' => $id, 'people_left' => $left, 'closed' => $left === 0];
         });
     }
 

@@ -1033,7 +1033,8 @@ try {
             [$u, $caps] = fin_caps();
             $rows = Http::input('rows', []);
             admin_answer(Fin::createEntry((string) Http::input('mode', ''), (string) Http::input('date', ''),
-                is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [], (string) Http::input('reason', ''), $caps, (int) $u['id']));
+                is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [], (string) Http::input('reason', ''), $caps, (int) $u['id'],
+                Http::input('approve_now', false) === true));
             break;
 
         case $method === 'GET' && preg_match('#^/finance/people/(\d+)/entry-info$#', $route, $m) === 1:
@@ -1098,7 +1099,7 @@ try {
             send_csv('pay-sheet-' . $sh['sheet']['ref'] . '.csv', ['Code', 'Name', 'Department', 'Earned', 'Owed from before', 'Deducted', 'To pay', 'Bank or cash', 'Amendments'], $rows);
             break;
 
-        case $method === 'POST' && preg_match('#^/finance/sheets/(\d+)/(amend|approve|return|pay|cancel)$#', $route, $m) === 1:
+        case $method === 'POST' && preg_match('#^/finance/sheets/(\d+)/(amend|approve|return|pay|cancel|remove)$#', $route, $m) === 1:
             Http::requireCsrf();
             [$u, $caps] = fin_caps();
             $sid = (int) $m[1]; $uid = (int) $u['id']; $why = (string) Http::input('reason', '');
@@ -1109,6 +1110,7 @@ try {
                 'return'  => Fin::sendBack($sid, $why, $caps, $uid),
                 'pay'     => Fin::pay($sid, (string) Http::input('pay_date', ''), $why, $caps, $uid),
                 'cancel'  => Fin::cancelSheet($sid, $why, $caps, $uid),
+                'remove'  => Fin::removeFromSheet($sid, (int) Http::input('employee_id', 0), $why, $caps, $uid),
             });
             break;
 

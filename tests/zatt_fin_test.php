@@ -495,6 +495,55 @@ ok($bad['saved'] === 0 && count($bad['errors']) === 4 && str_contains($bad['erro
    '  never changed here: a scanned day, a day already on a pay sheet, a day to come, a salaried person — each says why');
 Fin::setToday('2026-03-05');
 
+echo "12g. Deductions without a second person, the administrator's one step, and taking one person off\n";
+Fin::setToday('2026-03-12');
+$A = Fin::caps($admin); $R = Fin::caps($hr); $C = Fin::caps($acc); $H = Fin::caps($hod); $U = Fin::caps($aud);
+ok($A['direct_deduct'] && $C['direct_deduct'] && $R['direct_deduct'] && $U['direct_deduct'] && !$H['direct_deduct'], 'a deduction is posted at once by Admin, Accounts, HR and Audit — not by a HOD');
+Fin::createEntry('earning', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'bonus', 'amount_paisa' => 500000], ['employee_id' => $emp['D001'], 'type' => 'bonus', 'amount_paisa' => 500000]], 'Seed for the tests', $A, $admin, true);
+$b2 = Fin::balance($emp['D002']);
+$dd = Fin::createEntry('deduction', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'deduction', 'label' => 'Penalty', 'amount_paisa' => 30000]], 'Late three times', $C, $acc);
+ok($dd['ok'] && $dd['status'] === 'posted' && Fin::balance($emp['D002']) === $b2 - 30000, 'ACCOUNTS enters a penalty of 300: posted at once, no second person, 300 less is owed');
+ok($n('SELECT approved_by FROM att_fin_sheets WHERE id = ?', [$dd['sheet_id']]) === $acc && $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'fin.entry_direct' AND subject_id = ?", [$dd['sheet_id']]) === 1, '  it carries their name, and the trail says it was a direct office deduction');
+ok(str_contains((string) (Fin::createEntry('deduction', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'deduction', 'amount_paisa' => Fin::balance($emp['D002']) + 100]], 'x', $C, $acc)['error'] ?? ''), 'cannot be taken off'), '  still never more than is owed');
+$hd = Fin::createEntry('deduction', '2026-03-12', [['employee_id' => $emp['D001'], 'type' => 'deduction', 'amount_paisa' => 10000]], 'Broken needle', $H, $hod);
+ok($hd['ok'] && $hd['status'] === 'waiting', '  a HOD\'s deduction still waits for approval');
+Fin::sendBack($hd['sheet_id'], 'test', $H, $hod);
+Policy::set('fin_direct_deductions', '0', null, 'string'); Policy::flush();
+$off = Fin::createEntry('deduction', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'deduction', 'amount_paisa' => 10000]], 'x', Fin::caps($acc), $acc);
+ok($off['status'] === 'waiting', '  and the whole rule can be switched off (policy fin_direct_deductions = 0): then it waits');
+Fin::sendBack($off['sheet_id'], 'test', $C, $acc);
+Policy::set('fin_direct_deductions', '1', null, 'string'); Policy::flush();
+$hre = Fin::createEntry('earning', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'production', 'amount_paisa' => 20000], ['employee_id' => $emp['C001'], 'type' => 'other_earning', 'label' => 'Production adjustment', 'amount_paisa' => 15000]], 'Rate corrected', $R, $hr);
+ok($hre['ok'] && $hre['status'] === 'waiting', 'HR may enter an adjustment for a daily worker and a contractor (an earning waits for approval)');
+ok(Fin::createEntry('earning', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'bonus', 'amount_paisa' => 1000]], 'x', $C, $acc, true)['status'] === 'waiting', '"approve now" from anybody but an administrator is ignored: it waits');
+$b2 = Fin::balance($emp['D002']);
+$an = Fin::createEntry('earning', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'bonus', 'amount_paisa' => 70000]], 'Target met', $A, $admin, true);
+ok($an['status'] === 'posted' && Fin::balance($emp['D002']) === $b2 + 70000, 'THE ADMINISTRATOR, one step: an earning is entered and posted');
+$b2 = Fin::balance($emp['D002']);
+$ap = Fin::createEntry('payment', '2026-03-12', [['employee_id' => $emp['D002'], 'amount_paisa' => 50000, 'method' => 'cash']], '', $A, $admin, true);
+ok($ap['status'] === 'paid' && Fin::balance($emp['D002']) === $b2 - 50000 && $n("SELECT COUNT(*) FROM att_fin_ledger WHERE sheet_id = ? AND kind = 'payment' AND amount_paisa = 50000", [$ap['sheet_id']]) === 1, '  a payment is entered, approved and paid: a PAY- line of 500');
+ok($code(Fin::createEntry('payment', '2026-03-12', [['employee_id' => $emp['D002'], 'amount_paisa' => 99999999]], '', $A, $admin, true)) === 'VALIDATION', '  the limits are the same for the administrator: never more than is owed');
+
+$two = Fin::createEntry('earning', '2026-03-12', [['employee_id' => $emp['D001'], 'type' => 'bonus', 'amount_paisa' => 40000], ['employee_id' => $emp['D002'], 'type' => 'bonus', 'amount_paisa' => 40000]], 'Eid', $C, $acc);
+ok($code(Fin::removeFromSheet($two['sheet_id'], $emp['D001'], '', $C, $acc)) === 'REASON_REQUIRED' && $code(Fin::removeFromSheet($two['sheet_id'], $emp['D001'], 'x', $H, $hod)) === 'FORBIDDEN', 'TAKING ONE PERSON OFF needs a reason, and is not for a stranger to the sheet');
+$rm = Fin::removeFromSheet($two['sheet_id'], $emp['D001'], 'Wrong person', $C, $acc);
+ok($rm['ok'] && $rm['people_left'] === 1 && !$rm['closed'] && $n('SELECT status = \'waiting\' FROM att_fin_sheets WHERE id = ?', [$two['sheet_id']]) === 1, '  from a waiting entry: only that person leaves, the entry still waits with the other');
+$b1 = Fin::balance($emp['D001']); $b2 = Fin::balance($emp['D002']);
+Fin::approve($two['sheet_id'], $U, $aud);
+ok(Fin::balance($emp['D001']) === $b1 && Fin::balance($emp['D002']) === $b2 + 40000, '  approved afterwards, only the one left on it is posted');
+$lo = Fin::giveAdvance(['employee_id' => $emp['D002'], 'kind' => 'advance', 'amount_paisa' => 60000, 'per_pay_paisa' => 20000, 'given_on' => '2026-03-12'], $acc)['advance_id'];
+$rc = Fin::createEntry('deduction', '2026-03-12', [['employee_id' => $emp['D002'], 'type' => 'advance', 'advance_id' => $lo, 'amount_paisa' => 20000], ['employee_id' => $emp['D001'], 'type' => 'deduction', 'amount_paisa' => 5000]], 'Early recovery', $C, $acc);
+$b2 = Fin::balance($emp['D002']); $b1 = Fin::balance($emp['D001']);
+ok($rc['status'] === 'posted' && $n('SELECT recovered_paisa FROM att_fin_advances WHERE id = ?', [$lo]) === 20000 && $code(Fin::removeFromSheet($rc['sheet_id'], $emp['D002'], 'x', $C, $acc)) === 'FORBIDDEN', '  from a POSTED entry it is for Admin or Audit, not Accounts');
+$rp = Fin::removeFromSheet($rc['sheet_id'], $emp['D002'], 'Recovered twice by mistake', $U, $aud);
+ok($rp['ok'] && Fin::balance($emp['D002']) === $b2 + 20000 && Fin::balance($emp['D001']) === $b1 && $n('SELECT recovered_paisa FROM att_fin_advances WHERE id = ?', [$lo]) === 0
+   && $n("SELECT COUNT(*) FROM att_fin_ledger WHERE sheet_id = ? AND employee_id = ? AND cancelled_at IS NOT NULL AND cancel_reason = 'Recovered twice by mistake'", [$rc['sheet_id'], $emp['D002']]) === 1,
+   '  Audit takes one person off a posted entry: their line is struck through with the reason, the advance is owed again, the other person is untouched');
+$last = Fin::removeFromSheet($rc['sheet_id'], $emp['D001'], 'Not needed either', $U, $aud);
+ok($last['closed'] && $n('SELECT status = \'cancelled\' FROM att_fin_sheets WHERE id = ?', [$rc['sheet_id']]) === 1 && Fin::balance($emp['D001']) === $b1 + 5000, '  when the last person goes the entry is closed');
+ok($code(Fin::removeFromSheet($ap['sheet_id'], $emp['D002'], 'x', $A, $admin)) === 'ALREADY_DECIDED', '  never from a sheet that has been paid: money has been handed over');
+Fin::setToday('2026-03-05');
+
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');
 $m->down(16);

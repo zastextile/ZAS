@@ -163,6 +163,7 @@ page_header('People Finance');
 .fin .phead{display:grid;grid-template-columns:16px 30px minmax(0,1.1fr) minmax(0,2fr) 110px 78px;gap:12px;padding:7px 12px;background:var(--head);border:1px solid var(--line);border-radius:4px 4px 0 0;font-size:11.5px;font-weight:600;color:#3b4a5a}
 .fin .phead.nocb{grid-template-columns:30px minmax(0,1.1fr) minmax(0,2fr) 110px 78px}
 .fin .prow.nocb{grid-template-columns:auto minmax(0,1.1fr) minmax(0,2fr) auto auto;grid-template-areas:"av nm sum net act"}
+.fin .phead.nocb{grid-template-columns:30px minmax(0,1.1fr) minmax(0,2fr) 110px 150px}
 
 /* one line of one person's pay */
 .fin .ln{display:grid;grid-template-columns:minmax(0,1.5fr) 96px 130px minmax(0,1.6fr) 28px;gap:4px 10px;align-items:center;padding:4px 8px;border-radius:0;border-bottom:1px solid var(--line2)}
@@ -259,6 +260,8 @@ page_header('People Finance');
 .fin .mwscan small,.fin .mwsheet small{font-weight:500;font-size:10px;color:var(--muted)}
 .fin .mwsheet{display:inline-grid;line-height:1.1;color:#3b4a5a;font-weight:600;font-size:12px;background:#eef1f5;border:1px solid var(--line);border-radius:4px;padding:3px 8px}
 .fin .mwlock{color:#b6c0cb}
+.fin .daypick{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:4px;padding:5px 9px;font-size:12.5px;cursor:pointer}
+.fin .daypick input{width:15px;height:15px;margin:0}
 .fin table.mw input[type=checkbox]{width:16px;height:16px;margin:0}
 .fin .mwkey{display:inline-block;width:18px;text-align:center;border-radius:3px;color:#fff;font-weight:700;font-size:11px;margin-left:8px}
 .fin .mwkey.f{background:#1f7a3a}.fin .mwkey.h{background:#d9730d}.fin .mwkey.a{background:#8a96a3}
@@ -614,6 +617,26 @@ page_header('People Finance');
     var adders = el('div', { class: 'row' }, Object.keys(ADD).map(function(k){
       return btn('+ ' + ADD[k], function(){ var a = { kind: k, label: '', amt: '', reason: '' }; m.added.push(a); addRow(a).focus(); refresh(); }, 'sm');
     }));
+    /* A CONTRACTOR'S PRODUCTION, ADJUSTED. What Production booked is not
+       retyped here — it is corrected at its source, or adjusted on this sheet
+       with a line that says exactly what and why: pieces x rate, added or
+       taken off. The booked figure itself stays as Production has it. */
+    if (lines.some(function(l){ return l.key === 'carry' && /Production/.test(l.label); })) {
+      adders.appendChild(btn('± Production adjustment', function(){
+        var inputs = ask('Production adjustment', 'For rejected or uncounted pieces, or a rate that was wrong. Give the pieces and the rate, or just an amount. It becomes its own line on this sheet with your reason; what Production booked is not changed.',
+          [{ k: 'dir', label: 'What', type: 'select', options: [['minus', 'Take off (less to pay)'], ['plus', 'Add (more to pay)']] }, { k: 'qty', label: 'Pieces', placeholder: 'e.g. 20' }, { k: 'rate', label: 'Rate each', placeholder: 'e.g. 12.50' },
+           { k: 'amt', label: 'Amount', money: true, placeholder: 'pieces × rate' }, { k: 'reason', label: 'Why', wide: true, placeholder: 'e.g. 20 pieces rejected in checking' }], 'Add to sheet', function(v){
+            var p = toPaisa(v.amt);
+            if (p === null || p <= 0) return { ok: false, error: 'Give the pieces and the rate, or the amount.' };
+            if (!v.reason) return { ok: false, error: 'Say why — the reason is kept on the line.' };
+            var q = parseFloat(v.qty), rt = parseFloat(v.rate), how = q > 0 && rt > 0 ? ' · ' + v.qty + ' × ' + v.rate : '';
+            var a = { kind: v.dir === 'plus' ? 'other_earning' : 'deduction', label: 'Production adjustment' + how, amt: v.amt, reason: v.reason };
+            m.added.push(a); addRow(a); closeModal(); refresh(); return { ok: true };
+          });
+        var calc = function(){ var q = parseFloat(inputs.qty.value), rt = parseFloat(inputs.rate.value); if (q > 0 && rt > 0) inputs.amt.value = (Math.round(q * rt * 100) / 100).toString(); };
+        inputs.qty.addEventListener('input', calc); inputs.rate.addEventListener('input', calc);
+      }, 'sm'));
+    }
     var meth = el('div', { class: 'seg mini', role: 'group', 'aria-label': 'Paid by' }, ['cash', 'bank'].map(function(x){
       return el('button', { type: 'button', 'aria-pressed': m.method === x ? 'true' : 'false', text: x === 'cash' ? 'Cash' : 'Bank',
         click: function(e){ m.method = x; Array.prototype.forEach.call(e.target.parentNode.children, function(b){ b.setAttribute('aria-pressed', b === e.target ? 'true' : 'false'); }); refresh(); } });
@@ -782,6 +805,8 @@ page_header('People Finance');
       r.items.forEach(function(i){ models[i.employee_id] = newModel(i.method); });
       var isEntry = s.kind === 'entry', payEntry = isEntry && r.items.some(function(i){ return i.lines.some(function(l){ return l.side === 'carry'; }); });
       var maySendBack = s.status === 'waiting' && (c.approve || r.own);
+      /* one wrong person can be taken off without sending the whole sheet back */
+      var mayRemove = maySendBack || ((s.status === 'approved' || s.status === 'posted') && c.approve);
       var mayAmend = maySendBack && !isEntry;
       var mayApprove = s.status === 'waiting' && c.approve && (!r.own || c.admin);
       var head = el('div', { class: 'cardx stack' }, [
@@ -808,7 +833,16 @@ page_header('People Finance');
           var row = el('div', { class: 'prow nocb' + (open[id] ? ' open' : '') }, [el('div', { class: 'av', text: initials(i.full_name) }),
             el('div', { class: 'nm' }, [el('b', { text: i.full_name }), el('span', { text: i.code + ' · ' + i.department_name + ' · ' + (m.method === 'bank' ? 'bank' : 'cash') + ' · ' }), pill]), sum,
             el('div', { class: 'net' }, [netB, netS]),
-            el('div', { class: 'act' }, [btn(open[id] ? 'Close' : (editing ? 'Amend' : 'Lines'), function(){ open[id] = !open[id]; drawList(); }, 'sm')])]);
+            el('div', { class: 'act row', style: 'flex-wrap:nowrap;gap:4px' }, [btn(open[id] ? 'Close' : (editing ? 'Amend' : 'Lines'), function(){ open[id] = !open[id]; drawList(); }, 'sm'),
+              mayRemove && !editing ? btn('Remove', function(){
+                ask('Take ' + i.full_name + ' off this ' + (isEntry ? 'entry' : 'sheet'), s.status === 'waiting' ? 'Only this person leaves; everybody else stays exactly as entered.' + (r.items.length === 1 ? ' They are the last one, so the ' + (isEntry ? 'entry' : 'sheet') + ' will be closed.' : '')
+                    : 'Their lines are struck through in the ledger with your reason, and any advance recovered here is put back. Everybody else stays.',
+                  [{ k: 'reason', label: 'Why', wide: true }], 'Remove', function(v){
+                    return call('POST', '/finance/sheets/' + s.id + '/remove', { employee_id: id, reason: v.reason }).then(function(x){
+                      if (!x.ok) return x;
+                      closeModal(); toast(i.full_name + ' taken off.' + (x.closed ? ' The ' + (isEntry ? 'entry' : 'sheet') + ' is closed.' : '')); refreshCounts(); if (x.closed) sheets(); else sheet(s.id); return x; });
+                  });
+              }, 'sm danger') : null])]);
           function refresh(){
             var x = netOf(i.lines, m), n = touched(i.lines, m);
             netB.textContent = rs(x.net); netB.style.color = x.bad ? 'var(--bad)' : '';
@@ -1092,7 +1126,7 @@ page_header('People Finance');
             return call('POST', '/finance/advances/' + a.id + '/change', { per_pay_paisa: per, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast(per ? 'Plan changed.' : 'Recovery paused.'); if (S.tab === 'advances') advances(); } return x; });
           });
       }, 'sm') : null,
-      (S.caps.salary || S.caps.wage) && a.status === 'active' ? btn('Recover now', function(){
+      (S.caps.salary || S.caps.wage || S.caps.adjust) && a.status === 'active' ? btn('Recover now', function(){
         loadPeople().then(function(){
           var who = PEOPLE.filter(function(x){ return +x.employee_id === +a.employee_id; })[0];
           if (!who) return toast('That person is not in your list.', true);
@@ -1288,11 +1322,21 @@ page_header('People Finance');
           field('Reason (kept on every day you mark)', why)]),
         el('div', { class: 'row', style: 'justify-content:space-between;margin-top:10px' }, [
           el('div', { class: 'row' }, [btn('All Full for ticked', function(){ W.forEach(function(w){ if (MW.on[w.employee_id]) D.forEach(function(d){ if (free(w, d)) setMark(w, d, 'F'); }); }); draw(); }, 'sm'),
-            btn('Fill a whole day…', function(){
-              ask('Fill a whole day', 'Sets the same mark for every ticked worker on that day. Days scanned at the gate or already paid stay as they are.',
-                [{ k: 'day', label: 'Day', type: 'select', options: D.filter(function(d){ return d <= r.today; }).map(function(d){ return [d, DAYS[isoDay(d)] + ' ' + nice(d)]; }) },
-                 { k: 'mark', label: 'Mark', type: 'select', options: [['F', 'Full day'], ['H', 'Half day'], ['A', 'Absent (e.g. holiday)']] }], 'Fill', function(v){
-                  W.forEach(function(w){ if (MW.on[w.employee_id] && free(w, v.day)) setMark(w, v.day, v.mark); }); closeModal(); draw(); return { ok: true }; });
+            btn('Fill days…', function(){
+              /* one or several days at once, for every ticked worker */
+              var boxes = D.filter(function(d){ return d <= r.today; }).map(function(d){ var c = el('input', { type: 'checkbox', value: d }); return { d: d, c: c, n: el('label', { class: 'daypick' }, [c, DAYS[isoDay(d)].slice(0, 3) + ' ' + nice(d).replace(/ \d{4}$/, '')]) }; });
+              var mk = el('select', {}, [['F', 'Full day'], ['H', 'Half day'], ['A', 'Absent (e.g. holiday)']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
+              var err = el('div', { class: 'err', hidden: true });
+              modal([el('h2', { text: 'Fill days' }), el('p', { class: 'muted small', style: 'margin:0', text: 'Tick one day or several. Every ticked worker gets the same mark on those days. Days scanned at the gate or already on a pay sheet stay as they are.' }),
+                el('div', { class: 'row' }, boxes.map(function(b){ return b.n; })),
+                el('div', { class: 'row' }, [btn('All days', function(){ boxes.forEach(function(b){ b.c.checked = true; }); }, 'sm'), btn('None', function(){ boxes.forEach(function(b){ b.c.checked = false; }); }, 'sm')]),
+                el('div', { class: 'formgrid' }, [field('Mark', mk)]), err,
+                el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Close', closeModal), btn('Fill', function(){
+                  var days = boxes.filter(function(b){ return b.c.checked; }).map(function(b){ return b.d; });
+                  if (!days.length) { err.textContent = 'Tick at least one day.'; err.hidden = false; return; }
+                  W.forEach(function(w){ if (MW.on[w.employee_id]) days.forEach(function(d){ if (free(w, d)) setMark(w, d, mk.value); }); });
+                  closeModal(); draw();
+                }, 'pri')])]);
             }, 'sm'),
             btn('Clear my marks', function(){ MW.marks = {}; draw(); }, 'sm')]),
           el('span', { class: 'lgtip', text: 'Blue days were scanned at the gate; grey days are already on a pay sheet. Neither is changed here.' })])]);
@@ -1405,13 +1449,13 @@ page_header('People Finance');
           el('div', { class: 'row' }, [btn('This month', function(){ span(S.today.slice(0, 8) + '01', S.today); }, 'sm'), btn('Last month', function(){ var m = monthRange(prevMonth()); span(m[0], m[1]); }, 'sm'),
             btn('This year', function(){ span(S.today.slice(0, 4) + '-01-01', S.today); }, 'sm'), btn('Everything', function(){ span('2000-01-01', S.today); }, 'sm')]),
           el('div', { class: 'row' }, [btn('Print / PDF', function(){ printLedger(); }, 'sm'), el('a', { class: 'btn sm', href: expUrl, text: 'Export Excel' })])])]);
-      var mayEnter = c.salary || c.wage;
+      var mayEnter = c.salary || c.wage || c.adjust;
       var actions = el('div', { class: 'lgacts' }, [
         mayEnter ? btn('+ Add Earning', function(){ entryForm('earning'); }, 'act-earn') : null,
         mayEnter ? btn('− Add Deduction', function(){ entryForm('deduction'); }, 'act-ded') : null,
         mayEnter ? btn('Record Payment', function(){ entryForm('payment'); }, 'act-pay') : null,
         c.pay ? btn('Advance / Loan', function(){ give(LG.emp); }, 'act-adv') : null,
-        el('span', { class: 'lgtip', text: mayEnter ? 'Entries wait for a second person\'s approval. Click any line to open where it came from.' : 'Click any line to open where it came from.' })]);
+        el('span', { class: 'lgtip', text: mayEnter ? (c.direct_deduct ? 'Earnings and payments wait for approval; a deduction is taken off at once.' : 'Entries wait for a second person\'s approval.') + ' Click any line to open where it came from.' : 'Click any line to open where it came from.' })]);
       var holder = el('div', { class: 'stack' }, [el('p', { class: 'muted', text: 'Loading…' })]);
       show([peopleList('fin-emps'), filters, actions, holder]);
       var printable = null;
@@ -1495,7 +1539,7 @@ page_header('People Finance');
     loadPeople().then(function(){
       var title = { earning: 'Add earning', deduction: 'Add deduction', payment: 'Record payment' }[mode];
       var note = { earning: 'Overtime, an incentive, a bonus or any other earning — for one person or many. It waits for approval; once approved it is in their ledger and is paid with their next pay, or by Record payment. Overtime that Attendance already has is added to the pay sheet by itself: enter here only what Attendance does not know.',
-                   deduction: 'Unpaid leave, advance or loan recovery, or any other deduction — for one person or many. It waits for approval; it can never take off more than is owed to the person. Absences that Attendance already has are taken off the pay sheet by itself.',
+                   deduction: 'A penalty, unpaid leave, advance or loan recovery, or any other deduction — for one person or many. ' + (S.caps.direct_deduct ? 'It is an adjustment, not a payment, so it is taken off at once, with your name and the reason.' : 'It waits for approval.') + ' It can never take off more than is owed to the person. Absences that Attendance already has are taken off the pay sheet by itself.',
                    payment: 'Pay part or all of what a person is owed, by cash or bank. It waits for approval like a pay sheet; then Accounts records the payment.' }[mode];
       var date = el('input', { type: 'date', value: S.today, max: S.today });
       var reason = el('input', { type: 'text', maxlength: 255, placeholder: mode === 'payment' ? 'e.g. Salary balance for October (optional)' : 'e.g. Eid bonus, Sunday overtime on order 5236 (needed)' });
@@ -1569,7 +1613,11 @@ page_header('People Finance');
       var fill = btn('Fill', function(){ if (toPaisa(same.value) === null) return; lines.forEach(function(L){ if (L.p) L.amt.value = same.value; }); sum(); }, 'sm');
       var head = mode === 'payment' ? ['Employee', 'Owed now', 'Amount to pay', 'Paid by', ''] : ['Employee', 'Type', 'Description', 'Amount', ''];
       var table = el('table', { class: 't entry' }, [el('thead', {}, [el('tr', {}, head.map(function(h, i){ return el('th', { style: (mode === 'payment' && i === 1) || (mode !== 'payment' && i === 3) || (mode === 'payment' && i === 2) ? 'text-align:right' : null, text: h }); }))]), tb]);
-      var save = btn(mode === 'payment' ? 'Send payment for approval' : 'Send for approval', function(){
+      var direct = mode === 'deduction' && S.caps.direct_deduct;
+      var now = false;                                   // the administrator's one step
+      var save = btn(direct ? 'Save deduction' : (mode === 'payment' ? 'Send payment for approval' : 'Send for approval'), function(){ now = false; send(); }, 'pri');
+      var saveNow = S.caps.admin && !direct ? btn(mode === 'payment' ? 'Approve and pay now' : 'Save and approve now', function(){ now = true; send(); }, 'pri go') : null;
+      function send(){
         errBox.hidden = true;
         var rows = [], bad = null;
         lines.forEach(function(L){
@@ -1588,15 +1636,16 @@ page_header('People Finance');
         if (!bad && !rows.length) bad = 'Add at least one person.';
         if (!bad && mode !== 'payment' && !reason.value.trim()) bad = 'Say what it is for (the reason is kept on every line).';
         if (bad) { errBox.textContent = bad; errBox.hidden = false; return; }
-        save.disabled = true;
-        call('POST', '/finance/entries', { mode: mode, date: date.value, reason: reason.value.trim(), rows: rows }).then(function(x){
-          save.disabled = false;
+        save.disabled = true; if (saveNow) saveNow.disabled = true;
+        call('POST', '/finance/entries', { mode: mode, date: date.value, reason: reason.value.trim(), rows: rows, approve_now: now }).then(function(x){
+          save.disabled = false; if (saveNow) saveNow.disabled = false;
           if (!x.ok) { errBox.textContent = x.error || 'That could not be saved.'; errBox.hidden = false; return; }
           closeModal(); refreshCounts();
-          toast('Entry ' + x.ref + ' sent for approval — ' + x.people + (x.people === 1 ? ' person' : ' people') + ', Rs ' + rs(Math.abs(x.total_paisa)) + '.');
-          if (S.tab === 'ledger') ledger();
+          var what = { posted: 'posted to the ledger', paid: 'approved and paid', approved: 'approved — ready to pay' }[x.status] || 'sent for approval';
+          toast('Entry ' + x.ref + ' ' + what + ' — ' + x.people + (x.people === 1 ? ' person' : ' people') + ', Rs ' + rs(Math.abs(x.total_paisa)) + '.');
+          if (S.tab === 'ledger') ledger(); else if (S.tab === 'advances') advances();
         });
-      }, 'pri');
+      }
       var box = modal([peopleList('fin-emps2'),
         el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: title }), btn('Close', closeModal, 'sm')]),
         el('p', { class: 'muted small', style: 'margin:0', text: note }),
@@ -1605,7 +1654,7 @@ page_header('People Finance');
         el('div', { class: 'row', style: 'justify-content:space-between' }, [el('div', { class: 'row' }, [btn('+ Add line', function(){ addLine(null).who.focus(); sum(); }, 'sm'), dsel]),
           el('div', { class: 'row' }, [el('div', { style: 'width:170px' }, [same]), fill])]),
         errBox,
-        el('div', { class: 'row', style: 'justify-content:space-between' }, [el('span', { class: 'muted small' }, ['Total: ', totalB]), el('div', { class: 'row' }, [btn('Close', closeModal), save])])], true);
+        el('div', { class: 'row', style: 'justify-content:space-between' }, [el('span', { class: 'muted small' }, ['Total: ', totalB]), el('div', { class: 'row' }, [btn('Close', closeModal), save, saveNow])])], true);
       box.classList.add('entrybox');
       if (preset) { if (preset.type) defType.value = preset.type; addLine(preset.p, preset); }
       else {
