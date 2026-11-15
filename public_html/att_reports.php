@@ -84,10 +84,10 @@ page_header('Attendance — Reports');
 /* figure tiles */
 .attr .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px}
 .attr .tile{background:#fff;border:1px solid var(--line);border-top:3px solid var(--navy);border-radius:4px;padding:8px 12px 9px;min-width:0}
-.attr .tile .k{display:block;font-size:11.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.attr .tile .k{display:block;font-size:11.5px;font-weight:600;color:var(--muted);line-height:1.3}
 .attr .tile b{display:block;font-size:22px;font-weight:600;line-height:1.2;color:var(--navy);font-variant-numeric:tabular-nums;margin-top:2px}
 .attr .tile b small{font-size:12.5px;font-weight:600;color:var(--muted)}
-.attr .tile .s{display:block;font-size:11.5px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.attr .tile .s{display:block;font-size:11.5px;line-height:1.3;color:var(--muted);margin-top:2px}
 .attr .tile.good{border-top-color:var(--good)}.attr .tile.good b{color:var(--good)}
 .attr .tile.hot{border-top-color:var(--bad)}.attr .tile.hot b{color:var(--bad)}
 .attr .tile.warn{border-top-color:var(--warn)}.attr .tile.warn b{color:var(--warn)}
@@ -103,12 +103,15 @@ page_header('Attendance — Reports');
 .attr .panel>.pb.flush{padding:0}
 .attr .panel.alert{border-left:3px solid var(--bad)}
 /* tables */
-.attr .scroll{overflow:auto;width:0;min-width:100%;max-height:70vh}
+/* tables fit the panel: text columns wrap instead of pushing the page sideways; no box-in-a-box scrolling.
+   A phone still slides a wide table inside its own box. */
+.attr .scroll{overflow-x:auto;overflow-y:hidden;width:0;min-width:100%}
 .attr table{min-width:0;width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
-.attr th{background:var(--navy);color:#fff;font-size:11.5px;font-weight:600;text-align:left;padding:7px 9px;white-space:nowrap;position:sticky;top:0;z-index:1}
+.attr th{background:var(--navy);color:#fff;font-size:11.5px;font-weight:600;line-height:1.25;text-align:left;padding:8px 7px;white-space:normal;vertical-align:bottom}
 .attr th.n,.attr td.n{text-align:right}
-.attr td{padding:6px 9px;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap;font-variant-numeric:tabular-nums}
-.attr td.wrap{white-space:normal;min-width:160px}
+.attr td{padding:6px 7px;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap;font-variant-numeric:tabular-nums}
+.attr td.wrap{white-space:normal;min-width:96px;overflow-wrap:break-word}
+.attr td .sub{display:block;font-size:11.5px;color:var(--muted);white-space:nowrap}
 .attr tbody tr:nth-child(even) td{background:#fafbfc}
 .attr tbody tr:hover td{background:var(--hover)}
 .attr tbody tr.pick{cursor:pointer}
@@ -119,10 +122,10 @@ page_header('Attendance — Reports');
 .attr .fit th:first-child,.attr .fit td:first-child{padding-left:12px}
 .attr .fit th:last-child,.attr .fit td:last-child{padding-right:12px}
 .attr tfoot td{background:var(--head);font-weight:600;border-top:2px solid var(--line);border-bottom:0}
-.attr .who b{font-weight:600;color:var(--ink)}.attr .who .c{font-family:'IBM Plex Mono',ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--muted);margin-right:6px}
+.attr .who b{font-weight:600;color:var(--ink)}.attr .who .c{display:block;font-family:'IBM Plex Mono',ui-monospace,Consolas,monospace;font-size:11px;color:var(--muted);line-height:1.3}
 .attr .empty{text-align:center;color:var(--muted);padding:22px 12px}
 /* status chips */
-.attr .pill{display:inline-block;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:600;background:#e8eef6;color:#33475f;white-space:nowrap}
+.attr .pill{display:inline-block;border-radius:3px;padding:2px 6px;font-size:11px;font-weight:600;background:#e8eef6;color:#33475f;white-space:nowrap}
 .attr .pill.present,.attr .pill.approved,.attr .pill.verified,.attr .pill.finalized{background:var(--good-bg);color:var(--good)}
 .attr .pill.inside{background:var(--info-bg);color:#17467c}
 .attr .pill.absent,.attr .pill.rejected,.attr .pill.disputed{background:var(--bad-bg);color:var(--bad)}
@@ -162,6 +165,7 @@ page_header('Attendance — Reports');
   <div id="attr-body"><p class="muted">Loading…</p></div>
 </div>
 
+<script src="assets/js/sorttable.js?v=1"></script>
 <script>
 (function(){
   'use strict';
@@ -197,17 +201,20 @@ page_header('Attendance — Reports');
     opts = opts || {};
     var num = head.map(function(h){ return h.charAt(0) === '#'; });
     var tb = el('tbody');
+    var keys = opts.keys || {};
     rows.forEach(function(r){
       var tr = el('tr', { class: opts.click ? 'pick' : null, title: opts.click ? opts.clickTitle || null : null }, draw(r).map(function(c, i){
         var cls = [(opts.wrap || []).indexOf(i) >= 0 ? 'wrap' : '', num[i] ? 'n' : ''].join(' ').trim() || null;
-        return el('td', { class: cls }, [c === null || c === undefined ? '—' : (typeof c === 'object' ? c : String(c))]);
+        /* data-sort: what the column sorts by when the text alone would sort wrongly (a date, "1 · 30m") */
+        var k = keys[i] ? keys[i](r) : null;
+        return el('td', { class: cls, 'data-sort': k === null || k === undefined ? null : String(k) }, [c === null || c === undefined ? '—' : (typeof c === 'object' ? c : String(c))]);
       }));
       if (opts.click) tr.addEventListener('click', function(){ opts.click(r); });
       tb.appendChild(tr);
     });
     var parts = [el('thead', {}, [el('tr', {}, head.map(function(h, i){ return el('th', { class: num[i] ? 'n' : null, text: num[i] ? h.slice(1) : h }); }))]), tb];
     if (opts.foot) parts.push(el('tfoot', {}, [el('tr', {}, opts.foot.map(function(c, i){ return el('td', { class: num[i] ? 'n' : null }, [c === null || c === undefined ? '' : (typeof c === 'object' ? c : String(c))]); }))]));
-    return el('div', { class: 'scroll' + (opts.cls ? ' ' + opts.cls : ''), id: opts.id || null }, [el('table', {}, parts)]);
+    return el('div', { class: 'scroll' + (opts.cls ? ' ' + opts.cls : ''), id: opts.id || null }, [el('table', { class: 'sortable' }, parts)]);
   }
   function hm(iso){ if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? iso : d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Karachi', hour: '2-digit', minute: '2-digit' }); }
   function dt(iso){ if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString('en-GB', { timeZone: 'Asia/Karachi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
@@ -301,13 +308,13 @@ page_header('Attendance — Reports');
       var deptBox = depts.length ? table(['Department', '#On roll', '#Came in', '#Inside', '#Late', '#Left early', '#Absent', '#Attendance'], depts, function(x){
         return [el('b', { text: x.department_name }), x.active, x.came_in, x.inside, x.late ? el('span', { class: 'flag', text: String(x.late) }) : '0',
           x.left_early ? el('span', { class: 'flagw', text: String(x.left_early) }) : '0', x.absent ? el('span', { class: 'flag', text: String(x.absent) }) : '0', rate(x.came_in, x.active)];
-      }, { id: 'inside-bars', cls: 'fit', foot: ['All departments', tot.active, tot.came_in, tot.inside, tot.late, tot.left_early, tot.absent, rate(tot.came_in, tot.active)] }) : none('Nobody is on the roll in your departments.', 'inside-bars');
+      }, { id: 'inside-bars', cls: 'fit', keys: { 7: function(x){ return x.active ? x.came_in / x.active : ''; } }, foot: ['All departments', tot.active, tot.came_in, tot.inside, tot.late, tot.left_early, tot.absent, rate(tot.came_in, tot.active)] }) : none('Nobody is on the roll in your departments.', 'inside-bars');
 
       /* the people behind each figure: one box at a time */
-      var lateBox = d.late.length ? table(['Employee', 'Department', 'Shift starts', 'First IN', '#Late by'], d.late, function(r){ return [who(r.employee_code, r.full_name), r.department_name, hm(r.starts_at), hm(r.first_in), el('span', { class: 'flag', text: mins(r.late_minutes) })]; }) : none('Nobody was late.');
-      var earlyBox = d.left_early.length ? table(['Employee', 'Department', 'Last OUT', 'Shift ends', '#Early by'], d.left_early, function(r){ return [who(r.employee_code, r.full_name), r.department_name, hm(r.last_out), hm(r.ends_at), el('span', { class: 'flagw', text: mins(r.early_minutes) })]; }) : none('Nobody left before shift end.');
-      var absBox = d.absent_with_shift.length ? table(['Employee', 'Department', 'Shift', 'Starts', 'Ends'], d.absent_with_shift, function(r){ return [who(r.employee_code, r.full_name), r.department_name, r.shift_name || '', hm(r.starts_at), hm(r.ends_at)]; }) : none('Everyone with a shift came in.');
-      var notBox = d.not_in.length ? table(['Code', 'Name', 'Department'], d.not_in, function(r){ return [r.employee_code, r.full_name, r.department_name]; }) : none('Everyone on the roll has an entry today.');
+      var lateBox = d.late.length ? table(['Employee', 'Department', 'Shift starts', 'First IN', '#Late by'], d.late, function(r){ return [who(r.employee_code, r.full_name), r.department_name, hm(r.starts_at), hm(r.first_in), el('span', { class: 'flag', text: mins(r.late_minutes) })]; }, { wrap: [0, 1], keys: { 0: function(r){ return r.full_name; }, 2: function(r){ return r.starts_at; }, 3: function(r){ return r.first_in; } } }) : none('Nobody was late.');
+      var earlyBox = d.left_early.length ? table(['Employee', 'Department', 'Last OUT', 'Shift ends', '#Early by'], d.left_early, function(r){ return [who(r.employee_code, r.full_name), r.department_name, hm(r.last_out), hm(r.ends_at), el('span', { class: 'flagw', text: mins(r.early_minutes) })]; }, { wrap: [0, 1], keys: { 0: function(r){ return r.full_name; }, 2: function(r){ return r.last_out; }, 3: function(r){ return r.ends_at; } } }) : none('Nobody left before shift end.');
+      var absBox = d.absent_with_shift.length ? table(['Employee', 'Department', 'Shift', 'Starts', 'Ends'], d.absent_with_shift, function(r){ return [who(r.employee_code, r.full_name), r.department_name, r.shift_name || '', hm(r.starts_at), hm(r.ends_at)]; }, { wrap: [0, 1], keys: { 0: function(r){ return r.full_name; } } }) : none('Everyone with a shift came in.');
+      var notBox = d.not_in.length ? table(['Code', 'Name', 'Department'], d.not_in, function(r){ return [r.employee_code, r.full_name, r.department_name]; }, { wrap: [1, 2] }) : none('Everyone on the roll has an entry today.');
       var s = seg([
         { id: 'late', label: 'Late', count: d.late_count, box: lateBox },
         { id: 'early', label: 'Left early', count: d.left_early_count, box: earlyBox },
@@ -325,7 +332,7 @@ page_header('Attendance — Reports');
 
       var auto = d.auto_out_count ? panel('Not scanned out — the system closed these at shift end', d.auto_out_count + ' entr' + (d.auto_out_count === 1 ? 'y' : 'ies') + ', last 36 hours', [
         el('p', { class: 'note', style: 'padding:8px 12px', text: 'Nobody scanned OUT for these people, so the system closed the entry at the shift end (or shift end plus approved overtime). HR can put in the real time on the Reconciliation screen.' }),
-        table(['Employee', 'Department', 'Came in', 'System OUT at', 'Closed by the system'], d.auto_out, function(r){ return [who(r.employee_code, r.full_name), r.department_name, dt(r.opened_at), hm(r.closed_at), dt(r.auto_closed_at)]; })
+        table(['Employee', 'Department', 'Came in', 'System OUT at', 'Closed by the system'], d.auto_out, function(r){ return [who(r.employee_code, r.full_name), r.department_name, dt(r.opened_at), hm(r.closed_at), dt(r.auto_closed_at)]; }, { wrap: [0, 1], keys: { 0: function(r){ return r.full_name; }, 2: function(r){ return r.opened_at; }, 3: function(r){ return r.closed_at; }, 4: function(r){ return r.auto_closed_at; } } })
       ], { id: 'auto-out', flush: true, alert: true }) : null;
 
       show([strip, tiles, auto, top]);
@@ -454,23 +461,26 @@ page_header('Attendance — Reports');
           return [who(e.code, e.name), e.dept, e.days, e.present, e.absent ? el('span', { class: 'flag', text: String(e.absent) }) : '0', rate(e.present, e.days), mins(e.mins), e.present ? mins(Math.round(e.mins / e.present)) : '—',
             e.late ? el('span', { class: 'flag', text: e.late + ' · ' + mins(e.lateMin) }) : '0', e.early ? el('span', { class: 'flagw', text: e.early + ' · ' + mins(e.earlyMin) }) : '0',
             e.unconf || '0', e.ot ? hrs(e.ot) : '—', e.auto ? el('span', { class: 'flag', text: String(e.auto) }) : '0'];
-        }, { click: function(e){ showPerson(e.code); }, clickTitle: 'Show this person’s days',
+        }, { click: function(e){ showPerson(e.code); }, clickTitle: 'Show this person’s days', wrap: [0, 1],
+          keys: { 0: function(e){ return e.name; }, 5: function(e){ return e.days ? e.present / e.days : ''; }, 7: function(e){ return e.present ? e.mins / e.present : ''; }, 8: function(e){ return e.lateMin; }, 9: function(e){ return e.earlyMin; }, 11: function(e){ return e.ot; } },
           foot: ['All employees', '', t.days, t.present, t.absent, rate(t.present, t.days), mins(t.mins), t.present ? mins(Math.round(t.mins / t.present)) : '—', t.late + ' · ' + mins(t.lateMin), t.early + ' · ' + mins(t.earlyMin), t.unconf, t.ot ? hrs(t.ot) : '—', t.auto] }) : none('Nothing in these dates.');
 
         var deps = Object.keys(byDept).sort().map(function(k){ return byDept[k]; });
         var depBox = deps.length ? table(['Department', '#Employees', '#Shift days', '#Worked', '#Did not come', '#Attendance', '#Present', '#Late days', '#Left early', '#HOD unconfirmed', '#OT checked', '#Not scanned out'], deps, function(g){
           return [el('b', { text: g.dept }), Object.keys(g.people).length, g.days, g.present, g.absent ? el('span', { class: 'flag', text: String(g.absent) }) : '0', rate(g.present, g.days), mins(g.mins),
             g.late ? el('span', { class: 'flag', text: String(g.late) }) : '0', g.early ? el('span', { class: 'flagw', text: String(g.early) }) : '0', g.unconf || '0', g.ot ? hrs(g.ot) : '—', g.auto || '0'];
-        }, { click: function(g){ AF.dept = g.dept; narrow.querySelector('#f-dept').value = g.dept; paint(); }, clickTitle: 'Show only this department',
+        }, { click: function(g){ AF.dept = g.dept; narrow.querySelector('#f-dept').value = g.dept; paint(); }, clickTitle: 'Show only this department', wrap: [0],
+          keys: { 5: function(g){ return g.days ? g.present / g.days : ''; }, 10: function(g){ return g.ot; } },
           foot: ['All departments', nPeople, t.days, t.present, t.absent, rate(t.present, t.days), mins(t.mins), t.late, t.early, t.unconf, t.ot ? hrs(t.ot) : '—', t.auto] }) : none('Nothing in these dates.');
 
         var lineBox = rows.length ? table(['Day', 'Employee', 'Department', 'Shift', 'First IN', 'Last OUT', '#Entries', '#Present', '#Late', '#Left early', '#HOD unconfirmed', '#OT checked', 'Status'], rows, function(x){
-          return [day(x.work_date), who(x.employee_code, x.full_name), x.department_name, x.shift_name + ' ' + hm(x.starts_at) + '–' + hm(x.ends_at) + (x.shift_source === 'default_auto' ? ' (default)' : ''),
-            hm(x.first_in), x.auto_out ? el('span', { class: 'flag', title: 'No OUT was scanned. The system closed the entry at shift end.', text: hm(x.last_out) + ' · system, not scanned' }) : hm(x.last_out), x.entries, mins(x.present_minutes),
+          return [day(x.work_date), who(x.employee_code, x.full_name), x.department_name,
+            el('span', {}, [x.shift_name, el('span', { class: 'sub', text: hm(x.starts_at) + '–' + hm(x.ends_at) + (x.shift_source === 'default_auto' ? ' · default' : '') })]),
+            hm(x.first_in), x.auto_out ? el('span', { class: 'flag', title: 'No OUT was scanned. The system closed the entry at shift end.' }, [hm(x.last_out), el('span', { class: 'sub', style: 'color:inherit', text: 'not scanned' })]) : hm(x.last_out), x.entries, mins(x.present_minutes),
             x.late_minutes ? el('span', { class: 'flag', text: mins(x.late_minutes) }) : '', x.early_minutes ? el('span', { class: 'flagw', text: mins(x.early_minutes) }) : '', x.unconfirmed || '',
             x.ot_actual_minutes !== null ? hrs(x.ot_actual_minutes) : (x.ot_approved_minutes ? 'approved ' + hrs(x.ot_approved_minutes) : ''),
             pill(x.status, x.status === 'absent' ? 'did not come' : x.status)];
-        }) : none(all.length ? 'No line matches the filters.' : 'Nothing in these dates.', 'att-none');
+        }, { wrap: [1, 2, 3], keys: { 0: function(x){ return x.work_date; }, 1: function(x){ return x.full_name; }, 3: function(x){ return x.shift_name + ' ' + x.starts_at; }, 4: function(x){ return x.first_in || ''; }, 5: function(x){ return x.last_out || ''; }, 11: function(x){ return x.ot_actual_minutes !== null ? x.ot_actual_minutes : (x.ot_approved_minutes || ''); } } }) : none(all.length ? 'No line matches the filters.' : 'Nothing in these dates.', 'att-none');
 
         var s = seg([
           { id: 'emp', label: 'By employee', count: emps.length, box: empBox },
@@ -535,7 +545,7 @@ page_header('Attendance — Reports');
             return [when, pill(isIn ? 'present' : (auto ? 'absent' : 'pending'), label), who(x.employee_code, x.full_name), x.department_name,
               x.entry_sequence ? '#' + x.entry_sequence : '', auto ? el('span', { class: 'flag', text: x.recorded_by }) : x.recorded_by, x.phone || '', auto ? 'not scanned' : (x.source === 'offline_replay' ? 'later' : 'at once'),
               isIn ? (x.hod_confirmed_at ? hm(x.hod_confirmed_at) + ' · ' + (x.hod_name || '') : el('span', { class: 'flag', text: 'not yet' })) : ''];
-          }) : none(r.rows.length ? 'No scan matches the filter.' : 'No scans in these dates.', 'mov-none')])]));
+          }, { wrap: [2, 3, 5], keys: { 0: function(x){ return x.occurred_at; }, 2: function(x){ return x.full_name; }, 4: function(x){ return x.entry_sequence || ''; }, 8: function(x){ return x.hod_confirmed_at || ''; } } }) : none(r.rows.length ? 'No scan matches the filter.' : 'No scans in these dates.', 'mov-none')])]));
         holder.appendChild(el('p', { class: 'note', text: '"Later" means the phone had no signal and sent it afterwards; the time shown is when it was scanned. "OUT · system": nobody scanned OUT and the system closed the entry at shift end. "OUT · corrected" / "IN · added": put in by HR or the administrator. "corrected": the administrator changed the time; the scanned time is shown under it.' }));
       }
       paint();
@@ -565,11 +575,11 @@ page_header('Attendance — Reports');
         panel('By department', r.by_department.length + ' department' + (r.by_department.length === 1 ? '' : 's'), [
           r.by_department.length ? table(['Department', '#Asked', '#Approved', '#Rejected', '#Approved time', '#Checked time', '#Finalized pay', '#Not finalized yet'], r.by_department, function(b){
             return [b.department_name, b.requested, b.approved, b.rejected, hrs(b.approved_minutes), hrs(b.actual_minutes), b.finalized_amount, b.draft_amount];
-          }, { foot: ['All departments', t.requested, t.approved, t.rejected, hrs(t.am), hrs(t.cm), n0(t.fin), n0(t.draft)] }) : none('No overtime in these dates.', 'ot-none')], { flush: true }),
+          }, { wrap: [0], foot: ['All departments', t.requested, t.approved, t.rejected, hrs(t.am), hrs(t.cm), n0(t.fin), n0(t.draft)] }) : none('No overtime in these dates.', 'ot-none')], { flush: true }),
         r.rows.length ? panel('Every line', r.rows.length, [table(['Day', 'Employee', 'Department', 'Reason', '#Asked', 'Decision', '#Approved', 'Checked', 'Rate', '#Amount', 'Payroll'], r.rows, function(x){
           return [day(x.work_date), who(x.employee_code, x.full_name), x.department_name, x.reason, hrs(x.estimated_minutes), pill(x.approval_status), x.approved_minutes ? hrs(x.approved_minutes) : '',
             x.verification_status === 'verified' ? hrs(x.actual_minutes) : pill(x.verification_status), x.rate_type ? x.rate_type + ' ' + x.manual_rate : '', x.amount || '', pill(x.payroll_status === 'none' ? 'pending' : x.payroll_status, x.payroll_status)];
-        }, { wrap: [3] })], { flush: true }) : null,
+        }, { wrap: [1, 2, 3], keys: { 0: function(x){ return x.work_date; }, 1: function(x){ return x.full_name; }, 4: function(x){ return x.estimated_minutes; }, 6: function(x){ return x.approved_minutes || ''; }, 7: function(x){ return x.verification_status === 'verified' ? x.actual_minutes : ''; } } })], { flush: true }) : null,
         r.truncated ? el('p', { class: 'err', text: 'Only the first 20000 lines are shown. Choose fewer days.' }) : null]);
     });
   }

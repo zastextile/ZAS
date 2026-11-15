@@ -360,6 +360,7 @@ page_header('People Finance');
 <div class="fin-toast" id="fin-toast" role="status" hidden></div>
 <div id="fin-print"></div>
 
+<script src="assets/js/sorttable.js?v=1"></script>
 <script>
 (function(){
   'use strict';
@@ -959,11 +960,11 @@ page_header('People Finance');
           var rate = p.pay_type === 'salary' ? (p.basic_paisa === null ? 'hidden' : rs(p.basic_paisa) + ' a month' + (p.allowance_paisa ? ' + ' + rs(p.allowance_paisa) : ''))
             : p.pay_type === 'daily' ? rs(p.daily_rate_paisa) + ' a day' : p.pay_type === 'contract' ? 'by production' : '';
           tb.appendChild(el('tr', { class: 'click', tabindex: '0', click: function(){ person(p); }, keydown: function(e){ if (e.key === 'Enter') person(p); } }, [
-            el('td', {}, [el('b', { text: p.full_name }), el('div', { class: 'muted small', text: p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + (+p.active ? '' : ' · left') })]),
+            el('td', { 'data-sort': p.full_name }, [el('b', { text: p.full_name }), el('div', { class: 'muted small', text: p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + (+p.active ? '' : ' · left') })]),
             el('td', {}, [el('span', { class: 'pill ' + (p.pay_type ? '' : 'none'), text: p.pay_type ? KIND1[p.pay_type] : 'Not set up' })]),
-            el('td', { text: rate }), el('td', { class: 'num' }, [el('b', { text: rs(p.balance) }), p.on_sheet ? el('div', {}, [el('span', { class: 'pill waiting', text: 'on a sheet' })]) : null])]));
+            el('td', { text: rate, 'data-sort': p.pay_type === 'salary' ? (p.basic_paisa === null ? '' : +p.basic_paisa + (+p.allowance_paisa || 0)) : p.pay_type === 'daily' ? +p.daily_rate_paisa : '' }), el('td', { class: 'num', 'data-sort': +p.balance || 0 }, [el('b', { text: rs(p.balance) }), p.on_sheet ? el('div', {}, [el('span', { class: 'pill waiting', text: 'on a sheet' })]) : null])]));
         });
-        box.appendChild(el('table', { class: 't' }, [el('thead', {}, [el('tr', {}, [el('th', { text: 'Employee' }), el('th', { text: 'Paid as' }), el('th', { text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Owed now' })])]), tb]));
+        box.appendChild(el('table', { class: 't sortable' }, [el('thead', {}, [el('tr', {}, [el('th', { text: 'Employee' }), el('th', { text: 'Paid as' }), el('th', { text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Owed now' })])]), tb]));
       }
       function shownNow(){ return r.people.filter(function(p){ return onState(p) && (PF.type === '' || (PF.type === 'none' ? !p.pay_type : p.pay_type === PF.type)) && (!PF.dept || p.department_name === PF.dept) && (!PF.q || (p.full_name + ' ' + p.code).toLowerCase().indexOf(PF.q) >= 0); }); }
       var left = r.people.filter(function(p){ return !+p.active; }).length;
@@ -1711,12 +1712,12 @@ page_header('People Finance');
         var tb = el('tbody');
         rows.forEach(function(x){
           tb.appendChild(el('tr', { class: 'click', tabindex: '0', click: function(){ pick(x); }, keydown: function(e){ if (e.key === 'Enter') pick(x); } }, [
-            el('td', {}, [el('b', { text: x.full_name }), el('div', { class: 'muted small', text: x.code + ' · ' + x.department_name + (x.pay_type ? ' · ' + KIND1[x.pay_type] : '') })]),
+            el('td', { 'data-sort': x.full_name }, [el('b', { text: x.full_name }), el('div', { class: 'muted small', text: x.code + ' · ' + x.department_name + (x.pay_type ? ' · ' + KIND1[x.pay_type] : '') })]),
             el('td', { class: 'num', text: rs(x.before_paisa) }), dash(x.earned, 'c-earn'), dash(x.deducted, 'c-ded'), dash(x.paid, 'c-pay'), el('td', { class: 'num' }, [el('b', { text: rs(x.closing_paisa) })])]));
         });
         tb.appendChild(el('tr', { class: 'tot' }, [el('td', {}, [el('b', { text: 'Total — ' + rows.length + (rows.length === 1 ? ' person' : ' people') })]), el('td', { class: 'num', text: rs(t.b) }),
           el('td', { class: 'num c-earn', text: rs(t.e) }), el('td', { class: 'num c-ded', text: rs(t.d) }), el('td', { class: 'num c-pay', text: rs(t.p) }), el('td', { class: 'num', text: rs(t.c) })]));
-        var table = el('table', { class: 't stmt lg' }, [el('thead', {}, [el('tr', {}, ['Employee', 'Owed before (PKR)', 'Earnings (PKR)', 'Deductions (PKR)', 'Payments (PKR)', 'Owed at end (PKR)'].map(function(h, i){ return el('th', { style: i ? 'text-align:right' : null, text: h }); }))]), tb]);
+        var table = el('table', { class: 't stmt lg sortable' }, [el('thead', {}, [el('tr', {}, ['Employee', 'Owed before (PKR)', 'Earnings (PKR)', 'Deductions (PKR)', 'Payments (PKR)', 'Owed at end (PKR)'].map(function(h, i){ return el('th', { style: i ? 'text-align:right' : null, text: h }); }))]), tb]);
         printable = { title: 'Employee ledger — everyone', sub: rows.length + (rows.length === 1 ? ' person' : ' people'), table: table };
         holder.appendChild(el('div', { class: 'cardx scroll' }, [table]));
       });

@@ -121,6 +121,7 @@ page_header('Attendance — Setup');
   </form>
 </dialog>
 
+<script src="assets/js/sorttable.js?v=1"></script>
 <script>
 (function(){
   'use strict';
@@ -162,7 +163,7 @@ page_header('Attendance — Setup');
   function table(head, rows, draw){
     var tb = el('tbody');
     rows.forEach(function(r){ tb.appendChild(el('tr', {}, draw(r).map(function(c){ return el('td', {}, [c]); }))); });
-    return el('div', { class: 'scroll' }, [el('table', {}, [el('thead', {}, [el('tr', {}, head.map(function(h){ return el('th', { text: h }); }))]), tb])]);
+    return el('div', { class: 'scroll' }, [el('table', { class: 'sortable' }, [el('thead', {}, [el('tr', {}, head.map(function(h){ return el('th', { text: h }); }))]), tb])]);
   }
   function btn(text, onClick, primary, disabled){
     return el('button', { class: 'act' + (primary ? ' primary' : ''), type: 'button', text: text, click: onClick, disabled: disabled });

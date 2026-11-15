@@ -318,6 +318,42 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     check('the attendance report shows the day: Night Worker, "did not come", late 30m', /Night Worker/.test(body) && /did not come/.test(body) && /30m/.test(body), body.slice(0, 200));
     check('the CSV link asks the same report as a file', /format=csv/.test(await p.getAttribute('#f-csv', 'href')));
     if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-attendance.png', fullPage: true });
+    // sortable column titles: Present ▲ then ▼, read from the visible table
+    const presentCol = async () => p.evaluate(() => {
+      const t = [...document.querySelectorAll('#attr-body table.sortable')].find(x => x.offsetParent);
+      const i = [...t.tHead.rows[0].cells].findIndex(th => /^Present/.test(th.textContent));
+      return { sort: t.tHead.rows[0].cells[i].getAttribute('aria-sort'), v: [...t.tBodies[0].rows].map(r => window.ZSort.value(r.cells[i])) };
+    });
+    await p.click('#attr-body table.sortable:visible th:has-text("Present")');
+    const up = await presentCol();
+    await p.click('#attr-body table.sortable:visible th:has-text("Present")');
+    const down = await presentCol();
+    const asc = (a) => a.every((x, i) => i === 0 || a[i - 1] === null || x === null || a[i - 1] <= x);
+    check('clicking a column title sorts it ▲, clicking again ▼', up.sort === 'ascending' && asc(up.v) && down.sort === 'descending' && asc(down.v.filter(x => x !== null).reverse()) && up.v.length > 2, JSON.stringify([up, down]));
+    // no sideways scrolling: every view fits the panel on office screens
+    const wideViews = [];
+    for (const w of [1366, 1280]) {
+      await p.setViewportSize({ width: w, height: 900 });
+      for (const v of ['emp', 'dept', 'lines']) {
+        await p.click('#attr-body .seg button[data-v=' + v + ']'); await p.waitForTimeout(100);
+        const o = await p.evaluate(() => { const b = [...document.querySelectorAll('#attr-body .scroll')].find(x => x.offsetParent); return b ? b.scrollWidth - b.clientWidth : 0; });
+        if (o > 1) wideViews.push(w + 'px ' + v + ' +' + o);
+        if (SHOT && w === 1280) await p.screenshot({ path: SHOT + '/att-m7-fit-' + v + '.png', fullPage: true });
+      }
+    }
+    await p.setViewportSize({ width: 1280, height: 900 });
+    await p.click('#attr-body .seg button[data-v=emp]');
+    check('By employee, By department and Day by day fit the panel at 1366 and 1280 px (no sideways scroll)', wideViews.length === 0, wideViews.join(', '));
+    // long real-life names and departments wrap inside their cells instead of widening the table
+    await p.click('#attr-body .seg button[data-v=lines]');
+    const longFit = await p.evaluate(() => {
+      const t = [...document.querySelectorAll('#attr-body table.sortable')].find(x => x.offsetParent);
+      [...t.tBodies[0].rows].forEach(r => { r.cells[1].querySelector('b').textContent = 'ALI CHEF MAY 2023 ALI AHSAN'; r.cells[2].textContent = 'ADMINISTRATION AND GENERAL'; });
+      const b = t.parentNode; return b.scrollWidth - b.clientWidth;
+    });
+    check('  and still fit with long names like "ALI CHEF MAY 2023 ALI AHSAN"', longFit <= 1, '+' + longFit + 'px');
+    if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-fit-long.png', fullPage: true });
+    await p.click('#attr-body .seg button[data-v=emp]');
     // the same dates, by department and day by day; a person's row opens their days
     await p.click('#attr-body .seg button[data-v=dept]');
     if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-attendance-dept.png', fullPage: true });

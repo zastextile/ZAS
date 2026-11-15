@@ -548,6 +548,15 @@ const body = p => p.textContent('#fin-body');
     const e8 = []; ad.on('pageerror', e => e8.push(e.message));
     await ad.goto(BASE + '/att_finance.php#people');
     await ad.waitForSelector('table.t tr.click');
+    // the employee list sorts by any column: Owed now ▼ (largest first), then Employee ▲ (A→Z)
+    const colVals = (i) => ad.evaluate((i) => [...document.querySelectorAll('#fin-body table.t.sortable tbody tr')].map(r => window.ZSort.value(r.cells[i])), i);
+    await ad.click('#fin-body table.t.sortable th:has-text("Owed now")'); await ad.click('#fin-body table.t.sortable th:has-text("Owed now")');
+    const owed = await colVals(3);
+    await ad.click('#fin-body table.t.sortable th:has-text("Employee")');
+    const names = await colVals(0);
+    check('EMPLOYEES: sortable titles — Owed now ▼ largest first, Employee ▲ A to Z', owed.length > 2 && owed.every((v, i) => i === 0 || owed[i - 1] >= v) && names.every((v, i) => i === 0 || names[i - 1].localeCompare(v) <= 0)
+      && (await ad.getAttribute('#fin-body table.t.sortable th:has-text("Employee")', 'aria-sort')) === 'ascending', JSON.stringify([owed, names]));
+    await shot(ad, '26-employees-sorted');
     await ad.locator('tr.click', { hasText: 'Sami Salaried' }).click();
     await ad.waitForFunction(() => /Photo for the gate/.test(document.getElementById('fin-shade').textContent));
     t = await ad.textContent('#fin-shade');
