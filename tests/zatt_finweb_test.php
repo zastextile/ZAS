@@ -555,7 +555,15 @@ const body = p => p.textContent('#fin-body');
     await ad.waitForTimeout(400); await shot(ad, '17-one-card-admin');
     const depOpts = await ad.locator('#fin-shade select[aria-label="Department"] option').allTextContents();
     check('ONE CARD: the department is a drop-down with EVERY department (not only the one it has), and Packing chosen', depOpts.includes('Stitching') && depOpts.includes('Packing') && depOpts.includes('Weaving') && (await ad.inputValue('#fin-shade select[aria-label="Department"]')) === 'Packing', depOpts.join('|'));
+    check('  the administrator\'s card has "Delete (entered by mistake)" beside "Mark as left the company"', (await ad.locator('#fin-shade button:has-text("Delete (entered by mistake)")').count()) === 1);
+    await ad.click('#fin-shade button:has-text("Delete (entered by mistake)")');
+    await ad.fill('#fin-shade input[placeholder="e.g. entered twice"]', 'test');
+    await ad.click('#fin-shade button.pri:has-text("Delete")');
+    await ad.waitForFunction(() => /Mark as left the company/.test((document.querySelector('#fin-shade .err:not([hidden])') || {}).textContent || ''));
+    check('  Sami has been paid, so Delete is refused and says why — ' + (await ad.textContent('#fin-shade .err:not([hidden])')), /pay-ledger line/.test(await ad.textContent('#fin-shade .err:not([hidden])')));
     await ad.click('#fin-shade button:has-text("Close")');
+    await ad.waitForFunction(() => document.getElementById('fin-shade').hidden);
+    check('EMPLOYEES: the list shows those on the roll, with "Left the company" and "Everyone" to choose', (await ad.locator('select[aria-label="Who is listed"] option').allTextContents()).join('|').includes('Left the company'));
     await ad.locator('tr.click', { hasText: 'Hira Helper' }).click();
     await ad.waitForSelector('#fin-shade select[aria-label="Department"]');
     await ad.selectOption('#fin-shade select[aria-label="Department"]', 'Stitching');
@@ -664,6 +672,11 @@ const body = p => p.textContent('#fin-body');
     await acp.goto(BASE + '/att_finance.php');
     await acp.waitForSelector('#fin-tabs button');
     check('  Accounts does not see Mark attendance', (await acp.locator('#fin-tabs button:has-text("Mark attendance")').count()) === 0);
+    await acp.click('#fin-tabs button:has-text("Employees")');
+    await acp.waitForSelector('table.t tr.click');
+    await acp.locator('tr.click', { hasText: 'Sami Salaried' }).click();
+    await acp.waitForSelector('#fin-shade .cardx');
+    check('  and has no Delete on an employee (Admin only)', (await acp.locator('#fin-shade button:has-text("Delete")').count()) === 0);
     await c10.close();
 
     // ---- HOD

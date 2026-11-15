@@ -934,14 +934,16 @@ page_header('People Finance');
   }
 
   // ------------------------------------------------------------ people
-  var PF = { type: '', dept: '', q: '' };
+  var PF = { type: '', dept: '', q: '', state: 'on' };
   function people(type){
     if (typeof type === 'string') PF.type = type;
     show([el('p', { class: 'muted', text: 'Loading…' })]);
     call('GET', '/finance/people').then(function(r){
       if (!r.ok) return show([fail(r)]);
+      /* who is listed: on the roll (the default — a short list), left the company, or everyone */
+      var onState = function(p){ return PF.state === 'all' || (PF.state === 'left' ? !+p.active : +p.active); };
       var seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Kind of pay' }, [['', 'Everyone'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractors'], ['none', 'Not set up']].map(function(x){
-        var n = r.people.filter(function(p){ return x[0] === '' || (x[0] === 'none' ? !p.pay_type && +p.active : p.pay_type === x[0]); }).length;
+        var n = r.people.filter(function(p){ return onState(p) && (x[0] === '' || (x[0] === 'none' ? !p.pay_type : p.pay_type === x[0])); }).length;
         return el('button', { type: 'button', 'aria-pressed': PF.type === x[0] ? 'true' : 'false', text: x[1] + ' ' + n, click: function(){ PF.type = x[0]; people(); } }); }));
       var dept = el('select', { 'aria-label': 'Department', change: function(){ PF.dept = dept.value; draw(); } }, [el('option', { value: '', text: 'All departments' })].concat(
         Object.keys(r.people.reduce(function(a, p){ a[p.department_name] = 1; return a; }, {})).sort().map(function(d){ return el('option', { value: d, text: d }); })));
@@ -949,7 +951,7 @@ page_header('People Finance');
       var search = el('input', { type: 'search', placeholder: 'Search name or code', value: PF.q, 'aria-label': 'Search', input: function(){ PF.q = search.value.toLowerCase(); draw(); } });
       var box = el('div', { class: 'cardx scroll' });
       function draw(){
-        var rows = r.people.filter(function(p){ return (PF.type === '' || (PF.type === 'none' ? !p.pay_type && +p.active : p.pay_type === PF.type)) && (!PF.dept || p.department_name === PF.dept) && (!PF.q || (p.full_name + ' ' + p.code).toLowerCase().indexOf(PF.q) >= 0); });
+        var rows = shownNow();
         box.textContent = '';
         if (!rows.length) return box.appendChild(el('div', { class: 'empty', text: 'Nobody here.' }));
         var tb = el('tbody');
@@ -963,8 +965,12 @@ page_header('People Finance');
         });
         box.appendChild(el('table', { class: 't' }, [el('thead', {}, [el('tr', {}, [el('th', { text: 'Employee' }), el('th', { text: 'Paid as' }), el('th', { text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Owed now' })])]), tb]));
       }
-      var shownNow = function(){ return r.people.filter(function(p){ return (PF.type === '' || (PF.type === 'none' ? !p.pay_type && +p.active : p.pay_type === PF.type)) && (!PF.dept || p.department_name === PF.dept) && (!PF.q || (p.full_name + ' ' + p.code).toLowerCase().indexOf(PF.q) >= 0); }); };
-      show([seg, el('div', { class: 'row' }, [el('div', { style: 'flex:1 1 160px' }, [dept]), el('div', { style: 'flex:2 1 220px' }, [search]),
+      function shownNow(){ return r.people.filter(function(p){ return onState(p) && (PF.type === '' || (PF.type === 'none' ? !p.pay_type : p.pay_type === PF.type)) && (!PF.dept || p.department_name === PF.dept) && (!PF.q || (p.full_name + ' ' + p.code).toLowerCase().indexOf(PF.q) >= 0); }); }
+      var left = r.people.filter(function(p){ return !+p.active; }).length;
+      var state = el('select', { 'aria-label': 'Who is listed', change: function(){ PF.state = state.value; people(); } },
+        [['on', 'On the roll'], ['left', 'Left the company (' + left + ')'], ['all', 'Everyone']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
+      state.value = PF.state;
+      show([seg, el('div', { class: 'row' }, [el('div', { style: 'flex:0 1 190px' }, [state]), el('div', { style: 'flex:1 1 160px' }, [dept]), el('div', { style: 'flex:2 1 220px' }, [search]),
         S.caps.staff ? btn('+ New employees', function(){ staffForm([], 8); }, 'pri') : null,
         (S.caps.staff || S.caps.setup) ? btn('Edit these in one form', function(){ staffForm(shownNow(), S.caps.staff ? 3 : 0); }) : null]), box]);
       draw();
@@ -1062,6 +1068,13 @@ page_header('People Finance');
       var vis = function(){ var t = type.value; w.basic.hidden = w.allow.hidden = t !== 'salary'; w.daily.hidden = t !== 'daily'; w.ot.hidden = t === 'contract' || t === ''; w.bank.hidden = f.method.value !== 'bank'; };
       type.addEventListener('change', vis); f.method.addEventListener('change', vis); vis();
       var e1 = el('div', { class: 'err', hidden: true });
+      /* DELETE, for someone entered by mistake: Admin only, and only when nothing
+         has happened to them yet — otherwise the server says what they have. */
+      var del = c.delete_staff ? btn('Delete (entered by mistake)', function(){
+        ask('Delete ' + p.full_name + '?', 'For someone entered by mistake — typed twice, the wrong person. It is only possible while nothing has happened to them: no scan, no attendance, nothing in pay. Their pay setup and photo go with them. For anyone who worked here, use "Mark as left the company" instead.',
+          [{ k: 'reason', label: 'Why', wide: true, placeholder: 'e.g. entered twice' }], 'Delete', function(v){
+            return call('POST', '/admin/employees/delete', { id: id, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast(p.full_name + ' deleted.'); PEOPLE = null; people(); } return x; }); });
+      }, 'sm danger') : null;
       var left = c.staff ? btn(+p.active ? 'Mark as left the company' : 'Bring back on the roll', function(){
         ask(+p.active ? p.full_name + ' has left' : 'Bring ' + p.full_name + ' back', +p.active ? 'They stay in every record and statement; they can no longer be scanned in or put on a new pay sheet.' : '', [{ k: 'reason', label: 'Reason', wide: true }], 'Save', function(v){
           return call('POST', '/finance/staff/' + id + '/active', { active: !+p.active, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast('Saved.'); people(); } return x; }); });
@@ -1070,7 +1083,7 @@ page_header('People Finance');
         el('div', { class: 'formgrid' }, [field('Code', m.code), field('Name', m.name), field('Department', m.dept), field('Production worker code', m.worker), field('Card text', m.qr),
           field('Paid as', type), w.basic, w.allow, w.daily, w.ot, field('Paid by', f.method), w.bank, field('Reason', f.reason)]),
         el('p', { class: 'muted small', style: 'margin:0', text: 'A contractor is paid from Production: give the same code here as in Production › Workers (or leave it blank to use the employee code). The overtime rate is used only for approved, checked overtime that Accounts has not already priced.' }), e1,
-        el('div', { class: 'row', style: 'justify-content:space-between' }, [left || el('span'), btn('Save', function(ev){
+        el('div', { class: 'row', style: 'justify-content:space-between' }, [el('div', { class: 'row' }, [left, del]), btn('Save', function(ev){
           var num = function(i){ var v = i.value.trim(); return v === '' ? 0 : toPaisa(v); };
           var row = { employee_id: id };
           if (c.staff) { row.code = m.code.value.trim(); row.full_name = m.name.value.trim(); row.department = m.dept.value.trim(); row.worker_code = m.worker.value.trim(); row.qr_payload = m.qr.value.trim(); }

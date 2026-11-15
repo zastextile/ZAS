@@ -29,6 +29,7 @@ foreach (['Db','Time','Migrations','Policy','Audit','Roles','Employees','Shifts'
     require_once $B . "includes/att/$c.php";
 }
 use Att\Db;
+use Att\AdminService;
 use Att\Employees;
 use Att\FinanceService as Fin;
 use Att\Migrations;
@@ -592,6 +593,26 @@ ok($code(Fin::adjustProduction('2026-03-01', '2026-03-12', [['employee_id' => $n
 $hb = Fin::productionBill('2026-03-01', '2026-03-12', 0, $H);
 ok($hb['ok'] && array_filter($hb['contractors'], fn($c) => $c['department_name'] !== 'Stitching') === [], '  a HOD sees and adjusts only their own department\'s contractors');
 Fin::setToday('2026-03-05');
+
+echo "12i. Deleting what was entered by mistake — and never what has history\n";
+$z = Employees::create(['code' => 'Z999', 'full_name' => 'Typed Twice', 'department_id' => $dP]);
+Fin::saveProfile($z, ['pay_type' => 'daily', 'daily_rate_paisa' => 100000, 'pay_method' => 'cash'], 'x', $acc);
+$day0 = Shifts::create(['name' => 'Spare', 'start_time' => '09:00', 'end_time' => '17:00']);
+Db::run("INSERT INTO att_shift_instances (employee_id, shift_id, work_date, starts_at, ends_at) VALUES (?, ?, '2026-03-20', '2026-03-20 04:00:00', '2026-03-20 12:00:00')", [$z, $day0]);
+ok($code(AdminService::deleteEmployee($z, '', $admin)) === 'REASON_REQUIRED', 'deleting needs a reason');
+$dz = AdminService::deleteEmployee($z, 'Entered twice', $admin);
+ok($dz['ok'] && $n('SELECT COUNT(*) FROM att_employees WHERE id = ?', [$z]) === 0 && $n('SELECT COUNT(*) FROM att_fin_profiles WHERE employee_id = ?', [$z]) === 0 && $n('SELECT COUNT(*) FROM att_shift_instances WHERE employee_id = ?', [$z]) === 0,
+   'SOMEONE ENTERED BY MISTAKE (pay set up, a shift day, nothing else): deleted, with their pay setup and shift days — ' . ($dz['error'] ?? ''));
+ok($n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'employee.delete' AND subject_id = ? AND old_data LIKE '%Typed Twice%'", [$z]) === 1, '  a full copy is kept in the audit trail, with the reason');
+$dh = AdminService::deleteEmployee($emp['D001'], 'x', $admin);
+ok(!$dh['ok'] && $dh['reason_code'] === 'HAS_HISTORY' && str_contains($dh['error'], 'gate scans') && str_contains($dh['error'], 'Mark as left the company') && $n('SELECT COUNT(*) FROM att_employees WHERE id = ?', [$emp['D001']]) === 1,
+   'SOMEONE WITH HISTORY is never deleted: the answer says what they have and points to "left the company" — ' . $dh['error']);
+ok($code(AdminService::deleteDepartment($dP, 'x', $admin)) === 'DEPARTMENT_IN_USE', 'a department with people in it is not deleted');
+$md = Employees::createDepartment('Made By Mistake');
+ok(AdminService::deleteDepartment($md, 'Typo', $admin)['ok'] && $n('SELECT COUNT(*) FROM att_departments WHERE id = ?', [$md]) === 0, '  an empty one made by mistake is');
+$hd = Employees::createDepartment('Has A HOD');
+Roles::grant($hr, Roles::HOD, $hd);
+ok(str_contains((string) (AdminService::deleteDepartment($hd, 'x', $admin)['error'] ?? ''), 'job given to a user'), '  one a HOD is tied to says so, and stays');
 
 echo "13. Rollback\n";
 $m = new Migrations($B . 'sql/att');

@@ -327,7 +327,10 @@ page_header('Attendance — Setup');
               CAN.u ? btn('Edit', function(){ editEmployee(e); }) : null, ' ',
               CAN.u ? btn('Photo…', function(){ photoDialog(e); }) : null, ' ',
               active ? (CAN.d ? btn('Make inactive', function(){ deactivate(e); }) : null)
-                     : (CAN.u ? btn('Make active', function(){ call('POST', '/admin/employees/active', { id: e.id, active: true }).then(function(x){ if (!x.ok) alert(x.error); list(); }); }) : null)
+                     : (CAN.u ? btn('Make active', function(){ call('POST', '/admin/employees/active', { id: e.id, active: true }).then(function(x){ if (!x.ok) alert(x.error); list(); }); }) : null),
+              CAN.admin ? ' ' : null,
+              CAN.admin ? btn('Delete…', function(){ removeRecord('employees', e.id, e.full_name + ' (' + e.code + ')',
+                'Only for someone entered by mistake — while nothing has happened to them: no scan, no attendance, nothing in pay. For anyone who worked here, use "Make inactive": they leave the lists and nothing is lost.', function(){ list(); }); }) : null
             ]);
             return [el('strong', { text: e.code }), e.full_name, e.department_name,
               el('span', { class: 'pill ' + (hasPhoto ? 'good' : 'off'), text: hasPhoto ? 'On file' : 'None' }), state, acts];
@@ -794,6 +797,13 @@ page_header('Attendance — Setup');
   }
 
   // --------------------------------------------------------- departments
+  /* Delete for good — Admin only. The server refuses, and says why, whenever
+     the record has anything hanging on it. */
+  function removeRecord(kind, id, label, text, done){
+    var why = el('textarea', { class: 'full', rows: 2, id: 'del-why' });
+    dialog({ title: 'Delete ' + label + '?', text: text, fields: [field('Reason (kept on the record)', why)], okText: 'Delete',
+      submit: function(){ return call('POST', '/admin/' + kind + '/delete', { id: id, reason: why.value }).then(function(r){ if (r.ok) done(); return r; }); } });
+  }
   function drawDepartments(){
     loadDepts().then(function(list){
       var name = el('input', { type: 'text', class: 'grow', maxlength: 100, placeholder: 'New department name', 'aria-label': 'New department name' });
@@ -823,7 +833,10 @@ page_header('Attendance — Setup');
               }), ' ',
               btn(on ? 'Switch off' : 'Switch on', function(){
                 call('POST', '/admin/departments', { id: d.id, name: d.name, active: !on }).then(function(r){ if (!r.ok) { msg.className = 'err'; msg.textContent = r.error; return; } drawDepartments(); });
-              })
+              }),
+              CAN.admin ? ' ' : null,
+              CAN.admin ? btn('Delete…', function(){ removeRecord('departments', d.id, d.name,
+                'Only for a department nobody is in — made by mistake, or emptied. While anyone is in it (on the roll or left), move them first, or switch it off to hide it.', function(){ deptCache = []; drawDepartments(); }); }) : null
             ]) : el('span', {})];
         }) : el('p', { class: 'muted', text: 'No departments yet.' })
       ]);

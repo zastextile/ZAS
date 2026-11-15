@@ -757,6 +757,17 @@ try {
                 (string) Http::input('reason', ''), (int) $u['id']));
             break;
 
+        /* DELETING, for what was entered by mistake: Admin only, and only
+           when nothing has happened to the person or department yet
+           (AdminService::deleteEmployee / deleteDepartment say why not). */
+        case $method === 'POST' && ($route === '/admin/employees/delete' || $route === '/admin/departments/delete'):
+            Http::requireCsrf();
+            $u = require_erp_admin();
+            admin_answer($route === '/admin/employees/delete'
+                ? AdminService::deleteEmployee((int) Http::input('id', 0), (string) Http::input('reason', ''), (int) $u['id'])
+                : AdminService::deleteDepartment((int) Http::input('id', 0), (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
         case $method === 'POST' && $route === '/admin/employees/import':
             Http::requireCsrf();
             $u    = Http::requirePermission('attadm', 'c');
@@ -913,7 +924,7 @@ try {
            kind of sheet, whose department, their own sheet or not). */
         case $method === 'GET' && $route === '/finance/overview':
             [$u, $caps] = fin_caps();
-            admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps + ['staff' => Fin::mayEditStaff((int) $u['id']), 'photo' => Roles::can('attadm', 'u')], 'departments' => Employees::departments()]);
+            admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps + ['staff' => Fin::mayEditStaff((int) $u['id']), 'photo' => Roles::can('attadm', 'u'), 'delete_staff' => (bool) $caps['admin']], 'departments' => Employees::departments()]);
             break;
 
         case $method === 'GET' && $route === '/finance/people':

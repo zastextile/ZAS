@@ -443,6 +443,8 @@ call('POST', '/admin/jobs/grant', ['user_id' => $hodU, 'role' => 'hod', 'departm
 
 /* ===================================================================== */
 echo "12. The screen itself, in a browser\n";
+$dMis = Employees::createDepartment('Mistake Dept');                    // for the browser's delete checks
+Employees::create(['code' => 'X777', 'full_name' => 'Delete Me', 'department_id' => $dS]);
 $work = __DIR__ . '/.zattadmin';
 @mkdir($work, 0777, true);
 $shot = getenv('ATT_SHOT_DIR') ?: '';
@@ -631,6 +633,28 @@ const closed = (page) => page.waitForFunction(() => !document.querySelector('#at
     await cp.waitForSelector('#atts-body .setting');
     check('a clerk sees the settings read-only, with no Save button', (await cp.locator('button:has-text("Save settings")').count()) === 0 && await cp.locator('#atts-body .setting input').first().isDisabled());
     await c2.close();
+
+    // DELETE, for what was entered by mistake (Admin only): a person, then a department
+    await page.goto(BASE + '/att_setup.php#emp');
+    await page.reload();
+    await page.waitForSelector('input[aria-label="Search employees"]');
+    await page.fill('input[aria-label="Search employees"]', 'X777');
+    await page.waitForFunction(() => /X777/.test(document.getElementById('atts-body').textContent));
+    await page.locator('#atts-body tr', { hasText: 'X777' }).locator('button:has-text("Delete")').click();
+    await page.waitForSelector('#attsdlg[open]');
+    await page.fill('#del-why', 'Entered by mistake');
+    await page.click('#attsdlg-ok');
+    await page.waitForFunction(() => !document.querySelector('#attsdlg[open]') && !/X777/.test(document.getElementById('atts-body').textContent), null, { timeout: 10000 }).catch(() => {});
+    check('SETUP › EMPLOYEES: Delete removes someone entered by mistake', !/X777/.test(await page.textContent('#atts-body')));
+    await page.goto(BASE + '/att_setup.php#dept');
+    await page.reload();
+    await page.waitForFunction(() => /Mistake Dept/.test(document.getElementById('atts-body').textContent));
+    await page.locator('#atts-body tr', { hasText: 'Mistake Dept' }).locator('button:has-text("Delete")').click();
+    await page.waitForSelector('#attsdlg[open]');
+    await page.fill('#del-why', 'Typo');
+    await page.click('#attsdlg-ok');
+    await page.waitForFunction(() => !/Mistake Dept/.test(document.getElementById('atts-body').textContent), null, { timeout: 10000 }).catch(() => {});
+    check('SETUP › DEPARTMENTS: Delete removes an empty department made by mistake', !/Mistake Dept/.test(await page.textContent('#atts-body')));
 
     check('no script error on any tab', errors.length === 0, errors.join(' | '));
   } catch (e) { check('the browser run completed', false, e && e.message); }

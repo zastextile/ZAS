@@ -375,6 +375,102 @@ final class AdminService
     }
 
     /**
+     * DELETE an employee that should never have been entered — typed twice,
+     * the wrong person, a test. Allowed ONLY when nothing has happened to
+     * them yet: no gate scan, no attendance entry, no HOD confirmation, no
+     * overtime, nothing in the pay ledger or on a pay sheet, no advance. With
+     * any of that, deleting them would delete real records with them, so the
+     * answer says what they have and points to "left the company" instead —
+     * that takes them off every list and keeps the history.
+     *
+     * Their pay setup, shift days and reference photo go with them. A full
+     * copy of the row is kept in the audit trail.
+     */
+    public static function deleteEmployee(int $id, string $reason, int $actorId): array
+    {
+        $reason = self::clean($reason);
+        if ($reason === '') {
+            return self::no('REASON_REQUIRED', 'Say why it is deleted — for example "entered twice". It is kept on the record.');
+        }
+        $e = Db::one('SELECT * FROM att_employees WHERE id = ?', [$id]);
+        if ($e === null) {
+            return self::no('NOT_FOUND', 'That employee no longer exists.');
+        }
+        $history = self::employeeHistory($id);
+        if ($history !== []) {
+            return self::no('HAS_HISTORY', $e['full_name'] . ' has ' . implode(', ', $history)
+                . '. Deleting them would delete those records too, so it is not allowed. Use "Mark as left the company" instead: they leave every list and nothing is lost.');
+        }
+        if (!empty($e['reference_photo_key'])) {
+            $r = PhotoService::removeReference($id, 'Employee deleted: ' . $reason, $actorId);
+            if (!$r['ok']) {
+                return $r;
+            }
+        }
+        return Db::tx(static function () use ($id, $e, $reason, $actorId) {
+            foreach (['att_fin_profile_history', 'att_fin_profiles', 'att_shift_instances'] as $t) {
+                if (Db::tableExists($t)) {
+                    Db::run("DELETE FROM `$t` WHERE employee_id = ?", [$id]);
+                }
+            }
+            Db::run('DELETE FROM att_employees WHERE id = ?', [$id]);
+            unset($e['reference_photo_key'], $e['reference_photo_etag']);
+            Audit::record('employee.delete', 'att_employee', $id, $e, ['deleted' => true], $actorId, $reason);
+            return ['ok' => true, 'employee_id' => $id, 'deleted' => true];
+        });
+    }
+
+    /** What has happened to this person, in words; empty when nothing has. @return list<string> */
+    public static function employeeHistory(int $id): array
+    {
+        $out = [];
+        foreach (['att_events' => ['gate scan', 'gate scans'], 'att_entry_cycles' => ['attendance entry', 'attendance entries'], 'att_hod_arrivals' => ['HOD confirmation', 'HOD confirmations'],
+                  'att_flags' => ['flag', 'flags'], 'att_ot_request_employees' => ['overtime record', 'overtime records'], 'att_fin_ledger' => ['pay-ledger line', 'pay-ledger lines'],
+                  'att_fin_sheet_items' => ['pay-sheet line', 'pay-sheet lines'], 'att_fin_advances' => ['advance or loan', 'advances or loans']] as $t => [$one, $many]) {
+            if (!Db::tableExists($t)) {
+                continue;
+            }
+            $n = (int) Db::value("SELECT COUNT(*) FROM `$t` WHERE employee_id = ?", [$id]);
+            if ($n > 0) {
+                $out[] = $n . ' ' . ($n === 1 ? $one : $many);
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * DELETE a department that is not used — made by mistake, or emptied.
+     * Not while any employee is in it (on the roll or left), nor while a HOD
+     * or another job is tied to it, nor when old records name it; switching it
+     * off is the way to hide one of those.
+     */
+    public static function deleteDepartment(int $id, string $reason, int $actorId): array
+    {
+        $reason = self::clean($reason);
+        if ($reason === '') {
+            return self::no('REASON_REQUIRED', 'Say why it is deleted. It is kept on the record.');
+        }
+        $d = Db::one('SELECT * FROM att_departments WHERE id = ?', [$id]);
+        if ($d === null) {
+            return self::no('NOT_FOUND', 'That department no longer exists.');
+        }
+        $all = (int) Db::value('SELECT COUNT(*) FROM att_employees WHERE department_id = ?', [$id]);
+        if ($all > 0) {
+            $left = (int) Db::value('SELECT COUNT(*) FROM att_employees WHERE department_id = ? AND active = 0', [$id]);
+            return self::no('DEPARTMENT_IN_USE', $all . ($all === 1 ? ' employee is' : ' employees are') . ' in ' . $d['name'] . ($left ? " ($left of them left the company)" : '')
+                . '. Move them to another department first — or switch the department off to hide it.');
+        }
+        foreach (['att_user_roles' => 'job given to a user (Setup › People)', 'att_hod_arrivals' => 'HOD confirmation', 'att_ot_requests' => 'overtime request'] as $t => $what) {
+            if (Db::tableExists($t) && (int) Db::value("SELECT COUNT(*) FROM `$t` WHERE department_id = ?", [$id]) > 0) {
+                return self::no('DEPARTMENT_IN_USE', $d['name'] . ' is named on a ' . $what . '. Switch the department off instead to hide it.');
+            }
+        }
+        Db::run('DELETE FROM att_departments WHERE id = ?', [$id]);
+        Audit::record('department.delete', 'att_department', $id, $d, ['deleted' => true], $actorId, $reason);
+        return ['ok' => true, 'department_id' => $id, 'deleted' => true];
+    }
+
+    /**
      * Add many employees at once, from rows pasted out of a spreadsheet.
      *
      * Always checked in full first. With $commit false nothing is written and
