@@ -300,7 +300,7 @@ page_header('People Finance');
 .fin-shade .box.xwide{max-width:1320px}
 .fin table.staff input,.fin table.staff select{min-width:92px;padding:4px 7px;min-height:28px;font-size:12.5px}
 .fin table.staff input[type=checkbox]{min-width:0;width:16px;height:16px;min-height:0;padding:0;margin:0}
-.fin table.staff select[data-k=type]{min-width:128px}.fin table.staff thead th{position:sticky;top:0;z-index:1}
+.fin table.staff select[data-k=type]{min-width:128px}.fin table.staff select[data-k=dept]{min-width:160px}.fin table.staff thead th{position:sticky;top:0;z-index:1}
 .fin table.staff td:nth-child(3) input{min-width:150px}
 .fin-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;background:#0f2742;color:#fff;padding:9px 16px;border-radius:4px;font:600 13px/1.4 'IBM Plex Sans','Segoe UI',Inter,system-ui,Arial,sans-serif;max-width:calc(100% - 32px);z-index:950;box-shadow:0 8px 22px rgba(15,39,66,.3)}
 .fin-toast[hidden]{display:none}
@@ -1003,6 +1003,38 @@ page_header('People Finance');
       btn('This month', function(){ span(S.today.slice(0, 8) + '01', S.today); }, 'sm'), btn('Last month', function(){ var m = monthRange(prevMonth()); span(m[0], m[1]); }, 'sm'),
       btn('Everything', function(){ span('2000-01-01', S.today); }, 'sm'), dl]), bodyS]);
   }
+  /* THE DEPARTMENT BOX: a drop-down of every department, and "+ New
+     department…" at the end. (A typing box with suggestions only offered the
+     names matching what was already typed — usually just its own.) Reading
+     and setting .value works with the department NAME, as before, so a name
+     pasted from Excel that is not a department yet is added as "(new)". */
+  function deptSelect(value, attrs){
+    var s = el('select', attrs || {});
+    var proto = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+    var opts = function(){ return [].slice.call(s.options); };
+    s.appendChild(el('option', { value: '', text: (attrs && attrs['data-ph']) || '— choose —' }));
+    (S.depts || []).forEach(function(d){ s.appendChild(el('option', { value: d.name, text: d.name })); });
+    var newOpt = el('option', { value: '__new', text: '+ New department…' }); s.appendChild(newOpt);
+    Object.defineProperty(s, 'value', { configurable: true,
+      get: function(){ var v = proto.get.call(s); return v === '__new' ? '' : v; },
+      set: function(v){
+        v = String(v === null || v === undefined ? '' : v).trim();
+        if (v) {
+          var m = opts().filter(function(o){ return o.value !== '__new' && o.value.toLowerCase() === v.toLowerCase(); })[0];
+          if (m) v = m.value; else s.insertBefore(el('option', { value: v, text: v + ' (new)' }), newOpt);
+        }
+        proto.set.call(s, v);
+      } });
+    s.value = value || '';
+    var last = s.value;
+    s.addEventListener('change', function(){
+      if (proto.get.call(s) !== '__new') { last = s.value; return; }
+      var n = window.prompt('Name of the new department');
+      s.value = n && n.trim() ? n.trim() : last; last = s.value;
+      s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    return s;
+  }
   function deptList(){
     var old = document.getElementById('fin-depts'); if (old) old.remove();
     return el('datalist', { id: 'fin-depts' }, (S.depts || []).map(function(d){ return el('option', { value: d.name }); }));
@@ -1017,7 +1049,7 @@ page_header('People Finance');
       el('div', { class: 'nm' }, [el('b', { text: p.full_name }), el('span', { text: p.code + ' · ' + p.department_name + (+p.active ? '' : ' · left the company') })])]), btn('Close', closeModal, 'sm')])];
     if (c.staff || c.setup) {
       var m = { code: el('input', { type: 'text', maxlength: 40, value: p.code, disabled: !c.staff }), name: el('input', { type: 'text', maxlength: 160, value: p.full_name, disabled: !c.staff }),
-        dept: el('input', { type: 'text', list: 'fin-depts', maxlength: 120, value: p.department_name, disabled: !c.staff }), worker: el('input', { type: 'text', maxlength: 40, value: p.worker_code || '', disabled: !c.staff }),
+        dept: deptSelect(p.department_name, { disabled: !c.staff, 'aria-label': 'Department' }), worker: el('input', { type: 'text', maxlength: 40, value: p.worker_code || '', disabled: !c.staff }),
         qr: el('input', { type: 'text', maxlength: 190, value: p.qr_payload || '', disabled: !c.staff, placeholder: 'Only if the card scans as something else' }) };
       var type = el('select', { disabled: !c.setup }, [['', '— not set —'], ['salary', 'Fixed salary (monthly)'], ['daily', 'Daily wages (weekly)'], ['contract', 'Contractor (by production)']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
       type.value = p.pay_type || '';
@@ -1189,7 +1221,7 @@ page_header('People Finance');
       var o = { p: p, isNew: isNew,
         cb: el('input', { type: 'checkbox', 'aria-label': 'Save this line' }),
         code: txt(p.code, 40, !c.staff, isNew ? 'auto' : ''), name: txt(p.full_name, 160, !c.staff, isNew ? 'Full name' : ''),
-        dept: el('input', { type: 'text', list: 'fin-depts', maxlength: 120, value: p.department_name || '', disabled: !c.staff, placeholder: isNew ? 'Department' : null }),
+        dept: deptSelect(p.department_name || '', { disabled: !c.staff, 'data-ph': isNew ? 'Department…' : '— choose —' }),
         worker: txt(p.worker_code, 40, !c.staff),
         type: el('select', { disabled: !c.setup || hide }, TYPES.map(function(t){ return el('option', { value: t[0], text: t[1] }); })),
         amt: txt(p.pay_type === 'salary' ? (p.basic_paisa ? plain(p.basic_paisa) : '') : (p.daily_rate_paisa ? plain(p.daily_rate_paisa) : ''), 14, !c.setup || hide, '', 'n'),
@@ -1232,7 +1264,7 @@ page_header('People Finance');
 
     var all = el('input', { type: 'checkbox', 'aria-label': 'Tick or untick every line', change: function(){ rows.forEach(function(o){ o.cb.checked = all.checked; }); count(); } });
     var fT = el('select', { 'aria-label': 'Fill: paid as' }, [['', 'Paid as…'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractor']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
-    var fD = el('input', { type: 'text', list: 'fin-depts', placeholder: 'Department', 'aria-label': 'Fill: department' }), fA = el('input', { type: 'text', inputmode: 'decimal', placeholder: 'Salary / day rate', 'aria-label': 'Fill: amount' });
+    var fD = deptSelect('', { 'aria-label': 'Fill: department', 'data-ph': 'Department…' }), fA = el('input', { type: 'text', inputmode: 'decimal', placeholder: 'Salary / day rate', 'aria-label': 'Fill: amount' });
     var fM = el('select', { 'aria-label': 'Fill: paid by' }, [el('option', { value: '', text: 'Paid by…' }), el('option', { value: 'cash', text: 'Cash' }), el('option', { value: 'bank', text: 'Bank' })]);
     var reason = el('input', { type: 'text', maxlength: 255, placeholder: 'Reason (needed only when changing pay that was already set)' });
     var errBox = el('div', { class: 'err', hidden: true }), countEl = el('span', { class: 'muted small' });
