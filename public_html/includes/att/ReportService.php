@@ -106,8 +106,40 @@ final class ReportService
         }
         unset($a);
 
+        /* One line per department: on the roll, came in, inside now, late,
+           left early, had a shift and did not come. Same scope as the rest. */
+        $byDept = [];
+        foreach (Db::all(
+            "SELECT d.id, d.name AS department_name, COUNT(e.id) AS active
+               FROM att_employees e JOIN att_departments d ON d.id = e.department_id
+              WHERE e.active = 1 $dw GROUP BY d.id, d.name ORDER BY d.name", $dp) as $r) {
+            $byDept[$r['department_name']] = ['department_name' => $r['department_name'], 'active' => (int) $r['active'],
+                'came_in' => 0, 'inside' => 0, 'late' => 0, 'left_early' => 0, 'absent' => 0];
+        }
+        $blank = fn($n) => ['department_name' => $n, 'active' => 0, 'came_in' => 0, 'inside' => 0, 'late' => 0, 'left_early' => 0, 'absent' => 0];
+        foreach (Db::all(
+            "SELECT d.name AS department_name, COUNT(DISTINCT c.employee_id) AS people
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
+              WHERE c.opened_at >= ? AND c.opened_at < ? $dw GROUP BY d.id, d.name", array_merge([$from, $to], $dp)) as $r) {
+            $byDept[$r['department_name']] ??= $blank($r['department_name']);
+            $byDept[$r['department_name']]['came_in'] = (int) $r['people'];
+        }
+        foreach ($inside as $r) {
+            $byDept[$r['department_name']] ??= $blank($r['department_name']);
+            $byDept[$r['department_name']]['inside'] = (int) $r['inside'];
+        }
+        foreach ([[$late, 'late'], [$early, 'left_early'], [$absent, 'absent']] as [$list, $k]) {
+            foreach ($list as $r) {
+                $n = (string) $r['department_name'];
+                $byDept[$n] ??= $blank($n);
+                $byDept[$n][$k]++;
+            }
+        }
+        ksort($byDept, SORT_NATURAL | SORT_FLAG_CASE);
+
         $out = [
             'ok' => true, 'today' => $today, 'generated_at' => Time::iso(self::nowUtc()),
+            'by_department' => array_values($byDept),
             'auto_out' => $auto, 'auto_out_count' => count($auto),
             'inside_now' => array_sum(array_map(fn($r) => (int) $r['inside'], $inside)),
             'inside_by_department' => $inside,

@@ -298,6 +298,7 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     await loaded(p);
     check('the menu shows Attendance › Reports', /Reports/.test(await p.textContent('.nav')));
     check('Today opens with the tiles and "Needs attention"', (await p.locator('#t-inside').count()) === 1 && (await p.locator('#watch li').count()) === 10);
+    check('Today has one line per department, with a total', (await p.locator('#inside-bars tbody tr').count()) >= 1 && /All departments/.test(await p.textContent('#inside-bars')));
     await p.click('#attr-tabs button:has-text("Attendance")');
     await loaded(p);
     await p.fill('#f-from', '2026-03-02'); await p.fill('#f-to', '2026-03-02');
@@ -307,9 +308,20 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     check('the attendance report shows the day: Night Worker, "did not come", late 30m', /Night Worker/.test(body) && /did not come/.test(body) && /30m/.test(body), body.slice(0, 200));
     check('the CSV link asks the same report as a file', /format=csv/.test(await p.getAttribute('#f-csv', 'href')));
     if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-attendance.png', fullPage: true });
+    // the same dates, by department and day by day; a person's row opens their days
+    await p.click('#attr-body .seg button[data-v=dept]');
+    if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-attendance-dept.png', fullPage: true });
+    await p.click('#attr-body .seg button[data-v=emp]');
+    await p.click('#attr-body tr.pick:has-text("Night Worker")');
+    await p.waitForFunction(() => document.getElementById('f-emp') && document.getElementById('f-emp').value !== '', null, { timeout: 10000 });
+    await loaded(p); await p.waitForSelector('#attr-body .seg button[data-v=lines][aria-pressed=true]');
+    check('clicking a person shows only their days, day by day', (await p.inputValue('#f-emp')) !== '' && /Night Worker/.test(await p.textContent('#attr-body')));
+    if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-attendance-lines.png', fullPage: true });
+    await p.fill('#f-emp', ''); await p.click('#f-show'); await p.waitForSelector('#attr-body .seg'); await p.click('#attr-body .seg button[data-v=emp]');
     await p.click('#attr-tabs button:has-text("Movements")');
     await loaded(p);
     await p.waitForSelector('#attr-body table');
+    if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-movements.png', fullPage: true });
     check('movements: one row per scan, with the HOD who confirmed', (await p.locator('#attr-body tbody tr').count()) === 11 && /Hina Hod/.test(await p.textContent('#attr-body')));
     // E003 never scanned out on 2 March; opening Today ran the Automatic OUT rule.
     check('  and E003\'s forgotten exit as the system\'s OUT, not a scan', /OUT · system/.test(await p.textContent('#attr-body')) && /System — no OUT scanned/.test(await p.textContent('#attr-body')));
@@ -317,6 +329,7 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     await loaded(p);
     await p.fill('#f-from', '2026-03-01'); await p.fill('#f-to', '2026-03-31'); await p.click('#f-show');
     await p.waitForSelector('#attr-body table');
+    if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-overtime.png', fullPage: true });
     check('overtime: by department, in hours — 1 h approved and 0.75 h checked', /Stitching110(1 h)(0\.75 h)/.test(await p.textContent('#attr-body')), (await p.textContent('#attr-body')).slice(0, 300));
     await p.click('#attr-tabs button:has-text("Today")');
     await loaded(p);
@@ -328,6 +341,7 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
       await mp.goto(BASE + '/att_reports.php#' + t); await mp.reload(); await loaded(mp); await mp.waitForTimeout(300);
       const o = await mp.evaluate(() => document.documentElement.scrollWidth - innerWidth);
       if (o > 1) wide.push(t + ' +' + o);
+      if (SHOT && (t === 'today' || t === 'att')) await mp.screenshot({ path: SHOT + '/att-m7-phone-' + t + '.png', fullPage: true });
     }
     check('at phone width no report pushes the page sideways', wide.length === 0, wide.join(', '));
     await m.close();
