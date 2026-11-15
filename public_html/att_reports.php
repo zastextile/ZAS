@@ -95,7 +95,7 @@ page_header('Attendance — Reports');
 .attr .tile .meter{height:5px;border-radius:2px;background:var(--line2);overflow:hidden;margin-top:6px}
 .attr .tile .meter i{display:block;height:100%;background:var(--good)}
 /* panels */
-.attr .cols{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:12px;align-items:start}
+.attr .cols{display:grid;grid-template-columns:minmax(0,2.1fr) minmax(260px,1fr);gap:12px;align-items:start}
 .attr .panel{background:#fff;border:1px solid var(--line);border-radius:4px;min-width:0}
 .attr .panel>.ph{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid var(--line2)}
 .attr .panel>.ph .n{font-size:11.5px;color:var(--muted)}
@@ -112,6 +112,12 @@ page_header('Attendance — Reports');
 .attr tbody tr:nth-child(even) td{background:#fafbfc}
 .attr tbody tr:hover td{background:var(--hover)}
 .attr tbody tr.pick{cursor:pointer}
+.attr th:last-child,.attr td:last-child{padding-right:12px}
+.attr th:first-child,.attr td:first-child{padding-left:12px}
+/* the department table on Today fits its box: tighter cells */
+.attr .fit th,.attr .fit td{padding-left:7px;padding-right:7px}
+.attr .fit th:first-child,.attr .fit td:first-child{padding-left:12px}
+.attr .fit th:last-child,.attr .fit td:last-child{padding-right:12px}
 .attr tfoot td{background:var(--head);font-weight:600;border-top:2px solid var(--line);border-bottom:0}
 .attr .who b{font-weight:600;color:var(--ink)}.attr .who .c{font-family:'IBM Plex Mono',ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--muted);margin-right:6px}
 .attr .empty{text-align:center;color:var(--muted);padding:22px 12px}
@@ -123,8 +129,8 @@ page_header('Attendance — Reports');
 .attr .pill.pending,.attr .pill.draft{background:var(--warn-bg);color:var(--warn)}
 .attr .flag{color:var(--bad);font-weight:600}.attr .flagw{color:var(--warn);font-weight:600}
 /* attendance-rate bar inside a cell */
-.attr .rate{display:inline-flex;align-items:center;gap:6px;justify-content:flex-end;min-width:96px}
-.attr .rate .t{width:46px;height:6px;border-radius:2px;background:var(--line2);overflow:hidden}
+.attr .rate{display:inline-flex;align-items:center;gap:6px;justify-content:flex-end;min-width:84px}
+.attr .rate .t{width:38px;height:6px;border-radius:2px;background:var(--line2);overflow:hidden}
 .attr .rate .t i{display:block;height:100%;background:var(--good)}
 .attr .rate.mid .t i{background:var(--warn)}.attr .rate.low .t i{background:var(--bad)}
 /* needs attention */
@@ -201,7 +207,7 @@ page_header('Attendance — Reports');
     });
     var parts = [el('thead', {}, [el('tr', {}, head.map(function(h, i){ return el('th', { class: num[i] ? 'n' : null, text: num[i] ? h.slice(1) : h }); }))]), tb];
     if (opts.foot) parts.push(el('tfoot', {}, [el('tr', {}, opts.foot.map(function(c, i){ return el('td', { class: num[i] ? 'n' : null }, [c === null || c === undefined ? '' : (typeof c === 'object' ? c : String(c))]); }))]));
-    return el('div', { class: 'scroll', id: opts.id || null }, [el('table', {}, parts)]);
+    return el('div', { class: 'scroll' + (opts.cls ? ' ' + opts.cls : ''), id: opts.id || null }, [el('table', {}, parts)]);
   }
   function hm(iso){ if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? iso : d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Karachi', hour: '2-digit', minute: '2-digit' }); }
   function dt(iso){ if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString('en-GB', { timeZone: 'Asia/Karachi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
@@ -292,10 +298,10 @@ page_header('Attendance — Reports');
 
       /* one line per department */
       var tot = depts.reduce(function(a, x){ ['active', 'came_in', 'inside', 'late', 'left_early', 'absent'].forEach(function(k){ a[k] += Number(x[k]) || 0; }); return a; }, { active: 0, came_in: 0, inside: 0, late: 0, left_early: 0, absent: 0 });
-      var deptBox = depts.length ? table(['Department', '#On the roll', '#Came in', '#Inside now', '#Late', '#Left early', '#Did not come', '#Attendance'], depts, function(x){
+      var deptBox = depts.length ? table(['Department', '#On roll', '#Came in', '#Inside', '#Late', '#Left early', '#Absent', '#Attendance'], depts, function(x){
         return [el('b', { text: x.department_name }), x.active, x.came_in, x.inside, x.late ? el('span', { class: 'flag', text: String(x.late) }) : '0',
           x.left_early ? el('span', { class: 'flagw', text: String(x.left_early) }) : '0', x.absent ? el('span', { class: 'flag', text: String(x.absent) }) : '0', rate(x.came_in, x.active)];
-      }, { id: 'inside-bars', foot: ['All departments', tot.active, tot.came_in, tot.inside, tot.late, tot.left_early, tot.absent, rate(tot.came_in, tot.active)] }) : none('Nobody is on the roll in your departments.', 'inside-bars');
+      }, { id: 'inside-bars', cls: 'fit', foot: ['All departments', tot.active, tot.came_in, tot.inside, tot.late, tot.left_early, tot.absent, rate(tot.came_in, tot.active)] }) : none('Nobody is on the roll in your departments.', 'inside-bars');
 
       /* the people behind each figure: one box at a time */
       var lateBox = d.late.length ? table(['Employee', 'Department', 'Shift starts', 'First IN', '#Late by'], d.late, function(r){ return [who(r.employee_code, r.full_name), r.department_name, hm(r.starts_at), hm(r.first_in), el('span', { class: 'flag', text: mins(r.late_minutes) })]; }) : none('Nobody was late.');

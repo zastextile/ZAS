@@ -298,6 +298,16 @@ const loaded = (p) => p.waitForFunction(() => !/^Loading…$/.test(document.getE
     await loaded(p);
     check('the menu shows Attendance › Reports', /Reports/.test(await p.textContent('.nav')));
     check('Today opens with the tiles and "Needs attention"', (await p.locator('#t-inside').count()) === 1 && (await p.locator('#watch li').count()) === 10);
+    // the department table fits its box (no column cut off at the right) on usual office screens
+    const cut = [];
+    for (const w of [1366, 1280, 1200, 1100]) {
+      await p.setViewportSize({ width: w, height: 900 }); await p.waitForTimeout(150);
+      const o = await p.evaluate(() => { const b = document.querySelector('#inside-bars'); return b.scrollWidth - b.clientWidth; });
+      if (o > 1) cut.push(w + 'px: ' + o + 'px cut');
+      if (SHOT) await p.screenshot({ path: SHOT + '/att-m7-today-' + w + '.png' });
+    }
+    await p.setViewportSize({ width: 1280, height: 900 });
+    check('the department table fits its box at 1366, 1280, 1200 and 1100 px wide', cut.length === 0, cut.join(', '));
     check('Today has one line per department, with a total', (await p.locator('#inside-bars tbody tr').count()) >= 1 && /All departments/.test(await p.textContent('#inside-bars')));
     await p.click('#attr-tabs button:has-text("Attendance")');
     await loaded(p);
