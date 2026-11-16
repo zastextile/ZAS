@@ -450,12 +450,13 @@ page_header('Attendance — Reports');
   function autoGroups(d){
     var y = new Date(d.today + 'T00:00:00Z'); y.setUTCDate(y.getUTCDate() - 1);
     var yest = y.toISOString().slice(0, 10), G = {};
+    G[d.today] = [];                                           // Today always shows first, even before any shift has ended
     d.auto_out.forEach(function(r){ var k = r.work_date || d.today; (G[k] = G[k] || []).push(r); });
     return Object.keys(G).sort().reverse().map(function(k){
       var rows = G[k], name = k === d.today ? 'Today' : k === yest ? 'From yesterday' : 'Earlier';
       return el('div', { class: 'agrp', 'data-day': k === d.today ? 'today' : k === yest ? 'yesterday' : 'earlier' }, [
-        el('div', { class: 'agh' }, [el('b', { text: name }), el('span', { class: 'm', text: day(k) + ' · ' + rows.length + ' entr' + (rows.length === 1 ? 'y' : 'ies') })]),
-        table(['Employee', 'Department', 'Came in', 'System OUT at', 'Closed by the system'], rows, function(r){ return [who(r.employee_code, r.full_name), r.department_name, dt(r.opened_at), hm(r.closed_at), dt(r.auto_closed_at)]; },
+        el('div', { class: 'agh' }, [el('b', { text: name }), el('span', { class: 'm', text: day(k) + ' · ' + (rows.length ? rows.length + ' entr' + (rows.length === 1 ? 'y' : 'ies') : 'none yet') })]),
+        !rows.length ? el('p', { class: 'note', style: 'padding:8px 12px', text: 'Nothing yet today. The system closes an entry only when that person\'s shift ends (or shift end plus approved overtime), so today\'s forgotten OUTs appear here this evening.' }) : table(['Employee', 'Department', 'Came in', 'System OUT at', 'Closed by the system'], rows, function(r){ return [who(r.employee_code, r.full_name), r.department_name, dt(r.opened_at), hm(r.closed_at), dt(r.auto_closed_at)]; },
           { wrap: [0, 1], keys: { 0: function(r){ return r.full_name; }, 2: function(r){ return r.opened_at; }, 3: function(r){ return r.closed_at; }, 4: function(r){ return r.auto_closed_at; } } })]);
     });
   }
