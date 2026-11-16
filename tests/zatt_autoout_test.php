@@ -274,6 +274,8 @@ const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra
     await ap.waitForSelector('#auto-out', { timeout: 20000 }).catch(() => {});
     const t = await ap.textContent('#auto-out').catch(() => '');
     check('Reports › Today has the "Not scanned out" list', /Not scanned out/.test(t) && /E004/.test(t), t.slice(0, 120));
+    const heads = await ap.locator('#auto-out .agh').allTextContents();
+    check('  grouped by the day of the shift (Today / From yesterday / Earlier), each with its date and count', heads.length >= 1 && heads.every(h => /^(Today|From yesterday|Earlier)\w{3} \d\d \w{3} · \d+ entr(y|ies)$/.test(h.replace(/\s+/g, ' ').replace(/(Today|yesterday|Earlier) /, '$1'))), heads.join(' | '));
     if (SHOT) { await ap.locator('#auto-out').screenshot({ path: SHOT + '/reports-not-scanned-out.png' }).catch(() => {}); }
     await a.close();
   } catch (e) { check('the browser run completed', false, e && e.message); }

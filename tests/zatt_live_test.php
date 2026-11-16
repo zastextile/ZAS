@@ -147,6 +147,16 @@ foreach ($plan as $c => $what) {
     };
     if (!$r['ok']) { echo "  seed $c: {$r['error']}\n"; }
 }
+/* forgotten OUTs: two from yesterday's shift, one from today, closed by the system */
+$k = fn(string $local) => new DateTimeImmutable($local, new DateTimeZone('Asia/Karachi'));
+$yK = $nowK->modify('-1 day')->format('Y-m-d');
+foreach (['E028', 'E029'] as $c) {
+    Db::run('INSERT INTO att_shift_instances (employee_id, shift_id, work_date, starts_at, ends_at) VALUES (?, ?, ?, ?, ?)',
+        [$ids[$c], $day, $yK, $yK . ' 04:00:00', $yK . ' 12:00:00']);
+    $ry = E::add($c, $k("$yK 08:55"), $k("$yK 17:00"), 'live demo', $admin);
+    Db::run("UPDATE att_entry_cycles SET close_source = 'auto_shift_end', auto_closed_at = ? WHERE id = ?", [gmdate('Y-m-d H:i:s', time() - 8 * 3600), $ry['entry_cycle_id']]);
+}
+Db::run("UPDATE att_entry_cycles SET close_source = 'auto_shift_end', auto_closed_at = ? WHERE employee_id = ? AND closed_at IS NOT NULL ORDER BY id DESC LIMIT 1", [gmdate('Y-m-d H:i:s', time() - 60), $ids['E025']]);
 $lv = R::live(null);
 ok($lv['ok'] && count($lv['incoming']) === 5 && $lv['inside_now'] === 21 && count($lv['outgoing']) === 3 && $lv['gone_home'] === 6 && $lv['not_in'] === 3 && $lv['came_in'] === 27 && $lv['active_employees'] === 30,
    'LIVE: 5 came in the last 30 min, 21 inside (the 5 included), 3 just went out, 6 gone home (the 3 included), 3 not in, 27 of 30 came — '
@@ -243,6 +253,11 @@ async function signIn(ctx, email) {
     check('Wall screen: the dark full-screen view for a TV', await p.locator('#attr.wall').count() === 1);
     if (SHOTS) await p.screenshot({ path: SHOTS + '/live-wall.png', fullPage: true });
     await p.click('#live-wall');
+    await p.click('#attr-tabs button:has-text("Today")'); await p.waitForSelector('#auto-out .agrp');
+    const groups = await p.locator('#auto-out .agh b').allTextContents();
+    check('TODAY › Not scanned out is split: Today (1) then From yesterday (2)', groups.join('|') === 'Today|From yesterday'
+      && (await p.locator('#auto-out .agrp[data-day=today] tbody tr').count()) === 1 && (await p.locator('#auto-out .agrp[data-day=yesterday] tbody tr').count()) === 2, groups.join('|'));
+    if (SHOTS) await p.locator('#auto-out').screenshot({ path: SHOTS + '/not-scanned-out-groups.png' });
     check('no script error', errs.length === 0, errs.join(' | '));
     await ctx.close();
     const m = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOTS ? 2 : 1 });
@@ -260,7 +275,7 @@ JS);
 $raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 240 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('LIVE_SHOTS') ?: '')) . ' 2>&1');
 $results = [];
 if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
-ok(count($results) >= 13, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+ok(count($results) >= 14, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
 foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
 ok($n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view' AND new_data LIKE '%live dashboard%'") >= 20, 'every face shown on the Live tab is in the audit log');
 

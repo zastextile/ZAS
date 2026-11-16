@@ -102,6 +102,10 @@ page_header('Attendance — Reports');
 .attr .panel>.pb{padding:10px 12px}
 .attr .panel>.pb.flush{padding:0}
 .attr .panel.alert{border-left:3px solid var(--bad)}
+.attr .agrp+.agrp{border-top:2px solid var(--line)}
+.attr .agh{display:flex;gap:10px;align-items:baseline;padding:9px 12px 7px;background:var(--head);border-top:1px solid var(--line2)}
+.attr .agh b{font-size:12.5px;color:var(--navy)}.attr .agh .m{font-size:11.5px;color:var(--muted)}
+.attr .agrp[data-day=today] .agh b{color:var(--bad)}
 /* tables */
 /* tables fit the panel: text columns wrap instead of pushing the page sideways; no box-in-a-box scrolling.
    A phone still slides a wide table inside its own box. */
@@ -434,12 +438,26 @@ page_header('Attendance — Reports');
 
       var auto = d.auto_out_count ? panel('Not scanned out — the system closed these at shift end', d.auto_out_count + ' entr' + (d.auto_out_count === 1 ? 'y' : 'ies') + ', last 36 hours', [
         el('p', { class: 'note', style: 'padding:8px 12px', text: 'Nobody scanned OUT for these people, so the system closed the entry at the shift end (or shift end plus approved overtime). HR can put in the real time on the Reconciliation screen.' }),
-        table(['Employee', 'Department', 'Came in', 'System OUT at', 'Closed by the system'], d.auto_out, function(r){ return [who(r.employee_code, r.full_name), r.department_name, dt(r.opened_at), hm(r.closed_at), dt(r.auto_closed_at)]; }, { wrap: [0, 1], keys: { 0: function(r){ return r.full_name; }, 2: function(r){ return r.opened_at; }, 3: function(r){ return r.closed_at; }, 4: function(r){ return r.auto_closed_at; } } })
-      ], { id: 'auto-out', flush: true, alert: true }) : null;
+      ].concat(autoGroups(d)), { id: 'auto-out', flush: true, alert: true }) : null;
 
       show([strip, tiles, auto, top]);
     });
     timer = setInterval(function(){ if (!document.hidden) drawToday(); }, 60000);
+  }
+  /* Not scanned out, in groups by the day of the shift: Today first, then
+     From yesterday (the evening's forgotten exits), then anything older
+     still inside the 36 hours. Each group has its own count and table. */
+  function autoGroups(d){
+    var y = new Date(d.today + 'T00:00:00Z'); y.setUTCDate(y.getUTCDate() - 1);
+    var yest = y.toISOString().slice(0, 10), G = {};
+    d.auto_out.forEach(function(r){ var k = r.work_date || d.today; (G[k] = G[k] || []).push(r); });
+    return Object.keys(G).sort().reverse().map(function(k){
+      var rows = G[k], name = k === d.today ? 'Today' : k === yest ? 'From yesterday' : 'Earlier';
+      return el('div', { class: 'agrp', 'data-day': k === d.today ? 'today' : k === yest ? 'yesterday' : 'earlier' }, [
+        el('div', { class: 'agh' }, [el('b', { text: name }), el('span', { class: 'm', text: day(k) + ' · ' + rows.length + ' entr' + (rows.length === 1 ? 'y' : 'ies') })]),
+        table(['Employee', 'Department', 'Came in', 'System OUT at', 'Closed by the system'], rows, function(r){ return [who(r.employee_code, r.full_name), r.department_name, dt(r.opened_at), hm(r.closed_at), dt(r.auto_closed_at)]; },
+          { wrap: [0, 1], keys: { 0: function(r){ return r.full_name; }, 2: function(r){ return r.opened_at; }, 3: function(r){ return r.closed_at; }, 4: function(r){ return r.auto_closed_at; } } })]);
+    });
   }
   function watch(m){
     function li(n, text, hot){ return el('li', {}, [el('span', { text: text }), el('b', { class: hot && n ? 'hot' : null, text: String(n) })]); }
