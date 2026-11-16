@@ -425,15 +425,19 @@ page_header('Attendance — Overtime');
      away until wanted; when it does not support the approved time, the tap
      asks first. */
   var SHOW_GATE = false;
+  /* Does the gate back up the approved time? Said with WHAT was measured:
+     inside during the planned overtime hours, or inside after the shift. */
   function gateSupports(l){
     var mv = l.movement || {}, a = parseInt(l.approved_minutes, 10) || 0;
     if (!mv.entries || !mv.entries.length) return { ok: false, why: 'no gate entry that day' };
-    var seen = Math.max(parseInt(mv.minutes_inside_after_shift, 10) || 0, parseInt(mv.minutes_inside_planned, 10) || 0);
-    if ((mv.minutes_inside_after_shift !== null && mv.minutes_inside_after_shift !== undefined) || (mv.minutes_inside_planned !== null && mv.minutes_inside_planned !== undefined)) {
-      if (seen < a) return { ok: false, why: 'the gate shows ' + mins(seen) + ' inside' };
-      return { ok: true, why: 'the gate shows ' + mins(seen) + ' inside' };
-    }
-    return { ok: true, why: '' };
+    var has = function(v){ return v !== null && v !== undefined; };
+    var after = has(mv.minutes_inside_after_shift) ? parseInt(mv.minutes_inside_after_shift, 10) || 0 : null;
+    var plan = has(mv.minutes_inside_planned) ? parseInt(mv.minutes_inside_planned, 10) || 0 : null;
+    if (after === null && plan === null) return { ok: true, why: '' };
+    var usePlan = plan !== null && (after === null || plan >= after);
+    var seen = usePlan ? plan : after;
+    var where = usePlan ? ' inside during the planned time' + (l.planned_start ? ' ' + String(l.planned_start).slice(0, 5) + '–' + String(l.planned_end || '').slice(0, 5) : '') : ' inside after the shift';
+    return { ok: seen >= a, why: 'the gate shows ' + mins(seen) + where };
   }
   function drawVerify(){
     var dt = el('input', { type: 'date', id: 'ver-date', 'aria-label': 'Work date' });
@@ -474,7 +478,10 @@ page_header('Attendance — Overtime');
         if (mv.minutes_inside_after_shift !== null && mv.minutes_inside_after_shift !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside after the shift ended: ' + mins(mv.minutes_inside_after_shift) }));
         if (mv.minutes_inside_planned !== null && mv.minutes_inside_planned !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside during the planned time: ' + mins(mv.minutes_inside_planned) }));
         var sup = gateSupports(l);
-        var chip = el('span', { class: 'gchip' + (sup.ok ? '' : ' warn'), text: sup.ok ? (sup.why ? 'Gate: ' + sup.why.replace('the gate shows ', '') : '') : '⚠ ' + sup.why.charAt(0).toUpperCase() + sup.why.slice(1) });
+        /* Before the day after, the overtime may not even have been worked yet: no warning, just when it can be checked. */
+        var chip = (l.verification_status !== 'verified' && !l.can_verify_now)
+          ? el('span', { class: 'gchip', text: 'Overtime not worked yet — check from ' + day(nextDay(l.work_date)) })
+          : el('span', { class: 'gchip' + (sup.ok ? '' : ' warn'), text: sup.ok ? (sup.why ? 'Gate: ' + sup.why.replace('the gate shows ', '') : '') : '⚠ ' + sup.why.charAt(0).toUpperCase() + sup.why.slice(1) });
         var out = el('div', { class: 'err', style: 'font-size:12px' });
         var tick = el('span'), work, acts = el('span');
         if (l.verification_status === 'verified') {
