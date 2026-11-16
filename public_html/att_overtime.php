@@ -19,8 +19,10 @@
   hidden here is a courtesy only.
 
   The actual hours box is EMPTY until a person types in it. The gate
-  history is shown beside it to be checked, never copied into it: staying
-  late is not overtime (AT08).
+  history is shown (folded away until wanted) to be checked, never copied
+  into it: staying late is not overtime (AT08). "Worked as approved" is a
+  person's tap recording the APPROVED hours, never the gate's; when the gate
+  does not show that much time inside, it asks first.
 
   Names are written with textContent throughout.
 */
@@ -42,37 +44,76 @@ $can = [
 page_header('Attendance — Overtime');
 ?>
 <style>
-.atto .tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid #dfe6ef;margin:0 0 14px}
-.atto .tabs button{font:inherit;font-size:13.5px;font-weight:600;padding:9px 14px;border:0;border-bottom:3px solid transparent;background:none;color:#5a6b82;cursor:pointer}
-.atto .tabs button[aria-selected=true]{color:#10243e;border-bottom-color:#10243e}
-.atto table,#attodlg table{min-width:0;width:100%;border-collapse:collapse;font-size:13.5px}
-.atto th,#attodlg th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:#5a6b82;padding:7px 8px;border-bottom:1px solid #dfe6ef;white-space:nowrap}
-.atto td,#attodlg td{padding:8px;border-bottom:1px solid #edf1f6;vertical-align:top}
-.atto .scroll{overflow-x:auto;width:0;min-width:100%}
+/* ENTERPRISE LOOK — the same working area as People Finance and Reports:
+   white panel with a tab bar, compact inputs, navy-headed tables. */
+.content{padding:16px 20px}
+.topbar{margin-bottom:12px}
+.topbar h1{font:600 20px/1.25 'IBM Plex Sans','Segoe UI',Inter,system-ui,Arial,sans-serif;color:#0f2742;margin:0}
+.topbar .lead{font:400 12.5px/1.4 'IBM Plex Sans','Segoe UI',Inter,system-ui,Arial,sans-serif;color:#5b6b7c;margin:3px 0 0}
+.atto,#attodlg{--ff:'IBM Plex Sans','Segoe UI',Inter,system-ui,-apple-system,Roboto,Arial,sans-serif;--navy:#0f2742;--pri:#0a5fb4;--ink:#1d2733;--muted:#5b6b7c;--line:#d5dbe3;--line2:#e7ebf0;--head:#f4f6f9;--hover:#f0f6fc;--good:#107e3e;--good-bg:#e7f4ec;--warn:#b45309;--warn-bg:#fef6ea;--bad:#bb0000;--bad-bg:#ffefef}
+.atto{color:var(--ink);font:400 13px/1.45 var(--ff);background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 1px 2px rgba(15,39,66,.06);padding:0!important}
+.atto *,#attodlg *{box-sizing:border-box}
+.atto [hidden],#attodlg [hidden]{display:none!important}
+.atto .tabs{width:0;min-width:100%;display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;border-bottom:1px solid var(--line);padding:0 10px;margin:0}
+.atto .tabs button{flex:0 0 auto;border:0;border-bottom:3px solid transparent;background:transparent;color:var(--muted);font:600 13px/1 var(--ff);padding:13px 14px 10px;cursor:pointer;white-space:nowrap}
+.atto .tabs button:hover{color:var(--pri)}
+.atto .tabs button[aria-selected=true]{color:var(--pri);border-bottom-color:var(--pri)}
+#atto-body{padding:14px 16px 18px}
+.atto table,#attodlg table{min-width:0;width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
+.atto th,#attodlg th{background:var(--navy);color:#fff;text-align:left;font-size:11.5px;font-weight:600;padding:8px 9px;white-space:nowrap}
+.atto td,#attodlg td{padding:8px 9px;border-bottom:1px solid var(--line2);vertical-align:top}
+.atto tbody tr:hover td{background:var(--hover)}
+.atto .scroll{overflow-x:auto;width:0;min-width:100%;border:1px solid var(--line);border-radius:4px}
 .atto .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}
 .atto .bar .grow{flex:1 1 180px}
-.atto input,.atto select,.atto textarea,#attodlg input,#attodlg select,#attodlg textarea{font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid #cfd9e6;border-radius:8px;box-sizing:border-box;background:#fff;color:inherit;max-width:100%}
+.atto input,.atto select,.atto textarea,#attodlg input,#attodlg select,#attodlg textarea{font:400 13px var(--ff);padding:6px 9px;min-height:32px;border:1px solid #b9c4d0;border-radius:3px;background:#fff;color:inherit;max-width:100%}
+.atto input:focus,.atto select:focus,.atto textarea:focus{outline:2px solid #9cc3ea;outline-offset:0;border-color:var(--pri)}
 .atto input[type=number]{width:96px}
 .atto td select{width:auto}
-.atto button.act,#attodlg button.act{font:inherit;font-size:12.5px;font-weight:600;padding:6px 10px;border-radius:7px;border:1px solid #cfd9e6;background:#fff;color:#10243e;cursor:pointer;white-space:nowrap;margin:0 4px 4px 0}
-.atto button.act.primary,#attodlg button.act.primary{background:#10243e;color:#fff;border-color:#10243e}
+.atto button.act,#attodlg button.act{font:600 12.5px/1 var(--ff);padding:8px 12px;min-height:32px;border-radius:3px;border:1px solid #b9c4d0;background:#fff;color:var(--pri);cursor:pointer;white-space:nowrap;margin:0 4px 4px 0}
+.atto button.act:hover{background:var(--hover)}
+.atto button.act.primary,#attodlg button.act.primary{background:var(--pri);color:#fff;border-color:var(--pri)}
+.atto button.act.good{background:var(--good);color:#fff;border-color:var(--good)}
+.atto button.act.link{border-color:transparent;background:transparent;padding-left:4px;padding-right:4px}
 .atto button.act:disabled,#attodlg button.act:disabled{opacity:.5;cursor:default}
-.atto .muted,#attodlg .muted{color:#5a6b82}.atto .err,#attodlg .err{color:#a1241c;font-weight:600}.atto .okmsg,#attodlg .okmsg{color:#17683a;font-weight:600}
-.atto .pill{display:inline-block;border-radius:99px;padding:2px 9px;font-size:12px;font-weight:600;background:#e8eef6;color:#33475f;white-space:nowrap}
-.atto .pill.approved,.atto .pill.verified,.atto .pill.ready,.atto .pill.finalized{background:#e2f3e8;color:#17683a}
-.atto .pill.rejected,.atto .pill.disputed,.atto .pill.undecided,.atto .pill.unverified,.atto .pill.no_rate{background:#fbe6e4;color:#a1241c}
-.atto .pill.pending{background:#fdf0d9;color:#8a5300}
-.atto .req{border:1px solid #dfe6ef;border-radius:12px;padding:12px 14px;margin:0 0 12px}
-.atto .req h3{font-size:14.5px;margin:0 0 2px}.atto .req .meta{font-size:12.5px;color:#5a6b82;margin:0 0 8px}
-.atto .note{font-size:13px;color:#5a6b82;margin:0 0 12px}
-.atto .gate{font-size:12.5px;color:#33475f}.atto .gate div{white-space:nowrap}
+.atto .muted,#attodlg .muted{color:var(--muted)}.atto .err,#attodlg .err{color:var(--bad);font-weight:600}.atto .okmsg,#attodlg .okmsg{color:var(--good);font-weight:600}
+.atto .pill{display:inline-block;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:600;background:#e8eef6;color:#33475f;white-space:nowrap}
+.atto .pill.approved,.atto .pill.verified,.atto .pill.ready,.atto .pill.finalized{background:var(--good-bg);color:var(--good)}
+.atto .pill.rejected,.atto .pill.disputed,.atto .pill.undecided,.atto .pill.unverified,.atto .pill.no_rate{background:var(--bad-bg);color:var(--bad)}
+.atto .pill.pending{background:var(--warn-bg);color:var(--warn)}
+.atto .req{border:1px solid var(--line);border-radius:4px;padding:12px 14px;margin:0 0 12px}
+.atto .req h3{font-size:14px;font-weight:600;color:var(--navy);margin:0 0 2px}.atto .req .meta{font-size:12px;color:var(--muted);margin:0 0 8px}
+.atto .note{font-size:12.5px;color:var(--muted);margin:0 0 12px}
+.atto .gate{font-size:12px;color:#33475f}.atto .gate div{white-space:nowrap}
 .atto .total{font-size:20px;font-weight:700}
-.atto .pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px;margin:8px 0}
-.atto .pick label{display:flex;gap:8px;align-items:center;border:1px solid #dfe6ef;border-radius:8px;padding:7px 9px;font-size:13.5px}
-.atto .pick label input[type=number]{width:72px;margin-left:auto}
 .atto .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px 14px}
-.atto label.f,#attodlg label.f{display:block;font-size:12.5px;font-weight:600;color:#33475f;margin:8px 0 4px}
-#attodlg{border:1px solid #cfd9e6;border-radius:12px;padding:18px;max-width:560px;width:94vw;max-height:92vh;overflow:auto}
+.atto label.f,#attodlg label.f{display:block;font-size:12px;font-weight:600;color:#33475f;margin:8px 0 4px}
+/* New request: one short form, the planned times only when asked for */
+.atto .form{display:grid;grid-template-columns:160px minmax(180px,260px) 150px 1fr;gap:4px 14px;align-items:end;background:var(--head);border:1px solid var(--line);border-radius:4px;padding:6px 12px 12px}
+.atto .form .wide{grid-column:1/-1}
+.atto .form textarea{width:100%;min-height:58px}
+.atto .hrs{display:inline-flex;align-items:center;gap:6px}.atto .hrs input{width:84px;text-align:right}.atto .hrs span{color:var(--muted);font-weight:600}
+.atto .pickbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 6px}
+.atto .pickbar .count{margin-left:auto;color:var(--muted);font-size:12.5px}
+.atto .pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:6px;margin:0 0 12px}
+.atto .pick label{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:4px;padding:6px 9px;font-size:12.5px;cursor:pointer;background:#fff}
+.atto .pick label:has(input:checked){border-color:var(--pri);background:#f3f8fd}
+.atto .pick label input[type=checkbox]{width:16px;height:16px;min-height:0;margin:0}
+.atto .pick label .nm{flex:1;min-width:0;line-height:1.25}
+.atto .pick label input.hval{width:64px;margin-left:auto;text-align:right}
+/* Verify hours: one tap when it was worked as approved; the details on request */
+.atto .vsum{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;background:var(--head);border:1px solid var(--line);border-radius:4px;padding:8px 10px}
+.atto .vsum label{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer}
+.atto .vsum input[type=checkbox]{width:15px;height:15px;min-height:0;margin:0}
+.atto .gchip{display:inline-block;margin-top:3px;font-size:11.5px;color:var(--muted)}
+.atto .gchip.warn{color:var(--warn);font-weight:600}
+.atto .diff{margin-top:6px;padding:8px;border:1px dashed #b9c4d0;border-radius:4px;background:#fbfcfd;display:grid;gap:6px;max-width:330px}
+.atto .diff .row2{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.atto .diff input.hours{width:84px;text-align:right}
+.atto .verified{color:var(--good);font-weight:600}
+.atto td.tick{width:28px}.atto td.tick input,.atto th.tick input{width:15px;height:15px;min-height:0;margin:0}
+@media (max-width:820px){.atto .form{grid-template-columns:1fr 1fr}#atto-body{padding:12px}}
+#attodlg{border:1px solid var(--line);border-radius:6px;padding:18px;max-width:560px;width:94vw;max-height:92vh;overflow:auto;font:400 13px/1.45 var(--ff)}
 #attodlg::backdrop{background:rgba(16,36,62,.35)}
 #attodlg .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
 #attodlg .full{width:100%}
@@ -232,26 +273,35 @@ page_header('Attendance — Overtime');
       var t = todayKhi();
       var date = el('input', { type: 'date', value: iso(t), id: 'ot-date' });
       var dept = el('select', { id: 'ot-dept' }, r.departments.map(function(d){ return el('option', { value: d.id, text: d.name }); }));
-      var reason = el('textarea', { rows: 2, class: 'grow', id: 'ot-reason', maxlength: 1000, style: 'width:100%', placeholder: 'For example: export order 4471 must ship Friday' });
+      var reason = el('textarea', { rows: 2, id: 'ot-reason', maxlength: 1000, placeholder: 'For example: export order 4471 must ship Friday' });
       var ps = el('input', { type: 'time', id: 'ot-start' }), pe = el('input', { type: 'time', id: 'ot-end' });
-      var all = hoursBox({ value: '2', id: 'ot-all' });
+      /* ONE number: hours for everyone ticked. Each person's box follows it until changed. */
+      var all = hoursBox({ value: '2', id: 'ot-all', style: '' });
+      var times = el('div', { class: 'wide grid2', id: 'ot-times', hidden: true }, [field('Planned start', ps), field('Planned end', pe)]);
+      var timesBtn = el('button', { type: 'button', class: 'act link', id: 'ot-times-btn', text: '+ Add planned start and end (optional)', click: function(){
+        times.hidden = !times.hidden; timesBtn.textContent = times.hidden ? '+ Add planned start and end (optional)' : '− Hide planned times'; if (times.hidden) { ps.value = ''; pe.value = ''; } } });
       var q = el('input', { type: 'search', placeholder: 'Find by code or name', id: 'ot-find' });
       var pick = el('div', { class: 'pick', id: 'ot-pick' });
+      var countEl = el('span', { class: 'count', id: 'ot-count' });
       var msg = el('p', { id: 'ot-msg' });
       var boxes = {};
+      function count(){ var n = Object.keys(boxes).filter(function(k){ return boxes[k].c.checked; }).length; countEl.textContent = n ? n + (n === 1 ? ' person' : ' people') + ' ticked' : 'Nobody ticked yet'; send.textContent = n ? 'Send request (' + n + ')' : 'Send request'; }
+      function shown(){ var did = parseInt(dept.value, 10), term = q.value.trim().toLowerCase();
+        return r.employees.filter(function(e){ return parseInt(e.department_id, 10) === did && (!term || (e.code + ' ' + e.full_name).toLowerCase().indexOf(term) >= 0); }); }
       function paint(){
         pick.textContent = '';
-        var did = parseInt(dept.value, 10), term = q.value.trim().toLowerCase();
-        r.employees.filter(function(e){ return parseInt(e.department_id, 10) === did && (!term || (e.code + ' ' + e.full_name).toLowerCase().indexOf(term) >= 0); }).forEach(function(e){
-          var b = boxes[e.id] || (boxes[e.id] = { c: el('input', { type: 'checkbox', 'data-code': e.code }), m: hoursBox({ value: all.value, 'aria-label': 'Hours for ' + e.full_name }) });
-          pick.appendChild(el('label', {}, [b.c, el('span', {}, [el('strong', { text: e.code }), ' ' + e.full_name]), b.m]));
+        shown().forEach(function(e){
+          var b = boxes[e.id] || (boxes[e.id] = { c: el('input', { type: 'checkbox', 'data-code': e.code, change: function(){ count(); } }), m: hoursBox({ value: all.value, class: 'hval', style: '', 'aria-label': 'Hours for ' + e.full_name }), own: false });
+          b.m.addEventListener('input', function(){ b.own = true; if (!b.c.checked) { b.c.checked = true; count(); } });
+          pick.appendChild(el('label', {}, [b.c, el('span', { class: 'nm' }, [el('strong', { text: e.code }), ' ' + e.full_name]), b.m, el('span', { class: 'muted', text: 'h' })]));
         });
         if (!pick.children.length) pick.appendChild(el('p', { class: 'muted', text: 'Nobody matches.' }));
+        count();
       }
       [date, dept, reason, ps, pe].forEach(function(x){ x.addEventListener('input', function(){ pendingUuid = null; }); });
       dept.addEventListener('change', function(){ boxes = {}; paint(); });
       q.addEventListener('input', paint);
-      all.addEventListener('input', function(){ Object.keys(boxes).forEach(function(k){ if (!boxes[k].c.checked) boxes[k].m.value = all.value; }); });
+      all.addEventListener('input', function(){ Object.keys(boxes).forEach(function(k){ if (!boxes[k].own) boxes[k].m.value = all.value; }); });
       var send = btn('Send request', function(){
         var chosen = Object.keys(boxes).filter(function(k){ return boxes[k].c.checked; });
         msg.className = 'err';
@@ -274,11 +324,17 @@ page_header('Attendance — Overtime');
           reason.value = ''; boxes = {}; paint();
         });
       }, true);
+      send.id = 'ot-send-desk';
       show([
-        el('p', { class: 'note', text: 'Ask for overtime before it is worked. One officer (HR, Accounts or Admin) decides each employee. The actual hours are checked the next day; only approved and checked hours are paid.' }),
-        el('div', { class: 'grid2' }, [field('Date', date), field('Department', dept), field('Planned start (optional)', ps), field('Planned end (optional)', pe)]),
-        field('Reason', reason),
-        el('div', { class: 'bar', style: 'margin-top:10px' }, [el('label', { class: 'f', for: 'ot-all', style: 'margin:0', text: 'Hours for each (can be changed per person)' }), all, q]),
+        el('p', { class: 'note', text: 'Ask for overtime before it is worked: the day, the department, the hours, the reason, and who. One officer (HR, Accounts or Admin) decides; the hours are checked the next day; only approved and checked hours are paid.' }),
+        el('div', { class: 'form' }, [field('Date', date), field('Department', dept),
+          el('div', {}, [el('label', { class: 'f', for: 'ot-all', text: 'Hours for each' }), el('span', { class: 'hrs' }, [all, el('span', { text: 'h' })])]),
+          el('div', { style: 'align-self:center' }, [timesBtn]),
+          times,
+          el('div', { class: 'wide' }, [field('Reason', reason)])]),
+        el('div', { class: 'pickbar' }, [el('b', { text: 'Who' }), q,
+          btn('Tick all shown', function(){ shown().forEach(function(e){ boxes[e.id].c.checked = true; }); count(); }),
+          btn('Untick all', function(){ Object.keys(boxes).forEach(function(k){ boxes[k].c.checked = false; }); count(); }), countEl]),
         pick, el('div', { class: 'bar' }, [send]), msg
       ]);
       paint();
@@ -362,53 +418,102 @@ page_header('Attendance — Overtime');
   }
 
   // -------------------------------------------------------------- verify
+  /* VERIFY HOURS. Most overtime is worked exactly as approved, so that is ONE
+     tap: "Worked as approved". Nothing is ever filled in by itself — the tap
+     is the checker saying so. Different hours open an EMPTY box (AT08: time
+     at the gate is shown to help, never copied). The gate history is folded
+     away until wanted; when it does not support the approved time, the tap
+     asks first. */
+  var SHOW_GATE = false;
+  function gateSupports(l){
+    var mv = l.movement || {}, a = parseInt(l.approved_minutes, 10) || 0;
+    if (!mv.entries || !mv.entries.length) return { ok: false, why: 'no gate entry that day' };
+    var seen = Math.max(parseInt(mv.minutes_inside_after_shift, 10) || 0, parseInt(mv.minutes_inside_planned, 10) || 0);
+    if ((mv.minutes_inside_after_shift !== null && mv.minutes_inside_after_shift !== undefined) || (mv.minutes_inside_planned !== null && mv.minutes_inside_planned !== undefined)) {
+      if (seen < a) return { ok: false, why: 'the gate shows ' + mins(seen) + ' inside' };
+      return { ok: true, why: 'the gate shows ' + mins(seen) + ' inside' };
+    }
+    return { ok: true, why: '' };
+  }
   function drawVerify(){
     var dt = el('input', { type: 'date', id: 'ver-date', 'aria-label': 'Work date' });
     call('GET', '/overtime/verification', verifyDate ? { date: verifyDate } : {}).then(function(r){
       if (!r.ok) return show([el('p', { class: 'err', text: r.error })]);
       dt.value = verifyDate || '';
       dt.addEventListener('change', function(){ verifyDate = dt.value; drawVerify(); });
+      var picked = {};
+      function verify(l, minutes, note){
+        return call('POST', '/overtime/requests/' + l.request_id + '/verify-hours', { request_employee_id: l.request_employee_id, actual_minutes: minutes, verification_note: note || '' });
+      }
+      var gateTog = el('input', { type: 'checkbox', id: 'ver-gate', change: function(){ SHOW_GATE = gateTog.checked; Array.prototype.forEach.call(document.querySelectorAll('#atto-body .gate'), function(g){ g.hidden = !SHOW_GATE; }); } });
+      gateTog.checked = SHOW_GATE;
+      var bulk = btn('Worked as approved — ticked', function(){
+        var lines = r.lines.filter(function(l){ return picked[l.request_employee_id]; });
+        if (!lines.length) { alert('Tick the lines first.'); return; }
+        var weak = lines.filter(function(l){ return !gateSupports(l).ok; });
+        var ok = lines.filter(function(l){ return gateSupports(l).ok; });
+        dialog({ title: 'Record ' + ok.length + ' line' + (ok.length === 1 ? '' : 's') + ' as worked as approved?',
+          text: (ok.length ? ok.map(function(l){ return l.full_name + ' ' + mins(l.approved_minutes); }).join(', ') + '. ' : '') + (weak.length ? weak.length + ' ticked line' + (weak.length === 1 ? '' : 's') + ' left for you to check one by one, because the gate does not show the approved time: ' + weak.map(function(l){ return l.full_name; }).join(', ') + '.' : ''),
+          okText: ok.length ? 'Record ' + ok.length : 'Close', noOk: !ok.length,
+          submit: function(){
+            return ok.reduce(function(p, l){ return p.then(function(acc){ return verify(l, parseInt(l.approved_minutes, 10), 'Worked as approved').then(function(x){ acc.push(x); return acc; }); }); }, Promise.resolve([]))
+              .then(function(res){ var bad = res.filter(function(x){ return !x.ok; }); drawVerify(); return bad.length ? { ok: false, error: bad.map(function(x){ return x.error; }).join(' ') } : { ok: true }; });
+          } });
+      }, true);
+      bulk.id = 'ver-bulk';
       var nodes = [
-        el('p', { class: 'note', text: 'Check the gate history, then type the hours actually worked (for example 1.5 or 1:30). The box starts empty on purpose: time inside after the shift is shown to help you, and is never counted as overtime by itself. More than was approved needs an amendment first.' }),
-        el('div', { class: 'bar' }, [el('span', { class: 'muted', text: 'Showing ' + (verifyDate ? 'everything approved for' : 'everything still to check') }), dt,
-          verifyDate ? btn('Show everything still to check', function(){ verifyDate = ''; drawVerify(); }) : null])
+        el('p', { class: 'note', text: 'The day after, record what was worked. Worked as approved? One tap. Different? Type the hours (1.5 or 1:30) — the box starts empty, and time inside at the gate is never counted by itself. More than approved needs an amendment first.' }),
+        el('div', { class: 'vsum' }, [el('span', { class: 'muted', text: 'Showing ' + (verifyDate ? 'everything approved for' : 'everything still to check') }), dt,
+          verifyDate ? btn('Show everything still to check', function(){ verifyDate = ''; drawVerify(); }) : null,
+          el('label', {}, [gateTog, 'Show gate history']), el('span', { style: 'flex:1' }), CAN.verify ? bulk : null])
       ];
       if (!r.lines.length) nodes.push(el('p', { class: 'muted', id: 'ver-none', text: 'Nothing to check.' }));
-      else nodes.push(table(['Employee', 'Work date', 'Approved', 'Gate history', 'Actual hours', ''], r.lines, function(l){
+      else nodes.push(table(['', 'Employee', 'Work date', 'Approved', 'Worked', ''], r.lines, function(l){
         var mv = l.movement || {};
-        var gate = el('div', { class: 'gate' }, (mv.entries && mv.entries.length) ? mv.entries.map(function(e){ return el('div', { text: 'In ' + clock(e.in) + ' — ' + (e.out ? 'out ' + clock(e.out) + (e.auto_out ? ' (not scanned — closed by the system at shift end)' : '') : 'still inside') }); }) : [el('div', { class: 'muted', text: 'No gate entry that day' })]);
+        var gate = el('div', { class: 'gate', hidden: !SHOW_GATE }, (mv.entries && mv.entries.length) ? mv.entries.map(function(e){ return el('div', { text: 'In ' + clock(e.in) + ' — ' + (e.out ? 'out ' + clock(e.out) + (e.auto_out ? ' (not scanned — closed by the system at shift end)' : '') : 'still inside') }); }) : [el('div', { class: 'muted', text: 'No gate entry that day' })]);
         if (mv.minutes_inside_after_shift !== null && mv.minutes_inside_after_shift !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside after the shift ended: ' + mins(mv.minutes_inside_after_shift) }));
         if (mv.minutes_inside_planned !== null && mv.minutes_inside_planned !== undefined) gate.appendChild(el('div', { class: 'muted', text: 'Inside during the planned time: ' + mins(mv.minutes_inside_planned) }));
-        var input = hoursBox({ 'aria-label': 'Actual hours for ' + l.full_name, 'data-line': l.request_employee_id, class: 'hours' });
-        var note = el('input', { type: 'text', placeholder: 'Note (optional)', maxlength: 1000, style: 'width:160px' });
-        var out = el('div', { class: 'err', style: 'font-size:12.5px' });
-        var acts;
+        var sup = gateSupports(l);
+        var chip = el('span', { class: 'gchip' + (sup.ok ? '' : ' warn'), text: sup.ok ? (sup.why ? 'Gate: ' + sup.why.replace('the gate shows ', '') : '') : '⚠ ' + sup.why.charAt(0).toUpperCase() + sup.why.slice(1) });
+        var out = el('div', { class: 'err', style: 'font-size:12px' });
+        var tick = el('span'), work, acts = el('span');
         if (l.verification_status === 'verified') {
-          acts = el('span', {}, [pill('verified', mins(l.actual_minutes))]);
-          input = el('span', { class: 'muted', text: '—' }); note = null;
+          work = el('span', { class: 'verified', text: '✓ ' + mins(l.actual_minutes) });
         } else if (!l.can_verify_now) {
-          acts = el('span', { class: 'muted', text: 'From ' + day(nextDay(l.work_date)) });
-          input.disabled = true;
+          work = el('span', { class: 'muted', text: 'From ' + day(nextDay(l.work_date)) });
         } else if (CAN.verify) {
-          acts = el('span', {}, [
-            btn('Verify', function(){
-              if (input.value.trim() === '') { out.textContent = 'Type the actual hours (0 if no overtime was worked).'; return; }
-              if (isNaN(toMin(input.value))) { out.textContent = BAD_HOURS; return; }
-              call('POST', '/overtime/requests/' + l.request_id + '/verify-hours', { request_employee_id: l.request_employee_id, actual_minutes: toMin(input.value), verification_note: note.value })
-                .then(function(x){ if (!x.ok) { out.textContent = x.error; return; } drawVerify(); });
-            }, true),
-            l.verification_status === 'pending' ? btn('Dispute…', function(){
-              var why = el('textarea', { class: 'full', rows: 3, id: 'disp-note' });
-              dialog({ title: 'Dispute — ' + l.full_name, text: 'Use this when the record does not add up and you cannot settle it. An officer settles it later with an amendment.',
-                fields: [field('What does not add up?', why)], okText: 'Record dispute',
-                submit: function(){ return call('POST', '/overtime/requests/' + l.request_id + '/dispute', { request_employee_id: l.request_employee_id, verification_note: why.value }).then(function(x){ if (x.ok) drawVerify(); return x; }); } });
-            }) : null
-          ]);
-        } else acts = el('span', { class: 'muted', text: 'view only' });
-        return [el('span', {}, [el('strong', { text: l.employee_code }), ' ' + l.full_name, el('div', { class: 'muted', style: 'font-size:12px', text: l.department_name + ' · ' + l.reason })]),
+          tick = el('input', { type: 'checkbox', style: 'width:16px;height:16px;min-height:0;margin:2px 0 0', 'aria-label': 'Tick ' + l.full_name, change: function(e){ picked[l.request_employee_id] = e.target.checked; } });
+          var input = hoursBox({ 'aria-label': 'Actual hours for ' + l.full_name, 'data-line': l.request_employee_id, class: 'hours', style: '' });
+          var note = el('input', { type: 'text', placeholder: 'Note (optional)', maxlength: 1000, style: 'flex:1;min-width:120px' });
+          var diff = el('div', { class: 'diff', hidden: l.verification_status !== 'disputed' }, [
+            el('div', { class: 'row2' }, [input, el('span', { class: 'muted', text: 'h actually worked' })]),
+            el('div', { class: 'row2' }, [note]),
+            el('div', { class: 'row2' }, [btn('Save hours', function(){
+                if (input.value.trim() === '') { out.textContent = 'Type the actual hours (0 if no overtime was worked).'; return; }
+                if (isNaN(toMin(input.value))) { out.textContent = BAD_HOURS; return; }
+                verify(l, toMin(input.value), note.value).then(function(x){ if (!x.ok) { out.textContent = x.error; return; } drawVerify(); });
+              }, true),
+              l.verification_status === 'pending' ? btn('Dispute…', function(){
+                var why = el('textarea', { class: 'full', rows: 3, id: 'disp-note' });
+                dialog({ title: 'Dispute — ' + l.full_name, text: 'Use this when the record does not add up and you cannot settle it. An officer settles it later with an amendment.',
+                  fields: [field('What does not add up?', why)], okText: 'Record dispute',
+                  submit: function(){ return call('POST', '/overtime/requests/' + l.request_id + '/dispute', { request_employee_id: l.request_employee_id, verification_note: why.value }).then(function(x){ if (x.ok) drawVerify(); return x; }); } });
+              }) : null])]);
+          var asOk = btn('✓ Worked as approved', function(){
+            function go_(){ verify(l, parseInt(l.approved_minutes, 10), 'Worked as approved').then(function(x){ if (!x.ok) { out.textContent = x.error; return; } drawVerify(); }); }
+            if (sup.ok) return go_();
+            dialog({ title: 'Record ' + mins(l.approved_minutes) + ' for ' + l.full_name + '?', text: 'Careful: ' + sup.why + ', less than the ' + mins(l.approved_minutes) + ' approved. Record it only if you know the overtime was worked (for example at another gate). Otherwise use "Different hours".',
+              okText: 'Record ' + mins(l.approved_minutes), submit: function(){ go_(); return Promise.resolve({ ok: true }); } });
+          }, true);
+          asOk.classList.add('good'); asOk.classList.remove('primary');
+          var other = btn(l.verification_status === 'disputed' ? 'Hide' : 'Different hours…', function(){ diff.hidden = !diff.hidden; other.textContent = diff.hidden ? 'Different hours…' : 'Hide'; if (!diff.hidden) input.focus(); });
+          other.classList.add('link');
+          work = el('div', {}, [asOk, other, diff]);
+        } else work = el('span', { class: 'muted', text: 'view only' });
+        acts = btn('History', function(){ historyDialog(l.request_employee_id, l.full_name); });
+        return [tick, el('span', {}, [el('strong', { text: l.employee_code }), ' ' + l.full_name, el('div', { class: 'muted', style: 'font-size:12px', text: l.department_name + ' · ' + l.reason }), chip, gate]),
           day(l.work_date), mins(l.approved_minutes),
-          gate, el('div', {}, [input, note ? el('div', { style: 'margin-top:4px' }, [note]) : null,
-            l.verification_status === 'disputed' ? el('div', { class: 'err', style: 'font-size:12px', text: 'Disputed: ' + (l.verification_note || '') }) : null, out]), acts];
+          el('div', {}, [work, l.verification_status === 'disputed' ? el('div', { class: 'err', style: 'font-size:12px', text: 'Disputed: ' + (l.verification_note || '') }) : null, out]), acts];
       }));
       show(nodes);
     });

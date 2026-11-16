@@ -595,22 +595,49 @@ const loaded = (page) => page.waitForFunction(() => !/^Loading…$/.test(documen
     const vt = await vrow.textContent();
     check('the gate history is shown beside the line: out at 19:00, 2 h inside after the shift', /Inside after the shift ended: 2 h(?![\d.])/.test(vt), vt);
     check('  and the approved time in hours: 1.5 h', /1\.5 h/.test(vt), vt);
+    check('the gate history is folded away until "Show gate history" is ticked; a one-line gate note is shown instead',
+      await vrow.locator('.gate').isHidden() && /Gate: 2 h inside/.test(await vrow.locator('.gchip').textContent()));
+    await hp.check('#ver-gate');
+    check('  ticking it shows the gate history', await vrow.locator('.gate').isVisible());
+    check('"Worked as approved" is one tap; different hours are behind "Different hours…"', (await vrow.locator('button:has-text("Worked as approved")').count()) === 1 && await vrow.locator('input.hours').isHidden());
+    if (SHOT) await hp.screenshot({ path: SHOT + '/att-m6-verify-simple.png', fullPage: true });
+    await vrow.locator('button:has-text("Different hours")').click();
     const box = vrow.locator('input.hours');
-    check('THE ACTUAL MINUTES BOX IS EMPTY — the 2 hours at the gate are not copied into it', (await box.inputValue()) === '');
-    await vrow.locator('button:has-text("Verify")').click();
+    check('THE ACTUAL HOURS BOX IS EMPTY — the 2 hours at the gate are not copied into it', (await box.inputValue()) === '' && await box.isVisible());
+    await vrow.locator('button:has-text("Save hours")').click();
     await hp.waitForFunction(() => /Type the actual hours/.test(document.getElementById('atto-body').textContent));
-    check('verifying with the box empty is refused on the screen', true);
+    check('saving with the box empty is refused on the screen', true);
     await box.fill('2');
-    await vrow.locator('button:has-text("Verify")').click();
+    await vrow.locator('button:has-text("Save hours")').click();
     await hp.waitForFunction(() => /approved\. An officer must first amend/.test(document.getElementById('atto-body').textContent));
     check('2 h against 1.5 h approved is refused, with the reason in hours', /2 h is more than the 1\.5 h approved/.test(await hp.textContent('#atto-body')));
     if (SHOT) await hp.screenshot({ path: SHOT + '/att-m6-verify.png', fullPage: true });
     await box.fill('1:25');
-    await vrow.locator('button:has-text("Verify")').click();
+    await vrow.locator('button:has-text("Save hours")').click();
     await hp.waitForFunction(() => !/Container 4471/.test(document.getElementById('atto-body').textContent) || /verified/.test(document.getElementById('atto-body').textContent), null, { timeout: 20000 });
     check('1:25 (85 minutes) is accepted and the line leaves the list', true);
     check('no script error on HR\'s desk', herr.length === 0, herr.join(' | '));
     await hc.close();
+
+    // ============================================== HOD at a desk: New request
+    const nc = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const np = await nc.newPage();
+    const nerr = []; np.on('pageerror', e => nerr.push(e.message));
+    await desk(np, 'hod@zas.test');
+    await np.goto(BASE + '/att_overtime.php#new');
+    await np.waitForSelector('#ot-pick label');
+    check('NEW REQUEST (desk): one "Hours for each" box, 2 by default; the planned times are hidden until asked for',
+      (await np.inputValue('#ot-all')) === '2' && await np.locator('#ot-times').isHidden() && /Hours for each/.test(await np.textContent('label[for=ot-all]')));
+    await np.click('#ot-times-btn');
+    check('  "+ Add planned start and end" shows them', await np.locator('#ot-start').isVisible());
+    await np.click('#atto-body button:has-text("Tick all shown")');
+    const cnt = await np.textContent('#ot-count');
+    check('  "Tick all shown" ticks the department and the count says so, on the Send button too', /\d+ (person|people) ticked/.test(cnt) && /Send request \(\d+\)/.test(await np.textContent('#ot-send-desk')), cnt);
+    await np.fill('#ot-all', '1.5');
+    check('  changing "Hours for each" changes every line not typed over', (await np.locator('#ot-pick input.hval').first().inputValue()) === '1.5');
+    if (SHOT) await np.screenshot({ path: SHOT + '/att-m6-new-request.png', fullPage: true });
+    check('no script error on the HOD\'s desk', nerr.length === 0, nerr.join(' | '));
+    await nc.close();
 
     // ======================================================= Accounts desk
     const ac = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
