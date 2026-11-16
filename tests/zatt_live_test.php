@@ -170,10 +170,14 @@ foreach (['E028', 'E029'] as $c) {
 }
 Db::run("UPDATE att_entry_cycles SET close_source = 'auto_shift_end', auto_closed_at = ? WHERE employee_id = ? AND closed_at IS NOT NULL ORDER BY id DESC LIMIT 1", [gmdate('Y-m-d H:i:s', time() - 60), $ids['E025']]);
 $lv = R::live(null);
-ok($lv['ok'] && count($lv['incoming']) === 5 && $lv['inside_now'] === 21 && count($lv['outgoing']) === 3 && $lv['gone_home'] === 6 && $lv['not_in'] === 3 && $lv['came_in'] === 27 && $lv['active_employees'] === 30,
+/* Just after midnight in Karachi, "today" is too short for the spread above (everyone lands in the last 30
+   minutes): then the exact split is not checked, and the screens are compared with the server's own figures. */
+$dayLong = ((int) $nowK->format('G')) * 60 + (int) $nowK->format('i') >= 330;
+ok(!$dayLong || $lv['ok'] && count($lv['incoming']) === 5 && $lv['inside_now'] === 21 && count($lv['outgoing']) === 3 && $lv['gone_home'] === 6 && $lv['not_in'] === 3 && $lv['came_in'] === 27 && $lv['active_employees'] === 30,
    'LIVE: 5 came in the last 30 min, 21 inside (the 5 included), 3 just went out, 6 gone home (the 3 included), 3 not in, 27 of 30 came — '
    . json_encode(['in' => count($lv['incoming']), 'inside' => $lv['inside_now'], 'out' => count($lv['outgoing']), 'gone' => $lv['gone_home'], 'notin' => $lv['not_in']]));
-ok($lv['incoming'][0]['employee_code'] === 'E001' && $lv['incoming'][0]['has_photo'] === true, '  newest first, with whether a photo is on file');
+ok(!$dayLong || $lv['incoming'][0]['employee_code'] === 'E001' && $lv['incoming'][0]['has_photo'] === true, '  newest first, with whether a photo is on file');
+ok($lv['inside_now'] === 21 && $lv['came_in'] === 27 && $lv['not_in'] === 3, 'whatever the hour: 21 inside, 27 came, 3 not in');
 $hodLive = R::live([$deptIds['Packing']]);
 ok($hodLive['active_employees'] === 10 && !in_array('Stitching', array_column($hodLive['inside'], 'department_name'), true), 'a HOD sees their own department only');
 
@@ -217,7 +221,7 @@ $work = __DIR__ . '/.zattlive';
 @mkdir($work, 0777, true);
 file_put_contents($work . '/run.js', <<<'JS'
 const { chromium } = require('playwright');
-const BASE = process.argv[2]; const SHOTS = process.argv[3] || '';
+const BASE = process.argv[2]; const SHOTS = process.argv[3] || ''; const EXP = JSON.parse(process.argv[4] || '{}');
 const out = [];
 const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra === undefined ? '' : String(extra) });
 async function signIn(ctx, email) {
@@ -243,9 +247,9 @@ async function signIn(ctx, email) {
     const tx = async (s) => (await p.textContent(s)).replace(/\s+/g, ' ');
     const big = async (s) => (await p.textContent(s + ' > b')).replace(/\D+/g, '');
     const k = [await big('#live-in'), await big('#live-inside'), await big('#live-out'), await big('#live-gone'), await big('#live-notin')].join(',');
-    check('tiles: Incoming 5, Inside now 21, Outgoing 3, Gone home 6, Not in today 3', k === '5,21,3,6,3', k);
+    check('tiles: Incoming ' + EXP.in + ', Inside now 21, Outgoing ' + EXP.out + ', Gone home 6, Not in today 3 (as the server counts them)', k === [EXP.in, 21, EXP.out, 6, 3].join(','), k);
     check('the clock ticks', /\d\d:\d\d:\d\d/.test(await p.textContent('#live-clock')));
-    check('incoming faces with a green ring: 5; outgoing with amber: 3', (await p.locator('#live-flow-in .av.g').count()) === 5 && (await p.locator('#live-flow-out .av.o').count()) === 3);
+    check('incoming faces with a green ring; outgoing with amber (as many as the server counts, up to 14 shown)', (await p.locator('#live-flow-in .av.g').count()) === Math.min(14, EXP.in) && (await p.locator('#live-flow-out .av.o').count()) === Math.min(14, EXP.out));
     check('the ring says 90% present', /90%/.test(await p.textContent('svg.ring')));
     await p.waitForFunction(() => document.querySelectorAll('#live-grid .av.has').length >= 19, null, { timeout: 15000 }).catch(() => {});
     const loaded = await p.locator('#live-grid .av.has').count(), all = await p.locator('#live-grid .av').count();
@@ -290,6 +294,47 @@ async function signIn(ctx, email) {
     await hp.evaluate(() => { const L = document.getElementById('pendinglist'); window.scrollTo(0, L.getBoundingClientRect().top + scrollY - 150); });
     if (SHOTS) await hp.screenshot({ path: SHOTS + '/hod-faces.png' });
     await hc.close();
+    // ===================================================== the phone view
+    const pv = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 3 : 1, isMobile: true, hasTouch: true });
+    const pp = await signIn(pv, 'admin@zas.test');
+    const perr = []; pp.on('pageerror', e => perr.push(e.message));
+    await pp.goto(BASE + '/att_mobile.php');
+    await pp.waitForSelector('#m-hero'); await pp.waitForTimeout(900);
+    const nums = await pp.evaluate(() => ['m-inside', 'm-came', 'm-notin'].map(i => document.getElementById(i).textContent).join(','));
+    check('PHONE VIEW · Live: inside 21, came 27, not in 3, and the ring says 90%', nums === '21,27,3' && /90%/.test(await pp.textContent('#m-hero svg')), nums);
+    await pp.waitForFunction(() => document.querySelectorAll('#m-grid .av.has').length >= 19, null, { timeout: 15000 }).catch(() => {});
+    check('  "Just arrived" with a green ring; "Just left" with amber — as many as the server counts', (await pp.locator('#m-arrived .av.g').count()) === EXP.in && (await pp.locator('#m-left .av.o').count()) === EXP.out);
+    check('  everyone inside as faces (21), department chips narrow them', (await pp.locator('#m-grid .pf').count()) === 21);
+    await pp.locator('#m-inside-card .chip', { hasText: 'Packing' }).click();
+    check('  …Packing only', (await pp.locator('#m-grid .pf').count()) < 21 && (await pp.locator('#m-grid .pf').count()) > 0);
+    await pp.locator('#m-inside-card .chip', { hasText: 'All' }).click();
+    const ow = await pp.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    check('  nothing pushes the phone screen sideways', ow <= 1, '+' + ow);
+    if (SHOTS) { await pp.waitForTimeout(600); await pp.screenshot({ path: SHOTS + '/phone-live.png' }); await pp.screenshot({ path: SHOTS + '/phone-live-full.png', fullPage: true }); }
+    await pp.click('#m-tabs button[data-tab=today]'); await pp.waitForSelector('#m-kpis'); await pp.waitForTimeout(800);
+    await pp.click('#m-kpis .kpi[data-k=auto]');
+    check('PHONE VIEW · Today: four tiles; "Not scanned out" lists 3 with today\'s and yesterday\'s', (await pp.locator('#m-kpis .kpi').count()) === 4 && (await pp.locator('#m-today-list .prow').count()) === 3);
+    if (SHOTS) { await pp.evaluate(() => window.scrollTo(0, 0)); await pp.waitForTimeout(500); await pp.screenshot({ path: SHOTS + '/phone-today.png' }); }
+    await pp.click('#m-tabs button[data-tab=week]'); await pp.waitForSelector('#m-bars'); await pp.waitForTimeout(1000);
+    check('PHONE VIEW · Week: seven day bars', (await pp.locator('#m-bars .bar').count()) === 7);
+    if (SHOTS) await pp.screenshot({ path: SHOTS + '/phone-week.png' });
+    await pp.click('#m-tabs button[data-tab=find]'); await pp.waitForSelector('#m-q');
+    await pp.fill('#m-q', 'ayesha');
+    check('PHONE VIEW · Find: typing a name finds the person', (await pp.locator('#m-found .prow').count()) === 1);
+    await pp.locator('#m-found .prow').first().click();
+    await pp.waitForSelector('#m-cal'); await pp.waitForTimeout(800);
+    check('  their card: face, status, and 30 days, day by day', (await pp.locator('#m-cal .c').count()) === 30 && /Ayesha Khan/.test(await pp.textContent('#m-person')) && /Inside since/.test(await pp.textContent('#m-person')));
+    if (SHOTS) await pp.screenshot({ path: SHOTS + '/phone-person.png' });
+    await pp.click('#m-hide'); await pp.click('#m-tabs button[data-tab=live]'); await pp.waitForSelector('#m-grid .pf'); await pp.waitForTimeout(300);
+    check('  "Hide faces": initials only, remembered on this phone', (await pp.locator('#m-grid .av.has').count()) === 0);
+    await pp.click('#m-hide');
+    check('no script error on the phone view', perr.length === 0, perr.join(' | '));
+    await pv.close();
+    const pvh = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const ph2 = await signIn(pvh, 'hod@zas.test');
+    await ph2.goto(BASE + '/att_mobile.php'); await ph2.waitForSelector('#m-grid');
+    check('a HOD\'s phone view shows their department only', !/Stitching|Cutting/.test(await ph2.textContent('#m-body')) && /Packing/.test(await ph2.textContent('#m-body')));
+    await pvh.close();
     const m = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     const mp = await signIn(m, 'admin@zas.test');
     await mp.goto(BASE + '/att_reports.php#live'); await mp.waitForSelector('#live-grid'); await mp.waitForTimeout(500);
@@ -302,10 +347,10 @@ async function signIn(ctx, email) {
   console.log('RESULT' + JSON.stringify(out));
 })();
 JS);
-$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 240 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('LIVE_SHOTS') ?: '')) . ' 2>&1');
+$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 240 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('LIVE_SHOTS') ?: '')) . ' ' . escapeshellarg(json_encode(['in' => count($lv['incoming']), 'out' => count($lv['outgoing'])])) . ' 2>&1');
 $results = [];
 if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
-ok(count($results) >= 16, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+ok(count($results) >= 26, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
 foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
 ok($n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view' AND new_data LIKE '%live dashboard%'") >= 20, 'every face shown on the Live tab is in the audit log');
 $th = Db::one('SELECT COUNT(*) AS n, MAX(LENGTH(bytes)) AS big FROM att_photo_thumbs');

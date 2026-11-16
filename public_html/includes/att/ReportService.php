@@ -84,7 +84,7 @@ final class ReportService
         $absent = array_values(array_filter($days, fn($r) => $r['status'] === 'absent'));
 
         $notIn = Db::all(
-            "SELECT e.code AS employee_code, e.full_name, d.name AS department_name
+            "SELECT e.id AS employee_id, e.code AS employee_code, e.full_name, d.name AS department_name, (e.reference_photo_key IS NOT NULL) AS has_photo
                FROM att_employees e JOIN att_departments d ON d.id = e.department_id
               WHERE e.active = 1 $dw
                 AND NOT EXISTS (SELECT 1 FROM att_entry_cycles c WHERE c.employee_id = e.id AND c.opened_at >= ? AND c.opened_at < ?)
@@ -93,7 +93,7 @@ final class ReportService
         /* Not scanned out: closed by the system in the last day and a half, so
            the morning after shows last night's forgotten exits. */
         $auto = Db::all(
-            "SELECT e.code AS employee_code, e.full_name, d.name AS department_name, c.opened_at, c.closed_at, c.auto_closed_at, si.work_date
+            "SELECT e.id AS employee_id, e.code AS employee_code, e.full_name, d.name AS department_name, c.opened_at, c.closed_at, c.auto_closed_at, si.work_date
                FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
                JOIN att_shift_instances si ON si.id = c.shift_instance_id
               WHERE c.close_source = 'auto_shift_end' AND c.auto_closed_at >= ? $dw

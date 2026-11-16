@@ -259,7 +259,7 @@ page_header('Attendance — Reports');
 <div class="topbar">
   <div>
     <h1>Attendance reports</h1>
-    <p class="lead">Read-only. Times are factory time (Asia/Karachi). Download any report for Excel, or print it.</p>
+    <p class="lead">Read-only. Times are factory time (Asia/Karachi). Download any report for Excel, or print it. On a phone: <a href="att_mobile.php" style="font-weight:600;color:#0a5fb4">open the phone view</a>.</p>
   </div>
 </div>
 
