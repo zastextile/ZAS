@@ -28,7 +28,7 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.4.4';
+  var APP_VERSION = '1.5.0';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 5 * 60 * 1000;
 
@@ -36,7 +36,7 @@
     screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false, ot: false }, csrf: '', flagReasons: {}, otUuid: null, hodDepts: [], mode: null, fx: { sound: true, vibe: true }, kbd: 'num',
     deviceUuid: null, deviceId: null, revoked: false, online: navigator.onLine, needLogin: false,
     syncing: false, lastSync: null, lastError: '', persisted: null, pin: null, pinFails: 0,
-    policies: { dup: 60, warnMin: 120 }, waitingForGate: 0, hiddenAt: 0, message: null, selected: {}
+    policies: { dup: 60, warnMin: 120 }, waitingForGate: 0, hiddenAt: 0, message: null, selected: {}, faces: {}
   };
   var root;
 
@@ -166,6 +166,7 @@
         ? n + ' item(s) on this phone have NOT been sent yet. They stay on this phone and are sent after the next sign-in. Sign out anyway?'
         : 'Sign out?';
       if (!confirm(warn)) return;
+      S.faces = {};                                        // faces are for the person signed in; not the next one
       return api('POST', '/auth/logout', {}).catch(function () {}).then(function () {
         S.user = null; S.pin = null; S.can = { gate: false, hod: false };
         // The outbox is deliberately left alone. Signing out forgets WHO is
@@ -717,6 +718,36 @@
     img.src = photoUrl(emp.code);
   }
 
+  /* Small faces for the HOD list: up to 40 per request, from this app's own
+     API, kept in memory only — gone when the app is closed, never written to
+     the phone. A face that cannot be had stays as the bold name. */
+  function loadFaces(codes) {
+    codes = codes.filter(function (c) { return S.faces[c] === undefined; });
+    if (!codes.length) return;
+    codes.forEach(function (c) { S.faces[c] = 'loading'; });
+    var batch = codes.slice(0, 40), rest = codes.slice(40);
+    fetch(API + encodeURIComponent('/employees/photos') + '&codes=' + encodeURIComponent(batch.join(',')), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
+      .then(function (j) {
+        var got = (j && j.photos) || {};
+        batch.forEach(function (code) {
+          S.faces[code] = got[code] || (j ? null : undefined);              // a failed request may be tried again later
+          if (!got[code]) return;
+          Array.prototype.forEach.call(document.querySelectorAll('#pendinglist .face[data-code="' + code.replace(/"/g, '') + '"]'), function (f) {
+            f.style.backgroundImage = 'url("' + got[code] + '")'; f.classList.add('has');
+          });
+        });
+        rest.forEach(function (c) { delete S.faces[c]; });
+        if (rest.length) loadFaces(rest);
+      });
+  }
+  function paintPickCount() {
+    var b = document.getElementById('btn-confirm');
+    if (!b) return;
+    var n = Array.prototype.filter.call(document.querySelectorAll('#pendinglist input[data-cycle]'), function (x) { return x.checked; }).length;
+    b.textContent = n ? 'Confirm selected (' + n + ')' : 'Confirm selected';
+  }
+
   function enlarge(emp) {
     var over = el('div', { class: 'sheet', id: 'photo-sheet', on: { click: function () { over.remove(); } } }, [
       el('div', { class: 'card center' }, [
@@ -1202,21 +1233,36 @@
       var pl = document.getElementById('pendinglist');
       if (pl) {
         pl.textContent = '';
+        pl.className = cycles.length ? 'pgrid' : '';
         if (!cycles.length) pl.appendChild(el('p', { class: 'muted', text: S.online ? 'Nobody is waiting.' : 'No list on this phone yet. It loads when there is a connection.' }));
+        /* Faces, three to a row. A face is dim until the HOD taps it; then it
+           is in full colour with a tick, and that person is selected. No
+           photo on file (or no connection): the name, in bold, in the frame. */
+        var want = [];
         cycles.forEach(function (c) {
-          var box = el('input', { type: 'checkbox', 'data-cycle': c.entry_cycle_id });
+          var box = el('input', { type: 'checkbox', class: 'vh', 'data-cycle': c.entry_cycle_id, 'aria-label': c.full_name + ' · ' + c.employee_code });
           box.checked = !!S.selected[c.entry_cycle_id];
-          box.addEventListener('change', function () { S.selected[c.entry_cycle_id] = box.checked; });
-          pl.appendChild(el('label', { class: 'item pick' }, [box, el('span', { text: ' ' + c.full_name + ' · ' + c.employee_code }),
-            el('span', { class: 'muted', text: '  entry ' + c.entry_sequence + ', in at ' + timeOf(Date.parse(String(c.opened_at).replace(' ', 'T') + 'Z')) }),
-            // The HOD can look at the face before ticking the box.
-            parseInt(c.has_photo, 10) ? el('button', { class: 'btn small seephoto', type: 'button', text: 'Photo', on: { click: function (e) {
-              e.preventDefault();
+          var hasPhoto = parseInt(c.has_photo, 10) === 1;
+          var face = el('span', { class: 'face' + (hasPhoto ? '' : ' noface'), 'data-code': c.employee_code }, [el('b', { class: 'fname', text: c.full_name })]);
+          if (hasPhoto) {
+            if (S.faces[c.employee_code]) { face.style.backgroundImage = 'url("' + S.faces[c.employee_code] + '")'; face.classList.add('has'); }
+            else if (S.faces[c.employee_code] === undefined) want.push(c.employee_code);
+          }
+          var tile = el('label', { class: 'item pick tile' + (box.checked ? ' on' : '') }, [box, face, el('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }),
+            el('b', { class: 'tn', text: c.full_name }),
+            el('span', { class: 'ts', text: c.employee_code + ' · ' + timeOf(Date.parse(String(c.opened_at).replace(' ', 'T') + 'Z')) + (c.entry_sequence > 1 ? ' · entry ' + c.entry_sequence : '') }),
+            // The HOD can look at the face, large, before selecting.
+            hasPhoto ? el('button', { class: 'seephoto', type: 'button', 'aria-label': 'Photo of ' + c.full_name, text: '⤢', on: { click: function (e) {
+              e.preventDefault(); e.stopPropagation();
               if (!navigator.onLine) { say('bad', 'The photo needs a connection.'); return; }
               enlarge({ code: c.employee_code, full_name: c.full_name });
-            } } }) : null]));
+            } } }) : null]);
+          box.addEventListener('change', function () { S.selected[c.entry_cycle_id] = box.checked; tile.classList.toggle('on', box.checked); paintPickCount(); });
+          pl.appendChild(tile);
         });
-        if (S.waitingForGate) pl.appendChild(el('p', { class: 'muted', text: S.waitingForGate + ' of your confirmations are waiting for the gate\'s record to reach the server.' }));
+        if (want.length && navigator.onLine) loadFaces(want);
+        paintPickCount();
+        if (S.waitingForGate) pl.appendChild(el('p', { class: 'muted wide', text: S.waitingForGate + ' of your confirmations are waiting for the gate\'s record to reach the server.' }));
       }
       var ql = document.getElementById('queuelist');
       if (ql) {

@@ -109,7 +109,7 @@ function portrait(int $i): string
 echo "1. Thirty people, their photos, and today so far\n";
 $admin = $mk('Admin Person', 'admin@zas.test', 'admin');
 $hodU = $mk('Hina Hod', 'hod@zas.test');
-$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'attrep', 'v')")->execute([$hodU]);
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'attrep', 'v'), (?, 'atthod', 'vc')")->execute([$hodU, $hodU]);
 $names = ['Ali Raza', 'Ayesha Khan', 'Usman Tariq', 'Mehnaz Bibi', 'Bilal Ahmed', 'Imran Shah', 'Sana Malik', 'Hamza Iqbal', 'Nadia Pervez', 'Kashif Ali',
           'Rabia Noor', 'Faisal Mehmood', 'Zainab Akhtar', 'Asad Butt', 'Hina Yousaf', 'Tariq Jamil', 'Sadia Riaz', 'Waqas Anwar', 'Maryam Saleem', 'Junaid Khan',
           'Farah Naz', 'Adeel Hussain', 'Saima Ashraf', 'Naveed Akram', 'Iqra Javed', 'Shahid Latif', 'Amna Zafar', 'Danish Qureshi', 'Kiran Shahzad', 'Omer Farooq'];
@@ -137,10 +137,22 @@ foreach (array_keys($ids) as $i => $c) {
     Db::run('INSERT INTO att_shift_instances (employee_id, shift_id, work_date, starts_at, ends_at) VALUES (?, ?, ?, ?, ?)', [$ids[$c], $day, $todayK, $utcS, $utcE]);
     $plan[$c] = $i < 5 ? 'incoming' : ($i < 21 ? 'inside' : ($i < 24 ? 'outgoing' : ($i < 27 ? 'gone' : 'notin')));
 }
+/* those inside came through the gate: real scans, as a gate phone sends them */
+$gkU = $mk('Gul Gate', 'gate@zas.test');
+$pdo->prepare("INSERT INTO zu_perm (user_id, module, actions) VALUES (?, 'attgate', 'vc')")->execute([$gkU]);
+Roles::grant($gkU, Roles::GATEKEEPER);
+S::registerDevice('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Main gate', 'gate', $gkU);
+$gseq = 0;
+$gateIn = function (string $c, DateTimeImmutable $t) use (&$gseq, $gkU): array {
+    $r = S::process(['event_uuid' => sprintf('%08x-0000-4000-8000-%012x', random_int(0, 0xffffffff), ++$gseq), 'device_id' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'device_sequence' => $gseq, 'employee_code' => $c, 'event_type' => 'GATE_IN', 'occurred_at' => $t->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z'),
+        'timezone' => 'UTC', 'payload' => []], $gkU, true);
+    return ['ok' => in_array($r['receipt_status'] ?? '', ['ACCEPTED'], true), 'error' => json_encode($r)];
+};
 foreach ($plan as $c => $what) {
     $r = match ($what) {
-        'incoming' => E::add($c, $at(2 + 4 * (int) substr($c, 1)), null, 'live demo', $admin),
-        'inside'   => E::add($c, $at(120 + (int) substr($c, 1)), null, 'live demo', $admin),
+        'incoming' => $gateIn($c, $at(2 + 4 * (int) substr($c, 1))),
+        'inside'   => $gateIn($c, $at(120 + (int) substr($c, 1))),
         'outgoing' => E::add($c, $at(200), $at(5 + (int) substr($c, 1) % 20), 'live demo', $admin),
         'gone'     => E::add($c, $at(300), $at(90), 'live demo', $admin),
         default    => ['ok' => true],
@@ -263,6 +275,21 @@ async function signIn(ctx, email) {
     if (SHOTS) await p.locator('#auto-out').screenshot({ path: SHOTS + '/not-scanned-out-groups.png' });
     check('no script error', errs.length === 0, errs.join(' | '));
     await ctx.close();
+    // the HOD's phone: the waiting list as faces, three to a row
+    const hc = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
+    const hp = await hc.newPage(); hp.on('dialog', d => d.accept());
+    await hp.goto(BASE + '/att/'); await hp.waitForSelector('#email', { timeout: 20000 });
+    await hp.fill('#email', 'hod@zas.test'); await hp.fill('#password', 'CorrectHorse9'); await hp.click('#signin');
+    await hp.waitForSelector('#pin', { timeout: 20000 }); await hp.fill('#pin', '1234'); await hp.click('#pingo');
+    await hp.waitForFunction(() => document.querySelectorAll('#pendinglist .tile').length >= 6, null, { timeout: 30000 }).catch(() => {});
+    await hp.waitForFunction(() => document.querySelectorAll('#pendinglist .face.has').length >= 6, null, { timeout: 20000 }).catch(() => {});
+    const ht = await hp.locator('#pendinglist .tile').count(), hf = await hp.locator('#pendinglist .face.has').count();
+    check('HOD PHONE: the Packing arrivals waiting for confirmation are faces, three to a row (' + ht + ' tiles, ' + hf + ' faces)', ht >= 6 && hf >= 6 && !/Stitching|Cutting/.test(await hp.textContent('#pendinglist')));
+    await hp.locator('#pendinglist .tile:has(.face.has)').nth(0).click(); await hp.locator('#pendinglist .tile:has(.face.has)').nth(4).click();
+    await hp.waitForTimeout(400);
+    await hp.evaluate(() => { const L = document.getElementById('pendinglist'); window.scrollTo(0, L.getBoundingClientRect().top + scrollY - 150); });
+    if (SHOTS) await hp.screenshot({ path: SHOTS + '/hod-faces.png' });
+    await hc.close();
     const m = await browser.newContext({ viewport: { width: 390, height: 800 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     const mp = await signIn(m, 'admin@zas.test');
     await mp.goto(BASE + '/att_reports.php#live'); await mp.waitForSelector('#live-grid'); await mp.waitForTimeout(500);
@@ -278,7 +305,7 @@ JS);
 $raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 240 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('LIVE_SHOTS') ?: '')) . ' 2>&1');
 $results = [];
 if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
-ok(count($results) >= 15, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+ok(count($results) >= 16, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
 foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
 ok($n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view' AND new_data LIKE '%live dashboard%'") >= 20, 'every face shown on the Live tab is in the audit log');
 $th = Db::one('SELECT COUNT(*) AS n, MAX(LENGTH(bytes)) AS big FROM att_photo_thumbs');

@@ -716,6 +716,7 @@ const waiting = (page) => page.getAttribute('#waiting', 'data-count');
     const hctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
     const hp = await hctx.newPage();
     hp.on('dialog', d => d.accept());
+    const hodFaceReqs = []; hp.on('request', r => { if (/route=%2Femployees%2Fphotos/.test(r.url())) hodFaceReqs.push(r.url()); });
     await phone(hp, 'hod@zas.test');
     check('the HOD has no gate tab and so nothing to flag from', !(await hp.isVisible('#tab-gate')) && (await hp.locator('.flagbtn').count()) === 0);
     await hp.fill('#hodcode', 'E001');
@@ -727,6 +728,24 @@ const waiting = (page) => page.getAttribute('#waiting', 'data-count');
     await hp.waitForFunction(() => { const i = document.querySelector('#photo-sheet img'); return i.complete && i.naturalWidth === 480; }, null, { timeout: 20000 });
     check('  and from the waiting list, before ticking an entry', true);
     if (SHOT) await hp.screenshot({ path: SHOT + '/att-m5-hod-photo.png' });
+    await hp.click('#photo-sheet');
+    // the waiting list is faces, three to a row: dim until tapped, colour when selected
+    await hp.waitForFunction(() => document.querySelectorAll('#pendinglist .face.has').length >= 1, null, { timeout: 20000 });
+    const g = await hp.evaluate(() => { const L = document.getElementById('pendinglist'); const t = L.querySelector('.tile');
+      return { cols: getComputedStyle(L).gridTemplateColumns.split(' ').length, tiles: L.querySelectorAll('.tile').length, noface: L.querySelectorAll('.face.noface').length,
+               dim: getComputedStyle(L.querySelector('.face.has')).filter, bg: L.querySelector('.face.has').style.backgroundImage.slice(0, 22) }; });
+    check('HOD FACES: the waiting list is a grid, three to a row, faces start dim (grey)', g.cols === 3 && g.tiles >= 1 && /grayscale/.test(g.dim) && /^url\("data:image\//.test(g.bg), JSON.stringify(g));
+    check('  the faces came in one request, as small copies (never the photo address)', hodFaceReqs.length === 1, hodFaceReqs.length);
+    const tile = hp.locator('#pendinglist .tile:has(.face.has)').first();
+    await tile.click(); await hp.waitForTimeout(350);           // the colour fades in over 0.2 s
+    const on = await tile.evaluate(t => ({ on: t.classList.contains('on'), checked: t.querySelector('input').checked, f: getComputedStyle(t.querySelector('.face')).filter }));
+    check('  tapping a face selects that person: full colour, a tick, and the box ticked', on.on && on.checked && on.f === 'none', JSON.stringify(on));
+    check('  the Confirm button says how many are selected', /Confirm selected \(1\)/.test(await hp.textContent('#btn-confirm')));
+    if (SHOT) await hp.screenshot({ path: SHOT + '/att-m5-hod-faces.png' });
+    await tile.click();
+    check('  tapping again unselects', !(await tile.evaluate(t => t.classList.contains('on'))) && /^Confirm selected$/.test(await hp.textContent('#btn-confirm')));
+    const nf = await hp.locator('#pendinglist .face.noface .fname').count();
+    check('  someone with no photo on file: the name, in bold, in the same frame (' + nf + ')', g.noface === 0 || nf === g.noface);
     await hctx.close();
 
     // ========================================================== Setup screen

@@ -139,3 +139,23 @@ footer{margin:24px 2px 6px;font-size:12.5px;color:var(--muted);border-top:1px so
 .sheet .card{width:100%;max-width:440px;margin:0;max-height:96vh;overflow:auto}
 .sheet select,.sheet textarea{width:100%;padding:12px;font:inherit;font-size:16px;border:1.5px solid var(--line);border-radius:12px;background:#fff;color:var(--ink);margin:6px 0}
 .bigphoto{width:100%;max-width:360px;aspect-ratio:4/5;object-fit:cover;border-radius:14px;background:#e9eef5}
+
+/* HOD: faces to confirm, three to a row. Dim until tapped, colour when selected. */
+#pendinglist.pgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;max-height:min(72vh,760px);overflow-y:auto;overscroll-behavior:contain;padding:2px 2px 6px;-webkit-overflow-scrolling:touch}
+#pendinglist .wide{grid-column:1/-1}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;padding:0;margin:-1px}
+.pick.tile{position:relative;display:flex;flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:0;padding:0;margin:0;border:2px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden;cursor:pointer;min-width:0;-webkit-tap-highlight-color:transparent;transition:border-color .15s,box-shadow .15s}
+.pick.tile .face{display:grid;place-items:center;flex:none;width:100%;aspect-ratio:1/1;background:#e9eef5 center 30%/cover no-repeat;filter:grayscale(1) blur(1.4px) brightness(1.04);opacity:.72;transition:filter .2s,opacity .2s}
+.pick.tile .face .fname{display:none}
+.pick.tile .face.noface{filter:none;opacity:1;background:#eef2f8;padding:8px}
+.pick.tile .face.noface .fname{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;text-align:center;font-size:15px;line-height:1.2;font-weight:800;color:var(--navy);word-break:break-word}
+.pick.tile .tn{display:block;padding:6px 6px 0;font-size:12.5px;font-weight:800;line-height:1.2;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pick.tile .ts{display:block;padding:1px 6px 7px;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pick.tile .tick{position:absolute;top:6px;left:6px;width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.85);color:transparent;font-weight:800;font-size:14px;box-shadow:0 0 0 2px var(--line)}
+.pick.tile .seephoto{position:absolute;top:6px;right:6px;width:28px;height:28px;border-radius:8px;border:0;background:rgba(16,36,62,.55);color:#fff;font-size:15px;line-height:1;padding:0}
+.pick.tile.on,.item.pick.tile:has(input:checked){border-color:var(--ok);background:var(--card);box-shadow:0 0 0 2px rgba(11,132,87,.25)}
+.pick.tile.on .face{filter:none;opacity:1}
+.pick.tile.on .face.noface{background:#e3f4ec}
+.pick.tile.on .tick{background:var(--ok);color:#fff;box-shadow:none}
+.pick.tile:focus-within{outline:3px solid var(--note);outline-offset:1px}
+@media (prefers-reduced-motion:reduce){.pick.tile,.pick.tile .face{transition:none}}

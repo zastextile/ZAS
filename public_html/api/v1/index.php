@@ -169,6 +169,32 @@ try {
             Http::json(array_merge(['ok' => true], Employees::syncSnapshot($scope)));
             break;
 
+        /* Small faces for the HOD's waiting list, up to 40 codes in one go.
+           Same rule as one photo: a gatekeeper or HOD, only employees in the
+           departments they may see; each face sent is one audit line. The
+           phone holds them in memory only (never in its storage or cache). */
+        case $method === 'GET' && $route === '/employees/photos':
+            $u = require_gate_or_hod();
+            if (session_status() === PHP_SESSION_ACTIVE) { session_write_close(); }
+            Http::rateLimit('photos:user:' . (int) $u['id'], 600, 600);
+            $codes = array_slice(array_values(array_unique(array_filter(array_map('trim', explode(',', (string) Http::input('codes', '')))))), 0, 40);
+            $out = [];
+            if ($codes !== []) {
+                $scope = employee_scope_for((int) $u['id']);
+                $sql = 'SELECT id, code FROM att_employees WHERE code IN (' . implode(',', array_fill(0, count($codes), '?')) . ')';
+                $p = $codes;
+                if ($scope !== null) {
+                    if ($scope === []) { Http::json(['ok' => true, 'photos' => (object) []]); }
+                    $sql .= ' AND department_id IN (' . implode(',', array_fill(0, count($scope), '?')) . ')';
+                    $p = array_merge($p, $scope);
+                }
+                $byId = [];
+                foreach (Db::all($sql, $p) as $r) { $byId[(int) $r['id']] = (string) $r['code']; }
+                foreach (PhotoService::thumbs(array_keys($byId), (int) $u['id'], 'HOD confirmation list') as $id => $url) { $out[$byId[$id]] = $url; }
+            }
+            Http::json(['ok' => true, 'photos' => (object) $out]);
+            break;
+
         /* The employee's reference photo, for the gatekeeper or HOD who has
            just typed or scanned the code. The picture itself comes back —
            not a link to it — after the same department check as the lookup
