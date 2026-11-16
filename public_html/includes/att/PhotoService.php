@@ -170,6 +170,9 @@ final class PhotoService
             return self::no('STORAGE_FAILED', 'The photo could not be deleted from storage, so it is still on record. ' . $err);
         }
         Db::run('UPDATE att_employees SET reference_photo_key = NULL, reference_photo_etag = NULL, reference_photo_at = NULL WHERE id = ?', [$employeeId]);
+        if (Db::tableExists('att_photo_thumbs')) {
+            Db::run('DELETE FROM att_photo_thumbs WHERE employee_id = ?', [$employeeId]);   // the small copy goes with it
+        }
         Audit::record('photo.reference_removed', 'att_employee', $employeeId, ['had_photo' => true], ['had_photo' => false], $actorId, $reason);
         return ['ok' => true, 'employee_id' => $employeeId, 'removed' => true];
     }
@@ -193,6 +196,55 @@ final class PhotoService
         }
         Audit::record('photo.view', 'att_employee', $employeeId, null, ['kind' => 'reference', 'purpose' => $purpose], $actorId);
         return ['ok' => true, 'bytes' => $bytes, 'mime' => Images::mimeOf($bytes)];
+    }
+
+    /** The small copy shown on the Live tab: a circle about 60 px across. */
+    public const THUMB = ['width' => 120, 'height' => 150, 'crop' => true, 'min_width' => 40, 'min_height' => 40];
+
+    /**
+     * Small faces for many employees in one go, for the Live tab.
+     * Each face is made once from the reference photo and kept in
+     * att_photo_thumbs while that photo is current, so later views do not go
+     * back to the bucket. Each face sent is one line in the audit log, as a
+     * full photo would be. Ids the caller may not see must be removed BEFORE
+     * calling this.
+     * @param list<int> $ids
+     * @return array<int,string> employee id => data: URL (missing = no photo / could not be read)
+     */
+    public static function thumbs(array $ids, int $actorId, string $purpose): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($i) => $i > 0)));
+        if ($ids === []) {
+            return [];
+        }
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $haveTable = Db::tableExists('att_photo_thumbs');
+        $rows = Db::all("SELECT e.id, e.reference_photo_key AS k" . ($haveTable ? ", t.photo_key AS tk, t.mime, t.bytes" : ", NULL AS tk, NULL AS mime, NULL AS bytes") . "
+                           FROM att_employees e" . ($haveTable ? " LEFT JOIN att_photo_thumbs t ON t.employee_id = e.id" : "") . "
+                          WHERE e.id IN ($ph) AND e.reference_photo_key IS NOT NULL", $ids);
+        $out = [];
+        foreach ($rows as $r) {
+            $id = (int) $r['id'];
+            if ($r['tk'] !== null && $r['tk'] === $r['k'] && $r['bytes'] !== null) {
+                $mime = (string) $r['mime']; $bytes = (string) $r['bytes'];
+            } else {
+                [$ok, $err, $full] = Storage::get((string) $r['k']);
+                if (!$ok || $full === '') { error_log('[att-photo] reference photo could not be read: ' . $err); continue; }
+                $n = Images::normalize($full, self::THUMB);
+                if (!$n['ok']) { $mime = Images::mimeOf($full); $bytes = $full; }       // keep the full one rather than show nothing
+                else {
+                    $mime = $n['mime']; $bytes = $n['bytes'];
+                    if ($haveTable) {
+                        Db::run('INSERT INTO att_photo_thumbs (employee_id, photo_key, mime, bytes) VALUES (?, ?, ?, ?)
+                                 ON DUPLICATE KEY UPDATE photo_key = VALUES(photo_key), mime = VALUES(mime), bytes = VALUES(bytes), made_at = CURRENT_TIMESTAMP(6)',
+                            [$id, (string) $r['k'], $mime, $bytes]);
+                    }
+                }
+            }
+            $out[$id] = 'data:' . $mime . ';base64,' . base64_encode($bytes);
+            Audit::record('photo.view', 'att_employee', $id, null, ['kind' => 'reference', 'size' => 'small', 'purpose' => $purpose], $actorId);
+        }
+        return $out;
     }
 
     /**

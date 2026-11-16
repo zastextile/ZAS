@@ -965,30 +965,49 @@ page_header('Attendance — Reports');
   var clockTimer = null, FACES = {}, faceQueue = [], faceBusy = 0, LV = { dept: '', q: '' };
   var HIDE = false; try { HIDE = localStorage.getItem('attr-hide-faces') === '1'; } catch (e) {}
   function initials(n){ return String(n || '?').trim().split(/\s+/).slice(0, 2).map(function(w){ return w.charAt(0).toUpperCase(); }).join(''); }
+  /* Faces arrive in batches: the screen collects the faces coming into view
+     for a moment, then asks for up to 40 in one request (two requests at a
+     time at most). Each answer is a small copy of the photo, held in this
+     page's memory only. */
+  var faceWait = {}, faceTimer = null;
   function pumpFaces(){
-    while (faceBusy < 4 && faceQueue.length) {
-      var job = faceQueue.shift(), id = job.id;
-      if (FACES[id] !== undefined && FACES[id] !== 'loading') { job.done(FACES[id]); continue; }
-      if (FACES[id] === 'loading') { (FACES['w' + id] = FACES['w' + id] || []).push(job.done); continue; }
-      FACES[id] = 'loading'; faceBusy++;
-      (function(id, done){
-        fetch(q('/reports/live/photo', { id: id }), { credentials: 'same-origin' })
-          .then(function(r){ return r.ok ? r.blob() : null; }).catch(function(){ return null; })
-          .then(function(b){
-            FACES[id] = b ? URL.createObjectURL(b) : null; faceBusy--;
-            done(FACES[id]); (FACES['w' + id] || []).forEach(function(f){ f(FACES[id]); }); delete FACES['w' + id];
-            pumpFaces();
+    faceQueue.forEach(function(job){
+      var id = job.id;
+      if (FACES[id] !== undefined && FACES[id] !== 'loading') { job.done(FACES[id]); return; }
+      (faceWait[id] = faceWait[id] || []).push(job.done);
+    });
+    faceQueue = [];
+    if (!faceTimer) faceTimer = setTimeout(sendFaces, 40);
+  }
+  function sendFaces(){
+    faceTimer = null;
+    while (faceBusy < 2) {
+      var ids = Object.keys(faceWait).filter(function(id){ return FACES[id] === undefined; }).slice(0, 40);
+      if (!ids.length) return;
+      ids.forEach(function(id){ FACES[id] = 'loading'; });
+      faceBusy++;
+      (function(ids){
+        fetch(q('/reports/live/photos', { ids: ids.join(',') }), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
+          .then(function(j){
+            faceBusy--;
+            var got = (j && j.photos) || {};
+            ids.forEach(function(id){
+              FACES[id] = got[id] || null;
+              (faceWait[id] || []).forEach(function(f){ f(FACES[id]); }); delete faceWait[id];
+            });
+            sendFaces();
           });
-      })(id, job.done);
+      })(ids);
     }
   }
   var seen = 'IntersectionObserver' in window ? new IntersectionObserver(function(list){
-    list.forEach(function(en){ if (!en.isIntersecting) return; seen.unobserve(en.target); var t = en.target; faceQueue.push({ id: +t.dataset.id, done: function(url){ if (url) { t.style.backgroundImage = 'url(' + url + ')'; t.classList.add('has'); } } }); pumpFaces(); });
+    list.forEach(function(en){ if (!en.isIntersecting) return; seen.unobserve(en.target); var t = en.target; faceQueue.push({ id: +t.dataset.id, done: function(url){ if (url) { t.style.backgroundImage = 'url("' + url + '")'; t.classList.add('has'); } } }); pumpFaces(); });
   }, { rootMargin: '200px' }) : null;
   function face(p, size, ring){
     var av = el('div', { class: 'av ' + (ring || '') + ' s' + size, 'data-id': String(p.employee_id), 'aria-hidden': 'true' }, [el('span', { text: initials(p.full_name) })]);
     if (!HIDE && p.has_photo) {
-      if (FACES[p.employee_id]) { av.style.backgroundImage = 'url(' + FACES[p.employee_id] + ')'; av.classList.add('has'); }
+      if (FACES[p.employee_id]) { av.style.backgroundImage = 'url("' + FACES[p.employee_id] + '")'; av.classList.add('has'); }
       else if (seen) seen.observe(av);
     }
     return av;

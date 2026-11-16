@@ -849,8 +849,28 @@ try {
 
         /* A face on the Live tab: the reference photo itself (never a link),
            only for someone the viewer may report on, each view audited. */
+        /* Many small faces in one request (up to 40). Same checks as one
+           face: signed in, Reports, only people the viewer may report on;
+           every face sent is audited. The session is released first so the
+           browser's other requests are not held up while photos are made. */
+        case $method === 'GET' && $route === '/reports/live/photos':
+            $u = Http::requirePermission('attrep', 'v');
+            if (session_status() === PHP_SESSION_ACTIVE) { session_write_close(); }
+            Http::rateLimit('livephotos:user:' . (int) $u['id'], 600, 600);
+            $ids = array_slice(array_values(array_filter(array_map('intval', explode(',', (string) Http::input('ids', ''))), fn($i) => $i > 0)), 0, 40);
+            $scope = report_scope((int) $u['id']);
+            if ($ids !== [] && $scope !== null) {
+                $ok = $scope === [] ? [] : array_map('intval', array_column(Db::all('SELECT id FROM att_employees WHERE id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')
+                         AND department_id IN (' . implode(',', array_fill(0, count($scope), '?')) . ')', array_merge($ids, $scope)), 'id'));
+                $ids = array_values(array_intersect($ids, $ok));
+            }
+            header('Cache-Control: private, no-store');
+            Http::json(['ok' => true, 'photos' => (object) PhotoService::thumbs($ids, (int) $u['id'], 'live dashboard')]);
+            break;
+
         case $method === 'GET' && $route === '/reports/live/photo':
             $u = Http::requirePermission('attrep', 'v');
+            if (session_status() === PHP_SESSION_ACTIVE) { session_write_close(); }
             Http::rateLimit('livephoto:user:' . (int) $u['id'], 2400, 600);
             $id = (int) Http::input('id', 0);
             $dept = Db::value('SELECT department_id FROM att_employees WHERE id = ?', [$id]);

@@ -221,6 +221,8 @@ async function signIn(ctx, email) {
     const ctx = await browser.newContext({ viewport: { width: 1366, height: 900 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     const p = await signIn(ctx, 'admin@zas.test');
     const errs = []; p.on('pageerror', e => errs.push(e.message));
+    const photoReqs = [], singleReqs = [];
+    p.on('request', r => { const u = r.url(); if (/route=%2Freports%2Flive%2Fphotos/.test(u)) photoReqs.push(u); else if (/route=%2Freports%2Flive%2Fphoto(&|$)/.test(u)) singleReqs.push(u); });
     await p.evaluate(() => { try { localStorage.removeItem('attr-hide-faces'); } catch (e) {} });
     await p.goto(BASE + '/att_reports.php#live');
     await p.waitForSelector('#live-grid');
@@ -237,7 +239,8 @@ async function signIn(ctx, email) {
     const loaded = await p.locator('#live-grid .av.has').count(), all = await p.locator('#live-grid .av').count();
     check('everyone inside (21) is shown; 19 faces load, initials for the two with no photo on file', all === 21 && loaded === 19, loaded + ' of ' + all);
     const src = await p.locator('#live-grid .av.has').first().evaluate(e => getComputedStyle(e).backgroundImage);
-    check('  a face is held in this page only (blob:), never a link to the bucket', /^url\("blob:/.test(src), src.slice(0, 40));
+    check('  a face is held in this page only (a small inline picture), never a link to the bucket', /^url\("data:image\/(webp|jpeg);base64,/.test(src), src.slice(0, 40));
+    check('  SPEED: all the faces came in at most 2 requests (batches of up to 40), not one per face', photoReqs.length >= 1 && photoReqs.length <= 2 && singleReqs.length === 0, photoReqs.length + ' batch, ' + singleReqs.length + ' single');
     await p.click('#live-inside-panel .chips button:has-text("Cutting")');
     check('department chips narrow the faces (Cutting)', (await p.locator('#live-grid .pf').count()) === (await p.locator('#live-grid .pf .m').count()) && (await p.locator('#live-grid .pf').count()) < 21);
     await p.click('#live-inside-panel .chips button:has-text("All")');
@@ -275,9 +278,23 @@ JS);
 $raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 240 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('LIVE_SHOTS') ?: '')) . ' 2>&1');
 $results = [];
 if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
-ok(count($results) >= 14, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+ok(count($results) >= 15, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
 foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
 ok($n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view' AND new_data LIKE '%live dashboard%'") >= 20, 'every face shown on the Live tab is in the audit log');
+$th = Db::one('SELECT COUNT(*) AS n, MAX(LENGTH(bytes)) AS big FROM att_photo_thumbs');
+ok((int) $th['n'] >= 19 && (int) $th['big'] < 10000, 'SPEED: each face is a small copy made once and kept (' . $th['n'] . ' made, the largest ' . $th['big'] . ' bytes — the full photo is ~30 KB)');
+$made = (string) Db::value('SELECT made_at FROM att_photo_thumbs WHERE employee_id = ?', [$ids['E002']]);
+$t2 = Ph::thumbs([$ids['E002']], $admin, 'test');
+ok(isset($t2[$ids['E002']]) && (string) Db::value('SELECT made_at FROM att_photo_thumbs WHERE employee_id = ?', [$ids['E002']]) === $made, '  shown again, the kept copy is used — no new trip to the bucket');
+Ph::setReference($ids['E002'], portrait(99), true, $admin);
+Ph::thumbs([$ids['E002']], $admin, 'test');
+ok((string) Db::value('SELECT photo_key FROM att_photo_thumbs WHERE employee_id = ?', [$ids['E002']]) === (string) Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$ids['E002']]),
+   '  a NEW photo makes a new small copy (the old one is never shown)');
+Ph::removeReference($ids['E002'], 'left', $admin);
+ok($n('SELECT COUNT(*) FROM att_photo_thumbs WHERE employee_id = ?', [$ids['E002']]) === 0, '  a REMOVED photo takes its small copy with it');
+$hb = fetchUrl($hj, '/reports/live/photos', ['ids' => $ids['E001'] . ',' . $packing]);
+$hbj = json_decode($hb['body'], true);
+ok($hb['status'] === 200 && isset($hbj['photos'][(string) $packing]) && !isset($hbj['photos'][(string) $ids['E001']]), 'in a batch too, a HOD gets only their own department\'s faces');
 
 echo "\nLIVE: $P passed, $F failed\n";
 exit($F === 0 ? 0 : 1);
