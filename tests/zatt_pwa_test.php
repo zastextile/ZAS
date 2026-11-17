@@ -209,8 +209,32 @@ const shown = (page, sel) => page.isVisible(sel);
       await p2.waitForTimeout(600); await p2.screenshot({ path: SHOT + '/gate-in.png' });
       await p2.fill('#code', ''); await p2.waitForTimeout(600); await p2.screenshot({ path: SHOT + '/gate-idle.png' });
     }
-    // Signed out on the server (as after a sign-in setting changes) with no employee list on the phone.
+    // REMEMBER THIS PHONE: the server forgets the sign-in (app closed, eight
+    // quiet hours) — the phone signs itself back in with its key, silently.
     await p2.fill('#code', '');
+    const hasKey = await p2.evaluate(() => AttDB.getMeta('phone_key').then(k => !!(k && k.token)));
+    check('REMEMBER THIS PHONE: after a sign-in the phone holds its key', hasKey);
+    await ctx2.clearCookies();
+    await p2.evaluate(() => AttDB.replaceAll('employees', []));
+    await p2.fill('#code', 'E002');
+    await p2.waitForFunction(() => /Sara Khan/.test(document.getElementById('empname').textContent), null, { timeout: 15000 }).catch(() => {});
+    check('REMEMBER THIS PHONE: signed out on the server, the phone signs itself back in and the name appears',
+      /Sara Khan/.test(await text(p2, '#empname')), await text(p2, '#emphint'));
+    check('  and no "signed out" banner is shown', !(await p2.isVisible('#relogin')));
+    await p2.reload();
+    await p2.waitForSelector('#pin', { timeout: 20000 });
+    check('  reopening still asks only for the PIN — no email and password', await p2.isVisible('#pin') && !(await p2.isVisible('#email')));
+    await p2.fill('#pin', '1234'); await p2.click('#pingo');
+    await p2.waitForSelector('#status', { timeout: 20000 });
+    await p2.waitForTimeout(800);
+    check('  and after the PIN it works, with no "signed out" banner', !(await p2.isVisible('#relogin')));
+
+    // With the key gone (refused, or a different phone), signed out on the server
+    // with no employee list on the phone: the gate is told plainly.
+    await p2.fill('#code', '');
+    // (the server refuses the key, as after a password change or a withdrawn phone)
+    await ctx2.route(u => /phone-resume/.test(decodeURIComponent(u.toString())), r => r.fulfill({ status: 401, contentType: 'application/json',
+      body: JSON.stringify({ ok: false, reason_code: 'KEY_REFUSED', error: 'This phone needs a full sign-in.' }) }));
     await ctx2.clearCookies();
     await p2.evaluate(() => AttDB.replaceAll('employees', []));
     await p2.fill('#code', 'E002');
@@ -218,6 +242,7 @@ const shown = (page, sel) => page.isVisible(sel);
     const so = await p2.textContent('#emphint');
     check('NO LIST AND SIGNED OUT ON THE SERVER: the gate is told why, and what to tap', /SIGNED OUT on the server/.test(so) && /Sign in/.test(so), so);
     check('  and the red "signed out" banner with its Sign in button is shown', await p2.isVisible('#relogin'));
+    check('  and the refused key is forgotten on the phone', await p2.evaluate(() => AttDB.getMeta('phone_key').then(k => !k)));
     await ctx2.close();
 
     // ---------------------------------------------------- the network is cut
