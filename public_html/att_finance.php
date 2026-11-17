@@ -368,7 +368,21 @@ page_header('People Finance');
 .fin .elist-cols label{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;white-space:nowrap}
 .fin .elist-cols label.money{color:var(--owed)}
 .fin .elist-cols input{width:15px;height:15px;margin:0}
-.fin .elist-wrap{max-height:52vh;border:1px solid var(--line);border-radius:4px}
+/* the window is the screen's height: the options stay on top, the list takes the rest and scrolls on its own */
+.fin-shade .box.elist-box{height:92vh;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.fin-shade .box.elist-box>*{flex:none}
+.fin-shade .box.elist-box>.elist-wrap{flex:1 1 0;min-height:160px}
+.fin .elist-wrap,.fin-shade .elist-wrap{flex:1 1 auto;min-height:160px;overflow:auto;border:1px solid var(--line);border-radius:4px}
+.fin-shade .elist-colbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
+.fin-shade .elist-colbar .tog[aria-expanded="true"] .car{transform:rotate(180deg)}
+.fin-shade .elist-colbar .tog{white-space:normal;text-align:left}
+.fin-shade .elist-colbar .car{display:inline-block;transition:transform .15s;margin-left:4px}
+@media (max-width:700px){
+  .fin-shade .box.elist-box{height:auto;max-height:94vh;overflow:auto;display:grid}
+  .fin-shade .box.elist-box>.elist-wrap{min-height:0}
+  .fin .elist-wrap,.fin-shade .elist-wrap{max-height:none;overflow-x:auto}
+  .fin-shade .elist-presets .btn{flex:1 1 auto}
+}
 .fin table.elist{font-size:12px}.fin table.elist td{white-space:nowrap}
 .fin table.elist tr.grp td{background:var(--sel);color:var(--navy);font-size:12.5px}
 .fin table.elist tr.sub td{background:var(--head);font-weight:600}
@@ -997,7 +1011,7 @@ page_header('People Finance');
     var saved = {}; try { saved = JSON.parse(localStorage.getItem('fin-elist') || '{}') || {}; } catch (e) { saved = {}; }
     var O = { group: saved.group || 'type', who: saved.who || 'on', kind: '', dept: '', cols: (saved.cols || EL_PRESETS.short).filter(elCol) };
     function keep(){ try { localStorage.setItem('fin-elist', JSON.stringify({ group: O.group, who: O.who, cols: O.cols })); } catch (e) {} }
-    var box = modal([el('p', { class: 'muted', text: 'Loading…' })], true); box.classList.add('xwide');
+    var box = modal([el('p', { class: 'muted', text: 'Loading…' })], true); box.classList.add('xwide'); box.classList.add('elist-box');
     call('GET', '/finance/people').then(function(r){
       if (!r.ok) { box.textContent = ''; box.appendChild(fail(r)); return; }
       var all = r.people;
@@ -1093,6 +1107,7 @@ page_header('People Finance');
       function paint(){
         keep(); var b = build(); preview.textContent = ''; preview.appendChild(b.table);
         countEl.textContent = b.count + (b.count === 1 ? ' person' : ' people') + ' · ' + b.cols.length + ' columns';
+        colTogText.textContent = 'Choose columns (' + b.cols.length + ' of ' + EL_COLS.length + ' · money in brown)';
         Object.keys(presetBtns).forEach(function(k){ presetBtns[k].classList.toggle('on', EL_PRESETS[k].join() === b.cols.join()); });
       }
       function sel(label, value, opts, set){ var x = el('select', { 'aria-label': label, change: function(){ set(x.value); paint(); } }, opts.map(function(o){ return el('option', { value: o[0], text: o[1] }); })); x.value = value; return field(label, x); }
@@ -1101,6 +1116,11 @@ page_header('People Finance');
         cb.addEventListener('change', function(){ readBoxes(); paint(); });
         return el('label', { class: c[3] ? 'money' : null }, [cb, ' ' + c[1]]);
       }));
+      /* the column ticks fold away, so the list itself has the room */
+      colBoxes.hidden = true;
+      var colTogText = el('span'), colTog = btn('', function(){ colBoxes.hidden = !colBoxes.hidden; colTog.setAttribute('aria-expanded', String(!colBoxes.hidden)); }, 'sm tog');
+      colTog.textContent = ''; colTog.appendChild(colTogText); colTog.appendChild(el('span', { class: 'car', text: '▾' }));
+      colTog.setAttribute('aria-expanded', 'false'); colTog.id = 'elist-coltog';
       function readBoxes(){ O.cols = EL_COLS.map(function(x){ return x[0]; }).filter(function(k){ return colBoxes.querySelector('input[data-col="' + k + '"]').checked; }); }
       function setCols(list){ Array.prototype.forEach.call(colBoxes.querySelectorAll('input'), function(b){ b.checked = list.indexOf(b.getAttribute('data-col')) >= 0; }); readBoxes(); paint(); }
       function setMoney(on){ Array.prototype.forEach.call(colBoxes.querySelectorAll('label.money input'), function(b){ b.checked = on; }); readBoxes(); paint(); }
@@ -1139,7 +1159,7 @@ page_header('People Finance');
       doCsv.id = 'elist-csv';
       box.textContent = '';
       [el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Employee list — print or download' }), btn('Close', closeModal, 'sm')]),
-        el('p', { class: 'muted small', style: 'margin:0', text: 'Pick a ready list, or tick the columns you want. "Finance / audit" shows every pay and advance figure to match against the books. "Codes only" has no money at all — safe to hand to someone checking codes and names.' }),
+        el('p', { class: 'muted small', style: 'margin:0', text: 'Pick a ready list, or choose the columns yourself. "Finance / audit" shows every pay and advance figure to match against the books. "Codes only" has no money at all — safe to hand to someone checking codes and names.' }),
         el('div', { class: 'cardx elist-opts' }, [
           el('div', { class: 'row elist-presets' }, [el('b', { class: 'small', text: 'Ready lists' }),
             preset('short', 'Short list'), preset('audit', 'Finance / audit (all figures)'), preset('codes', 'Codes only — no money')]),
@@ -1148,8 +1168,7 @@ page_header('People Finance');
             sel('Who', O.who, [['on', 'On the roll'], ['left', 'Left the company'], ['all', 'Everyone']], function(v){ O.who = v; }),
             sel('Paid as', '', [['', 'All'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractors'], ['none', 'Not set up']], function(v){ O.kind = v; }),
             sel('Department', '', [['', 'All departments']].concat(depts.map(function(d){ return [d, d]; })), function(v){ O.dept = v; })]),
-          el('div', { class: 'row', style: 'margin-top:10px;gap:6px' }, [el('b', { class: 'small', text: 'Columns' }),
-            el('span', { class: 'muted small', text: '(money columns in brown)' }),
+          el('div', { class: 'elist-colbar' }, [colTog,
             btn('Hide all money', function(){ setMoney(false); }, 'sm'), btn('Show all money', function(){ setMoney(true); }, 'sm')]),
           colBoxes]),
         el('div', { class: 'row', style: 'justify-content:space-between' }, [countEl, el('div', { class: 'row' }, [doCsv, doPrint])]),
