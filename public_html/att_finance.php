@@ -241,7 +241,17 @@ page_header('People Finance');
 .fin .lgacts .act-prod{background:#0f766e}.fin .lgacts .act-prod:hover{background:#0b5f59}
 .fin table.t.entry.padj td{padding:5px 6px}
 .fin table.t.entry.padj input.n{min-width:0;width:96px}
-.fin table.t.entry.padj td:nth-child(8) input{min-width:200px}
+.fin table.t.entry.padj:not(.agrid) td:nth-child(8) input{min-width:200px}
+.fin table.t.entry.agrid td:nth-last-child(4) input{min-width:220px;width:100%}
+.fin table.t.entry.agrid input.n{width:92px}
+.fin table.t.entry.agrid input.bad{border-color:var(--bad);background:#fff5f5}
+.fin table.t.entry.agrid tr.chgrow>td:first-child{box-shadow:inset 3px 0 0 #e07b00}
+.fin table.t.entry.agrid tr.sub>td{padding:6px 10px 10px}
+.fin table.t.entry.agrid tr.sub .lines{background:#fff;border:1px solid var(--line2);border-radius:4px;padding:6px 8px}
+.fin-shade .box.agrid-box{max-height:92vh;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.fin-shade .box.agrid-box>*{flex:none}
+.fin-shade .box.agrid-box>.agrid-wrap{flex:0 1 auto;min-height:160px;overflow:auto;border:1px solid var(--line);border-radius:4px}
+.fin table.t.entry.agrid thead th{position:sticky;top:0;z-index:1}
 .fin table.t.entry.padj input.chg{border-color:#e07b00;background:var(--warn-bg)}
 .fin table.t.entry.padj tr.sub td{background:#f7fafd;border-bottom:1px solid #e3ebf5;font-size:12.5px}
 .fin table.t.entry.padj tr.sub.h td{font-size:11px;font-weight:600;color:var(--muted);padding-top:4px;padding-bottom:4px}
@@ -720,6 +730,147 @@ page_header('People Finance');
     return w;
   }
 
+  /* AMEND MANY AT ONCE — daily wages and fixed salaries, in one table, the
+     way contractors are adjusted. One row a person: days ± (daily wages),
+     bonus, other earning, deduction, and the reason. "Same for all ticked"
+     fills a column for everyone ticked (an amount, or a percent of their
+     pay). "Show lines" opens a person's own lines to change any of them.
+     Nothing is changed until "Put on the sheet"; it works on a copy, so
+     Close leaves the sheet as it was. Every change carries its reason;
+     a change of days says so in the reason ("+1 day: …"). Basic salary
+     stays fixed, as everywhere. */
+  function amendGrid(o){
+    var items = o.items, kind = o.kind, daily = kind === 'daily';
+    var num = function(v){ v = String(v === null || v === undefined ? '' : v).replace(/,/g, '').trim(); if (v === '' || v === '-' || v === '+') return null; var n = Number(v); return isFinite(n) ? n : NaN; };
+    var signed = function(p){ return (p > 0 ? '+' : p < 0 ? '−' : '') + rs(Math.abs(p)); };
+    var COLS = (daily ? [['days', 'Days ±']] : []).concat([['bonus', 'Bonus +'], ['other_earning', 'Other earning +'], ['deduction', 'Deduction −']]);
+    var reason = el('input', { type: 'text', maxlength: 255, placeholder: daily ? 'e.g. Checked against the gate register (needed when a row has no reason of its own)' : 'e.g. Eid bonus / checked by HR (needed when a row has no reason of its own)', 'aria-label': 'Reason for every line' });
+    var R = [];
+    function dayLine(i){ return i.lines.filter(function(l){ return l.key === 'daily'; })[0] || null; }
+    function daysOf(l){ var m = /·\s*([\d.]+)\s*day/.exec(l.label); return m ? parseFloat(m[1]) : null; }
+    function base(i){ /* what the percent is of: the basic salary, or the daily wages */
+      var l = i.lines.filter(function(x){ return x.key === (daily ? 'daily' : 'basic'); })[0]; return l ? l.calc_paisa : 0; }
+    /* the person's model with this row's figures added — never the real one until "Put on the sheet" */
+    function withRow(r){
+      var m = JSON.parse(JSON.stringify(r.m)), top = reason.value.trim(), own = r.why.value.trim(), bad = false, need = false, noWhy = false, why;
+      COLS.forEach(function(c){
+        var v = num(r.inp[c[0]].value); if (v === null) return;
+        /* filled for everyone: the reason at the top; typed on the row: the row's own */
+        var why0 = r.inp[c[0]].getAttribute('data-all') ? (top || own) : (own || top);
+        if (!why0 && v === v && v !== 0) noWhy = true;
+        why = why0 || '…';
+        if (v !== v) { bad = true; return; }
+        if (c[0] === 'days') {
+          var l = dayLine(r.i), d = l && daysOf(l); if (!l || !d) { bad = true; return; }
+          var nd = d + v; if (nd < 0 || Math.round(nd * 2) !== nd * 2) { bad = true; return; }
+          if (!v) return;
+          need = true;
+          m.ch.daily = { amt: plain(Math.round(l.calc_paisa / d * nd)), reason: (v > 0 ? '+' : '−') + Math.abs(v) + (Math.abs(v) === 1 ? ' day' : ' days') + ' (' + d + ' → ' + nd + '): ' + why };
+          return;
+        }
+        if (v <= 0) { bad = true; return; }
+        need = true;
+        m.added.push({ kind: c[0], label: '', amt: String(v), reason: why });
+      });
+      return { m: m, bad: bad, need: need, noWhy: noWhy };
+    }
+    var totNow = el('td', { class: 'num' }), totAdj = el('td', { class: 'num' }), totNew = el('td', { class: 'num' }), sumText = el('span', { class: 'muted small' });
+    function paint(){
+      var nCh = 0, bad = false, noWhy = false, a0 = 0, a1 = 0;
+      R.forEach(function(r){
+        var w = withRow(r), was = netOf(r.i.lines, r.m0).net, now = netOf(r.i.lines, w.m);
+        var d = now.net - was, changed = w.need || touched(r.i.lines, r.m) !== touched(r.i.lines, r.m0) || JSON.stringify(r.m) !== JSON.stringify(r.m0);
+        var rb = w.bad || now.bad;
+        if (w.noWhy) noWhy = true;
+        r.adj.textContent = rb ? 'check' : (d ? signed(d) : '—');
+        r.adj.className = 'num ' + (rb || d < 0 ? 'c-ded' : d > 0 ? 'c-earn' : 'nil');
+        r.now.textContent = rs(now.net); r.now.style.color = rb ? 'var(--bad)' : '';
+        r.why.classList.toggle('bad', w.noWhy);
+        r.tr.classList.toggle('chgrow', changed);
+        if (rb) bad = true; if (changed) nCh++;
+        a0 += was; a1 += now.net;
+      });
+      totNow.textContent = rs(a0); totAdj.textContent = a1 - a0 ? signed(a1 - a0) : '—'; totNew.textContent = rs(a1);
+      sumText.textContent = nCh ? nCh + (nCh === 1 ? ' person' : ' people') + ' changed · ' + (a1 - a0 ? signed(a1 - a0) : 'no change in total') : 'Nothing changed yet';
+      put.disabled = bad || noWhy || !nCh; put.textContent = bad ? 'Fix the red rows first' : noWhy ? 'Give the reason first' : 'Put on the sheet';
+      if (saveNow) saveNow.disabled = put.disabled;
+    }
+    function drawLines(r){
+      if (r.sub) { r.sub.remove(); r.sub = null; }
+      r.tog.textContent = r.open ? '▾ Hide lines' : '▸ Show lines';
+      if (!r.open) return;
+      r.sub = el('tr', { class: 'sub' }, [el('td'), el('td', { colspan: String(COLS.length + 6) }, [editor(r.i.lines, r.m, paint)])]);
+      r.tr.parentNode.insertBefore(r.sub, r.tr.nextSibling);
+    }
+    var tb = el('tbody');
+    items.forEach(function(i){
+      var m0 = o.models[i.employee_id], r = { i: i, m0: m0, m: JSON.parse(JSON.stringify(m0)), inp: {}, open: false, sub: null };
+      r.cb = el('input', { type: 'checkbox', checked: true, 'aria-label': 'Tick ' + i.full_name });
+      COLS.forEach(function(c){
+        var x = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: c[0] === 'days' ? '± days' : '', 'aria-label': i.full_name + ' — ' + c[1] });
+        x.addEventListener('input', function(){ x.removeAttribute('data-all'); x.classList.toggle('chg', x.value.trim() !== ''); paint(); });
+        r.inp[c[0]] = x;
+      });
+      r.why = el('input', { type: 'text', maxlength: 255, placeholder: 'same as above', 'aria-label': i.full_name + ' — reason' });
+      r.why.addEventListener('input', paint);
+      r.adj = el('td', { class: 'num nil', text: '—' }); r.now = el('b');
+      r.tog = el('button', { type: 'button', class: 'tog', text: '▸ Show lines', click: function(){ r.open = !r.open; drawLines(r); } });
+      var dl = dayLine(i), dd = dl && daysOf(dl);
+      r.tr = el('tr', {}, [el('td', {}, [r.cb]),
+        el('td', {}, [el('b', { text: i.full_name }), el('div', { class: 'muted small', text: i.code + ' · ' + i.department_name + (daily && dl ? ' · ' + dd + (dd === 1 ? ' day' : ' days') + ' × ' + rs(Math.round(dl.calc_paisa / dd)) : '') })]),
+        el('td', { class: 'num', text: rs(netOf(i.lines, m0).net) })]
+        .concat(COLS.map(function(c){ return el('td', { class: 'num' }, [r.inp[c[0]]]); }))
+        .concat([el('td', {}, [r.why]), r.adj, el('td', { class: 'num' }, [r.now]), el('td', {}, [r.tog])]));
+      tb.appendChild(r.tr); R.push(r);
+    });
+    tb.appendChild(el('tr', { class: 'tot' }, [el('td'), el('td', { text: 'Total — ' + items.length + (items.length === 1 ? ' person' : ' people') }), totNow]
+      .concat(COLS.map(function(){ return el('td'); })).concat([el('td'), totAdj, totNew, el('td')])));
+    var heads = [['', 0], ['Employee', 0], ['Now', 1]].concat(COLS.map(function(c){ return [c[1], 1]; })).concat([['Reason for this row (optional)', 0], ['Change', 1], ['New amount', 1], ['', 0]]);
+    var table = el('table', { class: 't entry padj agrid' }, [el('thead', {}, [el('tr', {}, heads.map(function(h){ return el('th', { style: h[1] ? 'text-align:right' : null, text: h[0] }); }))]), tb]);
+    /* same for all ticked */
+    var what = el('select', { 'aria-label': 'Which column' }, COLS.map(function(c){ return el('option', { value: c[0], text: c[1].replace(/ [+−±]$/, '') + (c[0] === 'days' ? ' (+ or −)' : '') }); }));
+    var same = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: 'Amount', 'aria-label': 'Same for all ticked' });
+    var pctOn = false, pctBtn = el('button', { type: 'button', class: 'btn sm pct', 'aria-pressed': 'false', title: 'A percent of each person\'s ' + (daily ? 'daily wages' : 'basic salary'), text: '%' });
+    var pctHint = el('span', { class: 'muted small', hidden: true, text: 'percent of each person\'s ' + (daily ? 'daily wages' : 'basic salary') });
+    function syncPct(){ var d = what.value === 'days'; if (d) pctOn = false; pctBtn.hidden = d; pctBtn.setAttribute('aria-pressed', pctOn ? 'true' : 'false'); pctHint.hidden = !pctOn; same.placeholder = d ? 'Days, e.g. 1 or -0.5' : (pctOn ? 'Percent, e.g. 5' : 'Amount'); }
+    pctBtn.addEventListener('click', function(){ pctOn = !pctOn; syncPct(); }); what.addEventListener('change', syncPct);
+    var fill = btn('Fill', function(){
+      var v = num(same.value), k = what.value; if (v === null || v !== v || (k !== 'days' && v <= 0) || v === 0) return;
+      R.forEach(function(r){ if (!r.cb.checked) return;
+        var x = r.inp[k];
+        if (pctOn && k !== 'days') { var a = Math.round(base(r.i) * v / 100); x.value = a ? plain(a) : ''; x.title = a ? v + '% of ' + rs(base(r.i)) : ''; }
+        else { x.value = String(v); x.title = ''; }
+        if (x.value) x.setAttribute('data-all', '1'); else x.removeAttribute('data-all');
+        x.classList.toggle('chg', x.value !== '');
+      });
+      paint();
+    }, 'sm');
+    var clear = btn('Clear', function(){ var k = what.value; R.forEach(function(r){ if (r.cb.checked) { r.inp[k].value = ''; r.inp[k].classList.remove('chg'); } }); paint(); }, 'sm');
+    reason.addEventListener('input', paint);
+    function apply(){
+      var ids = [];
+      R.forEach(function(r){ var w = withRow(r); if (JSON.stringify(w.m) !== JSON.stringify(r.m0)) { o.models[r.i.employee_id] = w.m; ids.push(r.i.employee_id); } });
+      return ids;
+    }
+    var put = btn('Put on the sheet', function(){ var ids = apply(); closeModal(); o.onApply(ids); }, o.onSave ? '' : 'pri');
+    put.id = 'ag-put';
+    var saveNow = o.onSave ? btn('Save amendments now', function(){ var ids = apply(); closeModal(); o.onApply(ids); o.onSave(); }, 'pri') : null;
+    if (saveNow) saveNow.id = 'ag-save';
+    var box = modal([
+      el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Amend many at once — ' + (daily ? 'daily wages' : 'fixed salaries') }), btn('Close', closeModal, 'sm')]),
+      el('p', { class: 'muted small', style: 'margin:0', text: (daily ? 'Add or take off days, or give a bonus, other earning or deduction, for one person or many. A change of days is worked out at that person\'s day rate. '
+        : 'Give a bonus, other earning or deduction, for one person or many. Basic salary stays as set up in People. ') + 'Every change keeps its reason. "Show lines" opens a person\'s own lines. Nothing changes until you press "Put on the sheet".' }),
+      el('div', {}, [field('Reason for everyone', reason), el('div', { class: 'muted small', style: 'margin-top:3px', text: 'Used for what you fill with "Same for all ticked", and for any row without its own reason. A row\'s own reason is used for what you type on that row.' })]),
+      el('div', { class: 'cardx row', style: 'justify-content:space-between;padding:8px 12px' }, [
+        el('div', { class: 'row' }, [el('b', { class: 'muted small', text: 'Same for all ticked:' }), el('div', { style: 'width:190px' }, [what]), el('div', { style: 'width:130px' }, [same]), pctBtn, fill, clear, pctHint]),
+        el('div', { class: 'row' }, [btn('Tick all', function(){ var any = R.some(function(r){ return !r.cb.checked; }); R.forEach(function(r){ r.cb.checked = any; }); }, 'sm'),
+          btn('Show all lines', function(){ R.forEach(function(r){ r.open = true; drawLines(r); }); }, 'sm'), btn('Hide all lines', function(){ R.forEach(function(r){ r.open = false; drawLines(r); }); }, 'sm')])]),
+      el('div', { class: 'scroll agrid-wrap' }, [table]),
+      el('div', { class: 'row', style: 'justify-content:space-between' }, [sumText, el('div', { class: 'row' }, [btn('Close', closeModal), put, saveNow])])], true);
+    box.classList.add('xwide'); box.classList.add('agrid-box');
+    syncPct(); paint();
+  }
+
   // ------------------------------------------------------------ prepare
   var P = { kind: null, from: '', to: '', custom: false, rows: [], models: {}, on: {}, open: {}, dept: '', q: '' };
   function weekOf(end){ return [addDays(end, -6), end]; }
@@ -761,7 +912,11 @@ page_header('People Finance');
       btn('Tick all shown', function(){ shown().forEach(function(r){ P.on[r.employee_id] = true; }); draw(); }, 'sm'),
       btn('Untick all', function(){ P.on = {}; draw(); }, 'sm'),
       btn('Add a line to everyone ticked', bulk, 'sm'),
-      P.kind === 'contract' ? btn('± Production adjustment (many)', function(){ prodAdjust(); }, 'sm') : null]);
+      P.kind === 'contract' ? btn('± Production adjustment (many)', function(){ prodAdjust(); }, 'sm')
+        : btn('Amend many at once (table)', function(){
+            var t = shown(); if (!t.length) return toast('Nobody to amend.', true);
+            amendGrid({ kind: P.kind, items: t, models: P.models, onApply: function(ids){ ids.forEach(function(id){ P.on[id] = true; }); draw(); if (ids.length) toast(ids.length + (ids.length === 1 ? ' person' : ' people') + ' amended — check, then Send for approval.'); } });
+          }, 'sm')]);
     show([el('div', { class: 'cardx stack' }, [el('div', { class: 'row', style: 'justify-content:space-between' }, [seg, el('span', { class: 'pill', text: period(P.kind, P.from, P.to) })]), dates]),
           el('div', { class: 'cardx' }, [tools]), listBox, bar]);
     function shown(){ return P.rows.filter(function(r){ return (!P.dept || r.department_name === P.dept) && (!P.q || (r.full_name + ' ' + r.code).toLowerCase().indexOf(P.q) >= 0); }); }
@@ -940,6 +1095,7 @@ page_header('People Finance');
       var acts = el('div', { class: 'row' }, [btn('← Pay sheets', function(){ sheets(); }, 'sm')]);
       if (!editing) {
         if (mayAmend) acts.appendChild(btn('Amend', function(){ sheet(id, true); }));
+        if (mayAmend && (s.kind === 'salary' || s.kind === 'daily')) acts.appendChild(btn('Amend many at once (table)', function(){ sheet(id, 'grid'); }));
         if (mayApprove) acts.appendChild(btn('Approve', function(){
           modal([el('h2', { text: isEntry ? 'Approve this entry?' : 'Approve this pay sheet?' }), el('p', { class: 'muted', text: r.items.length + (r.items.length === 1 ? ' person' : ' people') + ' · Rs ' + rs(Math.abs(r.total_paisa)) + '. ' + (isEntry && !payEntry ? 'Once approved it goes into each person\'s ledger at once.' : 'Once approved it cannot be amended; the earnings and deductions go into each person\'s statement and advances are recovered.') }),
             el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Not yet', closeModal), btn('Approve', function(e){ e.target.disabled = true; act('approve', {}, isEntry && !payEntry ? 'Approved and posted to the ledger.' : 'Approved. Accounts can now pay it.').then(function(x){ if (x && !x.ok) { closeModal(); toast(x.error, true); } }); }, 'pri')])]);
@@ -962,9 +1118,14 @@ page_header('People Finance');
       } else {
         r.items.forEach(function(i){ open[i.employee_id] = r.items.length <= 3; });
         acts.appendChild(btn('Open everyone', function(){ var any = r.items.some(function(i){ return !open[i.employee_id]; }); r.items.forEach(function(i){ open[i.employee_id] = any; }); drawList(); }, 'sm'));
+        var grid = function(){ amendGrid({ kind: s.kind, items: r.items, models: models,
+          onApply: function(ids){ ids.forEach(function(x){ open[x] = true; }); drawList(); sums(); if (ids.length) toast(ids.length + (ids.length === 1 ? ' person' : ' people') + ' amended — check the lines, then Save amendments.'); },
+          onSave: function(){ if (!dirty().length) return; save(); } }); };
+        if (s.kind === 'salary' || s.kind === 'daily') acts.appendChild(btn('Amend many at once (table)', grid, 'sm'));
       }
       show([acts, head, editing ? el('div', { class: 'why', text: 'Amending: open a person, change any line and say why. Basic salary is fixed. Nothing is saved until you press Save amendments.' }) : null, listBox, bar]);
       drawList(); sums();
+      if (editing === 'grid' && (s.kind === 'salary' || s.kind === 'daily')) grid();
     });
   }
   function printSlips(r){
