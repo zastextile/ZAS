@@ -1051,21 +1051,27 @@ function zdash_palette(string $html): string {
   </div>
   <?php if (count($trendBuckets) >= 2):
     $n = count($trendBuckets); $W = 1100; $H = 230; $padB = 30; $padT = 20;
-    $maxV = 1; foreach ($trendBuckets as $b) { $maxV = max($maxV, $b['sales'], $b['costed_sales'] - $b['cost']); }
-    $pt = function($i, $val) use ($n, $W, $H, $padB, $padT, $maxV) {
+    /* The scale runs from the lowest value to the highest. It used to start at
+       0, so a week with a LOSS (negative profit) had no room and its line was
+       drawn far below the chart, through the panels underneath. */
+    $maxV = 1; $minV = 0; foreach ($trendBuckets as $b) { $maxV = max($maxV, $b['sales'], $b['costed_sales'] - $b['cost']); $minV = min($minV, $b['sales'], $b['costed_sales'] - $b['cost']); }
+    $spanV = max(1, $maxV - $minV);
+    $pt = function($i, $val) use ($n, $W, $H, $padB, $padT, $minV, $spanV) {
         $x = 20 + $i * (($W - 40) / ($n - 1));
-        $y = ($H - $padB) - (($val / $maxV) * ($H - $padT - $padB));
+        $y = ($H - $padB) - ((($val - $minV) / $spanV) * ($H - $padT - $padB));
         return round($x, 1) . ',' . round($y, 1);
     };
+    $zeroY = round(($H - $padB) - (((0 - $minV) / $spanV) * ($H - $padT - $padB)), 1);
     $salesPts = []; $profitPts = [];
     foreach ($trendBuckets as $i => $b) { $salesPts[] = $pt($i, $b['sales']); $profitPts[] = $pt($i, $b['costed_sales'] - $b['cost']); }
     $lastX = 20 + ($n - 1) * (($W - 40) / ($n - 1));
-    $areaPts = implode(' ', $salesPts) . " $lastX," . ($H - $padB) . " 20," . ($H - $padB);
+    $areaPts = implode(' ', $salesPts) . " $lastX," . $zeroY . " 20," . $zeroY;
   ?>
-  <svg viewBox="0 0 1100 230" style="width:100%;height:230px;overflow:visible">
+  <svg viewBox="0 0 1100 230" style="width:100%;height:230px;overflow:hidden">
     <defs><linearGradient id="dashTrendGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0ea8c9" stop-opacity="0.18"/><stop offset="100%" stop-color="#0ea8c9" stop-opacity="0"/></linearGradient></defs>
     <?php for ($g=0; $g<4; $g++): $gy = $padT + $g*(($H-$padT-$padB)/3); ?><line x1="0" y1="<?= $gy ?>" x2="1100" y2="<?= $gy ?>" stroke="#eef1f6"/><?php endfor; ?>
     <polygon points="<?= e($areaPts) ?>" fill="url(#dashTrendGrad)"/>
+    <?php if ($minV < 0): ?><line x1="0" y1="<?= $zeroY ?>" x2="1100" y2="<?= $zeroY ?>" stroke="#c0293f" stroke-width="1" stroke-dasharray="4 4"/><text x="1096" y="<?= $zeroY - 4 ?>" text-anchor="end" font-size="10" fill="#c0293f">break-even 0 · below = loss</text><?php endif; ?>
     <polyline id="dashSalesLine" points="<?= e(implode(' ', $salesPts)) ?>" fill="none" stroke="#0ea8c9" stroke-width="2.5" stroke-dasharray="2400" stroke-dashoffset="2400"/>
     <polyline id="dashProfitLine" points="<?= e(implode(' ', $profitPts)) ?>" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-dasharray="2400" stroke-dashoffset="2400"/>
     <g id="dashTrendPts">
@@ -1411,6 +1417,7 @@ document.addEventListener('DOMContentLoaded', function () {
   var profitLine = document.getElementById('dashProfitLine');
   if (salesLine && profitLine) {
     if (REDUCE) {
+      salesLine.style.strokeDasharray = 'none'; profitLine.style.strokeDasharray = 'none';   // drawn whole, at once
       salesLine.style.strokeDashoffset = 0;
       profitLine.style.strokeDashoffset = 0;
       document.querySelectorAll('.trend-pt').forEach(function (c) { c.style.opacity = 1; });
