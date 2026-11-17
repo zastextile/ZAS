@@ -63,6 +63,13 @@ function fc_ensure_schema(): void {
     // gets slower as shipment history grows. 191-char prefix keeps the index
     // key size under InnoDB's limit for a utf8mb4 column (191*4 = 764 bytes).
     try { db()->exec("ALTER TABLE shipment_items ADD INDEX idx_product_name (product_name(191))"); } catch (Throwable $e) {}
+    /* the worked-out estimate of a shipment, kept so an open is instant (see fc_estimate_cached) */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS fc_estimate_cache (
+        shipment_id INT NOT NULL PRIMARY KEY,
+        fp CHAR(32) NOT NULL,
+        payload LONGTEXT NOT NULL,
+        made_at DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
     zas_schema_mark('fc', [__FILE__]);
 }
 
@@ -102,12 +109,75 @@ function fc_estimate_key(int $shipmentId): string
     return 'fc_estimate:' . $shipmentId . ':v' . cache_version('fc_estimate_' . $shipmentId);
 }
 
-/* Cached read — for handlers that cannot have invalidated it. */
+/* WHY OPENING FINAL COSTING WAS SLOW, AND HOW IT IS KEPT FAST.
+   The estimate behind this screen — which product each line is, its
+   costing, the checks — is worked out from every product, every costing
+   version and every match. It was meant to be kept for 10 minutes in
+   Redis, but Redis does not answer on the server, so it was worked out
+   again on every open, save, re-sync and link.
+
+   It is now kept in the database (fc_estimate_cache), with a fingerprint
+   of everything it is worked out from: this shipment and its lines, the
+   products, the costings and their lines, the confirmed matches, the
+   product vectors and the currency rates. When any of those change, the
+   fingerprint changes and it is worked out again; otherwise the open is
+   one read. It is also never older than 12 hours. */
+function fc_estimate_fp(int $shipmentId, array $lockedItemIds): string
+{
+    $parts = [];
+    $q = function (string $sql, array $p = []) use (&$parts): void {
+        try { $st = db()->prepare($sql); $st->execute($p); $parts[] = json_encode($st->fetchAll(PDO::FETCH_NUM)); }
+        catch (Throwable $e) { $parts[] = '-'; }
+    };
+    $q("SELECT updated_at, currency, buyer_name FROM shipments WHERE id=?", [$shipmentId]);
+    $q("SELECT COUNT(*), SUM(CRC32(CONCAT_WS('|', id, line_no, product_name, des_col, qty, rate, amount, product_id))) FROM shipment_items WHERE shipment_id=?", [$shipmentId]);
+    $q("SELECT COUNT(*), MAX(id) FROM packing_items WHERE shipment_id=?", [$shipmentId]);
+    $q("SELECT COUNT(*), MAX(id), SUM(CRC32(CONCAT_WS('|', id, rate))) FROM shipment_items");   // the price history compares other shipments
+    $q("SELECT COUNT(*), MAX(id), SUM(CRC32(CONCAT_WS('|', name, is_active))) FROM products");
+    $q("SELECT COUNT(*), MAX(id), SUM(total_cost) FROM costing_versions");
+    $q("SELECT COUNT(*), MAX(id) FROM costing_lines");
+    $q("SELECT COUNT(*) FROM costing_version_sizes");
+    $q("SELECT COUNT(*), MAX(id) FROM customer_product_mappings");
+    $q("SELECT COUNT(*), MAX(updated_at) FROM product_embeddings");
+    $q("SELECT MAX(updated_at), SUM(rate_per_pkr) FROM fx_rates");
+    sort($lockedItemIds);
+    $parts[] = implode(',', $lockedItemIds);
+    return md5(implode('#', $parts));
+}
+
+function fc_estimate_db_get(int $shipmentId, string $fp): ?array
+{
+    try {
+        $st = db()->prepare("SELECT payload FROM fc_estimate_cache WHERE shipment_id=? AND fp=? AND made_at > (NOW() - INTERVAL 12 HOUR)");
+        $st->execute([$shipmentId, $fp]);
+        $raw = $st->fetchColumn();
+        if ($raw === false) return null;
+        $v = json_decode((string)$raw, true);
+        return is_array($v) ? $v : null;
+    } catch (Throwable $e) { return null; }
+}
+
+function fc_estimate_db_put(int $shipmentId, string $fp, $estimate): void
+{
+    if (!is_array($estimate)) return;
+    try {
+        $json = json_encode($estimate, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PRESERVE_ZERO_FRACTION);
+        if ($json === false) return;
+        db()->prepare("REPLACE INTO fc_estimate_cache (shipment_id, fp, payload, made_at) VALUES (?,?,?,NOW())")->execute([$shipmentId, $fp, $json]);
+    } catch (Throwable $e) {}
+}
+
+/* Kept read — worked out only when something it depends on has changed. */
 function fc_estimate_cached(int $shipmentId, array $lockedItemIds): ?array
 {
-    return cache_remember(fc_estimate_key($shipmentId), 600, function () use ($shipmentId, $lockedItemIds) {
+    $fp = fc_estimate_fp($shipmentId, $lockedItemIds);
+    $hit = fc_estimate_db_get($shipmentId, $fp);
+    if ($hit !== null) return $hit;
+    $estimate = cache_remember(fc_estimate_key($shipmentId), 600, function () use ($shipmentId, $lockedItemIds) {
         return ai_check_compute($shipmentId, $lockedItemIds);
     });
+    fc_estimate_db_put($shipmentId, $fp, $estimate);
+    return $estimate;
 }
 
 /* Recompute and refill — for handlers that changed what a line is matched
@@ -118,6 +188,7 @@ function fc_estimate_fresh(int $shipmentId, array $lockedItemIds): ?array
     $estimate = ai_check_compute($shipmentId, $lockedItemIds);
     cache_bump('fc_estimate_' . $shipmentId);
     cache_set(fc_estimate_key($shipmentId), $estimate, 600);
+    fc_estimate_db_put($shipmentId, fc_estimate_fp($shipmentId, $lockedItemIds), $estimate);
     return $estimate;
 }
 
@@ -127,6 +198,8 @@ function fc_estimate_store(int $shipmentId, $estimate): void
 {
     cache_bump('fc_estimate_' . $shipmentId);
     cache_set(fc_estimate_key($shipmentId), $estimate, 600);
+    $finals = fc_get_for_shipment($shipmentId);
+    fc_estimate_db_put($shipmentId, fc_estimate_fp($shipmentId, fc_locked_item_ids($finals)), $estimate);
 }
 
 /* same per-line amount formula as Product Costing's own lineAmt() — shared = rate/qty, normal = qty*rate.
@@ -404,6 +477,63 @@ function fc_render_pick_row(int $itemId, array $suggestions, string $prefix, str
    fcAjaxSubmit(event,this)" (defined in final_costing.php) so it still
    works correctly after being swapped in via outerHTML — inline handler
    attributes re-bind automatically, addEventListener ones would not. */
+
+/* ---------------------------------------------------------------
+   THE OVERVIEW ROW: one compact line per invoice line, opened to show
+   its card. The facts on it are worked out the way the dashboard does:
+   the costing's total is per piece in the costing's own currency, and is
+   converted into the invoice's currency with the Settings rates.
+   --------------------------------------------------------------- */
+function fc_pkr_per(?string $cur, array $fx): float
+{
+    $cur = strtoupper(trim((string)$cur)); if ($cur === '') $cur = 'PKR';
+    if ($cur === 'PKR' || empty($fx[$cur]) || (float)$fx[$cur] <= 0) return 1.0;
+    return 1 / (float)$fx[$cur];
+}
+
+/** What the overview shows for one line, and what looks wrong with it. */
+function fc_line_facts(array $lc, ?array $fc, string $cur, array $fx): array
+{
+    $sale = (float)($lc['rate'] ?? 0);
+    $f = ['sale' => $sale, 'cost' => null, 'markup' => null, 'status' => $fc ? $fc['status'] : 'none',
+          'fcur' => $fc ? strtoupper((string)($fc['currency'] ?: $cur)) : $cur, 'flags' => [], 'n' => $fc ? count($fc['lines'] ?? []) : 0];
+    if ($fc && (float)$fc['total_cost'] > 0) {
+        $f['cost'] = (float)$fc['total_cost'] * fc_pkr_per($f['fcur'], $fx) / fc_pkr_per($cur, $fx);
+        if ($f['cost'] > 0) $f['markup'] = ($sale - $f['cost']) / $f['cost'] * 100;
+    }
+    if ($fc && $f['fcur'] !== strtoupper($cur)) {
+        $f['flags'][] = ['warn', 'Costing in ' . $f['fcur'] . ', invoice in ' . strtoupper($cur)];
+    }
+    if ($f['cost'] !== null && $sale > 0) {
+        $ratio = $f['cost'] / $sale;
+        if ($ratio >= 3)      $f['flags'][] = ['bad', 'Cost is ' . number_format($ratio, $ratio < 10 ? 1 : 0) . '× the sale price — check the rates\' currency'];
+        elseif ($ratio <= .1) $f['flags'][] = ['bad', 'Cost is only ' . number_format($ratio * 100, 1) . '% of the sale price — check the rates\' currency'];
+    }
+    if ($f['cost'] === null) $f['flags'][] = ['info', $f['n'] ? 'Lines entered, no cost yet' : 'No cost entered yet'];
+    return $f;
+}
+
+function fc_row_summary_html(array $lc, ?array $fc, string $cur, array $fx, int $itemId): string
+{
+    $f = fc_line_facts($lc, $fc, $cur, $fx);
+    $mk = $f['markup'];
+    $st = $f['status'] === 'locked' ? ['locked', 'Locked'] : ($f['status'] === 'draft' ? ['draft', 'Draft'] : ['none', 'Not started']);
+    $flag = '';
+    foreach ($f['flags'] as [$lvl, $txt]) $flag .= '<span class="fl ' . $lvl . '">' . e($txt) . '</span>';
+    $qty = rtrim(rtrim(number_format((float)$lc['qty'], 3), '0'), '.');
+    return '<button type="button" class="zfc-row' . ($f['flags'] && $f['flags'][0][0] === 'bad' ? ' bad' : '') . '" aria-expanded="false" data-item="' . $itemId . '">'
+        . '<span class="c-no">' . (int)$lc['line'] . '</span>'
+        . '<span class="c-prod"><b>' . e($lc['product_name']) . '</b>' . (trim((string)$lc['description']) !== '' ? '<small>' . e($lc['description']) . '</small>' : '') . '</span>'
+        . '<span class="c-n">' . e($qty) . '</span>'
+        . '<span class="c-n">' . e($cur) . ' ' . number_format($f['sale'], 2) . '</span>'
+        . '<span class="c-n">' . ($f['cost'] !== null ? e($cur) . ' ' . number_format($f['cost'], 2) : '<i>—</i>') . '</span>'
+        . '<span class="c-n ' . ($mk === null ? '' : ($mk < 0 ? 'neg' : 'pos')) . '">' . ($mk === null ? '<i>—</i>' : number_format($mk, 1) . '%') . '</span>'
+        . '<span class="c-st"><span class="pill ' . $st[0] . '">' . $st[1] . '</span></span>'
+        . '<span class="c-fl">' . $flag . '</span>'
+        . '<span class="c-chev" aria-hidden="true">▸</span>'
+        . '</button>';
+}
+
 function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur, int $shipmentId): string {
     $itemId = (int)$itemRow['id'];
     $locked = $fc && $fc['status'] === 'locked';
@@ -412,7 +542,8 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
     $fx = fx_get_rates();
     ob_start();
     ?>
-<div class="zcard" id="fcCard<?= $itemId ?>">
+<div class="zcard" id="fcCard<?= $itemId ?>" data-sale="<?= e((string)(float)$lc['rate']) ?>" data-inv="<?= e($cur) ?>">
+  <template class="fc-rowsum"><?= fc_row_summary_html($lc, $fc, $cur, $fx, $itemId) ?></template>
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
     <div>
       <h2>Line <?= (int)$lc['line'] ?> · <?= e($lc['product_name']) ?></h2>
@@ -577,7 +708,7 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
       <input type="hidden" name="final_costing_id" value="<?= (int)$fc['id'] ?>">
       <input type="hidden" name="shipment_id" value="<?= (int)$shipmentId ?>">
       <div style="overflow-x:auto"><table class="fc-table" id="fcTable<?= $itemId ?>">
-        <thead><tr><th>Group</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th class="num">Amount</th><th></th></tr></thead>
+        <thead><tr><th>Group</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate (<span class="fc-curlbl"><?= e($nativeCur) ?></span>)</th><th class="num">Amount (<span class="fc-curlbl"><?= e($nativeCur) ?></span>)</th><th></th></tr></thead>
         <?php /* data-fcgrid marks this tbody for the spreadsheet keyboard, and
                  data-c names each cell in Tab order. Both are read by the
                  script block in final_costing.php after every AJAX swap. */ ?>
@@ -606,10 +737,19 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
       </table></div>
       <div style="margin-top:9px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <button type="button" class="zbtn sec" onclick="fcAddRow(<?= $itemId ?>,'<?= e($nativeCur) ?>')">+ Add Line</button>
+        <?php /* WHICH CURRENCY THE RATES ARE TYPED IN — shown, and changeable for the whole card.
+                 A rate typed with no currency used to count in the costing's currency, so
+                 "700" meaning rupees on a GBP invoice was saved as £700. */
+              $curOpts = array_values(array_unique(array_merge([$nativeCur, 'PKR', strtoupper($cur)], array_map('strtoupper', array_keys($fx))))); ?>
+        <label class="fc-ratecur-wrap">Rates in
+          <select class="fc-ratecur" data-item="<?= $itemId ?>" aria-label="Currency the rates are typed in">
+            <?php foreach ($curOpts as $co): if (!preg_match('/^[A-Z]{3}$/', $co)) continue; ?><option value="<?= e($co) ?>" <?= $co === $nativeCur ? 'selected' : '' ?>><?= e($co) ?></option><?php endforeach; ?>
+          </select></label>
         <span style="font-size:11px;color:#8a97ab;font-family:monospace">Tab across &middot; Enter down &middot; Ctrl+D fill &middot; Alt+N new line &middot; Ctrl+S save</span>
         <span style="margin-left:auto;font-size:12.5px;color:#5a6b82">Draft total
           <b id="fcTotal<?= $itemId ?>" style="color:#0ea8c9;font-family:'Space Grotesk',monospace"><?= e($nativeCur) ?> <?= number_format($nativeTotal,2) ?></b></span>
       </div>
+      <div class="fc-live" id="fcLive<?= $itemId ?>" data-fx="<?= e(json_encode(array_map(fn($c) => fc_pkr_per($c, $fx), array_combine($curOpts, $curOpts)))) ?>"></div>
       <div id="fcPaste<?= $itemId ?>" style="display:none;font-size:12px;margin:9px 0 0;padding:8px 11px;border-radius:9px;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.3);color:#9a5710"></div>
       <div style="margin-top:12px;display:flex;gap:10px">
         <button class="zbtn">Save Draft</button>

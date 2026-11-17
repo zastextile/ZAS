@@ -96,34 +96,72 @@ flash();
 .fc-combo-empty{padding:10px;font-size:12px;color:#8a97ab;text-align:center}
 </style>
 <link rel="stylesheet" href="assets/css/lov.css?v=3">
+<link rel="stylesheet" href="assets/css/zfiori.css?v=2">
 <script src="assets/js/lov.js?v=3"></script>
 <script src="assets/js/grid.js?v=2"></script>
 
-<div class="topbar">
-  <div><h1>Final Costing</h1><p class="lead"><?= e($shipment['invoice_no']) ?> · <?= e($shipment['buyer_name']) ?> — enter actual costs once the shipment is complete; estimate stays untouched until this is locked.</p></div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <form method="post" action="final_costing_resync.php" onsubmit="return confirm('Re-sync ALL unlocked lines below with current Product Costing? Locked lines are skipped.')">
-      <?= csrf_field() ?>
-      <input type="hidden" name="shipment_id" value="<?= (int)$shipmentId ?>">
-      <button class="zbtn sec">⟳ Re-sync All from Product Costing</button>
-    </form>
-    <a class="zbtn sec" href="final_costing_export.php?shipment_id=<?= (int)$shipmentId ?>">Export CSV</a>
-    <a class="zbtn sec" href="shipment_view.php?id=<?= (int)$shipmentId ?>">Back to Shipment</a>
+<?php
+/* THE OVERVIEW (SAP Fiori / Oracle Fusion look, as the Attendance screens):
+   a header with the shipment's totals, then one slim row per invoice line;
+   a row opens its full card below it. Rows that look wrong say so — a
+   costing in another currency, or a cost far from the sale price — so a
+   bad entry is seen before it reaches the dashboard. */
+$fx = fx_get_rates();
+$T = ['sales' => 0.0, 'costed_sales' => 0.0, 'cost' => 0.0, 'n' => 0, 'costed' => 0, 'locked' => 0, 'flagged' => 0];
+foreach ($estimate['line_costing'] ?? [] as $lcx) {
+    $itx = null; foreach ($estimate['items'] as $it) { if ((int)$it['line_no'] === (int)$lcx['line']) { $itx = $it; break; } }
+    if (!$itx) continue;
+    $fcx = $finals[(int)$itx['id']] ?? null; $fx1 = fc_line_facts($lcx, $fcx, $cur, $fx);
+    $T['n']++; $T['sales'] += (float)$lcx['sales_amount'];
+    if ($fx1['cost'] !== null) { $T['costed']++; $T['costed_sales'] += (float)$lcx['sales_amount']; $T['cost'] += $fx1['cost'] * (float)$lcx['qty']; }
+    if ($fx1['status'] === 'locked') $T['locked']++;
+    foreach ($fx1['flags'] as $fl) if ($fl[0] !== 'info') { $T['flagged']++; break; }
+}
+$T['profit'] = $T['costed_sales'] - $T['cost'];
+$T['markup'] = $T['cost'] > 0 ? $T['profit'] / $T['cost'] * 100 : null;
+?>
+<div class="zfc">
+<div class="zfc-head">
+  <div class="zfc-title">
+    <div><h1>Final Costing <span><?= e($shipment['invoice_no']) ?></span></h1>
+      <p><?= e($shipment['buyer_name']) ?> · invoice in <b><?= e($cur) ?></b> · <?= (int)$T['n'] ?> line<?= $T['n'] === 1 ? '' : 's' ?> · <?= (int)$T['locked'] ?> locked</p></div>
+    <div class="zfc-acts">
+      <form method="post" action="final_costing_resync.php" onsubmit="return confirm('Re-sync ALL unlocked lines below with current Product Costing? Locked lines are skipped.')">
+        <?= csrf_field() ?><input type="hidden" name="shipment_id" value="<?= (int)$shipmentId ?>">
+        <button class="act">⟳ Re-sync all</button>
+      </form>
+      <a class="act" href="final_costing_export.php?shipment_id=<?= (int)$shipmentId ?>">Export CSV</a>
+      <button type="button" class="act" onclick="var d=document.getElementById('zfcCsv');d.hidden=!d.hidden">Upload CSV</button>
+      <a class="act" href="shipment_view.php?id=<?= (int)$shipmentId ?>">Back to shipment</a>
+    </div>
   </div>
+  <div class="zfc-tiles">
+    <div class="t"><span>Sales</span><b><?= e($cur) ?> <?= number_format($T['sales'], 2) ?></b></div>
+    <div class="t"><span>Final cost (<?= (int)$T['costed'] ?> of <?= (int)$T['n'] ?> costed)</span><b><?= e($cur) ?> <?= number_format($T['cost'], 2) ?></b></div>
+    <div class="t <?= $T['profit'] < 0 ? 'bad' : 'good' ?>"><span>Profit on costed lines</span><b><?= e($cur) ?> <?= number_format($T['profit'], 2) ?></b></div>
+    <div class="t <?= $T['markup'] !== null && $T['markup'] < 0 ? 'bad' : 'info' ?>"><span>Markup on cost</span><b><?= $T['markup'] === null ? '—' : number_format($T['markup'], 1) . '%' ?></b></div>
+  </div>
+  <?php if ($T['flagged']): ?>
+  <div class="zfc-strip"><b><?= (int)$T['flagged'] ?> line<?= $T['flagged'] === 1 ? '' : 's' ?> to check</b> — marked in red below. The usual cause: rates typed in rupees on a costing in another currency. Open the line and set <b>Rates in</b> to the currency you typed.</div>
+  <?php endif; ?>
+  <div class="zfc-csv" id="zfcCsv" hidden>
+    <form method="post" action="final_costing_import.php" enctype="multipart/form-data">
+      <?= csrf_field() ?><input type="hidden" name="shipment_id" value="<?= (int)$shipmentId ?>">
+      <input type="file" name="csv_file" accept=".csv" required>
+      <button class="act">Upload &amp; preview</button>
+      <span>Export the CSV, fill actual quantities and rates in Excel, upload it here. You see a preview with warnings first; nothing changes until you confirm.</span>
+    </form>
+  </div>
+  <div class="zfc-bar">
+    <span>Final costing is a snapshot of Product Costing — after correcting a costing, use Re-sync (locked lines are protected).</span>
+    <span class="zfc-tools">
+      <button type="button" class="act sm" id="zfcProblems" aria-pressed="false">Only lines to check</button>
+      <button type="button" class="act sm" id="zfcOpenAll">Open all</button>
+      <button type="button" class="act sm" id="zfcCloseAll">Close all</button>
+    </span>
+  </div>
+  <div class="zfc-cols"><span>#</span><span>Product</span><span class="n">Qty</span><span class="n">Sale / pc</span><span class="n">Cost / pc</span><span class="n">Markup</span><span>Status</span><span>Check</span><span></span></div>
 </div>
-<p style="font-size:11.5px;color:#8a97ab;margin:-10px 0 18px">Final Costing is a one-time snapshot, not live-linked to Product Costing — if you correct a costing after this was created, use Re-sync to pull the updated numbers in (locked lines are protected; reopen first).</p>
-
-<div class="zcard">
-  <h2 style="margin-bottom:12px">Upload Completed CSV</h2>
-  <form method="post" action="final_costing_import.php" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-    <?= csrf_field() ?>
-    <input type="hidden" name="shipment_id" value="<?= (int)$shipmentId ?>">
-    <input type="file" name="csv_file" accept=".csv" required>
-    <button class="zbtn sec">Upload &amp; Preview</button>
-  </form>
-  <p style="font-size:11.5px;color:#8a97ab;margin:10px 0 0">Export the CSV above, fill in actual quantities/rates in Excel, then upload it here. You'll see a preview with any warnings before anything is saved — nothing changes until you confirm.</p>
-</div>
-
 <script>
 /* Replaces the old <input list=datalist> picker, which only enabled its
    button on a byte-for-byte exact match to a product name — silently
@@ -184,8 +222,10 @@ function fcComboHide(prefix, itemId){
     if (!$itemRow) continue;
     $itemId = (int)$itemRow['id'];
     $fc = $finals[$itemId] ?? null;
-    echo fc_render_line_card($lc, $itemRow, $fc, $cur, $shipmentId);
+    echo '<section class="zfc-line" id="fcLine' . $itemId . '">' . fc_row_summary_html($lc, $fc, $cur, $fx, $itemId)
+       . '<div class="zfc-body" hidden>' . fc_render_line_card($lc, $itemRow, $fc, $cur, $shipmentId) . '</div></section>';
 endforeach; ?>
+</div><?php /* closes .zfc */ ?>
 
 <?php if (empty($estimate['line_costing'])): ?>
 <div class="zcard"><p style="color:#8a97ab;text-align:center;margin:0">No invoice lines on this shipment yet.</p></div>
@@ -310,6 +350,80 @@ function fcToast(msg, ok){
   clearTimeout(fcToastTimer);
   fcToastTimer = setTimeout(function(){ t.classList.remove('show'); }, 3200);
 }
+</script>
+<script>
+/* THE OVERVIEW: open and close lines, keep each row up to date after a
+   save, and the "Rates in" switch with its live check. Display only —
+   saving still goes through the card's own forms. */
+(function(){
+  var root = document.querySelector('.zfc'); if(!root) return;
+  function setOpen(sec, on){
+    var row = sec.querySelector('.zfc-row'), body = sec.querySelector('.zfc-body');
+    body.hidden = !on; row.setAttribute('aria-expanded', on ? 'true' : 'false');
+    if(on){ var card = body.querySelector('[id^=fcCard]'); if(card && window.fcWire) window.fcWire(card); live(card); }
+  }
+  root.addEventListener('click', function(e){
+    var row = e.target.closest('.zfc-row'); if(!row) return;
+    var sec = row.closest('.zfc-line'); setOpen(sec, row.getAttribute('aria-expanded') !== 'true');
+  });
+  var secs = function(){ return [].slice.call(root.querySelectorAll('.zfc-line')); };
+  document.getElementById('zfcOpenAll').onclick = function(){ secs().forEach(function(s){ if(!s.hidden) setOpen(s, true); }); };
+  document.getElementById('zfcCloseAll').onclick = function(){ secs().forEach(function(s){ setOpen(s, false); }); };
+  var pb = document.getElementById('zfcProblems');
+  pb.onclick = function(){
+    var on = pb.getAttribute('aria-pressed') !== 'true'; pb.setAttribute('aria-pressed', on ? 'true' : 'false');
+    secs().forEach(function(s){ s.hidden = on && !s.querySelector('.zfc-row.bad, .zfc-row .fl.warn'); });
+  };
+  /* one or two lines: open them; more: a list to open from */
+  if(secs().length <= 2) secs().forEach(function(s){ setOpen(s, true); });
+
+  /* after a save / re-sync / link the card is replaced: refresh its row from the card */
+  new MutationObserver(function(list){
+    list.forEach(function(m){ [].forEach.call(m.addedNodes, function(n){
+      if(n.nodeType !== 1 || !n.id || n.id.indexOf('fcCard') !== 0) return;
+      var sec = n.closest('.zfc-line'), tpl = n.querySelector('template.fc-rowsum');
+      if(sec && tpl){ var fresh = tpl.content.firstElementChild.cloneNode(true); fresh.setAttribute('aria-expanded', 'true'); sec.replaceChild(fresh, sec.querySelector('.zfc-row')); }
+      live(n);
+    }); });
+  }).observe(root, { childList: true, subtree: true });
+
+  /* RATES IN: every rate on the card, and new rows, count in this currency */
+  var add0 = window.fcAddRow;
+  window.fcAddRow = function(itemId, cur){
+    var sel = document.querySelector('#fcCard' + itemId + ' .fc-ratecur');
+    return add0(itemId, (sel && sel.value) || cur);
+  };
+  root.addEventListener('change', function(e){
+    var sel = e.target.closest('.fc-ratecur'); if(!sel) return;
+    var card = sel.closest('[id^=fcCard]');
+    [].forEach.call(card.querySelectorAll('input[name="native_currency[]"]'), function(h){ h.value = sel.value; });
+    [].forEach.call(card.querySelectorAll('.fc-curlbl'), function(l){ l.textContent = sel.value; });
+    var tot = card.querySelector('[id^=fcTotal]'); if(tot) tot.textContent = tot.textContent.replace(/^[A-Z]{3}/, sel.value);
+    live(card);
+  });
+  /* the live check: this card's cost per piece against its sale price */
+  function live(card){
+    if(!card) return;
+    var out = card.querySelector('.fc-live'), sel = card.querySelector('.fc-ratecur'), tot = card.querySelector('[id^=fcTotal]');
+    if(!out || !sel || !tot) return;
+    var fx = {}; try { fx = JSON.parse(out.getAttribute('data-fx') || '{}'); } catch(x){}
+    var amt = parseFloat((tot.textContent || '').replace(/[^0-9.\-]/g, '')) || 0;
+    var inv = card.getAttribute('data-inv'), sale = parseFloat(card.getAttribute('data-sale')) || 0;
+    if(!amt){ out.textContent = ''; out.className = 'fc-live'; return; }
+    var perInv = amt * (fx[sel.value] || 1) / (fx[inv] || 1);
+    var ratio = sale > 0 ? perInv / sale : 0, mk = perInv > 0 ? (sale - perInv) / perInv * 100 : 0;
+    var txt = 'Cost per piece ≈ ' + inv + ' ' + perInv.toFixed(2) + ' against a sale price of ' + inv + ' ' + sale.toFixed(2) + ' — markup ' + mk.toFixed(1) + '%';
+    var bad = ratio >= 3 || (ratio > 0 && ratio <= .1);
+    if(bad) txt += '. That is ' + (ratio >= 3 ? ratio.toFixed(ratio < 10 ? 1 : 0) + '× the sale price' : 'only ' + (ratio * 100).toFixed(1) + '% of it') + ' — are the rates really in ' + sel.value + '?';
+    out.textContent = txt; out.className = 'fc-live' + (bad ? ' bad' : '');
+  }
+  /* only a change of a card's total re-checks it (the check's own text must not, or it would loop) */
+  new MutationObserver(function(list){ list.forEach(function(m){
+    var t = m.target.nodeType === 3 ? m.target.parentElement : m.target;
+    var tot = t && t.closest ? t.closest('[id^=fcTotal]') : null;
+    if(tot) live(tot.closest('[id^=fcCard]'));
+  }); }).observe(root, { characterData: true, subtree: true, childList: true });
+})();
 </script>
 <div class="fc-toast" id="fcToast"></div>
 
