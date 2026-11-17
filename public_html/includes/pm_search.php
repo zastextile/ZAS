@@ -10,8 +10,13 @@
   Uses the existing OpenAI config + includes/openai.php.
 */
 require_once __DIR__ . '/openai.php';
+require_once __DIR__ . '/schema_once.php';
 
 function pm_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if (zas_schema_fresh('pm', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("CREATE TABLE IF NOT EXISTS product_embeddings (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         entity_type VARCHAR(40) NOT NULL DEFAULT 'variant',
@@ -40,6 +45,90 @@ function pm_schema(): void {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         KEY idx_norm (normalized_text), KEY idx_buyer (buyer_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    /* the AI vector of an invoice line's text, kept so the same text is never
+       sent to OpenAI twice (see pm_query_vector) */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS pm_query_vectors (
+        k CHAR(64) NOT NULL PRIMARY KEY,
+        embedding_model VARCHAR(80) NOT NULL,
+        embedding_dimensions INT NOT NULL,
+        embedding_vector MEDIUMTEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    zas_schema_mark('pm', [__FILE__]);
+}
+
+/* WHY FINAL COSTING WAS SLOW, AND WHAT CHANGED.
+   For every invoice line not matched by name, pm_match() asked OpenAI for
+   that line's vector over the internet, then loaded and decoded every
+   product's vector again — for each line, on every open, re-sync and link
+   (the 10-minute memory meant to spare this depends on Redis, which does
+   not answer on the server). The server's slow log showed the time spent
+   waiting in that OpenAI call.
+
+   The answers do not change: a text's vector is the same every time it is
+   asked for, and the products' vectors do not change while one page is
+   being worked out. So:
+     · a line's vector is kept in pm_query_vectors — the same text goes to
+       OpenAI once, ever (also saving its cost);
+     · the products and their vectors are read once per page, not per line.
+   The match itself — the scores, the order, the thresholds — is exactly
+   what it was. */
+
+/** Every product, read once per page. */
+function pm_products_all(): array
+{
+    static $rows = null;
+    if ($rows === null) {
+        $rows = db()->query("SELECT id,name,category,is_active,size FROM products")->fetchAll();
+        foreach ($rows as &$p) { $p['_norm'] = pm_norm((string)$p['name']); }
+        unset($p);
+    }
+    return $rows;
+}
+
+/** The products' vectors for this model, decoded once per page. [entity_id => vector] */
+function pm_vectors_all(string $model, int $dims): array
+{
+    static $byModel = [];
+    $key = $model . '|' . $dims;
+    if (!isset($byModel[$key])) {
+        $out = [];
+        $emb = db()->prepare("SELECT entity_id, embedding_vector FROM product_embeddings WHERE entity_type='variant' AND embedding_model=? AND embedding_dimensions=? AND status='current'");
+        $emb->execute([$model, $dims]);
+        foreach ($emb->fetchAll() as $v) {
+            $vec = json_decode((string)$v['embedding_vector'], true);
+            if (is_array($vec)) $out[] = [(int)$v['entity_id'], $vec];
+        }
+        $byModel[$key] = $out;
+    }
+    return $byModel[$key];
+}
+
+/** A line text's vector: from pm_query_vectors when it was asked for before, else from OpenAI once. */
+function pm_query_vector(string $text, string $model, int $dims): array
+{
+    static $mem = [];
+    $k = hash('sha256', $model . '|' . $dims . '|' . $text);
+    if (isset($mem[$k])) return $mem[$k];
+    try {
+        $st = db()->prepare("SELECT embedding_vector FROM pm_query_vectors WHERE k=?");
+        $st->execute([$k]);
+        $hit = $st->fetchColumn();
+        if ($hit !== false) {
+            $vec = json_decode((string)$hit, true);
+            if (is_array($vec) && $vec) return $mem[$k] = $vec;
+        }
+    } catch (Throwable $e) {}
+    $GLOBALS['pm_openai_calls'] = ($GLOBALS['pm_openai_calls'] ?? 0) + 1;   // counted, so a test can see it
+    $vec = create_embedding_ex($text, $model, $dims)['vector'] ?? [];
+    if (is_array($vec) && $vec) {
+        try {
+            db()->prepare("INSERT IGNORE INTO pm_query_vectors (k, embedding_model, embedding_dimensions, embedding_vector) VALUES (?,?,?,?)")
+                ->execute([$k, $model, $dims, json_encode($vec)]);
+        } catch (Throwable $e) {}
+        $mem[$k] = $vec;
+    }
+    return is_array($vec) ? $vec : [];
 }
 
 function pm_norm(string $s): string { return strtolower(trim(preg_replace('/[^a-z0-9]+/i',' ', $s))); }
@@ -171,27 +260,27 @@ function pm_match(string $name, string $desc = '', string $buyerName = ''): arra
     } catch (Throwable $e) {}
 
     // 2. exact normalized name
-    $rows = db()->query("SELECT id,name,category,is_active,size FROM products")->fetchAll();
-    foreach ($rows as $p) if (pm_norm($p['name'])===pm_norm($name))
+    $rows = pm_products_all();
+    $nameNorm = pm_norm($name);
+    foreach ($rows as $p) if ($p['_norm']===$nameNorm)
         return ['method'=>'exact_name','product_id'=>(int)$p['id'],'product_name'=>$p['name'],'score'=>1.0,'candidates'=>[],'needs_confirm'=>false];
 
     // 3. embedding retrieval (only if embeddings exist)
     list($model, $dims) = pm_active_model();
-    $emb = db()->prepare("SELECT entity_id, embedding_vector FROM product_embeddings WHERE entity_type='variant' AND embedding_model=? AND embedding_dimensions=? AND status='current'");
-    $emb->execute([$model,$dims]); $vecs = $emb->fetchAll();
+    $vecs = pm_vectors_all($model, (int)$dims);
     if ($vecs) {
         try {
             $qtext = "RECORD TYPE: Invoice Product\nPRODUCT: {$name}\nDESCRIPTION: {$desc}";
-            $qr = create_embedding_ex($qtext, $model, $dims); $qv = $qr['vector'];
+            $qv = pm_query_vector($qtext, $model, (int)$dims);
             if ($qv) {
                 $byId = []; foreach ($rows as $p) $byId[(int)$p['id']] = $p;
                 $scored = [];
-                foreach ($vecs as $v) {
-                    $vec = json_decode($v['embedding_vector'], true); if (!is_array($vec)) continue;
+                $words = explode(' ', $nameNorm);
+                foreach ($vecs as [$pid, $vec]) {
                     $sim = cosine_similarity($qv, $vec);
-                    $pid = (int)$v['entity_id']; $p = $byId[$pid] ?? null; if (!$p) continue;
+                    $p = $byId[$pid] ?? null; if (!$p) continue;
                     // small deterministic boost when tokens overlap
-                    $tokBoost = 0; foreach (explode(' ',pm_norm($name)) as $w) if ($w!=='' && strpos(pm_norm($p['name']),$w)!==false) $tokBoost += 0.05;
+                    $tokBoost = 0; foreach ($words as $w) if ($w!=='' && strpos($p['_norm'],$w)!==false) $tokBoost += 0.05;
                     $final = min(1, $sim*0.85 + min(0.15,$tokBoost));
                     $scored[] = ['product_id'=>$pid,'product_name'=>$p['name'],'category'=>$p['category'],'is_active'=>(int)$p['is_active'],'size'=>$p['size'],'similarity'=>round($sim,4),'score'=>round($final,4)];
                 }
@@ -209,7 +298,7 @@ function pm_match(string $name, string $desc = '', string $buyerName = ''): arra
     // 4. fallback: local similar_text
     $best=''; $bestPid=0; $bestScore=0;
     foreach ($rows as $p) {
-        $k = pm_norm($p['name']);
+        $k = $p['_norm'];
         if (strpos($k,$norm)!==false || strpos($norm,$k)!==false) $sc=0.85; else { similar_text($norm,$k,$pct); $sc=$pct/100; }
         if ($sc>$bestScore){ $bestScore=$sc; $best=$p['name']; $bestPid=(int)$p['id']; }
     }
