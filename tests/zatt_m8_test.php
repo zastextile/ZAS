@@ -50,10 +50,16 @@ foreach ($mm as $x) {
 }
 ok(count($routes) >= 60, 'the router has ' . count($routes) . ' routes, all read');
 $guards = '/Http::require(User|Permission)\(|require_erp_admin\(|require_gate_or_hod\(|ot_view_scope\(|fin_caps\(/';
-$open = array_values(array_filter($routes, fn($r) => !preg_match($guards, $r['body']) && !in_array($r['name'], ['/auth/login', '/auth/logout'], true)));
-ok($open === [], 'EVERY ROUTE BUT LOGIN AND LOGOUT CHECKS WHO IS ASKING' . ($open ? ' — unguarded: ' . implode(', ', array_column($open, 'name')) : ''));
-$noCsrf = array_values(array_filter($routes, fn($r) => $r['method'] === 'POST' && !str_contains($r['body'], 'Http::requireCsrf()') && $r['name'] !== '/auth/login'));
-ok($noCsrf === [], 'EVERY WRITE BUT LOGIN NEEDS THE CSRF TOKEN' . ($noCsrf ? ' — missing: ' . implode(', ', array_column($noCsrf, 'name')) : ''));
+$open = array_values(array_filter($routes, fn($r) => !preg_match($guards, $r['body']) && !in_array($r['name'], ['/auth/login', '/auth/logout', '/auth/phone-resume'], true)));
+ok($open === [], 'EVERY ROUTE BUT LOGIN, LOGOUT AND PHONE RESUME CHECKS WHO IS ASKING' . ($open ? ' — unguarded: ' . implode(', ', array_column($open, 'name')) : ''));
+$noCsrf = array_values(array_filter($routes, fn($r) => $r['method'] === 'POST' && !str_contains($r['body'], 'Http::requireCsrf()') && !in_array($r['name'], ['/auth/login', '/auth/phone-resume'], true)));
+ok($noCsrf === [], 'EVERY WRITE BUT LOGIN AND PHONE RESUME NEEDS THE CSRF TOKEN' . ($noCsrf ? ' — missing: ' . implode(', ', array_column($noCsrf, 'name')) : ''));
+/* Phone resume is a sign-in, like login: no session yet, so no CSRF token.
+   It must stand on its key alone — rate limited by address and by phone. */
+$pr = array_values(array_filter($routes, fn($r) => $r['name'] === '/auth/phone-resume'))[0]['body'] ?? '';
+ok(str_contains($pr, "Http::rateLimit('phone_resume:ip:") && str_contains($pr, "Http::rateLimit('phone_resume:dev:")
+    && str_contains($pr, 'PhoneKeys::check(') && str_contains($pr, 'session_regenerate_id(true)'),
+    '  PHONE RESUME signs in only with a valid key, rate limited by address and by phone, on a fresh session id');
 $order = array_values(array_filter($routes, fn($r) => $r['method'] === 'POST' && str_contains($r['body'], 'Http::requireCsrf()')
     && strpos($r['body'], 'Http::requireCsrf()') > (int) (preg_match($guards, $r['body'], $g, PREG_OFFSET_CAPTURE) ? $g[0][1] : PHP_INT_MAX)));
 ok($order === [], '  and checks the token BEFORE looking at permissions' . ($order ? ' — after: ' . implode(', ', array_column($order, 'name')) : ''));
