@@ -109,14 +109,16 @@ main{padding:12px 12px calc(84px + env(safe-area-inset-bottom));max-width:640px;
 .kpi span{font-size:12.5px;color:var(--muted)}
 .kpi[aria-pressed=true]{outline:2px solid var(--c);outline-offset:-2px}
 /* list rows */
-.rows{display:grid;gap:2px}
-.prow{display:flex;align-items:center;gap:12px;padding:8px 4px;border-bottom:1px solid #f1f4f8}
+/* one column that may shrink: a long name is cut with "…", never pushes the row past the card */
+.rows{display:grid;grid-template-columns:minmax(0,1fr);gap:2px}
+.prow{display:flex;align-items:center;gap:10px;padding:8px 2px;border-bottom:1px solid #f1f4f8;min-width:0}
 .prow:last-child{border-bottom:0}
 .prow .av{width:44px;height:44px;font-size:14px;margin:0;flex:none}
 .prow .t{flex:1;min-width:0}.prow .t b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .prow .t span{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.prow .v{font-size:13px;font-weight:700;white-space:nowrap}
-.v.late{color:var(--late)}.v.bad{color:var(--bad)}.v.out{color:var(--out)}.v.in{color:var(--in)}
+/* the value on the right: a small label that always fits inside the card */
+.prow .v{flex:none;max-width:44%;font-size:12px;font-weight:700;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:5px 9px;border-radius:99px;background:#f1f4f8;color:#475569;font-variant-numeric:tabular-nums}
+.v.late{color:var(--late);background:#fff4e5}.v.bad{color:var(--bad);background:var(--bad-bg)}.v.out{color:var(--out);background:var(--out-bg)}.v.in{color:var(--in);background:var(--in-bg)}
 /* bars */
 .bars{display:flex;align-items:flex-end;gap:8px;height:150px;padding:6px 2px 0}
 .bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end}
@@ -206,7 +208,7 @@ nav.tabs button[aria-selected=true]{color:var(--pri);background:var(--blue-bg)}
   var QUIET = false;      /* a refresh replaces the page without the entrance animation */
   function show(nodes){ var y = window.scrollY; body.textContent = ''; nodes.forEach(function(n, i){ if (!n) return; if (!QUIET) { n.classList && n.classList.add('rise'); if (n.style) n.style.animationDelay = Math.min(i * 50, 300) + 'ms'; } body.appendChild(n); }); if (QUIET) window.scrollTo(0, y); QUIET = false; }
   function hm(iso){ if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Karachi', hour: '2-digit', minute: '2-digit' }); }
-  function mins(m){ m = parseInt(m, 10) || 0; return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + 'm'; }
+  function mins(m){ m = parseInt(m, 10) || 0; return m >= 60 ? Math.floor(m / 60) + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '') : m + 'm'; }
   function pct(a, b){ return b ? Math.round(100 * a / b) : null; }
   function initials(n){ return String(n || '?').trim().split(/\s+/).slice(0, 2).map(function(w){ return w.charAt(0).toUpperCase(); }).join(''); }
   function khiDate(off){ var t = new Date(Date.now() + (5 * 60 + new Date().getTimezoneOffset()) * 60000); t.setDate(t.getDate() + (off || 0)); return t.getFullYear() + '-' + ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2); }
@@ -335,8 +337,8 @@ nav.tabs button[aria-selected=true]{color:var(--pri);background:var(--blue-bg)}
       DASH = d;
       var today = d.today, autoToday = (d.auto_out || []).filter(function(r){ return !r.work_date || r.work_date === today; });
       var defs = [
-        { id: 'late', label: 'Late', n: d.late_count, c: '#b45309', list: d.late, row: function(p){ return prow(p, 'y', p.department_name + ' · in ' + hm(p.first_in), 'late ' + mins(p.late_minutes), 'late'); } },
-        { id: 'early', label: 'Left early', n: d.left_early_count, c: '#d97706', list: d.left_early, row: function(p){ return prow(p, 'o', p.department_name + ' · out ' + hm(p.last_out), mins(p.early_minutes) + ' early', 'out'); } },
+        { id: 'late', label: 'Late', n: d.late_count, c: '#b45309', list: d.late, row: function(p){ return prow(p, 'y', p.department_name + ' · in ' + hm(p.first_in), '+' + mins(p.late_minutes), 'late'); } },
+        { id: 'early', label: 'Left early', n: d.left_early_count, c: '#d97706', list: d.left_early, row: function(p){ return prow(p, 'o', p.department_name + ' · out ' + hm(p.last_out), '−' + mins(p.early_minutes), 'out'); } },
         { id: 'absent', label: 'Did not come', n: d.absent_with_shift_count, c: '#c81e1e', list: d.absent_with_shift, row: function(p){ return prow(p, 'r', p.department_name + ' · shift ' + hm(p.starts_at), 'absent', 'bad'); } },
         { id: 'auto', label: 'Not scanned out', n: (d.auto_out || []).length, c: '#64748b', list: d.auto_out || [], row: function(p){ return prow(p, '', p.department_name + ' · in ' + hm(p.opened_at) + (p.work_date && p.work_date !== today ? ' · ' + dayLabel(p.work_date, { day: '2-digit', month: 'short' }) : ''), 'out ' + hm(p.closed_at), ''); } }
       ];
@@ -386,7 +388,7 @@ nav.tabs button[aria-selected=true]{color:var(--pri);background:var(--blue-bg)}
         el('section', { class: 'card' }, [el('h2', {}, ['Departments']), el('div', {}, Object.keys(D).sort().map(function(k){ var g = D[k], p = pct(g.w, g.n);
           return el('div', { class: 'drow' }, [el('b', { text: k }), el('span', { class: 'pc', text: p === null ? '—' : p + '%' }), el('div', { class: 'meter' }, [el('i', { class: p === null || p >= 90 ? '' : (p >= 75 ? 'mid' : 'low'), style: 'width:' + (p || 0) + '%' })])]); }))]),
         el('section', { class: 'card', id: 'm-often-late' }, [el('h2', {}, ['Often late', el('span', { class: 'n', text: late.length ? late.length + ' people' : '' })]),
-          late.length ? el('div', { class: 'rows' }, late.map(function(p){ return prow(p, 'y', p.department_name, p.late + ' times · ' + mins(p.lateMin), 'late'); })) : el('p', { class: 'empty', text: 'Nobody was late twice or more this week.' })])
+          late.length ? el('div', { class: 'rows' }, late.map(function(p){ return prow(p, 'y', p.department_name + ' · ' + mins(p.lateMin) + ' late in all', p.late + '×', 'late'); })) : el('p', { class: 'empty', text: 'Nobody was late twice or more this week.' })])
       ]);
     });
   }

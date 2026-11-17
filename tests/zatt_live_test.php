@@ -314,6 +314,9 @@ async function signIn(ctx, email) {
     await pp.click('#m-tabs button[data-tab=today]'); await pp.waitForSelector('#m-kpis'); await pp.waitForTimeout(800);
     await pp.click('#m-kpis .kpi[data-k=auto]');
     check('PHONE VIEW · Today: four tiles; "Not scanned out" lists 3 with today\'s and yesterday\'s', (await pp.locator('#m-kpis .kpi').count()) === 4 && (await pp.locator('#m-today-list .prow').count()) === 3);
+    const fitsIn = () => pp.evaluate(() => { [...document.querySelectorAll('.prow .t b')].forEach(b => { b.textContent = 'MUHAMMAD MUBEEN HAMEED ELECTRICIAN AND HELPER'; });
+      return [...document.querySelectorAll('.prow')].filter(r => { const c = r.closest('.card').getBoundingClientRect(), v = r.querySelector('.v'); return v && v.getBoundingClientRect().right > c.right - 4; }).length; });
+    check('  with very long names, every value on the right stays inside its card (Today)', (await fitsIn()) === 0);
     if (SHOTS) { await pp.evaluate(() => window.scrollTo(0, 0)); await pp.waitForTimeout(500); await pp.screenshot({ path: SHOTS + '/phone-today.png' }); }
     await pp.click('#m-tabs button[data-tab=week]'); await pp.waitForSelector('#m-bars'); await pp.waitForTimeout(1000);
     check('PHONE VIEW · Week: seven day bars', (await pp.locator('#m-bars .bar').count()) === 7);
@@ -321,6 +324,10 @@ async function signIn(ctx, email) {
     await pp.click('#m-tabs button[data-tab=find]'); await pp.waitForSelector('#m-q');
     await pp.fill('#m-q', 'ayesha');
     check('PHONE VIEW · Find: typing a name finds the person', (await pp.locator('#m-found .prow').count()) === 1);
+    await pp.fill('#m-q', '');
+    check('  …and the list keeps every status inside the card with long names', (await fitsIn()) === 0);
+    if (SHOTS) await pp.screenshot({ path: SHOTS + '/phone-find.png' });
+    await pp.fill('#m-q', 'ayesha');
     await pp.locator('#m-found .prow').first().click();
     await pp.waitForSelector('#m-cal'); await pp.waitForTimeout(800);
     check('  their card: face, status, and 30 days, day by day', (await pp.locator('#m-cal .c').count()) === 30 && /Ayesha Khan/.test(await pp.textContent('#m-person')) && /Inside since/.test(await pp.textContent('#m-person')));
@@ -350,7 +357,7 @@ JS);
 $raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 240 node run.js ' . escapeshellarg("http://127.0.0.1:$port") . ' ' . escapeshellarg((string) (getenv('LIVE_SHOTS') ?: '')) . ' ' . escapeshellarg(json_encode(['in' => count($lv['incoming']), 'out' => count($lv['outgoing'])])) . ' 2>&1');
 $results = [];
 if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
-ok(count($results) >= 26, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+ok(count($results) >= 28, 'the browser run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
 foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
 ok($n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view' AND new_data LIKE '%live dashboard%'") >= 20, 'every face shown on the Live tab is in the audit log');
 $th = Db::one('SELECT COUNT(*) AS n, MAX(LENGTH(bytes)) AS big FROM att_photo_thumbs');
