@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/schema_once.php';   // the table check below runs once per version (loads by itself, whatever order files are uploaded in)
 /*
   Final (Actual) Costing — one record per shipment invoice line, separate
   from the reusable Product Master "estimate" costing. Captures what a

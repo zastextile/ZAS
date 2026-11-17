@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/schema_once.php';   // the table check below runs once per version (loads by itself, whatever order files are uploaded in)
 /*
   AI-Assisted Product Costing — Phase 1 (see brief).
   Service layer only: AI EXTRACTS structured draft data from free text,

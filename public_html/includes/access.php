@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/schema_once.php';   // the table check below runs once per version (loads by itself, whatever order files are uploaded in)
 /* USER ACCESS — what a person may do, and when.
  *
  * WHAT WAS THERE BEFORE, AND WHY IT WAS NOT ENOUGH.

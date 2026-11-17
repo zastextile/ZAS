@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/schema_once.php';   // the table check below runs once per version (loads by itself, whatever order files are uploaded in)
 /* Shared helpers for the Costing + Proforma modules.
    Included by product_costing.php, costing_import.php, costing_print.php,
    proforma.php, proforma_print.php. */

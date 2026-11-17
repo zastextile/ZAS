@@ -7,7 +7,7 @@ date_default_timezone_set($config['timezone'] ?? 'Asia/Karachi');
 if (session_status() === PHP_SESSION_NONE) {
     session_name($config['session_name'] ?? 'ZAS_EXPORT_DOCS_SESSION');
     ini_set('session.gc_maxlifetime', 28800);
-    redis_session_boot();
+    // redis_session_boot();
     try {
         session_start();
     } catch (Throwable $e) {

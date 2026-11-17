@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/schema_once.php';   // the table check below runs once per version (loads by itself, whatever order files are uploaded in)
 /*
   Production Module — shared schema + small helpers.
   Workers, per-product Operations (rates), and the daily production
