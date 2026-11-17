@@ -16,19 +16,43 @@ $to = $_GET['to'] ?? date('Y-m-d');
    markup % (same break-even house rule as the dashboard: an uncosted item
    counts its own sale price as its cost) so the highest/oddest markups sort
    to the top without having to already know which product name to type. */
+/* A FINAL COSTING IS IN ITS OWN CURRENCY, WHICH IS NOT ALWAYS THE INVOICE'S.
+   This page used to treat every cost as if it were in the invoice currency:
+   a GBP 1.40 costing on a PKR invoice was read as Rs 1.40, and showed a
+   72,458% markup that was not real. Each cost is now converted with the
+   rates in Settings, the same way the dashboard does (a currency with no
+   rate counts as 1, as there), and the product ranking is worked out in
+   PKR so lines in different currencies add up. A costing with no cost in
+   it (total 0) is not counted as costed — also as on the dashboard. */
+$fx = fx_get_rates();
+$pkrPer = function (?string $cur) use ($fx): float {            // PKR for one unit of the currency
+    $cur = strtoupper(trim((string)$cur)); if ($cur === '') $cur = 'PKR';
+    if ($cur === 'PKR' || empty($fx[$cur]) || (float)$fx[$cur] <= 0) return 1.0;
+    return 1 / (float)$fx[$cur];
+};
+$costToInv = function (float $cost, ?string $costCur, ?string $invCur) use ($pkrPer): float {
+    $c = trim((string)$costCur) !== '' ? $costCur : $invCur;
+    return $cost * $pkrPer($c) / $pkrPer($invCur);
+};
+
 $products = [];
-$pst = db()->prepare("SELECT si.product_name grp, si.amount amt,
-        (SELECT fc.total_cost * si.qty FROM final_costings fc WHERE fc.shipment_item_id = si.id) cost_amt
+$pst = db()->prepare("SELECT si.product_name grp, si.amount amt, si.qty, UPPER(COALESCE(s.currency,'PKR')) scur,
+        fc.total_cost, fc.currency fcur
     FROM shipment_items si JOIN shipments s ON s.id = si.shipment_id
+    LEFT JOIN final_costings fc ON fc.shipment_item_id = si.id AND fc.total_cost > 0
     WHERE COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?");
 $pst->execute([$from, $to]);
 foreach ($pst->fetchAll() as $r) {
     $raw = trim((string)$r['grp']); if ($raw === '') continue;
     $g = mb_strtolower($raw);
     if (!isset($products[$g])) $products[$g] = ['name' => $raw, 'sales' => 0.0, 'costed_sales' => 0.0, 'real_cost' => 0.0, 'lines' => 0];
-    $products[$g]['sales'] += (float)$r['amt'];
+    $salePkr = (float)$r['amt'] * $pkrPer($r['scur']);
+    $products[$g]['sales'] += $salePkr;
     $products[$g]['lines']++;
-    if ($r['cost_amt'] !== null) { $products[$g]['costed_sales'] += (float)$r['amt']; $products[$g]['real_cost'] += (float)$r['cost_amt']; }
+    if ($r['total_cost'] !== null) {
+        $products[$g]['costed_sales'] += $salePkr;
+        $products[$g]['real_cost'] += $costToInv((float)$r['total_cost'], $r['fcur'], $r['scur']) * (float)$r['qty'] * $pkrPer($r['scur']);
+    }
 }
 $productList = [];
 foreach ($products as $p) {
@@ -45,24 +69,26 @@ if ($product !== '') {
             COALESCE(s.invoice_date, DATE(s.created_at)) dt,
             UPPER(COALESCE(s.currency,'PKR')) cur,
             si.qty, si.rate, si.amount,
-            fc.id fc_id, fc.total_cost
+            fc.id fc_id, fc.total_cost, UPPER(COALESCE(NULLIF(fc.currency,''), s.currency, 'PKR')) fcur
         FROM shipment_items si
         JOIN shipments s ON s.id = si.shipment_id
-        LEFT JOIN final_costings fc ON fc.shipment_item_id = si.id
+        LEFT JOIN final_costings fc ON fc.shipment_item_id = si.id AND fc.total_cost > 0
         WHERE si.product_name LIKE ? AND COALESCE(s.invoice_date, DATE(s.created_at)) BETWEEN ? AND ?
         ORDER BY dt DESC, s.id DESC");
     $st->execute(['%' . $product . '%', $from, $to]);
     foreach ($st->fetchAll() as $r) {
         $sale = (float)$r['amount'];
         $costed = $r['fc_id'] !== null;
-        $costTotal = $costed ? (float)$r['total_cost'] * (float)$r['qty'] : null;
+        $unitInv = $costed ? $costToInv((float)$r['total_cost'], $r['fcur'], $r['cur']) : null;   // in the invoice's currency
+        $costTotal = $costed ? $unitInv * (float)$r['qty'] : null;
         $profit = $costed ? $sale - $costTotal : null;
         $pct = ($costed && $costTotal > 0) ? round($profit / $costTotal * 100, 1) : null;
         $rows[] = [
             'sid' => (int)$r['sid'], 'invoice_no' => $r['invoice_no'], 'buyer_name' => $r['buyer_name'],
             'dt' => $r['dt'], 'cur' => $r['cur'],
             'qty' => (float)$r['qty'], 'rate' => (float)$r['rate'], 'sale' => $sale,
-            'costed' => $costed, 'unit_cost' => $costed ? (float)$r['total_cost'] : null,
+            'costed' => $costed, 'unit_cost' => $unitInv,
+            'entered' => ($costed && $r['fcur'] !== $r['cur']) ? $r['fcur'] . ' ' . number_format((float)$r['total_cost'], 2) : '',
             'cost_total' => $costTotal, 'profit' => $profit, 'pct' => $pct,
         ];
     }
@@ -131,7 +157,7 @@ page_header('Cost Audit');
     <td style="padding:9px 10px"><?= number_format($r['qty'], 2) ?></td>
     <td style="padding:9px 10px" class="num"><?= e($r['cur']) ?> <?= number_format($r['rate'], 2) ?></td>
     <td style="padding:9px 10px" class="num"><?= e($r['cur']) ?> <?= number_format($r['sale'], 2) ?></td>
-    <td style="padding:9px 10px" class="num"><?= $r['costed'] ? e($r['cur']).' '.number_format($r['unit_cost'], 2) : '—' ?></td>
+    <td style="padding:9px 10px" class="num"><?= $r['costed'] ? e($r['cur']).' '.number_format($r['unit_cost'], 2) : '—' ?><?php if (!empty($r['entered'])): ?><br><small style="color:#b45309;font-weight:600"><?= e($r['entered']) ?> entered</small><?php endif; ?></td>
     <td style="padding:9px 10px" class="num"><?= $r['costed'] ? e($r['cur']).' '.number_format($r['cost_total'], 2) : '—' ?></td>
     <td class="num" style="padding:9px 10px;color:<?= $r['profit']!==null && $r['profit']<0 ? '#c0293f' : '#152033' ?>"><?= $r['profit'] !== null ? e($r['cur']).' '.number_format($r['profit'], 2) : '—' ?></td>
     <td class="num" style="padding:9px 10px;font-weight:700;color:<?= $flag ? '#c0293f' : '#152033' ?>"><?= $r['pct'] !== null ? e((string)$r['pct']).'%' : 'not costed' ?><?= $flag ? ' ⚠' : '' ?></td>
