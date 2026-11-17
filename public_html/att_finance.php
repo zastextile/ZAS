@@ -349,9 +349,32 @@ page_header('People Finance');
   #fin-print table{width:100%;border-collapse:collapse}
   #fin-print td,#fin-print th{padding:3px 6px;border-bottom:1px solid #ddd;text-align:left}
   #fin-print td.r,#fin-print th.r{text-align:right}
+  #fin-print table.elist{margin-top:8px;font-size:10.5px}#fin-print table.elist th{background:#eee!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #fin-print table.elist tr.grp td{background:#f1f4f8!important;font-weight:700;padding-top:7px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #fin-print table.elist tr.sub td,#fin-print table.elist tfoot td{font-weight:700;border-top:1px solid #999}
+  #fin-print table.elist td.signc{border-bottom:1px solid #777;min-width:90px}
+  #fin-print table.elist tr{page-break-inside:avoid}
+  #fin-print table.elist th{color:#000!important;text-transform:none!important;letter-spacing:0!important;font-size:inherit!important;font-weight:700;vertical-align:bottom;line-height:1.2}
+  #fin-print table.elist td{white-space:nowrap;padding-top:2px;padding-bottom:2px;font-size:inherit!important;color:#000!important}
+  #fin-print table.elist.dense{font-size:8.6px}#fin-print table.elist.dense td,#fin-print table.elist.dense th{padding-left:3px;padding-right:3px}
   #fin-print h1{font-size:15px;margin:0 0 2px}#fin-print .sig{display:flex;justify-content:space-between;margin-top:22px;font-size:11px}
 }
 #fin-print{display:none}
+/* Employee list: options, column boxes, the table (also used in print) */
+.fin .elist-opts .formgrid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.fin .elist-presets{gap:6px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line2)}
+.fin .elist-presets .preset.on{background:var(--sel);border-color:var(--pri);color:var(--navy);font-weight:700}
+.fin .elist-cols{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px}
+.fin .elist-cols label{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.fin .elist-cols label.money{color:var(--owed)}
+.fin .elist-cols input{width:15px;height:15px;margin:0}
+.fin .elist-wrap{max-height:52vh;border:1px solid var(--line);border-radius:4px}
+.fin table.elist{font-size:12px}.fin table.elist td{white-space:nowrap}
+.fin table.elist tr.grp td{background:var(--sel);color:var(--navy);font-size:12.5px}
+.fin table.elist tr.sub td{background:var(--head);font-weight:600}
+.fin table.elist tfoot td{background:var(--head);font-weight:700;border-top:2px solid var(--line)}
+.fin table.elist td.signc{min-width:110px;border-bottom:1px solid #9aa7b4}
+@media (max-width:820px){.fin .elist-opts .formgrid{grid-template-columns:1fr 1fr}}
 </style>
 
 <div class="topbar">
@@ -532,6 +555,7 @@ page_header('People Finance');
         el('span', { text: 'Advances and loans still to recover' }), el('b', { text: rs(r.advances_out_paisa) }),
         el('span', { text: 'Earned so far (all time)' }), el('b', { text: rs(r.earned_paisa) }),
         el('span', { text: 'Paid so far (all time)' }), el('b', { text: rs(r.paid_paisa) })]),
+        el('div', { class: 'row', style: 'margin-top:10px' }, [btn('Employee list — print / download', employeeList, 'sm')]),
         r.no_setup ? el('div', { class: 'why', style: 'margin-top:12px' }, [r.no_setup + (r.no_setup === 1 ? ' active employee has' : ' active employees have') + ' no pay set up yet, so they cannot be put on a sheet. ',
           el('a', { href: '#people', text: 'Open People', click: function(e){ e.preventDefault(); go('people', 'none'); } })]) : null]);
       var who = el('div', { class: 'cardx' }, [el('h3', { text: 'Who does what' }), el('div', { class: 'who', style: 'margin-top:10px' },
@@ -945,6 +969,195 @@ page_header('People Finance');
 
   // ------------------------------------------------------------ people
   var PF = { type: '', dept: '', q: '', state: 'on' };
+  /* EMPLOYEE LIST — print or download, with the columns you choose.
+     Grouped by how people are paid (or by department), with totals.
+     Three ready choices: "Short list" (the usual), "Finance / audit" (every pay
+     and advance figure, to match against the books) and "Codes only — no
+     money" (safe to hand over for checking codes and names).
+     The figures are those the server already lets this user see: a salary
+     hidden from them stays hidden here. The download keeps amounts as plain
+     numbers so Excel can add them up. Choices are remembered on this computer.
+     [key, title, in the short list, is money, adds up in totals] */
+  var EL_COLS = [
+    ['sr', '#', 1, 0, 0], ['code', 'Code', 1, 0, 0], ['name', 'Name', 1, 0, 0], ['dept', 'Department', 1, 0, 0], ['type', 'Paid as', 1, 0, 0],
+    ['worker', 'Production code', 0, 0, 0], ['method', 'Paid by', 1, 0, 0], ['bank', 'Bank account', 0, 1, 0],
+    ['rate', 'Salary / day rate', 1, 1, 0], ['allow', 'Allowance', 0, 1, 1], ['ot', 'Overtime / hour', 0, 1, 0],
+    ['oadv', 'Opening advance', 0, 1, 1], ['adv', 'Advance left', 1, 1, 1], ['advper', 'Recovered each pay', 0, 1, 1],
+    ['open', 'Opening balance', 0, 1, 1], ['earned', 'Earned (all time)', 0, 1, 1], ['deducted', 'Deducted (all time)', 0, 1, 1], ['paid', 'Paid (all time)', 0, 1, 1],
+    ['owed', 'We owe them', 1, 1, 1], ['net', 'Net (we pay / they owe)', 1, 1, 1],
+    ['state', 'On the roll', 0, 0, 0], ['today', 'Today', 0, 0, 0], ['sign', 'Checked / signature', 0, 0, 0]
+  ];
+  var EL_PRESETS = {
+    short: EL_COLS.filter(function(c){ return c[2]; }).map(function(c){ return c[0]; }),
+    audit: ['sr', 'code', 'name', 'dept', 'type', 'worker', 'method', 'bank', 'rate', 'allow', 'ot', 'oadv', 'adv', 'advper', 'open', 'earned', 'deducted', 'paid', 'owed', 'net'],
+    codes: ['sr', 'code', 'name', 'dept', 'type', 'worker', 'state', 'sign']
+  };
+  function elCol(k){ return EL_COLS.filter(function(c){ return c[0] === k; })[0]; }
+  function employeeList(){
+    var saved = {}; try { saved = JSON.parse(localStorage.getItem('fin-elist') || '{}') || {}; } catch (e) { saved = {}; }
+    var O = { group: saved.group || 'type', who: saved.who || 'on', kind: '', dept: '', cols: (saved.cols || EL_PRESETS.short).filter(elCol) };
+    function keep(){ try { localStorage.setItem('fin-elist', JSON.stringify({ group: O.group, who: O.who, cols: O.cols })); } catch (e) {} }
+    var box = modal([el('p', { class: 'muted', text: 'Loading…' })], true); box.classList.add('xwide');
+    call('GET', '/finance/people').then(function(r){
+      if (!r.ok) { box.textContent = ''; box.appendChild(fail(r)); return; }
+      var all = r.people;
+      var depts = Object.keys(all.reduce(function(a, p){ a[p.department_name] = 1; return a; }, {})).sort();
+      function rows(){
+        return all.filter(function(p){ return (O.who === 'all' || (O.who === 'left' ? !+p.active : +p.active))
+          && (!O.kind || (O.kind === 'none' ? !p.pay_type : p.pay_type === O.kind)) && (!O.dept || p.department_name === O.dept); });
+      }
+      /* the amount behind each money column, in paisa; null = hidden from this user, '' = nothing */
+      function amount(k, p){
+        var hid = p.balance === null || p.balance === undefined;
+        switch (k) {
+          case 'rate': return p.pay_type === 'salary' ? p.basic_paisa : (p.pay_type === 'daily' ? p.daily_rate_paisa : '');
+          case 'allow': return p.allowance_paisa === null ? null : (+p.allowance_paisa || '');
+          case 'ot': return +p.ot_rate_paisa || '';
+          case 'oadv': return hid ? null : (+p.opening_advance_paisa || '');
+          case 'adv': return hid ? null : (+p.advance_left_paisa || '');
+          case 'advper': return hid ? null : (+p.advance_per_pay_paisa || '');
+          case 'open': return hid ? null : (+p.opening_paisa || '');
+          case 'earned': return hid ? null : +p.earned || 0;
+          case 'deducted': return hid ? null : +p.deducted || 0;
+          case 'paid': return hid ? null : +p.paid || 0;
+          case 'owed': return hid ? null : +p.balance || 0;
+          case 'net': return hid ? null : (+p.balance || 0) - (+p.advance_left_paisa || 0);
+        }
+        return '';
+      }
+      function netText(n){ return n > 0 ? 'We pay ' + rs(n) : (n < 0 ? 'They owe ' + rs(-n) : '0'); }
+      function todayText(p){ var t = p.today; if (!+p.active) return 'left'; if (!t) return 'not in'; if (t.status === 'inside') return 'inside'; if (t.status === 'absent') return 'did not come'; return 'came, gone'; }
+      function cell(k, p, i){
+        var c = elCol(k);
+        if (c[3] && k !== 'bank') {
+          if (k === 'rate' && p.pay_type === 'contract') return 'by production';
+          var a = amount(k, p);
+          if (a === null) return 'hidden'; if (a === '') return '';
+          if (k === 'rate') return rs(a) + (p.pay_type === 'salary' ? ' / month' : ' / day');
+          return k === 'net' ? netText(a) : rs(a);
+        }
+        switch (k) {
+          case 'sr': return String(i);
+          case 'code': return p.code; case 'name': return p.full_name; case 'dept': return p.department_name;
+          case 'type': return p.pay_type ? KIND1[p.pay_type] : 'Not set up'; case 'worker': return p.worker_code || '';
+          case 'method': return p.pay_type ? (p.pay_method === 'bank' ? 'Bank' : 'Cash') : '';
+          case 'bank': return p.pay_method === 'bank' ? (p.bank_account || '') : '';
+          case 'state': return +p.active ? 'Yes' : 'Left';
+          case 'today': return todayText(p);
+        }
+        return '';
+      }
+      function groups(list){
+        var key = O.group === 'type' ? function(p){ return p.pay_type ? KIND1[p.pay_type] : 'Not set up'; } : (O.group === 'dept' ? function(p){ return p.department_name; } : function(){ return 'Everyone'; });
+        var order = ['Fixed salary', 'Daily wages', 'Contractor', 'Not set up'];
+        var G = {}; list.forEach(function(p){ (G[key(p)] = G[key(p)] || []).push(p); });
+        return Object.keys(G).sort(function(a, b){ return O.group === 'type' ? order.indexOf(a) - order.indexOf(b) : a.localeCompare(b); })
+          .map(function(k){ return { name: k, list: G[k].sort(function(a, b){ return (O.group === 'type' ? a.department_name.localeCompare(b.department_name) : 0) || a.full_name.localeCompare(b.full_name); }) }; });
+      }
+      /* totals of the columns that add up; the monthly salaries (or day rates)
+         add up too when everyone in the group is paid the same way */
+      function totals(cols, list){
+        var kinds = {}; list.forEach(function(p){ kinds[p.pay_type || ''] = 1; });
+        var one = Object.keys(kinds).length === 1 && (kinds.salary || kinds.daily) ? Object.keys(kinds)[0] : null;
+        var t = {}, hid = {};
+        cols.forEach(function(k){ if (!(elCol(k)[4] || (k === 'rate' && one))) return; t[k] = 0;
+          list.forEach(function(p){ var a = amount(k, p); if (a === null) hid[k] = 1; else t[k] += +a || 0; }); });
+        return cols.map(function(k){
+          if (!(k in t)) return '';
+          if (hid[k]) return 'part hidden';
+          if (k === 'rate') return rs(t[k]) + (one === 'salary' ? ' / month' : ' / day');
+          return k === 'net' ? netText(t[k]) : rs(t[k]);
+        });
+      }
+      function totalRow(cols, list, label, tag, cls){
+        var v = totals(cols, list); if (!v.some(function(x){ return x; })) return null;
+        v[0] = label;
+        return el(tag || 'tr', { class: cls }, v.map(function(x, i){ return el('td', { class: (elCol(cols[i])[3] && i ? 'r' : null), colspan: null, text: x }); }));
+      }
+      /* the list as a table: the same for the screen and the print */
+      function build(){
+        var cols = EL_COLS.filter(function(c){ return O.cols.indexOf(c[0]) >= 0; }).map(function(c){ return c[0]; });
+        var head = el('tr', {}, cols.map(function(k){ return el('th', { class: elCol(k)[3] && k !== 'bank' ? 'r' : null, text: elCol(k)[1] }); }));
+        var tb = el('tbody'), list = rows(), gs = groups(list), n = 0;
+        gs.forEach(function(g){
+          if (O.group !== 'none') tb.appendChild(el('tr', { class: 'grp' }, [el('td', { colspan: String(cols.length) }, [el('b', { text: g.name }), ' · ' + g.list.length + (g.list.length === 1 ? ' person' : ' people')])]));
+          g.list.forEach(function(p){ n++; tb.appendChild(el('tr', {}, cols.map(function(k){ return el('td', { class: (elCol(k)[3] && k !== 'bank' ? 'r ' : '') + (k === 'sign' ? 'signc' : ''), text: cell(k, p, n) }); }))); });
+          if (O.group !== 'none' && gs.length > 1) { var sr = totalRow(cols, g.list, 'Total', 'tr', 'sub'); if (sr) tb.appendChild(sr); }
+        });
+        var all1 = totalRow(cols, list, 'Total · ' + list.length);
+        return { table: el('table', { class: 't elist', id: 'elist-table' }, [el('thead', {}, [head]), tb, all1 ? el('tfoot', {}, [all1]) : null]), count: list.length, cols: cols, groups: gs };
+      }
+      var preview = el('div', { class: 'scroll elist-wrap' });
+      var countEl = el('span', { class: 'muted small' });
+      var presetBtns = {};
+      function paint(){
+        keep(); var b = build(); preview.textContent = ''; preview.appendChild(b.table);
+        countEl.textContent = b.count + (b.count === 1 ? ' person' : ' people') + ' · ' + b.cols.length + ' columns';
+        Object.keys(presetBtns).forEach(function(k){ presetBtns[k].classList.toggle('on', EL_PRESETS[k].join() === b.cols.join()); });
+      }
+      function sel(label, value, opts, set){ var x = el('select', { 'aria-label': label, change: function(){ set(x.value); paint(); } }, opts.map(function(o){ return el('option', { value: o[0], text: o[1] }); })); x.value = value; return field(label, x); }
+      var colBoxes = el('div', { class: 'elist-cols' }, EL_COLS.map(function(c){
+        var cb = el('input', { type: 'checkbox', 'data-col': c[0] }); cb.checked = O.cols.indexOf(c[0]) >= 0;
+        cb.addEventListener('change', function(){ readBoxes(); paint(); });
+        return el('label', { class: c[3] ? 'money' : null }, [cb, ' ' + c[1]]);
+      }));
+      function readBoxes(){ O.cols = EL_COLS.map(function(x){ return x[0]; }).filter(function(k){ return colBoxes.querySelector('input[data-col="' + k + '"]').checked; }); }
+      function setCols(list){ Array.prototype.forEach.call(colBoxes.querySelectorAll('input'), function(b){ b.checked = list.indexOf(b.getAttribute('data-col')) >= 0; }); readBoxes(); paint(); }
+      function setMoney(on){ Array.prototype.forEach.call(colBoxes.querySelectorAll('label.money input'), function(b){ b.checked = on; }); readBoxes(); paint(); }
+      function preset(k, label){ var b = btn(label, function(){ setCols(EL_PRESETS[k]); }, 'sm preset'); b.setAttribute('data-preset', k); presetBtns[k] = b; return b; }
+      var title = function(){ return 'Employee list' + (O.kind ? ' — ' + (O.kind === 'none' ? 'Not set up' : KIND1[O.kind]) : '') + (O.dept ? ' — ' + O.dept : ''); };
+      var doPrint = btn('Print', function(){
+        var b = build(), pbox = document.getElementById('fin-print'); pbox.textContent = '';
+        var noMoney = !b.cols.some(function(k){ return elCol(k)[3]; });
+        pbox.appendChild(el('h1', { text: 'ZAS Textiles — ' + title() }));
+        pbox.appendChild(el('div', { text: 'As on ' + nice(S.today) + ' · ' + b.count + (b.count === 1 ? ' person' : ' people') + ' · ' + ({ on: 'on the roll', left: 'left the company', all: 'everyone' })[O.who] + (noMoney ? ' · no pay figures on this list' : ' · amounts in PKR') }));
+        var t = b.table; t.removeAttribute('id'); t.classList.toggle('dense', b.cols.length > 13); pbox.appendChild(t);
+        pbox.appendChild(el('div', { class: 'sig' }, [el('span', { text: 'Prepared by' }), el('span', { text: 'Checked by' })]));
+        /* a wide list prints across the page */
+        var pg = el('style', { text: '@page{size:A4 ' + (b.cols.length > 9 ? 'landscape' : 'portrait') + ';margin:10mm}' }); document.head.appendChild(pg);
+        window.print();
+        setTimeout(function(){ pg.remove(); }, 1000);
+      }, 'pri');
+      doPrint.id = 'elist-print';
+      /* the download: one line per person, amounts as plain rupees (Excel can add them) */
+      var doCsv = btn('Download (Excel)', function(){
+        var b = build(), lines = [], n = 0, head = (O.group !== 'none' ? ['Group'] : []);
+        b.cols.forEach(function(k){ head.push(k === 'net' ? 'Net (+ we pay, - they owe)' : (k === 'rate' ? 'Salary / day rate' : elCol(k)[1])); if (k === 'rate') head.push('Rate per'); });
+        b.groups.forEach(function(g){ g.list.forEach(function(p){ n++;
+          var line = O.group !== 'none' ? [g.name] : [];
+          b.cols.forEach(function(k){
+            var c = elCol(k);
+            if (c[3] && k !== 'bank') { var a = amount(k, p); line.push(a === null ? 'hidden' : (a === '' ? '' : (a / 100).toFixed(2)));
+              if (k === 'rate') line.push(p.pay_type === 'salary' ? 'month' : (p.pay_type === 'daily' ? 'day' : (p.pay_type === 'contract' ? 'production' : ''))); }
+            else line.push(cell(k, p, n));
+          });
+          lines.push(line); }); });
+        var esc = function(v){ v = String(v === null || v === undefined ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+        var blob = new Blob(['﻿' + [head].concat(lines).map(function(l){ return l.map(esc).join(','); }).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+        var a = el('a', { href: URL.createObjectURL(blob), download: 'employee-list-' + S.today + '.csv' }); document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+      });
+      doCsv.id = 'elist-csv';
+      box.textContent = '';
+      [el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Employee list — print or download' }), btn('Close', closeModal, 'sm')]),
+        el('p', { class: 'muted small', style: 'margin:0', text: 'Pick a ready list, or tick the columns you want. "Finance / audit" shows every pay and advance figure to match against the books. "Codes only" has no money at all — safe to hand to someone checking codes and names.' }),
+        el('div', { class: 'cardx elist-opts' }, [
+          el('div', { class: 'row elist-presets' }, [el('b', { class: 'small', text: 'Ready lists' }),
+            preset('short', 'Short list'), preset('audit', 'Finance / audit (all figures)'), preset('codes', 'Codes only — no money')]),
+          el('div', { class: 'formgrid' }, [
+            sel('Group by', O.group, [['type', 'How they are paid'], ['dept', 'Department'], ['none', 'No groups']], function(v){ O.group = v; }),
+            sel('Who', O.who, [['on', 'On the roll'], ['left', 'Left the company'], ['all', 'Everyone']], function(v){ O.who = v; }),
+            sel('Paid as', '', [['', 'All'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractors'], ['none', 'Not set up']], function(v){ O.kind = v; }),
+            sel('Department', '', [['', 'All departments']].concat(depts.map(function(d){ return [d, d]; })), function(v){ O.dept = v; })]),
+          el('div', { class: 'row', style: 'margin-top:10px;gap:6px' }, [el('b', { class: 'small', text: 'Columns' }),
+            el('span', { class: 'muted small', text: '(money columns in brown)' }),
+            btn('Hide all money', function(){ setMoney(false); }, 'sm'), btn('Show all money', function(){ setMoney(true); }, 'sm')]),
+          colBoxes]),
+        el('div', { class: 'row', style: 'justify-content:space-between' }, [countEl, el('div', { class: 'row' }, [doCsv, doPrint])]),
+        preview].forEach(function(n){ box.appendChild(n); });
+      paint();
+    });
+  }
+
   function people(type){
     if (typeof type === 'string') PF.type = type;
     show([el('p', { class: 'muted', text: 'Loading…' })]);
@@ -1030,7 +1243,8 @@ page_header('People Finance');
       state.value = PF.state;
       show([seg, el('div', { class: 'row' }, [el('div', { style: 'flex:0 1 190px' }, [state]), el('div', { style: 'flex:1 1 160px' }, [dept]), el('div', { style: 'flex:2 1 220px' }, [search]),
         S.caps.staff ? btn('+ New employees', function(){ staffForm([], 8); }, 'pri') : null,
-        (S.caps.staff || S.caps.setup) ? btn('Edit these in one form', function(){ staffForm(shownNow(), S.caps.staff ? 3 : 0); }) : null]), selBar, box]);
+        (S.caps.staff || S.caps.setup) ? btn('Edit these in one form', function(){ staffForm(shownNow(), S.caps.staff ? 3 : 0); }) : null,
+        btn('Print / download list', employeeList)]), selBar, box]);
       draw();
     });
   }
