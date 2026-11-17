@@ -662,7 +662,32 @@ $cardCss = 'padding:20px;border-radius:18px;background:#ffffff;border:1px solid 
 
 page_header('Dashboard');
 flash();
+
+/* THE ATTENDANCE LOOK (SAP Fiori / Oracle Fusion), VIEW ONLY.
+   assets/css/zfiori.css gives this page the same panels, tiles, navy-headed
+   tables and blue segmented buttons as the Attendance and People Finance
+   screens. The page's own colours — in its style blocks, inline styles and
+   charts — are mapped to that palette as the page is sent (zdash_palette),
+   so no figure, query or rule below changes. To put the old look back,
+   remove these lines, the zfiori wrapper and the ob_end_flush() at the end. */
+function zdash_palette(string $html): string {
+    return strtr($html, [
+        'linear-gradient(90deg,#0ea8c9,#6d5bd0)'  => '#0a5fb4',
+        'linear-gradient(100deg,#0ea8c9,#6d5bd0)' => '#0a5fb4',
+        'linear-gradient(135deg,#0ea8c9,#6d5bd0)' => '#0f2742',
+        "'Space Grotesk',system-ui,sans-serif"     => "'IBM Plex Sans','Segoe UI',system-ui,sans-serif",
+        '#0ea8c9' => '#0a5fb4', '#6d5bd0' => '#5899da', '#0891b2' => '#13a4b4', '#9333ea' => '#945ecf',
+        '#16a34a' => '#107e3e', '#c0293f' => '#bb0000', '#9b1c2a' => '#a30000', '#d97706' => '#b45309', '#a15c00' => '#9a4a06',
+        '#152033' => '#1d2733', '#5a6b82' => '#5b6b7c', '#8a97ab' => '#6a7887',
+        '#f6f8fc' => '#e7ebf0', '#edf1f6' => '#e7ebf0', '#dfe6ef' => '#d5dbe3', '#e3e9f2' => '#d5dbe3', '#eef1f6' => '#f4f6f9', '#cbd5e3' => '#b9c4d0',
+        'rgba(14,168,201,' => 'rgba(10,95,180,', 'rgba(224,67,93,' => 'rgba(187,0,0,', 'rgba(22,163,74,' => 'rgba(16,126,62,',
+        'rgba(217,119,6,' => 'rgba(180,83,9,',
+    ]);
+}
 ?>
+<link rel="stylesheet" href="assets/css/zfiori.css?v=1">
+<div class="zfiori zdash">
+<?php ob_start('zdash_palette'); ?>
 <style>
 @keyframes zrise { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:none} }
 .dash-card{transition:transform .25s ease, box-shadow .25s ease}
@@ -1354,7 +1379,8 @@ flash();
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-  var REDUCE = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /* the Attendance look shows every figure at once — no count-up, no draw-in */
+  var REDUCE = !!document.querySelector('.zfiori') || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
 
   document.querySelectorAll('.dash-anim-bar').forEach(function (el) {
     ['height', 'width'].forEach(function (prop) {
@@ -1418,4 +1444,6 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 </script>
+<?php ob_end_flush(); ?>
+</div>
 <?php page_footer(); ?>

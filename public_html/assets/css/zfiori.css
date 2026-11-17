@@ -1,0 +1,115 @@
+/* ============================================================
+   ZFIORI — the Attendance / People Finance look, for the older screens
+   ============================================================
+   The same working area the Attendance and People Finance screens use
+   (SAP Fiori / Oracle Fusion style): white panels with a 1px border and
+   4px corners, figure tiles with a coloured top edge, navy-headed tables
+   with right-aligned figures, blue segmented buttons, IBM Plex type, no
+   shadows, no gradients, no slide-in animations — figures appear at once.
+
+   Opt-in, one page at a time: a page links this file and puts
+   class="zfiori" on one wrapper. Remove that class and the page is back
+   exactly as it was. NOTHING HERE IS BEHAVIOUR — colour, type, spacing,
+   borders only.
+   ============================================================ */
+
+.zfiori{
+  --ff:'IBM Plex Sans','Segoe UI',Inter,system-ui,-apple-system,Roboto,Arial,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
+  --navy:#0f2742; --pri:#0a5fb4; --pri-d:#084b8f; --pri-soft:#d6e4f4;
+  --ink:#1d2733; --muted:#5b6b7c; --line:#d5dbe3; --line2:#e7ebf0; --head:#f4f6f9; --hover:#f0f6fc;
+  --good:#107e3e; --good-bg:#e7f4ec; --warn:#b45309; --warn-bg:#fef6ea; --bad:#bb0000; --bad-bg:#ffefef; --info-bg:#e1edf9;
+  color:var(--ink); font:400 13px/1.45 var(--ff);
+}
+.zfiori *{box-sizing:border-box}
+.zfiori, .zfiori *:not(code):not(pre){font-family:var(--ff)}
+/* figures appear at once: no count-up, no slide-in, no hover lift */
+.zfiori *, .zfiori *::before, .zfiori *::after{animation:none !important; transition:none !important}
+
+/* ---------- page header ---------- */
+.zfiori .topbar{margin-bottom:12px; align-items:center}
+.zfiori .topbar h1{font:600 20px/1.25 var(--ff); color:var(--navy); letter-spacing:0; margin:0}
+.zfiori .topbar .lead{font:400 12.5px/1.4 var(--ff); color:var(--muted); margin:3px 0 0}
+
+/* ---------- buttons (as .act on the Attendance screens) ---------- */
+.zfiori .zbtn, .zfiori .zbtn.sec{font:600 12.5px/1 var(--ff); padding:8px 12px; min-height:30px; border-radius:3px; border:1px solid #b9c4d0;
+  background:#fff; color:var(--pri); text-decoration:none; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; box-shadow:none}
+.zfiori .zbtn:hover{background:var(--hover)}
+.zfiori button[type=submit], .zfiori .zbtn.pri{background:var(--pri); color:#fff; border:1px solid var(--pri); border-radius:3px; font:600 12.5px/1 var(--ff); padding:8px 12px; min-height:30px; cursor:pointer}
+.zfiori input, .zfiori select{font:400 13px/1.2 var(--ff); padding:5px 8px; min-height:30px; border:1px solid #b9c4d0 !important; border-radius:3px !important; background:#fff; color:inherit}
+
+/* ---------- panels ---------- */
+.zfiori .dash-card{background:#fff !important; border:1px solid var(--line) !important; border-radius:4px !important; box-shadow:none !important;
+  backdrop-filter:none !important; padding:12px 14px !important; transform:none !important}
+.zfiori .dash-card:hover{transform:none !important; box-shadow:none !important}
+.zfiori .dash-card h3, .zfiori .dash-card h2{font:600 13.5px/1.3 var(--ff) !important; color:var(--navy) !important; margin:0 0 2px !important}
+.zfiori .dash-card > p:first-of-type{margin-bottom:10px !important}
+.zfiori details > summary{font-weight:600; color:var(--navy); cursor:pointer}
+.zfiori .dash-section-tag{font:600 13px/1.3 var(--ff); color:var(--navy); text-transform:none; letter-spacing:0; margin:16px 2px 8px}
+.zfiori .row2{gap:12px; margin-bottom:12px}
+
+/* ---------- figure tiles: the KPI row ---------- */
+.zfiori .dash-kpis{gap:8px; margin-bottom:12px}
+.zfiori .dash-kpis > .dash-card{border-top:3px solid var(--navy) !important; padding:9px 12px 10px !important}
+.zfiori .dash-kpis > .dash-card > span:first-child{font-size:11.5px !important; font-weight:600; color:var(--muted) !important}
+.zfiori .dash-num{font:600 22px/1.2 var(--ff) !important; color:var(--navy); font-variant-numeric:tabular-nums; margin-top:2px !important; letter-spacing:0}
+/* the admin figures only: Gross profit green, Avg. profit % blue (the shipment-count row stays navy) */
+.zfiori .dash-kpis:not([style]) > .dash-card:nth-child(3){border-top-color:var(--good) !important}
+.zfiori .dash-kpis:not([style]) > .dash-card:nth-child(4){border-top-color:var(--pri) !important}
+.zfiori .kpi-delta{font-size:11.5px; font-weight:600; margin-top:4px}
+.zfiori .num{font-family:var(--ff) !important; font-variant-numeric:tabular-nums}
+.zfiori .pfc-k{gap:8px; margin-bottom:12px}
+.zfiori .pfc-kc{border:1px solid var(--line); border-top:3px solid var(--navy); border-radius:4px; padding:9px 12px 10px}
+.zfiori .pfc-kc .k{font-size:11.5px; text-transform:none; letter-spacing:0; color:var(--muted); font-weight:600}
+.zfiori .pfc-kc .v{font-size:22px; font-weight:600; color:var(--navy); letter-spacing:0}
+.zfiori .pfc-note{background:var(--info-bg); border:1px solid #c5dbf2; border-left:3px solid var(--pri); border-radius:4px; color:#123d6a}
+
+/* ---------- period filter: a filter bar with a segmented switch ---------- */
+.zfiori .gfb{background:var(--head); border:1px solid var(--line); border-radius:4px; padding:8px 10px; margin-bottom:12px; gap:10px}
+.zfiori .periods{background:#fff; padding:0; gap:0; border:1px solid var(--pri); border-radius:3px; overflow:hidden; flex-wrap:nowrap; max-width:100%; overflow-x:auto}
+.zfiori .ptab{border-radius:0; border-right:1px solid var(--pri); color:var(--pri); font:600 12.5px/1 var(--ff); padding:8px 12px; background:#fff; white-space:nowrap}
+.zfiori .ptab:last-child{border-right:0}
+.zfiori .ptab:hover{background:var(--hover)}
+.zfiori .ptab.on{background:var(--pri); color:#fff; box-shadow:none}
+.zfiori .custom-form button{background:var(--pri)}
+
+/* ---------- tables: navy heads, right-aligned figures, quiet rows ---------- */
+.zfiori table{border-collapse:separate !important; border-spacing:0}
+.zfiori table th{background:var(--navy) !important; color:#fff !important; font:600 11.5px/1.25 var(--ff) !important; text-transform:none !important;
+  letter-spacing:0 !important; padding:8px 7px !important; border:0 !important; vertical-align:bottom}
+.zfiori table th:first-child, .zfiori table td:first-child{padding-left:12px !important}
+.zfiori table th:last-child, .zfiori table td:last-child{padding-right:12px !important}
+.zfiori table td{padding:6px 7px !important; border-top:0 !important; border-bottom:1px solid var(--line2) !important; font-variant-numeric:tabular-nums}
+.zfiori table tbody tr:nth-child(even) td{background:#fafbfc}
+.zfiori table tbody tr:hover td{background:var(--hover)}
+.zfiori .ctbl th{padding-bottom:8px !important}
+.zfiori .status-pill, .zfiori .task-badge{border-radius:3px; padding:2px 6px; font-size:11px; font-weight:600}
+.zfiori .status-pill.active{background:var(--good-bg); color:var(--good)}
+.zfiori .status-pill.completed{background:#e8eef6; color:#33475f}
+
+/* ---------- lists ---------- */
+.zfiori .task-row{padding:8px 4px; border-bottom:1px solid var(--line2)}
+.zfiori .task-row:hover{background:var(--hover)}
+.zfiori .task-inv{font-family:var(--mono) !important; color:var(--pri); font-weight:600}
+.zfiori .ml-row, .zfiori .sp-row{border-top:1px solid var(--line2)}
+.zfiori .ml-rank{background:var(--navy) !important; border-radius:3px}
+.zfiori .ml-pct{font-family:var(--ff) !important; font-weight:600}
+
+/* ---------- bars: one blue, sales as the pale track, profit as the bar ---------- */
+.zfiori .sp-bars{height:18px}
+.zfiori .sp-track-sales{background:var(--pri-soft) !important; opacity:1 !important; border-radius:2px !important; height:18px}
+.zfiori .sp-track-profit{background:var(--pri) !important; border-radius:2px !important; top:4px; height:10px}
+.zfiori .pfc-tr{background:var(--line2); border-radius:2px; height:14px}
+.zfiori .pfc-fl{border-radius:2px; background:var(--pri)}
+.zfiori .donut-center-val{font-family:var(--ff) !important; font-weight:600; color:var(--navy)}
+.zfiori .donut-legend-row{color:var(--ink)}
+.zfiori .donut-legend-row .pct{font-family:var(--ff) !important; color:var(--muted)}
+.zfiori .donut-dot{border-radius:2px}
+.zfiori .quad-legend i{border-radius:2px}
+
+/* ---------- message strips: a warning keeps its colour, as on the Attendance screens ---------- */
+.zfiori .dash-card[style*="border-color:rgba(180,83,9"]{background:var(--warn-bg) !important; border:1px solid #f1d3a8 !important;
+  border-left:3px solid var(--warn) !important; padding:9px 12px !important}
+/* the donut's centre figure fits inside the ring */
+.zfiori .donut-center-val{font-size:14px !important}
+.zfiori .donut-center-lbl{font-size:8.5px; letter-spacing:.02em}
