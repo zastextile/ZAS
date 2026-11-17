@@ -10,6 +10,10 @@
 require_once __DIR__ . '/ai_check_core.php'; // cvt() — fc_save_lines() converts native→working currency
 
 function fc_ensure_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if (zas_schema_fresh('fc', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("CREATE TABLE IF NOT EXISTS final_costings (
         id INT AUTO_INCREMENT PRIMARY KEY,
         shipment_item_id INT NOT NULL,
@@ -58,6 +62,7 @@ function fc_ensure_schema(): void {
     // gets slower as shipment history grows. 191-char prefix keeps the index
     // key size under InnoDB's limit for a utf8mb4 column (191*4 = 764 bytes).
     try { db()->exec("ALTER TABLE shipment_items ADD INDEX idx_product_name (product_name(191))"); } catch (Throwable $e) {}
+    zas_schema_mark('fc', [__FILE__]);
 }
 
 /* ---------------------------------------------------------------------

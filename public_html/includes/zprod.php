@@ -34,6 +34,7 @@ function zp_ensure_schema(): void {
     if ($done) return;
     $done = true;
 
+    if (zas_schema_fresh('zp', [__FILE__])) return;     // checked already for this version: see schema_once.php
     /* ---- THE PRODUCTS TABLE IS READ, NEVER CREATED AND NEVER EMPTIED.
        The only thing done to it is making sure the two columns the CSV round
        trip needs actually exist. Both are additive and nullable, so on a
@@ -109,7 +110,7 @@ function zp_ensure_schema(): void {
        default is dropped with it: a row's stage comes from stage_id, and a
        column that quietly fills itself in with a stage name is not a default,
        it is a guess. */
-    try { db()->exec("ALTER TABLE zp_part_ops MODIFY stage VARCHAR(60) NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    zas_modify_if_needed('zp_part_ops', 'stage', 'varchar(60)', true, "ALTER TABLE zp_part_ops MODIFY stage VARCHAR(60) NULL DEFAULT NULL");
     try { db()->exec("CREATE INDEX idx_zpo_stage ON zp_part_ops (stage_id)"); } catch (Throwable $e) {}
 
     /* ---- THE SHARED SIZE LIST lives in product_sizes, which Costing, Proforma
@@ -220,7 +221,7 @@ function zp_ensure_schema(): void {
        ever shown me, and ZP_CODE_MAX below refuses anything longer rather
        than trusting the database to complain. utf8mb4 VARCHAR(40) is 160
        bytes of index, nowhere near any limit. */
-    try { db()->exec("ALTER TABLE zp_workers MODIFY worker_code VARCHAR(40) NOT NULL"); } catch (Throwable $e) {}
+    zas_modify_if_needed('zp_workers', 'worker_code', 'varchar(40)', false, "ALTER TABLE zp_workers MODIFY worker_code VARCHAR(40) NOT NULL");
 
     /* ============================================================
        SET WORK — the jobs done to the whole set, not to any one part
@@ -363,7 +364,7 @@ function zp_ensure_schema(): void {
        which would have quietly cut any stage name longer than twenty letters
        and left the wage filed under a stage that matches nothing. */
     try { db()->exec("ALTER TABLE zp_entries ADD COLUMN stage_id INT NULL DEFAULT NULL AFTER op_id"); } catch (Throwable $e) {}
-    try { db()->exec("ALTER TABLE zp_entries MODIFY stage VARCHAR(60) NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    zas_modify_if_needed('zp_entries', 'stage', 'varchar(60)', true, "ALTER TABLE zp_entries MODIFY stage VARCHAR(60) NULL DEFAULT NULL");
     try { db()->exec("CREATE INDEX idx_zpe_stage ON zp_entries (stage_id)"); } catch (Throwable $e) {}
 
     /* ---- one order pays a different rate for one operation ---- */
@@ -444,6 +445,7 @@ function zp_ensure_schema(): void {
         cancel_reason VARCHAR(255) NULL,
         INDEX(pay_date), INDEX(worker_id), INDEX(status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    zas_schema_mark('zp', [__FILE__]);
 }
 
 /* ============================================================
@@ -1286,7 +1288,12 @@ function zp_product_todo(int $productId): array {
    to switch a flag the old module already used, so nothing is invented and
    nothing is lost. */
 function zp_orders_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if (zas_schema_fresh('zp_orders', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("ALTER TABLE proforma_invoices ADD COLUMN production_enabled TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    zas_schema_mark('zp_orders', [__FILE__]);
 }
 
 /* Resolve an order line to a master product: by the stored link first, then by
@@ -3853,8 +3860,10 @@ function zp_bridge_schema(): void {
     static $done = false;
     if ($done) return;
     $done = true;
+    if (zas_schema_fresh('zp_bridge', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("ALTER TABLE production_operations ADD COLUMN zp_op_id INT NULL DEFAULT NULL"); } catch (Throwable $e) {}
     try { db()->exec("CREATE INDEX idx_zp_op ON production_operations (zp_op_id)"); } catch (Throwable $e) {}
+    zas_schema_mark('zp_bridge', [__FILE__]);
 }
 
 /* THE SIZE MIRROR IS GONE, AND THAT IS THE POINT.

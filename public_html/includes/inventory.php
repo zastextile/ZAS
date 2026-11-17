@@ -45,6 +45,7 @@ function inv_ensure_schema(): void {
     if ($done) return;
     $done = true;
 
+    if (zas_schema_fresh('inv', [__FILE__])) return;     // checked already for this version: see schema_once.php
     /* --- masters --- */
     try { db()->exec("CREATE TABLE IF NOT EXISTS inv_locations (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -604,6 +605,7 @@ function inv_ensure_schema(): void {
     ] as $sql) { try { db()->exec($sql); } catch (Throwable $e) {} }
 
     inv_seed_defaults();
+    zas_schema_mark('inv', [__FILE__]);
 }
 
 /* First-run defaults. Every insert is guarded so re-running is harmless. */
@@ -3120,6 +3122,7 @@ function inv_dept_schema(): void {
     static $done = false;
     if ($done) return;
     $done = true;
+    if (zas_schema_fresh('inv_dept', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("CREATE TABLE IF NOT EXISTS inv_departments (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(80) NOT NULL,
@@ -3128,6 +3131,7 @@ function inv_dept_schema(): void {
         UNIQUE KEY uniq_dept (name),
         INDEX(is_active)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    zas_schema_mark('inv_dept', [__FILE__]);
 }
 
 /* The master list. Empty until somebody fills it in — and an empty master

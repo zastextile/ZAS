@@ -17,6 +17,10 @@ function require_costing(string $what): void {
 
 /* ---- schema for costing extensions + proforma ---- */
 function costing_ensure_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if (zas_schema_fresh('costing', [__FILE__])) return;     // checked already for this version: see schema_once.php
     // costing extension columns (ignore if present)
     $cols = [
         "ALTER TABLE costing_versions ADD COLUMN costing_no VARCHAR(40) NULL",
@@ -38,7 +42,6 @@ function costing_ensure_schema(): void {
         // this MODIFY converts any already-saved column to text (existing
         // dates just become their plain string form, nothing is lost).
         "ALTER TABLE proforma_invoices ADD COLUMN delivery_date VARCHAR(120) NULL",
-        "ALTER TABLE proforma_invoices MODIFY COLUMN delivery_date VARCHAR(120) NULL",
         // Structured bank fields replace the old single free-text box — a
         // pasted SWIFT code or IBAN with odd spacing used to print exactly
         // as typed; each piece now has its own field so it always prints
@@ -65,6 +68,8 @@ function costing_ensure_schema(): void {
         "ALTER TABLE users ADD COLUMN cost_delete TINYINT(1) NOT NULL DEFAULT 0",
     ];
     foreach ($cols as $sql) { try { db()->exec($sql); } catch (Throwable $e) {} }
+    /* the old DATE column becomes text — only when it is not text already (see schema_once.php) */
+    zas_modify_if_needed('proforma_invoices', 'delivery_date', 'varchar(120)', true, "ALTER TABLE proforma_invoices MODIFY COLUMN delivery_date VARCHAR(120) NULL");
 
     try { db()->exec("CREATE TABLE IF NOT EXISTS proforma_invoices (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -122,6 +127,7 @@ function costing_ensure_schema(): void {
                 ->execute(['Meezan Bank Limited','Faisalabad, Pakistan','ZAS Textile','MEZNPKKA','PK00 MEZN 0000 0000 0000 0000','Habib Bank Limited (HBL)','Faisalabad, Pakistan','ZAS Textile','HABBPKKA','PK00 HABB 0000 0000 0000 0000']);
         }
     } catch (Throwable $e) {}
+    zas_schema_mark('costing', [__FILE__]);
 }
 
 const COMPANY_BANK_FIELDS = ['bank1_name','bank1_branch','bank1_title','bank1_swift','bank1_iban','bank2_name','bank2_branch','bank2_title','bank2_swift','bank2_iban'];

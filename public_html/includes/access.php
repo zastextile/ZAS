@@ -131,6 +131,7 @@ function zu_ensure_schema(): void {
     if ($done) return;
     $done = true;
 
+    if (zas_schema_fresh('zu', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("CREATE TABLE IF NOT EXISTS zu_perm (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
@@ -155,6 +156,7 @@ function zu_ensure_schema(): void {
         /* the marker that stops the one-time read-across running twice */
         "ALTER TABLE users ADD COLUMN acc_seeded TINYINT(1) NOT NULL DEFAULT 0",
     ] as $sql) { try { db()->exec($sql); } catch (Throwable $e) {} }
+    zas_schema_mark('zu', [__FILE__]);
 }
 
 /* ------------------------------------------------- the one-time read-across

@@ -15,6 +15,10 @@ const AIC_MAX_SIZES = 8;
 const AIC_GROUPS = ['Fabric', 'Accessories', 'Packing', 'Workmanship', 'Other'];
 
 function aic_ensure_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if (zas_schema_fresh('aic', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("CREATE TABLE IF NOT EXISTS ai_costing_log (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NULL,
@@ -103,6 +107,7 @@ function aic_ensure_schema(): void {
         "ALTER TABLE costing_lines ADD INDEX idx_item_name (item_name(100))",
     ];
     foreach ($idx as $sql) { try { db()->exec($sql); } catch (Throwable $e) {} }
+    zas_schema_mark('aic', [__FILE__]);
 }
 
 function aic_log(string $action, string $inputText, string $model, int $inTok, int $outTok, float $cost, bool $success, string $err = '', int $sizesCount = 0): void {
@@ -940,6 +945,10 @@ function aic_check_size_progression(array $calculated): array {
    by meaning, not just literal text match.
    ============================================================ */
 function aic_embed_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if (zas_schema_fresh('aic_embed', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("CREATE TABLE IF NOT EXISTS costing_embeddings (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         costing_version_id INT NOT NULL,
@@ -953,6 +962,7 @@ function aic_embed_schema(): void {
         UNIQUE KEY uniq_version (costing_version_id, embedding_model),
         KEY idx_hash (content_hash)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    zas_schema_mark('aic_embed', [__FILE__]);
 }
 
 /* Natural-sentence description of one costing version — deliberately NOT a

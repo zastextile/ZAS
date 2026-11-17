@@ -56,6 +56,10 @@ function production_final_key(): string   { return production_dispatch_on() ? 'd
 function production_final_label(): string { return production_dispatch_on() ? 'Dispatched' : 'Stitched'; }
 
 function production_ensure_schema(): void {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if (zas_schema_fresh('production', [__FILE__])) return;     // checked already for this version: see schema_once.php
     try { db()->exec("CREATE TABLE IF NOT EXISTS production_workers (
         id INT AUTO_INCREMENT PRIMARY KEY,
         worker_code VARCHAR(20) NOT NULL,
@@ -213,6 +217,7 @@ function production_ensure_schema(): void {
         INDEX idx_scope_ref (scope, ref_id),
         INDEX idx_when (changed_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+    zas_schema_mark('production', [__FILE__]);
 }
 
 /* ---------- rate history ----------

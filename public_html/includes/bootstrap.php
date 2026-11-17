@@ -37,6 +37,7 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/schema_once.php';
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/auth.php';
 /* Loaded after auth.php because it uses current_user(), and BEFORE
@@ -47,45 +48,49 @@ require_once __DIR__ . '/access.php';
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/fx.php';
 
-try {
-    db()->exec("ALTER TABLE users ADD COLUMN department VARCHAR(60) NULL");
-} catch (Throwable $e) {}
-try {
-    db()->exec("ALTER TABLE shipment_items ADD COLUMN department VARCHAR(60) NULL");
-} catch (Throwable $e) {}
-try {
-    db()->exec("ALTER TABLE shipments ADD COLUMN optional_column_enabled TINYINT(1) DEFAULT 0");
-} catch (Throwable $e) {}
-try {
-    db()->exec("ALTER TABLE shipments MODIFY optional_column_title VARCHAR(120) NULL");
-} catch (Throwable $e) {}
-try {
-    db()->exec("ALTER TABLE shipments ADD COLUMN incoterm VARCHAR(120) NULL");
-} catch (Throwable $e) {}
+/* The columns every module relies on. Checked once per version of this
+   file, not on every page and every phone scan — see schema_once.php. */
+if (!zas_schema_fresh('core', [__FILE__, __DIR__ . '/fx.php'])) {
+    try {
+        db()->exec("ALTER TABLE users ADD COLUMN department VARCHAR(60) NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE shipment_items ADD COLUMN department VARCHAR(60) NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE shipments ADD COLUMN optional_column_enabled TINYINT(1) DEFAULT 0");
+    } catch (Throwable $e) {}
+    zas_modify_if_needed('shipments', 'optional_column_title', 'varchar(120)', true,
+        "ALTER TABLE shipments MODIFY optional_column_title VARCHAR(120) NULL");
+    try {
+        db()->exec("ALTER TABLE shipments ADD COLUMN incoterm VARCHAR(120) NULL");
+    } catch (Throwable $e) {}
 
-/* The product a line REALLY is, as opposed to what someone typed.
+    /* The product a line REALLY is, as opposed to what someone typed.
 
-   Until now a proforma or invoice line held only product_name, and every
-   production screen had to work out which product that meant by comparing
-   letters — production_resolve_product(), which drops the line entirely
-   below 55% confidence and, above it, takes its best guess without
-   telling anyone. That is why a manually typed line could be invisible to
-   production while a CSV-imported one worked.
+       Until now a proforma or invoice line held only product_name, and every
+       production screen had to work out which product that meant by comparing
+       letters — production_resolve_product(), which drops the line entirely
+       below 55% confidence and, above it, takes its best guess without
+       telling anyone. That is why a manually typed line could be invisible to
+       production while a CSV-imported one worked.
 
-   Storing the id removes the guess. Nullable on purpose: every line you
-   already have keeps a NULL here and keeps taking the old path, so
-   nothing that works today stops working. The typed name is untouched and
-   is still what prints — the code is what the system follows. */
-try {
-    db()->exec("ALTER TABLE proforma_items ADD COLUMN product_id INT NULL");
-} catch (Throwable $e) {}
-try {
-    db()->exec("ALTER TABLE proforma_items ADD INDEX idx_pi_product (product_id)");
-} catch (Throwable $e) {}
-try {
-    db()->exec("ALTER TABLE shipment_items ADD COLUMN product_id INT NULL");
-} catch (Throwable $e) {}
-try {
-    db()->exec("ALTER TABLE shipment_items ADD INDEX idx_si_product (product_id)");
-} catch (Throwable $e) {}
-fx_ensure_table();
+       Storing the id removes the guess. Nullable on purpose: every line you
+       already have keeps a NULL here and keeps taking the old path, so
+       nothing that works today stops working. The typed name is untouched and
+       is still what prints — the code is what the system follows. */
+    try {
+        db()->exec("ALTER TABLE proforma_items ADD COLUMN product_id INT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE proforma_items ADD INDEX idx_pi_product (product_id)");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE shipment_items ADD COLUMN product_id INT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE shipment_items ADD INDEX idx_si_product (product_id)");
+    } catch (Throwable $e) {}
+    fx_ensure_table();
+    zas_schema_mark('core', [__FILE__, __DIR__ . '/fx.php']);
+}
