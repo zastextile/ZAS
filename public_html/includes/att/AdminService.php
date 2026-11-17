@@ -74,6 +74,10 @@ final class AdminService
             'help' => 'Used when an employee reaches the gate on a day nobody gave them a shift. They are let in and this shift is attached, marked as filled in by the system.'],
         'auto_shift_on_gate_in'     => ['type' => 'bool',  'label' => 'Let in an employee who has no shift for the day',
             'help' => 'On: they are admitted on the default shift. Off: the scan is held for HR instead.'],
+        'app_lock_minutes'          => ['type' => 'int', 'min' => 1, 'max' => 720, 'label' => 'Gate and HOD phones: ask for the PIN after the app was away for (minutes)',
+            'help' => 'A phone whose screen slept or was used for something else for longer than this asks for its PIN again. The Lock button still locks at once.'],
+        'phone_remember_days'       => ['type' => 'int', 'min' => 1, 'max' => 90, 'label' => 'Gate and HOD phones: stay signed in for (days)',
+            'help' => 'After one sign-in a phone signs itself back in for this long after it was last used, so nobody types the email and password again and again. It stops at once when the person\'s password changes, they are deactivated or lose the job, the phone is withdrawn, or the phone signs out.'],
         'hod_match_window_minutes'  => ['type' => 'int', 'min' => 15, 'max' => 1440, 'label' => 'HOD matching window (minutes)',
             'help' => 'How far apart a gate entry and a HOD confirmation may be and still be matched automatically. Outside it, HR decides.'],
         'stale_open_cycle_hours'    => ['type' => 'int', 'min' => 4, 'max' => 72, 'label' => 'Show an entry to HR as "left open" after (hours)',
@@ -154,12 +158,44 @@ final class AdminService
 
     public static function departments(): array
     {
-        return ['ok' => true, 'departments' => Db::all(
-            'SELECT d.id, d.name, d.active,
+        $sql = 'SELECT d.id, d.name, d.active, %s
                     (SELECT COUNT(*) FROM att_employees e WHERE e.department_id = d.id AND e.active = 1) AS employees
                FROM att_departments d
-              ORDER BY d.active DESC, d.name'
-        )];
+              ORDER BY d.active DESC, d.name';
+        try {
+            $rows = Db::all(sprintf($sql, 'd.regular_shift_id,'));
+        } catch (\Throwable) {
+            $rows = Db::all(sprintf($sql, 'NULL AS regular_shift_id,'));     // before migration 0020
+        }
+        return ['ok' => true, 'departments' => $rows];
+    }
+
+    /**
+     * A department's regular shift: used for its people on any day nobody gave
+     * them a shift, before the factory default (see Shifts::instanceForOrDefault).
+     * null clears it. Days already given a shift keep it.
+     */
+    public static function setRegularShift(int $departmentId, ?int $shiftId, int $actorId): array
+    {
+        $dept = Db::one('SELECT id, name FROM att_departments WHERE id = ?', [$departmentId]);
+        if ($dept === null) {
+            return self::no('NOT_FOUND', 'That department no longer exists.');
+        }
+        if ($shiftId !== null) {
+            $shift = Shifts::find($shiftId);
+            if ($shift === null || (int) $shift['active'] !== 1) {
+                return self::no('VALIDATION', 'Choose a shift that is in use.');
+            }
+        }
+        try {
+            $before = Db::value('SELECT regular_shift_id FROM att_departments WHERE id = ?', [$departmentId]);
+            Db::run('UPDATE att_departments SET regular_shift_id = ? WHERE id = ?', [$shiftId, $departmentId]);
+        } catch (\Throwable) {
+            return self::no('NOT_READY', 'Run the attendance update first (php att_migrate.php up), then set the regular shift.');
+        }
+        Audit::record('department.regular_shift', 'att_department', $departmentId,
+            ['regular_shift_id' => $before === null ? null : (int) $before], ['regular_shift_id' => $shiftId], $actorId);
+        return ['ok' => true, 'department_id' => $departmentId, 'regular_shift_id' => $shiftId];
     }
 
     public static function saveDepartment(?int $id, string $name, ?bool $active, int $actorId): array

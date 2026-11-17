@@ -806,7 +806,21 @@ page_header('Attendance — Setup');
       submit: function(){ return call('POST', '/admin/' + kind + '/delete', { id: id, reason: why.value }).then(function(r){ if (r.ok) done(); return r; }); } });
   }
   function drawDepartments(){
-    loadDepts().then(function(list){
+    Promise.all([loadDepts(), call('GET', '/admin/shifts')]).then(function(res){
+      var list = res[0], shifts = (res[1] && res[1].ok) ? (res[1].shifts || []) : [];
+      var shiftName = function(id){ var s = shifts.filter(function(x){ return String(x.id) === String(id); })[0]; return s ? s.name + ' (' + String(s.start_time).slice(0, 5) + '–' + String(s.end_time).slice(0, 5) + ')' : ''; };
+      /* A department's REGULAR SHIFT: its people are on it on any day nobody
+         gave them a shift — no renewing every 92 days. Days already given a
+         shift keep it. */
+      function regularDialog(d){
+        var sel = el('select', { class: 'full', 'aria-label': 'Regular shift' }, [el('option', { value: '', text: 'None — use the factory default shift' })]
+          .concat(shifts.filter(function(x){ return parseInt(x.active, 10) === 1; }).map(function(x){ return el('option', { value: String(x.id), text: shiftName(x.id) }); })));
+        sel.value = d.regular_shift_id ? String(d.regular_shift_id) : '';
+        dialog({ title: 'Regular shift — ' + d.name,
+          text: 'Everyone in this department works this shift on any day nobody gave them a shift — with no end date, nothing to renew. A day already given a shift (for example with "Give a shift to a department") keeps it.',
+          fields: [field('Regular shift', sel)], okText: 'Save',
+          submit: function(){ return call('POST', '/admin/departments/regular-shift', { department_id: d.id, shift_id: parseInt(sel.value, 10) || 0 }).then(function(r){ if (r.ok) drawDepartments(); return r; }); } });
+      }
       var name = el('input', { type: 'text', class: 'grow', maxlength: 100, placeholder: 'New department name', 'aria-label': 'New department name' });
       var msg = el('span', { class: 'err' });
       function add(){
@@ -822,10 +836,13 @@ page_header('Attendance — Setup');
               drawDepartments();
             });
           }), msg]) : null,
-        list.length ? table(['Department', 'Active employees', 'State', ''], list, function(d){
+        list.length ? table(['Department', 'Active employees', 'Regular shift', 'State', ''], list, function(d){
           var on = parseInt(d.active, 10) === 1;
-          return [el('strong', { text: d.name }), String(d.employees), el('span', { class: 'pill ' + (on ? 'good' : 'off'), text: on ? 'In use' : 'Switched off' }),
+          return [el('strong', { text: d.name }), String(d.employees),
+            d.regular_shift_id ? el('span', { text: shiftName(d.regular_shift_id) }) : el('span', { class: 'muted', text: 'Factory default' }),
+            el('span', { class: 'pill ' + (on ? 'good' : 'off'), text: on ? 'In use' : 'Switched off' }),
             CAN.u ? el('span', {}, [
+              btn('Regular shift…', function(){ regularDialog(d); }), ' ',
               btn('Rename', function(){
                 var n = el('input', { type: 'text', class: 'full', maxlength: 100, value: d.name });
                 dialog({ title: 'Rename department', fields: [field('Name', n)], submit: function(){

@@ -29,6 +29,7 @@ require_once dirname(__DIR__, 2) . '/includes/att/Reconciler.php';
 require_once dirname(__DIR__, 2) . '/includes/att/SyncService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/HrService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/AdminService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/PhoneKeys.php';
 /* The ERP's own R2 client. Functions only; loading it changes nothing. */
 require_once dirname(__DIR__, 2) . '/includes/storage.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Storage.php';
@@ -56,6 +57,7 @@ use Att\Images;
 use Att\OvertimeService as OT;
 use Att\ReportService;
 use Att\PhotoService;
+use Att\PhoneKeys;
 use Att\Policy;
 use Att\Roles;
 use Att\Shifts;
@@ -91,9 +93,48 @@ try {
             handle_login();
             break;
 
+        /* REMEMBER THIS PHONE — see includes/att/PhoneKeys.php. A signed-in
+           gate or HOD phone asks for its key once ... */
+        case $method === 'POST' && $route === '/auth/phone-key':
+            Http::requireCsrf();
+            $u = Http::requireUser();
+            if (!Roles::can('attgate', 'c') && !Roles::can('atthod', 'c')) {
+                Http::fail('FORBIDDEN', 'Only a gate or HOD login keeps a phone signed in.', 403);
+            }
+            $r = PhoneKeys::issue((int) $u['id'], (string) Http::input('device_uuid', ''));
+            if (!$r['ok']) {
+                Http::fail($r['reason_code'], $r['error'], 422);
+            }
+            Http::json($r);
+            break;
+
+        /* ... and signs itself back in with it when the server says "signed out". */
+        case $method === 'POST' && $route === '/auth/phone-resume':
+            $dev = (string) Http::input('device_uuid', '');
+            Http::rateLimit('phone_resume:ip:' . Http::clientIp(), 60, 300);
+            if ($dev !== '') {
+                Http::rateLimit('phone_resume:dev:' . substr(preg_replace('/[^0-9a-fA-F-]/', '', $dev), 0, 36), 20, 300);
+            }
+            $r = PhoneKeys::check($dev, (string) Http::input('token', ''));
+            if (!$r['ok']) {
+                Http::fail($r['reason_code'], $r['error'], 401);
+            }
+            if (session_status() === PHP_SESSION_ACTIVE) {
+                session_regenerate_id(true);
+            }
+            $_SESSION['user_id'] = (int) $r['user_id'];
+            unset($_SESSION['pw_fp']);
+            Audit::record('auth.phone_resume', 'user', (int) $r['user_id'], null, ['device_uuid' => $dev], (int) $r['user_id']);
+            Http::json(['ok' => true, 'csrf_token' => function_exists('csrf_token') ? csrf_token() : ($_SESSION['_csrf'] ?? '')]);
+            break;
+
         case $method === 'POST' && $route === '/auth/logout':
             Http::requireCsrf();
             $uid = (int) ($_SESSION['user_id'] ?? 0);
+            $dev = (string) Http::input('device_uuid', '');
+            if ($uid > 0 && $dev !== '') {
+                PhoneKeys::revokeDevice($dev, $uid);    // signing out of a phone ends its key too
+            }
             $_SESSION = [];
             if (session_status() === PHP_SESSION_ACTIVE) {
                 session_regenerate_id(true);
@@ -146,6 +187,7 @@ try {
                 'policies' => [
                     'duplicate_window_seconds'  => Policy::int('duplicate_window_seconds'),
                     'sync_backlog_warn_minutes' => Policy::int('sync_backlog_warn_minutes'),
+                    'app_lock_minutes'          => Policy::int('app_lock_minutes', 30),
                 ],
             ]);
             break;
@@ -750,6 +792,13 @@ try {
             $active = Http::input('active', null);
             admin_answer(AdminService::saveDepartment($id, (string) Http::input('name', ''),
                 $active === null ? null : (bool) $active, (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/admin/departments/regular-shift':
+            Http::requireCsrf();
+            $u = Http::requirePermission('attadm', 'u');
+            $sid = (int) Http::input('shift_id', 0);
+            admin_answer(AdminService::setRegularShift((int) Http::input('department_id', 0), $sid > 0 ? $sid : null, (int) $u['id']));
             break;
 
         case $method === 'POST' && $route === '/admin/departments/seed':

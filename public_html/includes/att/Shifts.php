@@ -204,6 +204,25 @@ final class Shifts
             return [$existing, false];
         }
 
+        /* THE DEPARTMENT'S REGULAR SHIFT comes first. A night-guard department
+           with a regular 19:00–08:30 shift needs no renewing every 92 days, and
+           a guard moved into it is covered from the next scan. It is the
+           department's plan, so the day is filed as 'assigned'. It never
+           replaces a shift somebody gave that person for that day. */
+        try {
+            $regular = (int) (Db::value(
+                'SELECT d.regular_shift_id FROM att_employees e JOIN att_departments d ON d.id = e.department_id WHERE e.id = ?',
+                [$employeeId]) ?? 0);
+        } catch (\Throwable) {
+            $regular = 0;              // migration 0020 not applied yet: carry on as before
+        }
+        if ($regular > 0) {
+            $made = self::attachIfCovers($employeeId, $regular, $at, 'assigned', $actorId, true);
+            if ($made !== null) {
+                return [$made, true];
+            }
+        }
+
         if (!Policy::bool('auto_shift_on_gate_in')) {
             return [null, false];
         }
@@ -214,9 +233,27 @@ final class Shifts
             // shift yet. Say so plainly rather than inventing one.
             return [null, false];
         }
-        $shift = self::find($defaultId);
+        $made = self::attachIfCovers($employeeId, $defaultId, $at, 'default_auto', $actorId, false);
+        return [$made, $made !== null];
+    }
+
+    /**
+     * File the moment under this shift for the working day it falls in — only
+     * when the shift (with its grace) actually covers the moment.
+     *
+     * A scan at 19:00 against a 09:00–17:00 default is somebody working out of
+     * hours: the right answer is to hold the event for HR, not to file it under
+     * a shift that had already ended. Checking BEFORE writing means no orphan
+     * instance is ever left on a day the person was never scheduled.
+     *
+     * $keepExisting: do not touch a day that already has a shift (the regular
+     * shift never overrides one given to the person).
+     */
+    private static function attachIfCovers(int $employeeId, int $shiftId, DateTimeImmutable $at, string $source, ?int $actorId, bool $keepExisting): ?array
+    {
+        $shift = self::find($shiftId);
         if ($shift === null || (int) $shift['active'] !== 1) {
-            return [null, false];
+            return null;
         }
 
         // File it under the local working date of the moment, in the shift's
@@ -231,33 +268,23 @@ final class Shifts
         // A night shift beginning at 19:00 and scanned at 01:00 belongs to the
         // PREVIOUS working date, not the one the clock shows.
         if ((int) $shift['crosses_midnight'] === 1) {
-            $localTime  = $at->setTimezone($tz)->format('H:i:s');
+            $localTime = $at->setTimezone($tz)->format('H:i:s');
             if ($localTime < (string) $shift['start_time']) {
                 $workDate = $at->setTimezone($tz)->modify('-1 day')->format('Y-m-d');
             }
         }
 
-        /* Check the default shift actually COVERS this moment before writing
-           anything. A scan at 19:00 against a 09:00–17:00 default is somebody
-           working out of hours: the right answer is to hold the event for HR,
-           not to file it under a shift that had already ended. An earlier
-           draft assigned first and re-checked afterwards, which left an
-           orphan "default_auto" instance on the employee's record for a day
-           they were never scheduled — invisible, and wrong in any report that
-           counts scheduled days. */
         $window = self::resolveWindow($shift, $workDate);
-        $graceIn  = (int) $shift['grace_in_minutes'];
-        $graceOut = (int) $shift['grace_out_minutes'];
-        $from = $window['starts_at']->modify("-{$graceIn} minutes");
-        $to   = $window['ends_at']->modify("+{$graceOut} minutes");
-
+        $from = $window['starts_at']->modify('-' . (int) $shift['grace_in_minutes'] . ' minutes');
+        $to   = $window['ends_at']->modify('+' . (int) $shift['grace_out_minutes'] . ' minutes');
         if ($at < $from || $at > $to) {
-            return [null, false];
+            return null;
+        }
+        if ($keepExisting && Db::value('SELECT id FROM att_shift_instances WHERE employee_id = ? AND work_date = ?', [$employeeId, $workDate]) !== null) {
+            return null;
         }
 
-        self::assign($employeeId, $defaultId, $workDate, 'default_auto', $actorId);
-        $created = self::instanceFor($employeeId, $at);
-
-        return [$created, $created !== null];
+        self::assign($employeeId, $shiftId, $workDate, $source, $actorId);
+        return self::instanceFor($employeeId, $at);
     }
 }

@@ -28,9 +28,10 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.5.0';
+  var APP_VERSION = '1.6.0';
   var CHUNK = 50;
-  var LOCK_AFTER_MS = 5 * 60 * 1000;
+  var LOCK_AFTER_MS = 30 * 60 * 1000;   // until the server says otherwise (Settings: app_lock_minutes)
+  function lockAfterMs() { var m = S && S.policies && +S.policies.lockMin; return m > 0 ? m * 60 * 1000 : LOCK_AFTER_MS; }
 
   var S = {
     screen: 'boot', tab: 'gate', user: null, can: { gate: false, hod: false, flag: false, ot: false }, csrf: '', flagReasons: {}, otUuid: null, hodDepts: [], mode: null, fx: { sound: true, vibe: true }, kbd: 'num',
@@ -90,9 +91,51 @@
             return { status: res.status, body: j };
           });
         }
+        /* SIGNED OUT ON THE SERVER (the app was closed, or eight quiet hours):
+           a remembered phone signs itself back in with its key and asks once
+           more, instead of sending the guard to the email-and-password screen. */
+        if (res.status === 401 && !retried && S.phoneKey && (route.indexOf('/auth/') !== 0 || route === '/auth/me')) {
+          return resume().then(function (ok) {
+            return ok ? api(method, route, body, true) : { status: res.status, body: j };
+          });
+        }
         return { status: res.status, body: j };
       });
     });
+  }
+
+  // ------------------------------------------------------ remember this phone
+  /* After one sign-in the server gives this phone a key (only a hash of it is
+     kept there). With it the phone signs itself back in when the server's
+     sign-in has ended. The key stops working when the password changes, the
+     person is deactivated or loses the job, the phone is withdrawn, it has
+     not been used for the days set in Settings, or the phone signs out. */
+  var resuming = null;
+  function getPhoneKey() {
+    if (S.phoneKey || !S.user || !S.deviceUuid || (!S.can.gate && !S.can.hod)) return Promise.resolve();
+    return api('POST', '/auth/phone-key', { device_uuid: S.deviceUuid }).then(function (r) {
+      if (r.status === 200 && r.body.token) {
+        S.phoneKey = { token: r.body.token, user_id: S.user.id };
+        return AttDB.setMeta('phone_key', S.phoneKey);
+      }
+    }).catch(function () {});
+  }
+  function forgetPhoneKey() { S.phoneKey = null; return AttDB.setMeta('phone_key', null); }
+  function resume() {
+    if (!S.phoneKey || !S.deviceUuid) return Promise.resolve(false);
+    if (resuming) return resuming;                      // many requests at once: one sign-in
+    resuming = fetch(API + encodeURIComponent('/auth/phone-resume'), {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_uuid: S.deviceUuid, token: S.phoneKey.token })
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (j) {
+        if (res.status === 200 && j.ok) { S.csrf = j.csrf_token || S.csrf; S.needLogin = false; return true; }
+        if (res.status === 401) return forgetPhoneKey().then(function () { return false; });   // refused: a full sign-in is needed
+        return false;                                                                           // busy or offline: keep the key, try later
+      });
+    }).catch(function () { return false; }).then(function (ok) { resuming = null; return ok; });
+    return resuming;
   }
 
   // ------------------------------------------------------------------- PIN
@@ -124,9 +167,10 @@
         if (r.body.policies) {
           S.policies.dup = r.body.policies.duplicate_window_seconds || 60;
           S.policies.warnMin = r.body.policies.sync_backlog_warn_minutes || 120;
+          S.policies.lockMin = r.body.policies.app_lock_minutes || 30;
         }
         return Promise.all([AttDB.setMeta('user', S.user), AttDB.setMeta('can', S.can), AttDB.setMeta('policies', S.policies)])
-          .then(ensureDevice).then(function () { return true; });
+          .then(ensureDevice).then(getPhoneKey).then(function () { return true; });
       }
       if (r.status === 401) { S.needLogin = true; }
       return false;
@@ -167,8 +211,9 @@
         : 'Sign out?';
       if (!confirm(warn)) return;
       S.faces = {};                                        // faces are for the person signed in; not the next one
-      return api('POST', '/auth/logout', {}).catch(function () {}).then(function () {
+      return api('POST', '/auth/logout', { device_uuid: S.deviceUuid }).catch(function () {}).then(function () {
         S.user = null; S.pin = null; S.can = { gate: false, hod: false };
+        forgetPhoneKey();
         // The outbox is deliberately left alone. Signing out forgets WHO is
         // using the phone, never WHAT the phone has not sent.
         return Promise.all([AttDB.setMeta('user', null), AttDB.setMeta('pin', null)]);
@@ -1013,8 +1058,8 @@
         S.pinFails++;
         if (S.pinFails >= 5) {
           // Forget who was signed in. The unsent scans are NOT touched.
-          S.user = null; S.pin = null; S.pinFails = 0;
-          Promise.all([AttDB.setMeta('user', null), AttDB.setMeta('pin', null)]).then(function () { S.screen = 'login'; render(); });
+          S.user = null; S.pin = null; S.pinFails = 0; S.phoneKey = null;
+          Promise.all([AttDB.setMeta('user', null), AttDB.setMeta('pin', null), AttDB.setMeta('phone_key', null)]).then(function () { S.screen = 'login'; render(); });
           return;
         }
         err.textContent = 'Wrong PIN. ' + (5 - S.pinFails) + ' tries left before a full sign-in is needed.';
@@ -1322,11 +1367,11 @@
       navigator.serviceWorker.addEventListener('message', function (e) { if (e.data === 'att-sync') syncNow(); });
     }
     AttDB.open().then(function () {
-      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies', 'flag_reasons', 'hod_departments', 'mode', 'fx', 'kbd'].map(AttDB.getMeta));
+      return Promise.all(['device_uuid', 'device_id', 'user', 'can', 'pin', 'last_sync', 'policies', 'flag_reasons', 'hod_departments', 'mode', 'fx', 'kbd', 'phone_key'].map(AttDB.getMeta));
     }).then(function (m) {
       S.deviceUuid = m[0]; S.deviceId = m[1] || null; S.user = m[2] || null; S.can = m[3] || S.can;
       S.pin = m[4] || null; S.lastSync = m[5] || null; if (m[6]) S.policies = m[6]; if (m[7]) S.flagReasons = m[7]; if (m[8] !== undefined) S.hodDepts = m[8];
-      if (m[9]) S.mode = m[9]; if (m[10]) S.fx = m[10]; if (m[11]) S.kbd = m[11];
+      if (m[9]) S.mode = m[9]; if (m[10]) S.fx = m[10]; if (m[11]) S.kbd = m[11]; S.phoneKey = m[12] || null;
       var jobs = [];
       if (!S.deviceUuid) { S.deviceUuid = uuid(); jobs.push(AttDB.setMeta('device_uuid', S.deviceUuid)); }
       // Ask the browser not to evict this app's storage. It may say no.
@@ -1353,7 +1398,7 @@
     window.addEventListener('offline', function () { S.online = false; paintStatus(); });
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { S.hiddenAt = Date.now(); return; }
-      if (S.screen === 'main' && S.pin && S.hiddenAt && Date.now() - S.hiddenAt > LOCK_AFTER_MS) { S.screen = 'locked'; render(); return; }
+      if (S.screen === 'main' && S.pin && S.hiddenAt && Date.now() - S.hiddenAt > lockAfterMs()) { S.screen = 'locked'; render(); return; }
       if (S.screen === 'main') afterUnlock();
     });
     setInterval(function () {
