@@ -83,6 +83,25 @@ flash();
 .fc-toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);background:#152033;color:#fff;padding:12px 20px;border-radius:12px;font-size:13px;font-weight:600;opacity:0;transition:.25s;box-shadow:0 12px 30px rgba(0,0,0,.2);z-index:50;pointer-events:none;max-width:90vw;text-align:center}
 .fc-toast.show{opacity:1;transform:translate(-50%,0)}
 .fc-toast.err{background:#b8283f}
+/* Save as product costing — one shared dialog */
+.fc-sa{border:none;border-radius:14px;padding:0;width:min(470px,94vw);box-shadow:0 24px 60px rgba(15,23,42,.28);color:#152033}
+.fc-sa::backdrop{background:rgba(15,23,42,.38)}
+.fc-sa form{padding:16px 18px 14px;margin:0}
+.fc-sa h3{margin:0 0 3px;font-size:15px}
+.fc-sa .sub{margin:0 0 12px;font-size:11.5px;color:#5a6b82;line-height:1.45}
+.fc-sa .opt{display:flex;gap:8px;align-items:flex-start;padding:9px 10px;border:1px solid #e3e9f2;border-radius:10px;margin-bottom:7px;cursor:pointer}
+.fc-sa .opt.on{border-color:#0ea8c9;background:rgba(14,168,201,.05)}
+.fc-sa .opt input[type=radio]{margin-top:3px;accent-color:#0ea8c9}
+.fc-sa .opt b{font-size:12.5px;display:block;margin-bottom:5px}
+.fc-sa .opt .fc-combo{max-width:none;display:block}
+.fc-sa .row2{display:grid;grid-template-columns:1.4fr 1fr;gap:8px;margin-top:4px}
+.fc-sa label.f{font-size:10.5px;font-weight:700;color:#5a6b82;text-transform:uppercase;letter-spacing:.03em;display:block}
+.fc-sa label.f .fc-in{margin-top:3px;text-transform:none;letter-spacing:0;font-weight:400}
+.fc-sa .hint{font-size:10.5px;color:#8a97ab;margin:4px 0 0}
+.fc-sa .err{display:none;margin:10px 0 0;padding:7px 10px;border-radius:8px;background:rgba(224,67,93,.1);color:#b8283f;font-size:12px}
+#fcSaDlg .fc-in{border:1px solid #cbd5e3 !important;background:#fff !important;border-radius:8px;padding:7px 9px;box-shadow:none}
+#fcSaDlg .fc-in:focus{outline:none;border-color:#0ea8c9 !important;box-shadow:0 0 0 3px rgba(14,168,201,.15)}
+.fc-sa .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
 .fc-chip{display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:20px;border:1px solid #e3e9f2;background:#ffffff;cursor:pointer;font-size:12px;font-weight:700}
 .fc-chip:hover{border-color:#0ea8c9;background:rgba(14,168,201,.06)}
 .fc-chip-pct{font-size:10px;font-weight:800;padding:2px 7px;border-radius:20px;background:rgba(22,163,74,.1);color:#16a34a}
@@ -348,7 +367,7 @@ function fcToast(msg, ok){
   t.textContent = msg;
   t.className = 'fc-toast show' + (ok ? '' : ' err');
   clearTimeout(fcToastTimer);
-  fcToastTimer = setTimeout(function(){ t.classList.remove('show'); }, 3200);
+  fcToastTimer = setTimeout(function(){ t.classList.remove('show'); }, Math.max(3200, String(msg).length * 55));
 }
 </script>
 <script>
@@ -424,6 +443,98 @@ function fcToast(msg, ok){
     if(tot) live(tot.closest('[id^=fcCard]'));
   }); }).observe(root, { characterData: true, subtree: true, childList: true });
 })();
+</script>
+<dialog class="fc-sa" id="fcSaDlg" aria-labelledby="fcSaTitle">
+  <form method="dialog" onsubmit="return fcSaveAsGo(event)">
+    <h3 id="fcSaTitle">Save as product costing</h3>
+    <p class="sub">Copies this card's lines, per piece, into Product Costing as a <b>new</b> costing. Nothing existing is changed. Next time this buyer ships <b id="fcSaLineName"></b>, this costing is found by itself.</p>
+    <label class="opt on" id="fcSaOptVar"><input type="radio" name="sa_mode" value="variation" checked onchange="fcSaMode()">
+      <span style="flex:1;min-width:0"><b>Add as a variation under a product</b>
+        <span class="fc-combo"><input type="text" id="saInput0" class="fc-in" placeholder="Type a product name…" autocomplete="off"
+          oninput="document.getElementById('saPid0').value='';fcSaCheck();fcComboFilter('sa',0)" onfocus="fcSaPick('variation');fcComboFilter('sa',0)" onblur="setTimeout(function(){fcComboHide('sa',0);fcSaCheck()},150)">
+          <span class="fc-combo-list" id="saList0"></span></span>
+        <input type="hidden" id="saPid0" value=""></span></label>
+    <label class="opt" id="fcSaOptNew"><input type="radio" name="sa_mode" value="new" onchange="fcSaMode()">
+      <span style="flex:1;min-width:0"><b>Or make a new product</b>
+        <input type="text" id="fcSaNew" class="fc-in" maxlength="200" placeholder="New product name" oninput="fcSaCheck()" onfocus="fcSaPick('new')"></span></label>
+    <div class="row2">
+      <label class="f">Costing name<input type="text" id="fcSaVer" class="fc-in" maxlength="160"></label>
+      <label class="f">Size<input type="text" id="fcSaSize" class="fc-in" maxlength="80"></label>
+    </div>
+    <p class="hint">The size is looked for in an invoice line's name and description — it is what picks this costing next time.</p>
+    <p class="err" id="fcSaErr"></p>
+    <div class="acts">
+      <button type="button" class="zbtn sec" onclick="document.getElementById('fcSaDlg').close()">Cancel</button>
+      <button type="submit" class="zbtn" id="saBtn0" disabled>Save costing</button>
+    </div>
+  </form>
+</dialog>
+<script>
+/* SAVE AS PRODUCT COSTING. One dialog for every card: the card's button
+   carries what to suggest. The card's own lines are sent with it, so what
+   is on screen is what is copied; the card comes back redrawn, no reload. */
+var FC_INVOICE = <?= json_encode((string)$shipment['invoice_no'], JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_HEX_AMP) ?>;
+var fcSaFrom = null, fcSaForce = false;
+function fcSaveAsOpen(btn){
+  fcSaFrom = btn;
+  var d = btn.dataset, $ = function(id){ return document.getElementById(id); };
+  $('fcSaLineName').textContent = '"' + d.line + '"';
+  $('saInput0').value = d.pname || ''; $('saPid0').value = d.pid && d.pid !== '0' ? d.pid : '';
+  $('fcSaNew').value = d.line || '';
+  $('fcSaVer').value = (d.line || 'Costing') + ' (' + FC_INVOICE + ')';
+  $('fcSaSize').value = d.size || '';
+  $('fcSaErr').style.display = 'none'; fcSaForce = false; $('saBtn0').textContent = 'Save costing';
+  fcSaPick('variation');
+  $('fcSaDlg').showModal();
+  (d.pid && d.pid !== '0' ? $('fcSaVer') : $('saInput0')).focus();
+}
+function fcSaPick(mode){
+  document.querySelector('#fcSaDlg input[name=sa_mode][value=' + mode + ']').checked = true; fcSaMode();
+}
+function fcSaMode(){
+  var nw = document.querySelector('#fcSaDlg input[name=sa_mode][value=new]').checked;
+  document.getElementById('fcSaOptVar').classList.toggle('on', !nw);
+  document.getElementById('fcSaOptNew').classList.toggle('on', nw);
+  fcSaCheck();
+}
+function fcSaCheck(){
+  var nw = document.querySelector('#fcSaDlg input[name=sa_mode][value=new]').checked;
+  document.getElementById('saBtn0').disabled = nw ? !document.getElementById('fcSaNew').value.trim() : !document.getElementById('saPid0').value;
+}
+function fcSaveAsGo(ev){
+  ev.preventDefault();
+  var $ = function(id){ return document.getElementById(id); }, d = fcSaFrom.dataset, id = d.item;
+  var card = $('fcCard' + id), form = card ? card.querySelector('form[action="final_costing_save.php"]') : null;
+  var fd = form ? new FormData(form) : new FormData();
+  if (!form) {   // a locked card: copied as it stands
+    var tok = document.querySelector('input[name=_csrf]');
+    fd.append('_csrf', tok ? tok.value : ''); fd.append('final_costing_id', d.fc); fd.append('shipment_id', <?= (int)$shipmentId ?>);
+  }
+  var nw = document.querySelector('#fcSaDlg input[name=sa_mode][value=new]').checked;
+  fd.append('sa_mode', nw ? 'new' : 'variation');
+  fd.append('sa_product_id', nw ? '' : $('saPid0').value);
+  fd.append('sa_new_name', nw ? $('fcSaNew').value : '');
+  fd.append('sa_version', $('fcSaVer').value);
+  fd.append('sa_size', $('fcSaSize').value);
+  if (fcSaForce) fd.append('sa_force', '1');
+  fd.append('ajax', '1');
+  var b = $('saBtn0'); b.disabled = true; b.textContent = 'Saving…';
+  fetch('final_costing_to_product.php', { method: 'POST', body: fd }).then(function(r){ return r.json(); }).then(function(r){
+    b.textContent = 'Save costing';
+    if (!r.success) {
+      $('fcSaErr').textContent = r.message || 'Could not save.'; $('fcSaErr').style.display = 'block';
+      if (r.confirm) { fcSaForce = true; b.textContent = 'Save anyway'; }
+      fcSaCheck(); return;
+    }
+    $('fcSaDlg').close();
+    if (r.html && card) { card.outerHTML = r.html; if (window.fcWire) window.fcWire($('fcCard' + id)); }
+    fcToast(r.message, true);
+  }).catch(function(){
+    b.textContent = 'Save costing'; fcSaCheck();
+    $('fcSaErr').textContent = 'Network error — please try again.'; $('fcSaErr').style.display = 'block';
+  });
+  return false;
+}
 </script>
 <div class="fc-toast" id="fcToast"></div>
 

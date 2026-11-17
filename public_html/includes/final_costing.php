@@ -534,6 +534,19 @@ function fc_row_summary_html(array $lc, ?array $fc, string $cur, array $fx, int 
         . '</button>';
 }
 
+/* The "Save as product costing…" button. Everything the dialog needs to
+   suggest is carried on it, so the dialog itself is one shared element. */
+function fc_saveas_button(array $lc, int $itemId, int $fcId): string
+{
+    $line = trim((string)($lc['product_name'] ?? ''));
+    $desc = trim((string)($lc['description'] ?? ''));
+    $pid = !empty($lc['master_found']) ? (int)($lc['matched_product_id'] ?? 0) : 0;
+    return '<button type="button" class="zbtn sec fc-saveas" id="fcSa' . $itemId . '" data-item="' . $itemId . '" data-fc="' . $fcId . '"'
+         . ' data-line="' . e($line) . '" data-size="' . e($desc !== '' ? $desc : $line) . '"'
+         . ' data-pid="' . $pid . '" data-pname="' . e($pid ? (string)($lc['matched_product'] ?? '') : '') . '"'
+         . ' onclick="fcSaveAsOpen(this)" title="Copy these lines into Product Costing as a new costing. Nothing existing is changed.">Save as product costing…</button>';
+}
+
 function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur, int $shipmentId): string {
     $itemId = (int)$itemRow['id'];
     $locked = $fc && $fc['status'] === 'locked';
@@ -679,7 +692,8 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
       <tr style="font-weight:700;border-top:2px solid #cbd5e3"><td colspan="6">Total Final Cost</td><td class="num"><?= e($nativeCur) ?> <?= number_format($nativeTotal,2) ?></td></tr>
       </tbody>
     </table></div>
-    <p style="font-size:11.5px;color:#8a97ab;margin:10px 0 0">Locked <?= $fc['locked_at'] ? e(date('d M Y, H:i', strtotime($fc['locked_at']))) : '' ?>.</p>
+    <p style="font-size:11.5px;color:#8a97ab;margin:10px 0 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">Locked <?= $fc['locked_at'] ? e(date('d M Y, H:i', strtotime($fc['locked_at']))) : '' ?>.
+      <?= $fc['lines'] ? fc_saveas_button($lc, $itemId, (int)$fc['id']) : '' ?></p>
     <form method="post" action="final_costing_lock.php" data-item-id="<?= $itemId ?>" data-confirm="Reopen this final costing for correction?" onsubmit="return fcAjaxSubmit(event,this)" style="margin-top:12px;padding:14px;border-radius:12px;background:#f6f8fc;border:1px solid #e3e9f2">
       <?= csrf_field() ?>
       <input type="hidden" name="fc_action" value="reopen">
@@ -751,8 +765,9 @@ function fc_render_line_card(array $lc, array $itemRow, ?array $fc, string $cur,
       </div>
       <div class="fc-live" id="fcLive<?= $itemId ?>" data-fx="<?= e(json_encode(array_map(fn($c) => fc_pkr_per($c, $fx), array_combine($curOpts, $curOpts)))) ?>"></div>
       <div id="fcPaste<?= $itemId ?>" style="display:none;font-size:12px;margin:9px 0 0;padding:8px 11px;border-radius:9px;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.3);color:#9a5710"></div>
-      <div style="margin-top:12px;display:flex;gap:10px">
+      <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
         <button class="zbtn">Save Draft</button>
+        <?= ($fc && $fc['lines']) ? fc_saveas_button($lc, $itemId, (int)$fc['id']) : '' ?>
       </div>
     </form>
     <?php if ($fc && $fc['lines']): ?>
@@ -781,4 +796,145 @@ function fc_find_line(array $estimate, int $itemId): array {
         foreach ($estimate['line_costing'] ?? [] as $row) { if ((int)$row['line'] === (int)$itemRow['line_no']) { $lc = $row; break; } }
     }
     return [$lc, $itemRow];
+}
+
+/* ---------------------------------------------------------------
+   SAVE AS PRODUCT COSTING — a line whose real job had no costing to
+   match (for example "Face towel" for one buyer, at its own rates).
+
+   The card's lines are already per piece, exactly as Product Costing
+   keeps them (Dashboard multiplies total_cost by the line's quantity),
+   so they are copied as they are — nothing is divided or guessed.
+
+   It ONLY ADDS: a new costing (variation) under a product, or a new
+   product with this as its first costing. No existing costing, product
+   or shipment changes, so old quotes and old shipments read the same.
+   One currency for the whole costing: the card's. A line typed in
+   another currency is converted with the Settings rates, and the save
+   is refused if a rate for it is missing, rather than copied unconverted.
+   --------------------------------------------------------------- */
+function fc_save_as_costing(int $fcId, int $productId, string $newProductName, string $versionName, string $sizeLabel, int $userId, bool $linkCard = true): array
+{
+    $st = db()->prepare("SELECT fc.*, si.product_name, si.line_no, si.qty, s.invoice_no, s.buyer_name
+        FROM final_costings fc JOIN shipment_items si ON si.id = fc.shipment_item_id JOIN shipments s ON s.id = fc.shipment_id WHERE fc.id = ?");
+    $st->execute([$fcId]);
+    $fc = $st->fetch();
+    if (!$fc) return ['ok' => false, 'message' => 'Final costing not found.'];
+    $ls = db()->prepare("SELECT * FROM final_costing_lines WHERE final_costing_id=? ORDER BY sort_order, id");
+    $ls->execute([$fcId]);
+    $lines = array_values(array_filter($ls->fetchAll(), fn($l) => trim((string)$l['item_name']) !== ''));
+    if (!$lines) return ['ok' => false, 'message' => 'This card has no lines to save — add its lines first.'];
+
+    $fx = fx_get_rates();
+    $cur = strtoupper((string)($lines[0]['native_currency'] ?? '')) ?: (strtoupper((string)$fc['currency']) ?: 'PKR');
+    foreach ($lines as $l) {
+        $n = strtoupper((string)($l['native_currency'] ?? '')) ?: $cur;
+        if ($n !== $cur && (empty($fx[$n]) || empty($fx[$cur]))) {
+            return ['ok' => false, 'message' => "A line is in $n and there is no $n/$cur rate in Settings — set the rate, or put all rates in one currency (\"Rates in\")."];
+        }
+    }
+
+    $versionName = trim(preg_replace('/\s+/', ' ', $versionName));
+    $versionName = mb_substr($versionName !== '' ? $versionName : (trim((string)$fc['product_name']) . ' (from ' . $fc['invoice_no'] . ')'), 0, 160);
+    $sizeLabel = mb_substr(trim(preg_replace('/\s+/', ' ', $sizeLabel)), 0, 80);
+    $newProductName = mb_substr(trim(preg_replace('/\s+/', ' ', $newProductName)), 0, 200);
+
+    db()->beginTransaction();
+    try {
+        $created = false;
+        if ($productId > 0) {
+            $ps = db()->prepare("SELECT id, name FROM products WHERE id=? AND is_active=1");
+            $ps->execute([$productId]);
+            $prod = $ps->fetch();
+            if (!$prod) { db()->rollBack(); return ['ok' => false, 'message' => 'Pick the product from the list.']; }
+        } else {
+            if ($newProductName === '') { db()->rollBack(); return ['ok' => false, 'message' => 'Type the new product\'s name.']; }
+            $ps = db()->prepare("SELECT id, name FROM products WHERE is_active=1 AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1");
+            $ps->execute([$newProductName]);
+            if ($dup = $ps->fetch()) {
+                db()->rollBack();
+                return ['ok' => false, 'message' => "A product called \"{$dup['name']}\" already exists — choose it under \"Add as a variation\"."];
+            }
+            db()->prepare("INSERT INTO products (name, category, default_unit, is_active) VALUES (?, '', 'Pcs', 1)")->execute([$newProductName]);
+            $prod = ['id' => (int)db()->lastInsertId(), 'name' => $newProductName];
+            $created = true;
+        }
+        $pid = (int)$prod['id'];
+
+        // a name already used under this product gets a number, so the variation list stays readable
+        $taken = db()->prepare("SELECT LOWER(version_name) FROM costing_versions WHERE product_id=?");
+        $taken->execute([$pid]);
+        $names = array_flip($taken->fetchAll(PDO::FETCH_COLUMN));
+        $base = $versionName; $k = 2;
+        while (isset($names[mb_strtolower($versionName)])) { $versionName = mb_substr($base, 0, 154) . ' (' . $k++ . ')'; }
+
+        // totals and weights — the same rules Product Costing saves with
+        $rows = []; $total = 0.0; $net = 0.0; $pack = 0.0;
+        foreach ($lines as $l) {
+            $n = strtoupper((string)($l['native_currency'] ?? '')) ?: $cur;
+            $q = (float)$l['quantity']; $w = (float)$l['weight_kg']; $sh = !empty($l['shared']);
+            $r = $n === $cur ? (float)$l['rate'] : cvt((float)$l['rate'], $n, $cur, $fx);
+            $amt = $sh ? ($q > 0 ? round($r / $q, 2) : 0.0) : round($q * $r, 2);
+            $total += $sh ? ($q > 0 ? $r / $q : 0) : $q * $r;
+            $g = (string)($l['line_group'] ?: 'Other');
+            $aw = $sh ? ($q > 0 ? $w / $q : $w) : $w * $q;
+            if ($g === 'Fabric' || $g === 'Accessories') $net += $aw;
+            if ($g === 'Packing') $pack += $aw;
+            $rows[] = [$g, mb_substr((string)$l['item_name'], 0, 160), mb_substr((string)$l['description'], 0, 500), $q, mb_substr((string)$l['unit'], 0, 40), $w, round($r, 4), $amt, $sh ? 1 : 0];
+        }
+        $remarks = 'Saved from Final Costing: invoice ' . $fc['invoice_no'] . ', line ' . (int)$fc['line_no'] . ' "' . $fc['product_name'] . '"'
+                 . ($fc['buyer_name'] ? ', buyer ' . $fc['buyer_name'] : '') . ', ' . date('d M Y') . '.';
+        db()->prepare("INSERT INTO costing_versions (product_id,version_name,currency,status,remarks,suggested_price,total_cost,net_weight,packing_weight,gross_weight,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+            ->execute([$pid, $versionName, $cur, 'draft', $remarks, 0, round($total, 2), round($net, 3), round($pack, 3), round($net + $pack, 3), $userId]);
+        $vid = (int)db()->lastInsertId();
+        $costingNo = 'CST-' . $pid . '-' . $vid;
+        db()->prepare("UPDATE costing_versions SET costing_no=? WHERE id=?")->execute([$costingNo, $vid]);
+        $ins = db()->prepare("INSERT INTO costing_lines (costing_version_id,line_group,item_name,description,quantity,unit,weight_kg,rate,amount,sort_order,shared) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+        foreach ($rows as $i => $r) { $ins->execute([$vid, $r[0], $r[1], $r[2], $r[3], $r[4], $r[5], $r[6], $r[7], $i + 1, $r[8]]); }
+
+        // the size is what picks this variation for the next line of this product
+        if ($sizeLabel !== '') {
+            $ss = db()->prepare("SELECT id FROM product_sizes WHERE product_id=? AND LOWER(TRIM(size_label)) = LOWER(?) LIMIT 1");
+            $ss->execute([$pid, $sizeLabel]);
+            $sid = (int)$ss->fetchColumn();
+            if (!$sid) {
+                db()->prepare("INSERT INTO product_sizes (product_id, size_label) VALUES (?, ?)")->execute([$pid, $sizeLabel]);
+                $sid = (int)db()->lastInsertId();
+            }
+            db()->prepare("INSERT IGNORE INTO costing_version_sizes (costing_version_id, product_size_id) VALUES (?, ?)")->execute([$vid, $sid]);
+        }
+
+        // this card now shows it as the costing in use (a locked card is left exactly as it was)
+        if ($linkCard) db()->prepare("UPDATE final_costings SET source_costing_version_id=? WHERE id=?")->execute([$vid, $fcId]);
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        error_log('fc_save_as_costing: ' . $e->getMessage());
+        return ['ok' => false, 'message' => 'Could not save the costing: ' . $e->getMessage()];
+    }
+    if ($created) cache_bump('products');
+    try {
+        audit_log((int)$fc['shipment_id'], 'Final Costing', 'save_as_costing', '', $prod['name'] . ' / ' . $versionName . ' (' . $costingNo . ')',
+            $created ? 'New product and costing made from this line' : 'New costing variation made from this line');
+        audit_log(0, 'Product Costing', 'create', $prod['name'], $versionName . ' (' . $costingNo . ')', 'From Final Costing, invoice ' . $fc['invoice_no']);
+    } catch (Throwable $e) {}
+    return ['ok' => true, 'product_id' => $pid, 'product_name' => $prod['name'], 'new_product' => $created,
+            'version_id' => $vid, 'version_name' => $versionName, 'costing_no' => $costingNo, 'currency' => $cur, 'total' => round($total, 4),
+            'line_name' => (string)$fc['product_name'], 'buyer' => (string)($fc['buyer_name'] ?? ''), 'shipment_id' => (int)$fc['shipment_id'],
+            'item_id' => (int)$fc['shipment_item_id']];
+}
+
+/* A card's lines as its form posts them — the same fields Save Draft reads. */
+function fc_lines_from_post(): array
+{
+    $g = post_array('line_group'); $items = post_array('item_name'); $d = post_array('description'); $q = post_array('quantity');
+    $u = post_array('unit'); $w = post_array('weight_kg'); $r = post_array('rate'); $sh = post_array('shared'); $nc = post_array('native_currency');
+    $lines = [];
+    foreach ($items as $i => $name) {
+        if (trim((string)$name) === '') continue;
+        $lines[] = ['line_group' => $g[$i] ?? 'Other', 'item_name' => $name, 'description' => $d[$i] ?? '', 'quantity' => $q[$i] ?? 0,
+                    'unit' => $u[$i] ?? '', 'weight_kg' => $w[$i] ?? 0, 'rate' => $r[$i] ?? 0, 'shared' => ($sh[$i] ?? '0') === '1',
+                    'native_currency' => $nc[$i] ?? ''];
+    }
+    return $lines;
 }
