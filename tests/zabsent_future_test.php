@@ -60,13 +60,17 @@ $pdo->prepare("INSERT INTO att_entry_cycles (employee_id, shift_instance_id, ent
 $abs0 = array_filter(ReportService::attendance(['from' => $dd[0], 'to' => $dd[2]], null)['rows'], fn($x) => $x['status'] === 'absent');
 ok(count($abs0) === 5, '(before: five "did not come" days — 234 three, 379 two)');
 ok(AdminService::dayOff($dd[0], $dd[2], [], $dept, [], '', 1)['ok'] === false, 'no reason, no day off');
+/* the screen sends an empty code box as one empty code: the department must still be used (owner's screenshot, 19 Nov) */
+$far = $now->modify('+20 days')->format('Y-m-d');
+$e1 = AdminService::dayOff($far, $far, [], $dept, [''], 'check', 1);
+ok($e1['ok'] === true && $e1['employees'] === 2, 'a department with an empty code box is taken as the whole department (' . json_encode($e1) . ')');
 $r = AdminService::dayOff($dd[0], $dd[2], [], 0, ['234', '379', '999'], 'weekly off', 1);
 ok($r['ok'] && $r['removed'] === 5 && count($r['kept']) === 1 && str_starts_with($r['kept'][0], '379') && $r['unknown_codes'] === ['999'],
    'five shift days become day off; 379\'s day with an entry is kept and named; 999 is reported as unknown (' . json_encode($r) . ')');
 $rows = ReportService::attendance(['from' => $dd[0], 'to' => $dd[2]], null)['rows'];
 ok(count($rows) === 1 && $rows[0]['employee_code'] === '379' && $rows[0]['status'] === 'present', 'after: no "did not come" at all; only 379\'s worked day is left');
 ok((int) $pdo->query("SELECT COUNT(*) FROM att_entry_cycles")->fetchColumn() === 1, 'the entry itself is untouched');
-ok((int) $pdo->query("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'shift.day_off'")->fetchColumn() === 1, 'one audit line with the reason');
+ok((int) $pdo->query("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'shift.day_off'")->fetchColumn() === 2, 'one audit line for each day off given, with the reason');
 
 echo "\nNOT YET STARTED / DAY OFF: $P passed, $F failed\n";
 exit($F ? 1 : 0);

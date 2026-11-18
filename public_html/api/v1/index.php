@@ -900,7 +900,7 @@ try {
             $cs  = Http::input('codes', '');
             admin_answer(AdminService::dayOff(
                 (string) Http::input('from', ''), (string) Http::input('to', ''), is_array($wd) ? array_values($wd) : [],
-                (int) Http::input('department_id', 0), is_array($cs) ? array_values($cs) : preg_split('/[\s,;]+/', (string) $cs),
+                (int) Http::input('department_id', 0), is_array($cs) ? array_values($cs) : (preg_split('/[\s,;]+/', trim((string) $cs), -1, PREG_SPLIT_NO_EMPTY) ?: []),
                 (string) Http::input('reason', ''), (int) $u['id']));
             break;
 

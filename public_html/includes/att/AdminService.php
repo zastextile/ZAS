@@ -807,6 +807,8 @@ final class AdminService
         }
         $weekdays = array_values(array_unique(array_filter(array_map('intval', $weekdays), static fn($n) => $n >= 1 && $n <= 7)));
         $unknown = [];
+        /* an empty code box arrives as one empty code: drop the blanks before deciding department or codes */
+        $codes = array_values(array_unique(array_filter(array_map(static fn($c) => trim((string) $c), $codes), static fn($c) => $c !== '')));
         if ($departmentId > 0 && $codes === []) {
             $emps = Db::all('SELECT id, code FROM att_employees WHERE department_id = ? AND active = 1', [$departmentId]);
         } else {
