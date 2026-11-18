@@ -87,7 +87,7 @@ Roles::grant($hr, Roles::HR);
 Roles::grant($acc, Roles::ACCOUNTS);
 Roles::grant($gk, Roles::GATEKEEPER);
 $day = Shifts::create(['name' => 'Day', 'start_time' => '09:00', 'end_time' => '17:00', 'grace_in_minutes' => 30, 'grace_out_minutes' => 30]);
-Policy::set('default_shift_id', (string) $day, null, 'string'); Policy::flush();
+Policy::set('default_shift_id', (string) $day, null, 'string'); Policy::set('app_pin_required', '1', null, 'bool');   /* these runs sign phones in through the PIN screen; the PIN-off default is tested in zatt_pwa_test */ Policy::flush();
 const GATE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 S::registerDevice(GATE, 'Gate A', 'gate', $gk);
 

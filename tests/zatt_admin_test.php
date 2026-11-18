@@ -491,53 +491,30 @@ const closed = (page) => page.waitForFunction(() => !document.querySelector('#at
     await page.waitForSelector('#atts-body .err:has-text("already")');
     check('adding it again shows the refusal on the screen', true);
 
-    // Employees: one by one
+    // Employees: ONE PLACE — Setup only lists them; adding and changing is on People Finance
+    await page.evaluate(async () => {
+      const me = await (await fetch('api/v1/index.php?route=%2Fauth%2Fme', { credentials: 'same-origin' })).json();
+      const d = await (await fetch('api/v1/index.php?route=%2Fadmin%2Fdepartments', { credentials: 'same-origin' })).json();
+      const q = d.departments.find(x => x.name === 'Quality');
+      const h = { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf_token };
+      const lau = await (await fetch('api/v1/index.php?route=%2Fadmin%2Fdepartments', { method: 'POST', credentials: 'same-origin', headers: h, body: JSON.stringify({ name: 'Laundry' }) })).json();
+      for (const [code, name, dep] of [['Q001', 'Zara <b>Qureshi</b>', q.id], ['Q002', 'Omar Sheikh', q.id], ['Q003', 'Huma Raza', lau.department_id || lau.id]]) {
+        await fetch('api/v1/index.php?route=%2Fadmin%2Femployees', { method: 'POST', credentials: 'same-origin', headers: h, body: JSON.stringify({ code, full_name: name, department_id: dep }) });
+      }
+      /* Q002 leaves (as People Finance › Mark as left would), so two stay active in Quality */
+      const l = await (await fetch('api/v1/index.php?route=%2Fadmin%2Femployees&query=Q002&state=all', { credentials: 'same-origin' })).json();
+      await fetch('api/v1/index.php?route=%2Fadmin%2Femployees%2Factive', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf_token }, body: JSON.stringify({ id: l.employees[0].id, active: false, reason: 'entered by mistake' }) });
+    });
     await tab(page, 'Employees');
-    await page.click('button:has-text("Add employee")');
-    await page.waitForSelector('#attsdlg[open]');
-    await page.click('#attsdlg-ok');
-    await page.waitForSelector('#attsdlg-err:not(:empty)');
-    check('saving an empty form is refused in the dialog, which stays open', await page.isVisible('#attsdlg[open]'));
-    const inputs = page.locator('#attsdlg-fields input[type=text]');
-    await inputs.nth(0).fill('Q001');
-    await inputs.nth(1).fill('Zara <b>Qureshi</b>');
-    await page.selectOption('#attsdlg-fields select', { label: 'Quality' });
-    await page.click('#attsdlg-ok');
-    await closed(page);
     await page.waitForSelector('#atts-body td strong:text-is("Q001")');
-    check('an employee added from the screen appears in the list', true);
+    check('ONE PLACE: the Employees tab lists people but has no Add employee / Add many / Edit / Make inactive / Delete',
+      (await page.locator('#atts-body button:has-text("Add employee"), #atts-body button:has-text("Add many"), #atts-body button:has-text("Edit"), #atts-body button:has-text("Make inactive"), #atts-body button:has-text("Delete")').count()) === 0);
+    check('  and points to People Finance › Employees to add or change someone', (await page.getAttribute('#emp-to-fin', 'href')) === 'att_finance.php#people');
     check('a name with angle brackets is shown as text, not as markup', (await page.locator('#atts-body b').count()) === 0 && /Zara <b>Qureshi<\/b>/.test(await page.textContent('#atts-body')));
-
-    // Employees: paste from Excel
-    await page.click('button:has-text("Add many")');
-    await page.waitForSelector('#attsdlg[open]');
-    await page.fill('#attsdlg-fields textarea', 'Code\tName\tDepartment\nQ002\tOmar Sheikh\tQuality\nQ003\tHuma Raza\tLaundry\nQ001\tZara Again\tQuality\n');
-    await page.click('#attsdlg-ok');
-    await page.waitForSelector('#attsdlg-fields table');
-    const preview = await page.textContent('#attsdlg-fields');
-    check('the check skips the header row and says what will happen', /Will add 2\. Already on the roll: 1\. Cannot be added: 0\./.test(preview), preview);
-    check('  and that a new department will be created', /New department "Laundry" will be created/.test(preview));
-    check('  the button now offers to add exactly two', /Add 2 employees/.test(await page.textContent('#attsdlg-ok')));
-    await page.click('#attsdlg-ok');
-    await page.waitForSelector('#attsdlg-fields .okmsg');
-    check('after adding, it says how many were added', /2 employees added/.test(await page.textContent('#attsdlg-fields .okmsg')));
-    await page.click('#attsdlg-cancel');
-    await closed(page);
     await page.fill('input[aria-label="Search employees"]', 'Q00');
-    await page.waitForFunction(() => document.querySelectorAll('#atts-body tbody tr').length === 3);
-    check('searching "Q00" finds the three new people', true);
-
-    // Make inactive needs a reason
-    await page.locator('#atts-body tr', { hasText: 'Q002' }).locator('button:has-text("Make inactive")').click();
-    await page.waitForSelector('#attsdlg[open]');
-    await page.click('#attsdlg-ok');
-    await page.waitForSelector('#attsdlg-err:not(:empty)');
-    check('making somebody inactive without a reason is refused', /why/i.test(await page.textContent('#attsdlg-err')));
-    await page.fill('#attsdlg-fields textarea', 'entered by mistake');
-    await page.click('#attsdlg-ok');
-    await closed(page);
     await page.waitForFunction(() => document.querySelectorAll('#atts-body tbody tr').length === 2);
-    check('with a reason they leave the active list', true);
+    check('searching "Q00" finds the two active people (Q002 has left)', true);
 
     // Shifts
     await tab(page, 'Shifts');
@@ -634,18 +611,23 @@ const closed = (page) => page.waitForFunction(() => !document.querySelector('#at
     check('a clerk sees the settings read-only, with no Save button', (await cp.locator('button:has-text("Save settings")').count()) === 0 && await cp.locator('#atts-body .setting input').first().isDisabled());
     await c2.close();
 
-    // DELETE, for what was entered by mistake (Admin only): a person, then a department
+    // DELETE, for what was entered by mistake (Admin only): a person — on People Finance, the one place for people — then a department
     await page.goto(BASE + '/att_setup.php#emp');
     await page.reload();
     await page.waitForSelector('input[aria-label="Search employees"]');
     await page.fill('input[aria-label="Search employees"]', 'X777');
     await page.waitForFunction(() => /X777/.test(document.getElementById('atts-body').textContent));
-    await page.locator('#atts-body tr', { hasText: 'X777' }).locator('button:has-text("Delete")').click();
-    await page.waitForSelector('#attsdlg[open]');
-    await page.fill('#del-why', 'Entered by mistake');
-    await page.click('#attsdlg-ok');
-    await page.waitForFunction(() => !document.querySelector('#attsdlg[open]') && !/X777/.test(document.getElementById('atts-body').textContent), null, { timeout: 10000 }).catch(() => {});
-    check('SETUP › EMPLOYEES: Delete removes someone entered by mistake', !/X777/.test(await page.textContent('#atts-body')));
+    check('SETUP › EMPLOYEES has no Delete — it only lists people', (await page.locator('#atts-body tr', { hasText: 'X777' }).locator('button').count()) === 0);
+    await page.goto(BASE + '/att_finance.php#people');
+    await page.reload();
+    await page.waitForSelector('#fin-body input[aria-label="Search"]');
+    await page.fill('#fin-body input[aria-label="Search"]', 'X777');
+    await page.locator('tr.click', { hasText: 'X777' }).first().click();
+    await page.click('#fin-shade button:has-text("Delete (entered by mistake)")');
+    await page.fill('#fin-shade input[placeholder="e.g. entered twice"]', 'Entered by mistake');
+    await page.click('#fin-shade button:text-is("Delete")');
+    await page.waitForFunction(() => !/X777/.test(document.getElementById('fin-body').textContent), null, { timeout: 10000 }).catch(() => {});
+    check('PEOPLE FINANCE › EMPLOYEES: Delete removes someone entered by mistake', !/X777/.test(await page.textContent('#fin-body')));
     await page.goto(BASE + '/att_setup.php#dept');
     await page.reload();
     await page.waitForFunction(() => /Mistake Dept/.test(document.getElementById('atts-body').textContent));
@@ -670,7 +652,7 @@ foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — 
 
 echo "13. What the browser run left in the database\n";
 ok(Db::value("SELECT full_name FROM att_employees WHERE code = 'Q001'") === 'Zara <b>Qureshi</b>', 'the name is stored exactly as typed');
-ok($n("SELECT COUNT(*) FROM att_employees WHERE code IN ('Q002','Q003')") === 2 && $n("SELECT COUNT(*) FROM att_departments WHERE name = 'Laundry'") === 1, 'the pasted list added two people and one department');
+ok($n("SELECT COUNT(*) FROM att_employees WHERE code IN ('Q002','Q003')") === 2, 'Q002 and Q003 are on the roll');
 ok((int) Db::value("SELECT active FROM att_employees WHERE code = 'Q002'") === 0, 'Q002 is inactive');
 $ev = (int) Db::value("SELECT id FROM att_shifts WHERE name = 'Evening'");
 ok($n('SELECT COUNT(*) FROM att_shift_instances WHERE shift_id = ? AND DAYOFWEEK(work_date) = 1', [$ev]) === 0 && $n('SELECT COUNT(*) FROM att_shift_instances WHERE shift_id = ?', [$ev]) >= 25,

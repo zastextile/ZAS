@@ -116,7 +116,7 @@ $names = ['Ali Raza', 'Ayesha Khan', 'Usman Tariq', 'Mehnaz Bibi', 'Bilal Ahmed'
 $deptIds = ['Stitching' => Employees::createDepartment('Stitching'), 'Cutting' => Employees::createDepartment('Cutting'), 'Packing' => Employees::createDepartment('Packing')];
 Roles::grant($hodU, Roles::HOD, $deptIds['Packing']);
 $day = Shifts::create(['name' => 'Day', 'start_time' => '09:00', 'end_time' => '17:00', 'grace_in_minutes' => 10, 'grace_out_minutes' => 10]);
-Policy::set('default_shift_id', (string) $day, null, 'string');
+Policy::set('default_shift_id', (string) $day, null, 'string'); Policy::set('app_pin_required', '1', null, 'bool');   /* these runs sign phones in through the PIN screen; the PIN-off default is tested in zatt_pwa_test */
 Policy::set('auto_out_enabled', '0', null, 'bool'); Policy::flush();
 $ids = []; $dn = array_keys($deptIds);
 foreach ($names as $i => $nm) {

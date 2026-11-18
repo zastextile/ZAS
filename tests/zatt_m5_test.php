@@ -223,7 +223,7 @@ Roles::grant($gk, Roles::GATEKEEPER);
 Roles::grant($hodU, Roles::HOD, $dS);
 Roles::grant($hr, Roles::HR);
 $day = Shifts::create(['name' => 'Day', 'start_time' => '09:00', 'end_time' => '17:00']);
-Policy::set('default_shift_id', (string) $day, null, 'string'); Policy::flush();
+Policy::set('default_shift_id', (string) $day, null, 'string'); Policy::set('app_pin_required', '1', null, 'bool');   /* these runs sign phones in through the PIN screen; the PIN-off default is tested in zatt_pwa_test */ Policy::flush();
 const GATE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 S::registerDevice(GATE, 'Gate A', 'gate', $gk);
 $seq = 0; $un = 0;
@@ -759,47 +759,54 @@ const waiting = (page) => page.getAttribute('#waiting', 'data-count');
     await dp.waitForSelector('#atts-body table');
     const row = () => dp.locator('#atts-body tr', { hasText: 'E003' });
     check('the employee list shows who has a photo', /None/.test(await row().textContent()) && /On file/.test(await dp.locator('#atts-body tr', { hasText: 'E001' }).textContent()));
-    await row().locator('button:has-text("Photo")').click();
-    await dp.waitForSelector('#attsdlg[open]');
-    await dp.click('#attsdlg-ok');
-    check('saving with no picture chosen is refused', /Choose a picture/.test(await dp.textContent('#attsdlg-err')));
-    await dp.setInputFiles('#ph-file', DIR + '/notes.txt');
-    await dp.check('#ph-notice');
-    await dp.click('#attsdlg-ok');
-    await dp.waitForFunction(() => /not a JPG/.test(document.getElementById('attsdlg-err').textContent));
+    check('ONE PLACE: Setup › Employees only lists people — no Add, Edit, Photo or Delete there',
+      (await dp.locator('#atts-body button:has-text("Add employee"), #atts-body button:has-text("Photo"), #atts-body button:has-text("Edit"), #atts-body button:has-text("Delete")').count()) === 0);
+    check('  and it points to People Finance › Employees', (await dp.getAttribute('#emp-to-fin', 'href')) === 'att_finance.php#people');
+
+    // The gate photo is saved on the employee's card in People Finance.
+    const photoIn = async (name) => {
+      await dp.goto(BASE + '/att_finance.php#people'); await dp.reload();
+      await dp.waitForSelector('tr.click', { timeout: 20000 });
+      await dp.fill('#fin-body input[aria-label="Search"]', name);
+      await dp.locator('tr.click', { hasText: name }).first().click();
+      await dp.waitForFunction(() => /Photo for the gate/.test(document.getElementById('fin-shade').textContent), null, { timeout: 20000 });
+      const card = dp.locator('#fin-shade .cardx', { hasText: 'Photo for the gate' });
+      return { card, msg: () => card.locator('.small.muted').last().textContent(), save: () => card.locator('button:has-text("Save photo")').click(),
+               file: (f) => card.locator('input[type=file]').setInputFiles(f), notice: card.locator('input[type=checkbox]') };
+    };
+    let ph = await photoIn('Bilal Ahmed');
+    await ph.save();
+    check('saving with no picture chosen is refused', /Choose a picture/.test(await ph.msg()));
+    await ph.file(DIR + '/notes.txt'); await ph.notice.check(); await ph.save();
+    await dp.waitForFunction(() => /not a JPG/.test(document.getElementById('fin-shade').textContent), null, { timeout: 20000 });
     check('a text file chosen as the photo is refused, with the reason', true);
-    await dp.setInputFiles('#ph-file', DIR + '/face.png');
-    await dp.uncheck('#ph-notice');
-    await dp.click('#attsdlg-ok');
-    await dp.waitForFunction(() => /told/.test(document.getElementById('attsdlg-err').textContent));
-    check('a real picture without the notice ticked is refused', true);
-    await dp.check('#ph-notice');
-    await dp.click('#attsdlg-ok');
-    await dp.waitForSelector('#ph-done:not(:empty)', { timeout: 20000 });
-    const saved = await dp.textContent('#ph-done');
-    check('with the notice ticked it saves, and says the size it was stored at', /480 × 600, \d+ KB/.test(saved), saved);
-    await dp.waitForFunction(() => { const i = document.querySelector('img#ph-current'); return i && i.complete && i.naturalWidth === 480 && i.naturalHeight === 600; }, null, { timeout: 20000 });
+    await ph.file(DIR + '/face.png'); await ph.notice.uncheck(); await ph.save();
+    check('a real picture without the notice ticked is refused', /told/.test(await ph.msg()));
+    await ph.notice.check(); await ph.save();
+    await dp.waitForFunction(() => /Saved\. This is what the gate will see/.test(document.getElementById('fin-shade').textContent), null, { timeout: 20000 });
+    check('with the notice ticked it saves', true);
+    await dp.waitForFunction(() => { const i = document.querySelector('#fin-shade .gatepic img'); return i && i.complete && i.naturalWidth === 480 && i.naturalHeight === 600; }, null, { timeout: 20000 });
     check('  and shows the stored picture back: 480 × 600 from a 900 × 1300 upload', true);
     if (SHOT) await dp.screenshot({ path: SHOT + '/att-m5-setup-photo.png' });
-    await dp.click('#attsdlg-cancel');
-    await dp.waitForFunction(() => /On file/.test([...document.querySelectorAll('#atts-body tr')].find(r => /E003/.test(r.textContent)).textContent));
-    check('the list now shows E003 with a photo on file', true);
 
-    // Adding a new employee WITH their photo, in one dialog.
-    await dp.click('button:has-text("Add employee")');
-    await dp.waitForSelector('#attsdlg[open] #emp-photo');
-    await dp.fill('#emp-code', 'E007');
-    await dp.fill('#emp-name', 'Zainab New');
-    await dp.selectOption('#emp-dept', { label: 'Stitching' });
-    await dp.setInputFiles('#emp-photo', DIR + '/face.png');
-    await dp.click('#attsdlg-ok');
-    await dp.waitForFunction(() => /Tick that the employee has been told/.test(document.getElementById('attsdlg-err').textContent));
-    check('adding an employee with a photo but without the notice ticked is refused BEFORE anything is saved', true);
-    await dp.check('#emp-notice');
-    await dp.click('#attsdlg-ok');
-    await dp.waitForFunction(() => !document.querySelector('#attsdlg[open]'), null, { timeout: 20000 });
+    // A new employee, then their photo — added where employees are added.
+    const added = await dp.evaluate(async () => {
+      const me = await (await fetch('api/v1/index.php?route=%2Fauth%2Fme', { credentials: 'same-origin' })).json();
+      const d = await (await fetch('api/v1/index.php?route=%2Fadmin%2Fdepartments', { credentials: 'same-origin' })).json();
+      const st = d.departments.find(x => x.name === 'Stitching');
+      const r = await fetch('api/v1/index.php?route=%2Fadmin%2Femployees', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf_token }, body: JSON.stringify({ code: 'E007', full_name: 'Zainab New', department_id: st.id }) });
+      return r.status;
+    });
+    check('E007 Zainab New added (' + added + ')', added === 200);
+    ph = await photoIn('Zainab New');
+    await ph.file(DIR + '/face.png'); await ph.save();
+    check('a new employee\'s photo without the notice ticked is refused BEFORE anything is saved', /told/.test(await ph.msg()));
+    await ph.notice.check(); await ph.save();
+    await dp.waitForFunction(() => /Saved\. This is what the gate will see/.test(document.getElementById('fin-shade').textContent), null, { timeout: 20000 });
+    await dp.goto(BASE + '/att_setup.php#emp'); await dp.reload();
     await dp.waitForFunction(() => { const r = [...document.querySelectorAll('#atts-body tr')].find(x => /E007/.test(x.textContent)); return r && /On file/.test(r.textContent); }, null, { timeout: 20000 });
-    check('A NEW EMPLOYEE AND THEIR PHOTO ARE SAVED FROM ONE "Add employee" DIALOG', true);
+    check('A NEW EMPLOYEE AND THEIR PHOTO — saved on People Finance, listed with "On file" in Setup', true);
 
     await dp.click('#atts-tabs button:has-text("Photos")');
     await dp.waitForSelector('#atts-body .facts');
@@ -873,7 +880,7 @@ $e7 = Db::one("SELECT reference_photo_key, notice_ack_at FROM att_employees WHER
 ok($n("SELECT COUNT(*) FROM att_employees WHERE code = 'E007'") === 1 && $e7['reference_photo_key'] !== null && $e7['notice_ack_at'] !== null,
    'E007 exists once, with a photo and the notice date — the refused first attempt did not create a half-made employee');
 ok(Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$emp['E003']]) !== null
-   && Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$emp['E005']]) !== null, 'E003 (from the Setup dialog) and E005 (from the bucket folder) now have photos');
+   && Db::value('SELECT reference_photo_key FROM att_employees WHERE id = ?', [$emp['E005']]) !== null, 'E003 (from People Finance) and E005 (from the bucket folder) now have photos');
 $shown = $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'photo.view'") - $views0;
 /* Gate phone 2, HOD phone 1 or 2, Setup 1, HR 2. The HOD's second look at
    the SAME person's picture on the same open page is drawn by the browser

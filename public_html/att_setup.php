@@ -33,6 +33,7 @@ $can     = [
     'u' => zu_can('attadm', 'u'),
     'd' => zu_can('attadm', 'd'),
     'admin' => $isAdmin,
+    'fin' => function_exists('zfin_can_open') && zfin_can_open(),   // may open People Finance, where employees are added and changed
 ];
 
 page_header('Attendance — Setup');
@@ -266,7 +267,7 @@ page_header('Attendance — Setup');
           step(o.departments > 0, 'Departments', o.departments > 0 ? o.departments + ' in use.' : 'None yet. Each employee belongs to one, and each HOD confirms the arrivals of one.', 'dept', 'Departments'),
           step(o.shifts > 0, 'Shifts', o.shifts > 0 ? o.shifts + ' in use.' : 'None yet. Add the working hours of the factory.', 'shift', 'Shifts'),
           step(!!o.default_shift, 'Default shift', o.default_shift ? '"' + o.default_shift + '" is used for anyone who arrives without a shift for the day.' : 'Not chosen. Without it, an employee with no shift for the day cannot be filed and goes to HR.', CAN.admin ? 'set' : null, 'Settings'),
-          step(o.employees > 0, 'Employees', o.employees > 0 ? o.employees + ' on the roll.' : 'Nobody yet. Add them one by one, paste a list from Excel, or bring in the production workers.', 'emp', 'Employees'),
+          step(o.employees > 0, 'Employees', o.employees > 0 ? o.employees + ' on the roll.' : 'Nobody yet. Add them on People Finance › Employees — one by one, or many at once pasted from Excel.', 'emp', 'Employees'),
           step(o.gatekeepers_ready > 0, 'A gatekeeper', o.gatekeepers_ready > 0 ? o.gatekeepers_ready + ' login' + (o.gatekeepers_ready === 1 ? '' : 's') + ' can scan at the gate.' : 'No login can scan at the gate yet.', CAN.admin ? 'people' : null, 'People'),
           step(o.employees > 0 && noHod.length === 0, 'A HOD for every department', o.employees === 0 ? 'Comes after the employees.' : (noHod.length === 0 ? 'Every department with employees has a HOD.' : 'No HOD yet for: ' + noHod.join(', ') + '. Arrivals there will wait unconfirmed.'), CAN.admin ? 'people' : null, 'People'),
           step(o.employees > 0 && o.employees_with_photo >= o.employees, 'Employee photos (not needed to start)',
@@ -295,19 +296,19 @@ page_header('Attendance — Setup');
       var st = el('select', { 'aria-label': 'Show', change: function(){ empFilter.state = st.value; empFilter.page = 1; list(); } },
         options([{ v: 'active', t: 'Active' }, { v: 'inactive', t: 'Inactive' }, { v: 'all', t: 'Everyone' }], 'v', 't', empFilter.state));
       var holder = el('div', {}, [el('p', { class: 'muted', text: 'Loading…' })]);
-      /* ONE FORM FOR EMPLOYEES. Adding and editing people — with their pay and
-         opening balance in the same line — now lives on People Finance ›
-         Employees. This tab is kept for what belongs to attendance alone:
-         the reference photo and the card. The two buttons below still work,
-         and write the very same employee list. */
+      /* ONE PLACE FOR EMPLOYEES (owner's decision, 18 Nov 2026). Adding,
+         changing, "left" and deleting a person happen on People Finance ›
+         Employees only — code, name, department, card text, photo, pay and
+         opening balance in one card. This tab is a list to look people up:
+         two screens that both change the same people were confusing. */
       show([
-        el('div', { class: 'note', style: 'background:#eef8f3;border:1px solid #bfe0d3;border-radius:10px;padding:10px 13px;color:#17624d' }, [
-          el('strong', { text: 'Everything about an employee is now in one place: ' }),
-          el('a', { href: 'att_finance.php#people', style: 'font-weight:700;color:#17624d', text: 'People Finance › Employees →' }),
-          ' Code, name, department, card text, gate photo, pay, opening balance, ledger and advances — one person in one card, or many at once with paste from Excel. This tab still works and changes the same list.']),
-        el('div', { class: 'bar' }, [q, d, st,
-          CAN.c ? btn('Add employee', function(){ editEmployee(null); }, true) : null,
-          CAN.c ? btn('Add many…', function(){ importDialog(); }) : null]),
+        el('div', { class: 'note', style: 'background:#eef8f3;border:1px solid #bfe0d3;border-radius:10px;padding:10px 13px;color:#17624d' }, CAN.fin ? [
+          el('strong', { text: 'To add or change an employee, go to ' }),
+          el('a', { href: 'att_finance.php#people', id: 'emp-to-fin', style: 'font-weight:700;color:#17624d', text: 'People Finance › Employees →' }),
+          ' Code, name, department, card text, gate photo, pay and opening balance — one person in one card, or many at once with paste from Excel. This list is for looking people up.'] : [
+          el('strong', { text: 'This list is for looking people up. ' }),
+          'Employees are added and changed on People Finance › Employees — ask someone who can open People Finance.']),
+        el('div', { class: 'bar' }, [q, d, st]),
         holder
       ]);
       function list(){
@@ -316,25 +317,16 @@ page_header('Attendance — Setup');
           if (!r.ok) { holder.appendChild(el('p', { class: 'err', text: r.error || 'Could not load.' })); return; }
           if (!r.employees.length) {
             holder.appendChild(el('p', { class: 'muted', text: r.total === 0 && !empFilter.query && !empFilter.department_id && empFilter.state === 'active'
-              ? (activeDepts().length ? 'Nobody on the roll yet. Use "Add employee" or "Add many…".' : 'Add a department first (Departments tab), then the employees.')
+              ? (activeDepts().length ? 'Nobody on the roll yet. Add them on People Finance › Employees.' : 'Add a department first (Departments tab), then the employees on People Finance › Employees.')
               : 'Nobody matches.' }));
             return;
           }
-          holder.appendChild(table(['Code', 'Name', 'Department', 'Photo', 'State', ''], r.employees, function(e){
+          holder.appendChild(table(['Code', 'Name', 'Department', 'Photo', 'State'], r.employees, function(e){
             var hasPhoto = parseInt(e.has_photo, 10) === 1;
             var active = parseInt(e.active, 10) === 1, inside = parseInt(e.inside, 10) === 1;
             var state = el('span', {}, [el('span', { class: 'pill ' + (active ? 'good' : 'off'), text: active ? 'Active' : 'Inactive' }), inside ? el('span', { class: 'pill', text: 'Inside now' }) : null]);
-            var acts = el('span', {}, [
-              CAN.u ? btn('Edit', function(){ editEmployee(e); }) : null, ' ',
-              CAN.u ? btn('Photo…', function(){ photoDialog(e); }) : null, ' ',
-              active ? (CAN.d ? btn('Make inactive', function(){ deactivate(e); }) : null)
-                     : (CAN.u ? btn('Make active', function(){ call('POST', '/admin/employees/active', { id: e.id, active: true }).then(function(x){ if (!x.ok) alert(x.error); list(); }); }) : null),
-              CAN.admin ? ' ' : null,
-              CAN.admin ? btn('Delete…', function(){ removeRecord('employees', e.id, e.full_name + ' (' + e.code + ')',
-                'Only for someone entered by mistake — while nothing has happened to them: no scan, no attendance, nothing in pay. For anyone who worked here, use "Make inactive": they leave the lists and nothing is lost.', function(){ list(); }); }) : null
-            ]);
             return [el('strong', { text: e.code }), e.full_name, e.department_name,
-              el('span', { class: 'pill ' + (hasPhoto ? 'good' : 'off'), text: hasPhoto ? 'On file' : 'None' }), state, acts];
+              el('span', { class: 'pill ' + (hasPhoto ? 'good' : 'off'), text: hasPhoto ? 'On file' : 'None' }), state];
           }));
           var from = (r.page - 1) * r.per_page + 1, to = Math.min(r.total, r.page * r.per_page);
           holder.appendChild(el('div', { class: 'pager' }, [
