@@ -469,7 +469,7 @@ page_header('Attendance — Reports');
         el('p', { class: 'note', style: 'padding:8px 12px', text: 'Nobody scanned OUT for these people, so the system closed the entry at the shift end (or shift end plus approved overtime). HR can put in the real time on the Reconciliation screen.' }),
       ].concat(autoGroups(d)), { id: 'auto-out', flush: true, alert: true }) : null;
 
-      show([strip, tiles, det, auto, top]);
+      show([strip, tiles, det, top, auto]);           // "Not scanned out" last (owner, 18 Nov 2026): yesterday's list, read after the day
     });
     timer = setInterval(function(){ if (!document.hidden) drawToday(); }, 60000);
   }
