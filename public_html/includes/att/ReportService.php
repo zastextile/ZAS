@@ -138,6 +138,7 @@ final class ReportService
         ksort($byDept, SORT_NATURAL | SORT_FLAG_CASE);
 
         $out = [
+            'roll' => self::todayRoll($from, $to, $dw, $dp, $days, $auto),
             'ok' => true, 'today' => $today, 'generated_at' => Time::iso(self::nowUtc()),
             'by_department' => array_values($byDept),
             'auto_out' => $auto, 'auto_out_count' => count($auto),
@@ -156,6 +157,75 @@ final class ReportService
             $out['monitoring'] = self::monitoring();
         }
         return $out;
+    }
+
+    /**
+     * THE PEOPLE BEHIND EVERY TILE OF THE TODAY TAB, ONE SHORT ROW EACH
+     * (owner, 18 Nov 2026: attendance is for fixed salaries and daily wages;
+     * contractors are paid by production, so count them apart, and let each
+     * tile open its people underneath without loading the page again).
+     *
+     * Sent with the dashboard the page already asks for every minute, so a
+     * click on a tile costs the server nothing. Three light queries: the
+     * roll with how each person is paid, today's entries per person, and
+     * who is inside now. The rest is read from what the dashboard has
+     * already worked out ($days, $auto).
+     *
+     * Short keys on purpose (the list is sent every minute):
+     *   i id · c code · n name · d department · p pay: s salary, d daily,
+     *   c contractor, '' not set up · a on the roll (0 = left)
+     *   e entries today · f first IN · l latest IN · o latest OUT ·
+     *   in inside since · u entries not confirmed by a HOD
+     *   lt late shifts, lm late by · et left-early shifts, em early by ·
+     *   ab shifts not come to, ss/se that shift's start and end ·
+     *   ao entries closed by the system (last 36 hours)
+     *
+     * @param list<array<string,mixed>> $days @param list<array<string,mixed>> $auto
+     * @return list<array<string,mixed>>
+     */
+    private static function todayRoll(string $from, string $to, string $dw, array $dp, array $days, array $auto): array
+    {
+        $utc = new DateTimeZone('UTC');
+        $iso = fn($v) => $v === null ? null : Time::iso(new DateTimeImmutable((string) $v, $utc));
+        $pay = Db::tableExists('att_fin_profiles');
+        $roll = [];
+        foreach (Db::all(
+            "SELECT e.id, e.code, e.full_name, d.name AS dept, e.active, " . ($pay ? 'f.pay_type' : 'NULL AS pay_type') . "
+               FROM att_employees e JOIN att_departments d ON d.id = e.department_id
+               " . ($pay ? 'LEFT JOIN att_fin_profiles f ON f.employee_id = e.id' : '') . "
+              WHERE (e.active = 1 OR EXISTS (SELECT 1 FROM att_entry_cycles c WHERE c.employee_id = e.id AND (c.closed_at IS NULL OR c.opened_at >= ?))) $dw
+              LIMIT 3000", array_merge([$from], $dp)) as $r) {
+            $p = (string) ($r['pay_type'] ?? '');
+            $roll[(int) $r['id']] = ['i' => (int) $r['id'], 'c' => (string) $r['code'], 'n' => (string) $r['full_name'], 'd' => (string) $r['dept'],
+                'p' => $p === 'salary' ? 's' : ($p === 'daily' ? 'd' : ($p === 'contract' ? 'c' : '')), 'a' => (int) $r['active']];
+        }
+        foreach (Db::all(
+            "SELECT c.employee_id, COUNT(*) AS n, MIN(c.opened_at) AS f, MAX(c.opened_at) AS l, MAX(c.closed_at) AS o, SUM(h.id IS NULL) AS u
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id
+               LEFT JOIN att_hod_arrivals h ON h.entry_cycle_id = c.id AND h.status = 'confirmed'
+              WHERE c.opened_at >= ? AND c.opened_at < ? $dw GROUP BY c.employee_id", array_merge([$from, $to], $dp)) as $r) {
+            $id = (int) $r['employee_id'];
+            if (!isset($roll[$id])) { continue; }
+            $roll[$id] += ['e' => (int) $r['n'], 'f' => $iso($r['f']), 'l' => $iso($r['l']), 'o' => $iso($r['o']), 'u' => (int) $r['u']];
+        }
+        foreach (Db::all("SELECT c.employee_id, c.opened_at FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id WHERE c.closed_at IS NULL $dw", $dp) as $r) {
+            $id = (int) $r['employee_id'];
+            if (isset($roll[$id])) { $roll[$id]['in'] = $iso($r['opened_at']); }
+        }
+        foreach ($days as $r) {
+            $id = (int) $r['employee_id'];
+            if (!isset($roll[$id])) { continue; }
+            $x = &$roll[$id];
+            if ($r['late_minutes'] > 0) { $x['lt'] = ($x['lt'] ?? 0) + 1; $x['lm'] = max($x['lm'] ?? 0, (int) $r['late_minutes']); }
+            if ($r['early_minutes'] > 0) { $x['et'] = ($x['et'] ?? 0) + 1; $x['em'] = max($x['em'] ?? 0, (int) $r['early_minutes']); }
+            if ($r['status'] === 'absent') { $x['ab'] = ($x['ab'] ?? 0) + 1; $x['ss'] ??= $r['starts_at']; $x['se'] ??= $r['ends_at']; }
+            unset($x);
+        }
+        foreach ($auto as $r) {
+            $id = (int) $r['employee_id'];
+            if (isset($roll[$id])) { $roll[$id]['ao'] = ($roll[$id]['ao'] ?? 0) + 1; }
+        }
+        return array_values($roll);
     }
 
     /**

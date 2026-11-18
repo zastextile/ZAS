@@ -94,6 +94,17 @@ page_header('Attendance — Reports');
 .attr .tile.info{border-top-color:var(--pri)}
 .attr .tile .meter{height:5px;border-radius:2px;background:var(--line2);overflow:hidden;margin-top:6px}
 .attr .tile .meter i{display:block;height:100%;background:var(--good)}
+.attr .tile .s2{display:block;font-size:11px;line-height:1.3;color:#6b5a2e;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.attr .tiles.pickable .tile{cursor:pointer;transition:box-shadow .12s,border-color .12s}
+.attr .tiles.pickable .tile:hover{box-shadow:0 1px 6px rgba(16,33,58,.14)}
+.attr .tiles.pickable .tile.on{border-color:var(--pri);box-shadow:inset 0 0 0 1px var(--pri),0 1px 6px rgba(16,33,58,.14)}
+.attr .tiles.pickable .tile:focus-visible{outline:2px solid var(--pri);outline-offset:1px}
+.attr .tdet .ph{gap:10px;flex-wrap:wrap}
+.attr .tdet .ph .grow{flex:1 1 auto}
+.attr .tdet .st{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600}
+.attr .tdet .st.in{background:#e1edf9;color:#17467c}.attr .tdet .st.out{background:#eef1f5;color:#4b5563}
+.attr .tdet .pay{font-size:11.5px;color:var(--muted);white-space:nowrap}
+.attr .tdet .pb>.scroll{max-height:340px}
 /* panels */
 .attr .cols{display:grid;grid-template-columns:minmax(0,2.1fr) minmax(260px,1fr);gap:12px;align-items:start}
 .attr .panel{background:#fff;border:1px solid var(--line);border-radius:4px;min-width:0}
@@ -312,6 +323,7 @@ page_header('Attendance — Reports');
         var k = keys[i] ? keys[i](r) : null;
         return el('td', { class: cls, 'data-sort': k === null || k === undefined ? null : String(k) }, [c === null || c === undefined ? '—' : (typeof c === 'object' ? c : String(c))]);
       }));
+      tr.__p = r;                                   // the row's data, for a column added afterwards (Today › Paid as)
       if (opts.click) tr.addEventListener('click', function(){ opts.click(r); });
       tb.appendChild(tr);
     });
@@ -385,6 +397,15 @@ page_header('Attendance — Reports');
   TABS.forEach(function(t){ var b = el('button', { type: 'button', role: 'tab', text: t.label, click: function(){ go(t.id); } }); b.dataset.tab = t.id; document.getElementById('attr-tabs').appendChild(b); });
 
   // ---------------------------------------------------------------- today
+  /* EVERY TILE OPENS ITS PEOPLE BELOW (owner, 18 Nov 2026). The big figure
+     counts STAFF — fixed salary, daily wages and anyone not set up yet;
+     contractors are paid by production, so they are shown on a small line
+     with the total. A click fills the panel under the tiles from the list
+     the dashboard already sent (d.roll): no reload, no extra request. With
+     no tile picked it shows the latest movements, newest first. The choice
+     survives the refresh every minute. */
+  var TD = { pick: 'latest', who: 'staff' };
+  try { TD.who = localStorage.getItem('attr-td-who') || 'staff'; } catch (e) {}
   function drawToday(){
     get('/reports/dashboard').then(function(d){
       if (!d.ok) return show([el('p', { class: 'err', text: d.error || 'Could not load.' })]);
@@ -397,17 +418,24 @@ page_header('Attendance — Reports');
         el('div', { class: 'when' }, [el('b', { text: longDay(d.today) }), 'updated ' + hm(d.generated_at) + ' · refreshes every minute']),
         el('div', { class: 'acts' }, [el('button', { type: 'button', class: 'act', text: 'Refresh', click: function(){ go('today'); } }), printBtn()])]);
 
-      var tiles = el('div', { class: 'tiles' }, [
-        tile(d.inside_now, 'Inside now', 'info', 't-inside', d.entries + ' entr' + (d.entries === 1 ? 'y' : 'ies') + ' today'),
-        tile(el('b', {}, [String(d.came_in), el('small', { text: ' / ' + d.active_employees })]), 'Came in today', 'good', 't-came',
-          ratePct === null ? 'nobody on the roll' : ratePct + '% of those on the roll', ratePct),
-        tile(d.late_count, 'Late', d.late_count ? 'hot' : '', 't-late', d.late_count ? 'came after shift start' : 'everyone on time'),
-        tile(d.left_early_count, 'Left early', d.left_early_count ? 'warn' : '', 't-early', 'potential, before shift end'),
-        tile(d.absent_with_shift_count, 'Did not come', d.absent_with_shift_count ? 'hot' : '', 't-absent', shiftDays ? 'had a shift · ' + shiftDays + ' with one' : 'had a shift today'),
-        tile(d.unconfirmed_entries, 'HOD unconfirmed', d.unconfirmed_entries ? 'warn' : '', 't-unconf', 'entries today'),
-        tile(d.auto_out_count, 'Not scanned out', d.auto_out_count ? 'hot' : '', 't-auto', 'system closed at shift end'),
-        tile(d.not_in_count, 'No entry today', '', null, 'includes days off')
-      ]);
+      var R = todayRoll(d);
+      var tiles, det;
+      if (!R) {
+        tiles = el('div', { class: 'tiles' }, [
+          tile(d.inside_now, 'Inside now', 'info', 't-inside', d.entries + ' entr' + (d.entries === 1 ? 'y' : 'ies') + ' today'),
+          tile(el('b', {}, [String(d.came_in), el('small', { text: ' / ' + d.active_employees })]), 'Came in today', 'good', 't-came',
+            ratePct === null ? 'nobody on the roll' : ratePct + '% of those on the roll', ratePct),
+          tile(d.late_count, 'Late', d.late_count ? 'hot' : '', 't-late', d.late_count ? 'came after shift start' : 'everyone on time'),
+          tile(d.left_early_count, 'Left early', d.left_early_count ? 'warn' : '', 't-early', 'potential, before shift end'),
+          tile(d.absent_with_shift_count, 'Did not come', d.absent_with_shift_count ? 'hot' : '', 't-absent', shiftDays ? 'had a shift · ' + shiftDays + ' with one' : 'had a shift today'),
+          tile(d.unconfirmed_entries, 'HOD unconfirmed', d.unconfirmed_entries ? 'warn' : '', 't-unconf', 'entries today'),
+          tile(d.auto_out_count, 'Not scanned out', d.auto_out_count ? 'hot' : '', 't-auto', 'system closed at shift end'),
+          tile(d.not_in_count, 'No entry today', '', null, 'includes days off')
+        ]);
+      } else {
+        var built = todayTiles(d, R);
+        tiles = built.tiles; det = built.det;
+      }
 
       /* one line per department */
       var tot = depts.reduce(function(a, x){ ['active', 'came_in', 'inside', 'late', 'left_early', 'absent'].forEach(function(k){ a[k] += Number(x[k]) || 0; }); return a; }, { active: 0, came_in: 0, inside: 0, late: 0, left_early: 0, absent: 0 });
@@ -440,9 +468,117 @@ page_header('Attendance — Reports');
         el('p', { class: 'note', style: 'padding:8px 12px', text: 'Nobody scanned OUT for these people, so the system closed the entry at the shift end (or shift end plus approved overtime). HR can put in the real time on the Reconciliation screen.' }),
       ].concat(autoGroups(d)), { id: 'auto-out', flush: true, alert: true }) : null;
 
-      show([strip, tiles, auto, top]);
+      show([strip, tiles, det, auto, top]);
     });
     timer = setInterval(function(){ if (!document.hidden) drawToday(); }, 60000);
+  }
+  /* d.roll in short keys (see ReportService::todayRoll); null from an older server */
+  function todayRoll(d){
+    if (!Array.isArray(d.roll)) return null;
+    var staff = function(p){ return p.p !== 'c'; };
+    function count(test, field){
+      var a = { staff: 0, con: 0 };
+      d.roll.forEach(function(p){ var v = field ? (+p[field] || 0) : (test(p) ? 1 : 0); if (!v) return; a[staff(p) ? 'staff' : 'con'] += v; });
+      return a;
+    }
+    return { list: d.roll, staff: staff, count: count };
+  }
+  var TD_KINDS = {
+    latest: { label: 'Latest movements', test: function(p){ return !!p.e; } },
+    inside: { label: 'Inside now', test: function(p){ return !!p.in; } },
+    came:   { label: 'Came in today', test: function(p){ return !!p.e; } },
+    late:   { label: 'Late', test: function(p){ return !!p.lt; } },
+    early:  { label: 'Left early', test: function(p){ return !!p.et; } },
+    absent: { label: 'Did not come', test: function(p){ return !!p.ab; } },
+    unconf: { label: 'HOD unconfirmed', test: function(p){ return !!p.u; } },
+    auto:   { label: 'Not scanned out', test: function(p){ return !!p.ao; } },
+    notin:  { label: 'No entry today', test: function(p){ return +p.a === 1 && !p.e; } }
+  };
+  function todayTiles(d, R){
+    function c(kind, field){ return R.count(TD_KINDS[kind].test, field); }
+    var cIn = c('inside'), cCame = c('came'), cLate = c('late', 'lt'), cEarly = c('early', 'et'), cAbs = c('absent', 'ab'), cUnc = c('unconf', 'u'), cAuto = c('auto', 'ao'), cNot = c('notin');
+    var onRoll = { staff: 0, con: 0 }; R.list.forEach(function(p){ if (+p.a === 1) onRoll[R.staff(p) ? 'staff' : 'con']++; });
+    var anyCon = R.list.some(function(p){ return !R.staff(p); });
+    var ratePct = pct(cCame.staff, onRoll.staff);
+    function extra(n, total){
+      if (!anyCon) return null;
+      var t = n.con ? '+' + n.con + ' contractor' + (n.con === 1 ? '' : 's') + ' · ' + total + ' in all' : 'no contractors';
+      return el('span', { class: 's2', text: t, title: t });
+    }
+    function t(kind, v, label, cls, id, sub, more, meter){
+      var x = tile(v, label, cls, id, sub, meter);
+      if (more) x.insertBefore(more, x.querySelector('.meter'));
+      x.dataset.kind = kind; x.tabIndex = 0; x.setAttribute('role', 'button');
+      x.title = 'Show the people below';
+      if (TD.pick === kind) x.classList.add('on');
+      return x;
+    }
+    var staffWord = anyCon ? ' staff' : '';
+    var list = [
+      t('inside', cIn.staff, 'Inside now', 'info', 't-inside', d.entries + ' entr' + (d.entries === 1 ? 'y' : 'ies') + ' today', extra(cIn, d.inside_now)),
+      t('came', el('b', {}, [String(cCame.staff), el('small', { text: ' / ' + onRoll.staff })]), 'Came in today', 'good', 't-came',
+        ratePct === null ? 'nobody on the roll' : ratePct + '% of' + staffWord + ' on the roll',
+        anyCon ? (function(){ var x = '+' + cCame.con + '/' + onRoll.con + ' contractors · ' + d.came_in + ' in all'; return el('span', { class: 's2', text: x, title: x }); })() : null, ratePct),
+      t('late', cLate.staff, 'Late', cLate.staff ? 'hot' : '', 't-late', cLate.staff ? 'came after shift start' : 'everyone on time', extra(cLate, d.late_count)),
+      t('early', cEarly.staff, 'Left early', cEarly.staff ? 'warn' : '', 't-early', 'potential, before shift end', extra(cEarly, d.left_early_count)),
+      t('absent', cAbs.staff, 'Did not come', cAbs.staff ? 'hot' : '', 't-absent', 'had a shift today', extra(cAbs, d.absent_with_shift_count)),
+      t('unconf', cUnc.staff, 'HOD unconfirmed', cUnc.staff ? 'warn' : '', 't-unconf', 'entries today', extra(cUnc, d.unconfirmed_entries)),
+      t('auto', cAuto.staff, 'Not scanned out', cAuto.staff ? 'hot' : '', 't-auto', 'system closed at shift end', extra(cAuto, d.auto_out_count)),
+      t('notin', cNot.staff, 'No entry today', '', 't-notin', 'includes days off', extra(cNot, d.not_in_count))
+    ];
+    var tiles = el('div', { class: 'tiles pickable' }, list);
+    var det = el('section', { class: 'panel tdet', id: 'today-detail' });
+    function pick(kind){
+      TD.pick = TD.pick === kind ? 'latest' : kind;           // a second click goes back to the latest movements
+      list.forEach(function(x){ x.classList.toggle('on', x.dataset.kind === TD.pick); });
+      paint();
+    }
+    tiles.addEventListener('click', function(e){ var x = e.target.closest('.tile'); if (x && x.dataset.kind) pick(x.dataset.kind); });
+    tiles.addEventListener('keydown', function(e){ if (e.key !== 'Enter' && e.key !== ' ') return; var x = e.target.closest('.tile'); if (x && x.dataset.kind) { e.preventDefault(); pick(x.dataset.kind); } });
+    function paint(){
+      var K = TD_KINDS[TD.pick] || TD_KINDS.latest;
+      var rows = R.list.filter(function(p){ return K.test(p) && (TD.who === 'all' || (TD.who === 'staff') === R.staff(p)); });
+      var who = anyCon ? el('div', { class: 'seg', role: 'group', 'aria-label': 'Who' }, [['staff', 'Staff'], ['con', 'Contractors'], ['all', 'Everyone']].map(function(o){
+        return el('button', { type: 'button', 'aria-pressed': TD.who === o[0] ? 'true' : 'false', text: o[1], click: function(){ TD.who = o[0]; try { localStorage.setItem('attr-td-who', TD.who); } catch (e) {} paint(); } });
+      })) : null;
+      var back = TD.pick !== 'latest' ? el('button', { type: 'button', class: 'act', text: 'Latest movements', click: function(){ pick('latest'); } }) : null;
+      det.textContent = '';
+      det.appendChild(el('div', { class: 'ph' }, [el('h3', { text: K.label }), el('span', { class: 'n', text: rows.length + (rows.length === 1 ? ' person' : ' people') }), el('span', { class: 'grow' }), who, back]));
+      det.appendChild(el('div', { class: 'pb flush' }, [rows.length ? detailTable(TD.pick, rows, R, anyCon) : none(TD.pick === 'latest' ? 'Nobody has come in yet today.' : 'Nobody here.')]));
+    }
+    paint();
+    return { tiles: tiles, det: det };
+  }
+  function latestAt(p){ var a = p.l || '', b = p.in ? '' : (p.o || ''); return a > b ? a : b; }
+  function payOf(p){ return { s: 'Fixed salary', d: 'Daily wages', c: 'Contractor' }[p.p] || 'Not set up'; }
+  function detailTable(kind, rows, R, anyCon){
+    var box = detailTable0(kind, rows, R, anyCon);
+    if (!anyCon) return box;
+    /* one narrow column, so no row grows taller than the rest of the page's tables */
+    var trs = box.querySelectorAll('tbody tr');
+    var th = box.querySelector('thead tr'); th.insertBefore(el('th', { text: 'Paid as' }), th.children[2]);
+    Array.prototype.forEach.call(trs, function(tr){ var p = tr.__p; tr.insertBefore(el('td', {}, [el('span', { class: 'pay', text: p ? payOf(p) : '' })]), tr.children[2]); });
+    return box;
+  }
+  function detailTable0(kind, rows, R, anyCon){
+    var W = function(p){ return who(p.c, p.n); };
+    var nameKey = function(p){ return p.n; };
+    var state = function(p){ return p.in ? el('span', { class: 'st in', text: 'Inside' }) : el('span', { class: 'st out', text: 'Out' }); };
+    if (kind === 'latest') {
+      rows = rows.slice().sort(function(a, b){ var x = latestAt(a), y = latestAt(b); return x < y ? 1 : x > y ? -1 : 0; });
+      return table(['Employee', 'Department', 'Now', 'Latest', 'First IN', '#Late by'], rows, function(p){
+        var lastIsOut = !p.in && p.o && p.o >= (p.l || '');
+        return [W(p), p.d, state(p), (lastIsOut ? 'OUT ' : 'IN ') + hm(latestAt(p)), hm(p.f), p.lm ? el('span', { class: 'flag', text: mins(p.lm) }) : '—'];
+      }, { wrap: [0, 1], keys: { 0: nameKey, 3: latestAt, 4: function(p){ return p.f; } } });
+    }
+    if (kind === 'inside') return table(['Employee', 'Department', 'Inside since', '#Late by'], rows.slice().sort(function(a, b){ return a.in < b.in ? 1 : -1; }), function(p){ return [W(p), p.d, dt(p.in), p.lm ? el('span', { class: 'flag', text: mins(p.lm) }) : '—']; }, { wrap: [0, 1], keys: { 0: nameKey, 2: function(p){ return p.in; } } });
+    if (kind === 'came') return table(['Employee', 'Department', 'First IN', 'Last OUT', 'Now', '#Entries'], rows.slice().sort(function(a, b){ return a.f > b.f ? 1 : -1; }), function(p){ return [W(p), p.d, hm(p.f), p.in ? '—' : hm(p.o), state(p), p.e]; }, { wrap: [0, 1], keys: { 0: nameKey, 2: function(p){ return p.f; }, 3: function(p){ return p.o || ''; } } });
+    if (kind === 'late') return table(['Employee', 'Department', 'First IN', '#Late by'], rows.slice().sort(function(a, b){ return b.lm - a.lm; }), function(p){ return [W(p), p.d, hm(p.f), el('span', { class: 'flag', text: mins(p.lm) })]; }, { wrap: [0, 1], keys: { 0: nameKey, 2: function(p){ return p.f; }, 3: function(p){ return p.lm; } } });
+    if (kind === 'early') return table(['Employee', 'Department', 'Last OUT', '#Early by'], rows.slice().sort(function(a, b){ return b.em - a.em; }), function(p){ return [W(p), p.d, hm(p.o), el('span', { class: 'flagw', text: mins(p.em) })]; }, { wrap: [0, 1], keys: { 0: nameKey, 2: function(p){ return p.o; }, 3: function(p){ return p.em; } } });
+    if (kind === 'absent') return table(['Employee', 'Department', 'Shift starts', 'Shift ends'], rows, function(p){ return [W(p), p.d, hm(p.ss), hm(p.se)]; }, { wrap: [0, 1], keys: { 0: nameKey } });
+    if (kind === 'unconf') return table(['Employee', 'Department', 'First IN', '#Not confirmed', 'Now'], rows, function(p){ return [W(p), p.d, hm(p.f), p.u, state(p)]; }, { wrap: [0, 1], keys: { 0: nameKey, 2: function(p){ return p.f; } } });
+    if (kind === 'auto') return table(['Employee', 'Department', '#Closed by the system'], rows, function(p){ return [W(p), p.d, p.ao]; }, { wrap: [0, 1], keys: { 0: nameKey } });
+    return table(['Employee', 'Department'], rows.slice().sort(function(a, b){ return a.d < b.d ? -1 : a.d > b.d ? 1 : (a.n < b.n ? -1 : 1); }), function(p){ return [W(p), p.d]; }, { wrap: [0, 1], keys: { 0: nameKey } });
   }
   /* Not scanned out, in groups by the day of the shift: Today first, then
      From yesterday (the evening's forgotten exits), then anything older
