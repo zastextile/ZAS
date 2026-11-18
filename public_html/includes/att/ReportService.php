@@ -462,7 +462,13 @@ final class ReportService
             $r['ot_approved_minutes'] = $r['ot_approved_minutes'] !== null ? (int) $r['ot_approved_minutes'] : null;
         }
         unset($r);
-        return $rows;
+        /* A SHIFT THAT HAS NOT STARTED YET IS NOT "DID NOT COME" (owner, 19 Nov
+           2026: a 19:00 night shift showed as absent all morning). Nobody can be
+           absent from a shift before it begins, so such a day is left out of
+           every figure until its start time; if he then comes, it is a normal
+           day, and if not, it shows as "did not come" from the start time on. */
+        $now = self::nowUtc();
+        return array_values(array_filter($rows, static fn($r) => $r['entries'] > 0 || new DateTimeImmutable((string) $r['starts_at']) <= $now));
     }
 
     // ============================================================== movements
