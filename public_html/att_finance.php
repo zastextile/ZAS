@@ -77,6 +77,10 @@ page_header('People Finance');
 .fin .tchip{display:inline-block;margin-left:2px;padding:0 6px;border-radius:3px;font-size:11px;font-weight:600;line-height:17px;white-space:nowrap;vertical-align:1px}
 .fin .tchip.in{background:#e1edf9;color:#17467c}.fin .tchip.done{background:#e7f4ec;color:#107e3e}.fin .tchip.bad{background:var(--bad-bg);color:var(--bad)}
 .fin .tchip.none{background:#eef1f5;color:var(--muted)}.fin .tchip.off{background:#e3e6ea;color:#4b5563}
+.fin .tchip.rep{background:#fff1d6;color:#8a4b00;border:1px solid #f0c36d}
+.fin tr.rep td{background:#fffaf0}
+.fin .repbtn{border:1px solid #f0c36d;background:#fff8e8;color:#8a4b00;border-radius:4px;font:600 12.5px/1 var(--ff);padding:8px 12px;cursor:pointer}
+.fin .repbtn[aria-pressed=true]{background:#8a4b00;border-color:#8a4b00;color:#fff}
 .fin .advline{font-size:11.5px;color:var(--owed);font-weight:600;margin-top:2px;white-space:nowrap}
 .fin .stack{display:grid;gap:12px}
 .fin .cardx{background:#fff;border:1px solid var(--line);border-radius:4px;padding:12px 14px;min-width:0}
@@ -1143,7 +1147,35 @@ page_header('People Finance');
   }
 
   // ------------------------------------------------------------ people
-  var PF = { type: '', dept: '', q: '', state: 'on' };
+  var PF = { type: '', dept: '', q: '', state: 'on', rep: false };
+  /* POSSIBLE REPEATS (owner, 18 Nov 2026: "when you import some empl from old
+     so its some repeat … recheck and highlight"). Among people ON THE ROLL:
+     the same name (spelling of Muhammad / Mohammad / M. and spaces ignored),
+     or one person's code or production code is another's. Only shown, never
+     merged or deleted here: the owner decides, with the tick bar (mark as
+     left / delete). Marking one as left takes the flag off both. */
+  function repKey(name){
+    return String(name || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\b(muhammad|muhammed|mohammad|mohammed|mohamed|muhamad|mohd|muhd|md|m)\b/g, 'muhammad').replace(/\s+/g, '');
+  }
+  function repeatsOf(list){
+    var on = list.filter(function(p){ return +p.active; }), by = {}, out = {};
+    function put(k, p){ if (!k) return; (by[k] = by[k] || []).push(p); }
+    on.forEach(function(p){
+      put('n:' + repKey(p.full_name), p);
+      var codes = {}; [p.code, p.worker_code].forEach(function(c){ c = String(c || '').trim().toUpperCase(); if (c) codes[c] = 1; });
+      Object.keys(codes).forEach(function(c){ put('c:' + c, p); });
+    });
+    Object.keys(by).forEach(function(k){
+      var g = by[k]; if (g.length < 2) return;
+      g.forEach(function(p){
+        var o = out[p.employee_id] = out[p.employee_id] || { why: {}, others: {} };
+        o.why[k.charAt(0) === 'n' ? 'same name' : 'same code ' + k.slice(2)] = 1;
+        g.forEach(function(q){ if (q.employee_id !== p.employee_id) o.others[q.code] = 1; });
+      });
+    });
+    return out;
+  }
   /* EMPLOYEE LIST — print or download, with the columns you choose.
      Grouped by how people are paid (or by department), with totals.
      Three ready choices: "Short list" (the usual), "Finance / audit" (every pay
@@ -1351,6 +1383,10 @@ page_header('People Finance');
       var dept = el('select', { 'aria-label': 'Department', change: function(){ PF.dept = dept.value; draw(); } }, [el('option', { value: '', text: 'All departments' })].concat(
         Object.keys(r.people.reduce(function(a, p){ a[p.department_name] = 1; return a; }, {})).sort().map(function(d){ return el('option', { value: d, text: d }); })));
       dept.value = PF.dept;
+      var REP = repeatsOf(r.people), nRep = Object.keys(REP).length;
+      var repBtn = nRep ? el('button', { type: 'button', class: 'repbtn', 'aria-pressed': PF.rep ? 'true' : 'false', title: 'People on the roll who look like the same person twice',
+        text: '⚠ Possible repeats ' + nRep, click: function(){ PF.rep = !PF.rep; people(); } }) : null;
+      if (!nRep) PF.rep = false;
       var search = el('input', { type: 'search', placeholder: 'Search name or code', value: PF.q, 'aria-label': 'Search', input: function(){ PF.q = search.value.toLowerCase(); draw(); } });
       var box = el('div', { class: 'cardx scroll' });
       /* Admin and HR tick many people; a small bar then offers one action for all of them. */
@@ -1405,9 +1441,11 @@ page_header('People Finance');
           var cb = tickOn ? el('input', { type: 'checkbox', 'aria-label': 'Tick ' + p.full_name, click: function(e){ e.stopPropagation(); }, change: function(){ PF.sel[p.employee_id] = cb.checked; paintSel(); } }) : null;
           if (cb) cb.checked = !!PF.sel[p.employee_id];
           var adv = +p.advance_left_paisa ? el('div', { class: 'advline', text: 'Advance left ' + rs(p.advance_left_paisa) + ' · ' + rs(p.advance_per_pay_paisa) + ' a pay' }) : null;
-          tb.appendChild(el('tr', { class: 'click', tabindex: '0', click: function(){ person(p); }, keydown: function(e){ if (e.key === 'Enter') person(p); } }, [
+          var rp = REP[p.employee_id];
+          tb.appendChild(el('tr', { class: 'click' + (rp ? ' rep' : ''), tabindex: '0', click: function(){ person(p); }, keydown: function(e){ if (e.key === 'Enter') person(p); } }, [
             tickOn ? el('td', { class: 'tick' }, [cb]) : null,
-            el('td', { 'data-sort': p.full_name }, [el('b', { text: p.full_name }), el('div', { class: 'muted small' }, [p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + ' ', todayChip(p)])]),
+            el('td', { 'data-sort': PF.rep && rp ? repKey(p.full_name) : p.full_name }, [el('b', { text: p.full_name }), el('div', { class: 'muted small' }, [p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + ' ', todayChip(p)]),
+              rp ? el('div', {}, [el('span', { class: 'tchip rep', text: 'Repeat? ' + Object.keys(rp.why).join(', ') + ' as ' + Object.keys(rp.others).join(', ') })]) : null]),
             el('td', {}, [el('span', { class: 'pill ' + (p.pay_type ? '' : 'none'), text: p.pay_type ? KIND1[p.pay_type] : 'Not set up' })]),
             el('td', { text: rate, 'data-sort': p.pay_type === 'salary' ? (p.basic_paisa === null ? '' : +p.basic_paisa + (+p.allowance_paisa || 0)) : p.pay_type === 'daily' ? +p.daily_rate_paisa : '' }), el('td', { class: 'num', 'data-sort': +p.balance || 0 }, [el('b', { text: rs(p.balance) }), p.on_sheet ? el('div', {}, [el('span', { class: 'pill waiting', text: 'on a sheet' })]) : null, adv])]));
         });
@@ -1416,12 +1454,14 @@ page_header('People Finance');
         box.appendChild(el('table', { class: 't sortable' }, [el('thead', {}, [el('tr', {}, [tickOn ? el('th', { class: 'tick' }, [all]) : null, el('th', { text: 'Employee' }), el('th', { text: 'Paid as' }), el('th', { text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Owed now' })])]), tb]));
         paintSel();
       }
-      function shownNow(){ return r.people.filter(function(p){ return onState(p) && (PF.type === '' || (PF.type === 'none' ? !p.pay_type : p.pay_type === PF.type)) && (!PF.dept || p.department_name === PF.dept) && (!PF.q || (p.full_name + ' ' + p.code).toLowerCase().indexOf(PF.q) >= 0); }); }
+      function shownNow(){
+        if (PF.rep) return r.people.filter(function(p){ return REP[p.employee_id]; }).sort(function(a, b){ var x = repKey(a.full_name), y = repKey(b.full_name); return x < y ? -1 : x > y ? 1 : 0; });
+        return r.people.filter(function(p){ return onState(p) && (PF.type === '' || (PF.type === 'none' ? !p.pay_type : p.pay_type === PF.type)) && (!PF.dept || p.department_name === PF.dept) && (!PF.q || (p.full_name + ' ' + p.code).toLowerCase().indexOf(PF.q) >= 0); }); }
       var left = r.people.filter(function(p){ return !+p.active; }).length;
       var state = el('select', { 'aria-label': 'Who is listed', change: function(){ PF.state = state.value; people(); } },
         [['on', 'On the roll'], ['left', 'Left the company (' + left + ')'], ['all', 'Everyone']].map(function(o){ return el('option', { value: o[0], text: o[1] }); }));
       state.value = PF.state;
-      show([seg, el('div', { class: 'row' }, [el('div', { style: 'flex:0 1 190px' }, [state]), el('div', { style: 'flex:1 1 160px' }, [dept]), el('div', { style: 'flex:2 1 220px' }, [search]),
+      show([seg, el('div', { class: 'row' }, [repBtn, el('div', { style: 'flex:0 1 190px' }, [state]), el('div', { style: 'flex:1 1 160px' }, [dept]), el('div', { style: 'flex:2 1 220px' }, [search]),
         S.caps.staff ? btn('+ New employees', function(){ staffForm([], 8); }, 'pri') : null,
         (S.caps.staff || S.caps.setup) ? btn('Edit these in one form', function(){ staffForm(shownNow(), S.caps.staff ? 3 : 0); }) : null,
         btn('Print / download list', employeeList)]), selBar, box]);
