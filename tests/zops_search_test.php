@@ -54,7 +54,8 @@ ok(ops_search('x')['rows'] === [], 'one letter searches nothing');
 
 echo "2. Meaning — embeddings, stored, no OpenAI call when stored\n";
 $config['openai_enabled'] = true;   // the key is empty: any real call would fail and show as a note
-[$model, $dims] = pm_active_model();
+[$model, $dims] = ops_model();
+ok($dims === 256, 'operation search uses the light 256-number vectors');
 $axis = ['hem' => ['hem', 'hemming', 'fold', 'edge', 'ends'], 'cut' => ['cut', 'cutting', 'roll'], 'pack' => ['pack', 'bundle', 'bag', 'seal', 'insert'], 'lock' => ['overlock', 'sides']];
 $fv = function (string $t) use ($axis) { $w = explode(' ', pm_norm($t)); $v = []; foreach ($axis as $syn) { $n = 0; foreach ($w as $x) foreach ($syn as $s) if ($x !== '' && strpos($x, $s) === 0) $n++; $v[] = $n; } $v[] = 0.1;
     $l = sqrt(array_sum(array_map(fn($a) => $a * $a, $v))) ?: 1; return array_map(fn($a) => $a / $l, $v); };

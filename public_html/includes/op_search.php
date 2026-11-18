@@ -26,6 +26,18 @@
 require_once __DIR__ . '/openai.php';
 require_once __DIR__ . '/pm_search.php';
 
+/* THE VECTOR SIZE FOR OPERATION SEARCH: 256 numbers, not the 1,024 Product
+   Master uses. Same OpenAI model, asked for its shorter form (OpenAI's own
+   "dimensions" option). Every search unpacks one vector per operation, and on
+   a one-core server unpacking 1,024 numbers per line on each search was the
+   cost; 256 is four times lighter, and for names as short as "Overlock sides"
+   the matches are the same. Changing it re-makes the vectors once. */
+function ops_model(): array
+{
+    [$model, ] = pm_active_model();
+    return [$model, 256];
+}
+
 function ops_schema(): void
 {
     static $done = false;
@@ -154,9 +166,9 @@ function ops_search(string $q, int $limit = 12): array
     }
 
     $how = 'words'; $note = null;
-    if (!empty($config['openai_enabled'])) {
+    if (!empty($config['openai_enabled']) && mb_strlen($q) >= 3) {      // meaning only from three letters; words always
         try {
-            [$model, $dims] = pm_active_model();
+            [$model, $dims] = ops_model();
             $qv = pm_query_vector($q, $model, $dims);
             $vecs = $qv ? ops_vectors($lines, $model, $dims) : [];
             if ($qv && $vecs) {

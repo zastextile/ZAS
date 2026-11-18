@@ -551,7 +551,7 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
           res.hidden = false;
         }).catch(function(){ if (my === seq) { how.textContent = ''; res.innerHTML = '<p class="of-none">The search could not run.</p>'; res.hidden = false; } });
     }
-    box.addEventListener('input', function(){ clearTimeout(timer); timer = setTimeout(run, 350); });
+    box.addEventListener('input', function(){ clearTimeout(timer); timer = setTimeout(run, 650); });   // waits for a pause in typing: one search, not one per letter
     box.addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); last = ''; run(); } });
     res.addEventListener('click', function(e){ var tr = e.target.closest('tr.of-row'); if (tr) location.href = tr.getAttribute('data-href'); });
   })();
