@@ -305,7 +305,7 @@ $pdo->exec("INSERT INTO zp_workers (worker_code, worker_name) VALUES ('W777', 'N
 $pdo->exec("UPDATE zp_workers SET is_active = 0 WHERE worker_code = 'w-OLD'");
 /* only people with production wages are paid on the old screen (since 18 Nov 2026 everybody from People Finance has a worker row) */
 $pdo->exec("INSERT INTO zp_workers (worker_code, worker_name) VALUES ('W888', 'No Wages Yet')");
-$pdo->exec("INSERT INTO zp_entries (worker_id, entry_date, amount, status) SELECT id, '2026-03-05', 100, 'active' FROM zp_workers WHERE worker_code = 'W777'");
+$pdo->exec("INSERT INTO zp_entries (worker_id, entry_date, qty, rate_applied, amount, status) SELECT id, '2026-03-05', 10, 10, 100, 'active' FROM zp_workers WHERE worker_code = 'W777'");
 ok(array_column(Fin::unlinkedWorkers(), 'code') === ['W777'] && Fin::linkedWorkerIds() === [1], 'a production worker with wages and no contractor set up is listed as "still on the old screen"; one with no wages, and the linked one, are not');
 Fin::saveProfile($emp['D003'], ['pay_type' => 'contract'], 'Moved to piece rate', $admin);
 Db::run("UPDATE att_employees SET worker_code = 'w777' WHERE id = ?", [$emp['D003']]);
