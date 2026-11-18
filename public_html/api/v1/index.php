@@ -1025,6 +1025,19 @@ try {
                 (string) Http::input('reason', ''), (int) $u['id']));
             break;
 
+        /* Bulk add — the one-time opening. apply=0 only checks and counts; apply=1 writes. */
+        case $method === 'POST' && $route === '/admin/entries/bulk':
+            Http::requireCsrf();
+            $u = require_erp_admin();
+            admin_answer(EntryAdmin::bulk([
+                'from' => (string) Http::input('from', ''), 'to' => (string) Http::input('to', ''),
+                'days' => (string) Http::input('days', '123456'), 'department_id' => (int) Http::input('department_id', 0),
+                'codes' => (string) Http::input('codes', ''), 'mode' => (string) Http::input('mode', 'shift'),
+                'in_time' => (string) Http::input('in_time', ''), 'out_time' => (string) Http::input('out_time', ''),
+                'reason' => (string) Http::input('reason', ''),
+            ], (bool) Http::input('apply', false), (int) $u['id']));
+            break;
+
         case $method === 'POST' && preg_match('#^/admin/entries/(\d+)/(edit|delete)$#', $route, $m) === 1:
             Http::requireCsrf();
             $u = require_erp_admin();

@@ -19,7 +19,7 @@ $dsn  = getenv('ATT_TEST_DSN') ?: 'mysql:host=127.0.0.1;port=3306;dbname=zas_att
 $user = getenv('ATT_TEST_USER') ?: 'zas';
 $pass = getenv('ATT_TEST_PASS'); if ($pass === false) { $pass = 'zaspw'; }
 if (!is_file($B . 'config/config.php')) { echo "SKIP: no test config — run tests/run_att.sh\n"; exit(0); }
-foreach (['Db', 'Migrations', 'Policy', 'Audit', 'Roles', 'Employees', 'Time', 'Shifts', 'PhoneKeys'] as $c) { require_once $B . "includes/att/$c.php"; }
+foreach (['Db', 'Migrations', 'Policy', 'Audit', 'Roles', 'Employees', 'Time', 'Shifts', 'PhoneKeys', 'EntryAdmin'] as $c) { require_once $B . "includes/att/$c.php"; }
 use Att\Db; use Att\Employees; use Att\Migrations; use Att\Roles; use Att\Shifts; use Att\Time;
 try { $pdo = new PDO($dsn, $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false]); }
 catch (Throwable $e) { echo "SKIP: no MySQL\n"; exit(0); }
@@ -161,5 +161,37 @@ $r = call('POST', '/admin/departments/regular-shift', ['department_id' => $dNigh
 [$i6, ] = Shifts::instanceForOrDefault($guard, $at('2026-12-08 20:05'));
 ok(($r['body']['ok'] ?? false) && $i6 === null, 'clearing the regular shift puts it back as before');
 
-echo "\nPHONE KEY AND REGULAR SHIFT: $P passed, $F failed\n";
+
+echo "C. Bulk add — the one-time opening\n";
+use Att\EntryAdmin;
+call('POST', '/admin/departments/regular-shift', ['department_id' => $dNight, 'shift_id' => $night]);
+$opt = ['from' => '2026-11-02', 'to' => '2026-11-07', 'days' => '123456', 'department_id' => 0, 'codes' => '', 'mode' => 'shift', 'in_time' => '', 'out_time' => '', 'reason' => 'Opening attendance'];
+$n = fn(string $sql) => (int) $pdo->query($sql)->fetchColumn();
+$before = $n('SELECT COUNT(*) FROM att_entry_cycles');
+$chk = EntryAdmin::bulk($opt, false, $gateId);
+ok($chk['ok'] && $chk['to_add'] === 12 && $chk['people'] === 2 && $chk['days'] === 6, 'Check: 2 people × 6 days (Mon–Sat) = 12 entries');
+ok($n('SELECT COUNT(*) FROM att_entry_cycles') === $before, '  and Check writes nothing');
+$no = EntryAdmin::bulk(['reason' => ''] + $opt, true, $gateId);
+ok(!$no['ok'] && $no['reason_code'] === 'REASON_REQUIRED', 'Add without a reason is refused');
+$r = EntryAdmin::bulk($opt, true, $gateId);
+ok($r['ok'] && $r['added'] === 12 && !$r['failed'], 'Add: 12 entries added');
+$g = $pdo->query("SELECT CONVERT_TZ(opened_at,'+00:00','+05:00') i, CONVERT_TZ(closed_at,'+00:00','+05:00') o, present_minutes m FROM att_entry_cycles WHERE employee_id = $guard ORDER BY opened_at LIMIT 1")->fetch();
+ok(substr($g['i'], 0, 16) === '2026-11-02 19:00' && substr($g['o'], 0, 16) === '2026-11-03 08:30' && (int) $g['m'] === 810, 'the night guard gets his own night shift: 7:00 PM to 8:30 AM next day');
+$w = $pdo->query("SELECT CONVERT_TZ(opened_at,'+00:00','+05:00') i, CONVERT_TZ(closed_at,'+00:00','+05:00') o FROM att_entry_cycles WHERE employee_id = $worker ORDER BY opened_at LIMIT 1")->fetch();
+ok(substr($w['i'], 11, 5) === '08:00' && substr($w['o'], 11, 5) === '17:00', 'the day worker gets the default day shift');
+ok($n("SELECT COUNT(*) FROM att_corrections WHERE action = 'admin.entry_add' AND reason = 'Opening attendance'") === 12, 'every entry keeps the reason, under the administrator');
+$again = EntryAdmin::bulk($opt, true, $gateId);
+ok($again['ok'] && $again['added'] === 0 && $again['skipped_already'] === 12, 'running it again adds nothing — every day is already there');
+$fx = EntryAdmin::bulk(['from' => '2026-11-09', 'to' => '2026-11-09', 'codes' => '501, 999', 'mode' => 'fixed', 'in_time' => '09:15', 'out_time' => '18:00'] + $opt, true, $gateId);
+$fw = $pdo->query("SELECT CONVERT_TZ(opened_at,'+00:00','+05:00') i FROM att_entry_cycles WHERE employee_id = $worker ORDER BY opened_at DESC LIMIT 1")->fetchColumn();
+ok($fx['added'] === 1 && $fx['unknown_codes'] === ['999'] && substr((string) $fw, 11, 5) === '09:15', 'same times for chosen codes: 501 gets 09:15–18:00, unknown code 999 is listed');
+$fut = EntryAdmin::bulk(['from' => '2027-01-04', 'to' => '2027-01-05'] + $opt, false, $gateId);
+ok($fut['to_add'] === 0 && $fut['skipped_future'] === 4, 'days in the future are skipped');
+$big = EntryAdmin::bulk(['from' => '2026-01-01', 'to' => '2026-11-01'] + $opt, false, $gateId);
+ok(!$big['ok'], 'more than 62 days at once is refused');
+call('POST', '/auth/login', ['email' => 'gate@zas.test', 'password' => 'NewPassword7']);
+$r = call('POST', '/admin/entries/bulk', $opt + ['apply' => false]);
+ok($r['status'] === 403, 'a non-administrator cannot use bulk add (' . $r['status'] . ')');
+
+echo "\nPHONE KEY, REGULAR SHIFT AND BULK ADD: $P passed, $F failed\n";
 exit($F ? 1 : 0);

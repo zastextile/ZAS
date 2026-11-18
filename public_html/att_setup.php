@@ -710,7 +710,7 @@ page_header('Attendance — Setup');
     var who = el('input', { type: 'search', value: ENT.employee, id: 'ent-emp', placeholder: 'Employee code or name' });
     var bar = el('div', { class: 'bar' }, [date, who,
       btn('Show', function(){ ENT.date = date.value; ENT.employee = who.value; drawEntries(); }, true),
-      btn('Add entry…', function(){ addEntry(); })]);
+      btn('Add entry…', function(){ addEntry(); }), btn('Bulk add…', function(){ bulkEntries(); })]);
     call('GET', '/admin/entries', { date: ENT.date, employee: ENT.employee }).then(function(r){
       if (!r.ok) return show([bar, el('p', { class: 'err', text: r.error || 'Could not load.' })]);
       show([
@@ -742,6 +742,76 @@ page_header('Attendance — Setup');
       fields: [field('Employee code', code), field('IN', tin), field('OUT (empty = still inside)', tout), field('Reason (required)', why)], okText: 'Add entry',
       submit: function(){ return call('POST', '/admin/entries', { employee_code: code.value, in_at: tin.value, out_at: tout.value, timezone: 'Asia/Karachi', reason: why.value })
         .then(function(x){ if (x.ok) { ENT.date = tin.value.slice(0, 10); drawEntries(); } return x; }); } });
+  }
+  /* BULK ADD — the one-time opening. "Check" first: it counts what would be
+     added and what skipped (already has an entry, in the future, no shift)
+     and shows a few of the entries; only then does the button add them.
+     Changing anything puts it back to "Check". */
+  function bulkEntries(){
+    var from = el('input', { type: 'date', id: 'blk-from', value: ENT.date });
+    var to = el('input', { type: 'date', id: 'blk-to', value: ENT.date });
+    var dept = el('select', { id: 'blk-dept', class: 'full' }, [el('option', { value: '0', text: 'All departments' })]);
+    loadDepts().then(function(list){ (list || []).filter(function(d){ return +d.active !== 0; }).forEach(function(d){ dept.appendChild(el('option', { value: d.id, text: d.name })); }); });
+    var codes = el('textarea', { id: 'blk-codes', class: 'full', rows: 2, placeholder: 'Optional: only these codes, e.g. 611, 406, 145 (leave empty for the whole department)' });
+    var DN = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
+    var dayBoxes = DN.map(function(d){ return el('input', { type: 'checkbox', value: d[0], checked: d[0] !== '7' }); });
+    var daysRow = el('div', { class: 'bar', style: 'gap:10px' }, DN.map(function(d, i){ return el('label', { style: 'display:inline-flex;gap:4px;align-items:center;font-weight:500' }, [dayBoxes[i], d[1]]); }));
+    var mShift = el('input', { type: 'radio', name: 'blk-mode', value: 'shift', checked: true, id: 'blk-mode-shift' });
+    var mFixed = el('input', { type: 'radio', name: 'blk-mode', value: 'fixed', id: 'blk-mode-fixed' });
+    var tin = el('input', { type: 'time', id: 'blk-in', value: '08:30' });
+    var tout = el('input', { type: 'time', id: 'blk-out', value: '17:30' });
+    var modeRow = el('div', {}, [
+      el('label', { style: 'display:flex;gap:6px;align-items:center;font-weight:500' }, [mShift, 'Each person\'s own shift times (night guards get their night shift)']),
+      el('label', { style: 'display:flex;gap:6px;align-items:center;font-weight:500;margin-top:4px' }, [mFixed, 'The same times for everybody: IN ', tin, ' OUT ', tout])]);
+    var why = el('textarea', { class: 'full', rows: 2, id: 'blk-why', maxlength: 1000, placeholder: 'For example: opening attendance before the gate system started' });
+    var out = el('div', { id: 'blk-result', style: 'font-size:13px;margin-top:4px' });
+    var checked = null;
+    function body(apply){
+      return { from: from.value, to: to.value, department_id: parseInt(dept.value, 10) || 0, codes: codes.value,
+        days: dayBoxes.filter(function(b){ return b.checked; }).map(function(b){ return b.value; }).join(''),
+        mode: mFixed.checked ? 'fixed' : 'shift', in_time: tin.value, out_time: tout.value, reason: why.value, apply: apply };
+    }
+    function reset(){ if (checked !== null) { checked = null; out.textContent = ''; document.getElementById('attsdlg-ok').textContent = 'Check'; } }
+    [from, to, dept, codes, mShift, mFixed, tin, tout].concat(dayBoxes).forEach(function(n){ n.addEventListener('change', reset); n.addEventListener('input', reset); });
+    function summary(r){
+      var lines = [el('div', { style: 'font-weight:700' }, [r.applied ? ('Added ' + r.added + ' entries.') : (r.to_add + ' entries will be added') + (r.applied ? '' : ' — ' + r.people + ' people × ' + r.days + ' days')])];
+      var sk = [];
+      if (r.skipped_already) sk.push(r.skipped_already + ' already have an entry (left as they are)');
+      if (r.skipped_future) sk.push(r.skipped_future + ' are in the future');
+      if (r.skipped_no_shift) sk.push(r.skipped_no_shift + ' have no shift and no default shift');
+      if (sk.length) lines.push(el('div', { class: 'muted', text: 'Skipped: ' + sk.join('; ') + '.' }));
+      if (r.unknown_codes && r.unknown_codes.length) lines.push(el('div', { class: 'err', text: 'Not found or not active: ' + r.unknown_codes.join(', ') }));
+      if (!r.applied && r.sample && r.sample.length) {
+        lines.push(el('div', { class: 'muted', style: 'margin-top:4px', text: 'For example: ' + r.sample.slice(0, 4).map(function(x){ return x.code + ' ' + x.date.slice(5) + ' ' + x.in + '–' + (x.out || 'inside'); }).join(' · ') }));
+      }
+      if (r.failed && r.failed.length) lines.push(el('div', { class: 'err', text: 'Could not add: ' + r.failed.join('; ') }));
+      out.textContent = ''; lines.forEach(function(n){ out.appendChild(n); });
+    }
+    dialog({ title: 'Bulk add entries', wide: true,
+      text: 'For the opening: mark many people present on many days at once. Days that already have an entry are skipped, never changed. Press Check first — nothing is saved until you press Add. Factory time.',
+      fields: [el('div', { class: 'row2', style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px' }, [field('From', from), field('To', to)]),
+        field('Days of the week', daysRow), field('Department', dept), field('Or only these employee codes', codes),
+        field('Times', modeRow), field('Reason (required, kept with every entry)', why), out],
+      okText: 'Check',
+      submit: function(){
+        if (checked === null) {
+          return call('POST', '/admin/entries/bulk', body(false)).then(function(r){
+            if (!r.ok) return r;
+            checked = r; summary(r);
+            document.getElementById('attsdlg-ok').textContent = r.to_add ? ('Add ' + r.to_add + ' entries') : 'Check';
+            if (!r.to_add) checked = null;
+            return { ok: true, keepOpen: true };
+          });
+        }
+        return call('POST', '/admin/entries/bulk', body(true)).then(function(r){
+          if (!r.ok) return r;
+          summary(r); checked = null;
+          ENT.date = from.value; drawEntries();
+          document.getElementById('attsdlg-ok').hidden = true;
+          document.getElementById('attsdlg-cancel').textContent = 'Close';
+          return { ok: true, keepOpen: true };
+        });
+      } });
   }
   function editEntry(x){
     var tin = el('input', { type: 'datetime-local', id: 'ent-ed-in', value: khiLocal(x.opened_at) });

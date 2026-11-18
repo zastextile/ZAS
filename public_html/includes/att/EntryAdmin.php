@@ -181,6 +181,195 @@ final class EntryAdmin
         });
     }
 
+    /**
+     * BULK ADD — the one-time opening: many people, many days, in one go.
+     *
+     * The owner picks the days (from–to, which weekdays), the people (a
+     * department, all departments, or a list of codes) and the times: each
+     * person's OWN shift (a night guard gets 19:00–08:30 by himself) or one
+     * set of times for everybody. A check runs first ($apply = false) and
+     * says how many entries would be added and how many skipped, and why;
+     * nothing is written until the owner presses Add.
+     *
+     * Every rule of a single Add still holds, entry by entry: the reason is
+     * kept on each one (att_corrections + audit), nothing in the future,
+     * never two entries for one person at the same time. A day that already
+     * has an entry for that person is SKIPPED, never changed — so running
+     * it twice adds nothing the second time. A shift somebody gave a person
+     * for a day is used as it is; a day with none gets the department's
+     * regular shift, else the default shift, filed the same way the gate does.
+     * An OUT that would be later than now is left open (still inside).
+     *
+     * @param array{from:string,to:string,days?:string,department_id?:int,codes?:string,mode?:string,in_time?:string,out_time?:string,reason?:string} $o
+     * @return array<string,mixed>
+     */
+    public static function bulk(array $o, bool $apply, int $actorId): array
+    {
+        $from = (string) ($o['from'] ?? ''); $to = (string) ($o['to'] ?? '');
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            return self::no('VALIDATION', 'Choose the first and the last day.');
+        }
+        if ($to < $from) {
+            return self::no('VALIDATION', 'The last day is before the first day.');
+        }
+        $tz = new DateTimeZone(self::TZ); $utc = new DateTimeZone('UTC');
+        $d1 = new DateTimeImmutable($from, $tz); $d2 = new DateTimeImmutable($to, $tz);
+        $span = (int) $d1->diff($d2)->days + 1;
+        if ($span > 62) {
+            return self::no('VALIDATION', 'At most 62 days at a time — do it in two parts.');
+        }
+        $days = preg_replace('/[^1-7]/', '', (string) ($o['days'] ?? '1234567'));
+        if ($days === '') {
+            return self::no('VALIDATION', 'Tick at least one day of the week.');
+        }
+        $mode = ($o['mode'] ?? 'shift') === 'fixed' ? 'fixed' : 'shift';
+        $inT = (string) ($o['in_time'] ?? ''); $outT = (string) ($o['out_time'] ?? '');
+        if ($mode === 'fixed') {
+            if (!preg_match('/^\d{2}:\d{2}$/', $inT)) {
+                return self::no('VALIDATION', 'Give the IN time.');
+            }
+            if ($outT !== '' && !preg_match('/^\d{2}:\d{2}$/', $outT)) {
+                return self::no('VALIDATION', 'The OUT time is not a time.');
+            }
+            if ($outT === '' && $span > 1) {
+                return self::no('VALIDATION', 'Give the OUT time — an empty OUT ("still inside") is only for a single day.');
+            }
+        }
+        $reason = trim((string) ($o['reason'] ?? ''));
+        if ($apply && $reason === '') {
+            return self::no('REASON_REQUIRED', 'Say why — the reason is kept with every entry.');
+        }
+
+        // the people
+        $unknown = [];
+        $codes = array_values(array_unique(array_filter(preg_split('/[\s,;]+/', (string) ($o['codes'] ?? '')) ?: [], fn($c) => $c !== '')));
+        if ($codes) {
+            $in = implode(',', array_fill(0, count($codes), '?'));
+            $emps = Db::all("SELECT e.id, e.code, e.full_name, e.department_id FROM att_employees e WHERE e.active = 1 AND e.code IN ($in) ORDER BY e.code", $codes);
+            $found = array_flip(array_map('strval', array_column($emps, 'code')));
+            foreach ($codes as $c) { if (!isset($found[(string) $c])) $unknown[] = $c; }
+        } else {
+            $dep = (int) ($o['department_id'] ?? 0);
+            $emps = $dep > 0
+                ? Db::all('SELECT id, code, full_name, department_id FROM att_employees WHERE active = 1 AND department_id = ? ORDER BY code', [$dep])
+                : Db::all('SELECT id, code, full_name, department_id FROM att_employees WHERE active = 1 ORDER BY code');
+        }
+        if (!$emps) {
+            return self::no('VALIDATION', $unknown ? 'None of those codes is an active employee.' : 'Nobody to add — that department has no active employees.');
+        }
+
+        // the dates
+        $dates = [];
+        for ($d = $d1; $d <= $d2; $d = $d->modify('+1 day')) {
+            if (strpos($days, $d->format('N')) !== false) $dates[] = $d->format('Y-m-d');
+        }
+        if (!$dates) {
+            return self::no('VALIDATION', 'None of those days falls on the weekdays you ticked.');
+        }
+        if (count($dates) * count($emps) > 5000) {
+            return self::no('VALIDATION', count($emps) . ' people × ' . count($dates) . ' days is more than 5,000 entries at once — do one department, or fewer days, at a time.');
+        }
+
+        // what is already there, read once
+        $ids = array_map('intval', array_column($emps, 'id'));
+        $inIds = implode(',', $ids);
+        $insts = [];
+        foreach (Db::all("SELECT id, employee_id, work_date, starts_at, ends_at FROM att_shift_instances
+                           WHERE employee_id IN ($inIds) AND work_date BETWEEN ? AND ?", [$dates[0], end($dates)]) as $r) {
+            $insts[(int) $r['employee_id']][(string) $r['work_date']] = $r;
+        }
+        $lo = Time::sql($d1->modify('-2 days')->setTimezone($utc)); $hi = Time::sql($d2->modify('+3 days')->setTimezone($utc));
+        $have = [];
+        foreach (Db::all("SELECT employee_id, opened_at, closed_at FROM att_entry_cycles
+                           WHERE employee_id IN ($inIds) AND opened_at < ? AND (closed_at IS NULL OR closed_at > ?)", [$hi, $lo]) as $r) {
+            $have[(int) $r['employee_id']][] = [new DateTimeImmutable((string) $r['opened_at'], $utc),
+                $r['closed_at'] !== null ? new DateTimeImmutable((string) $r['closed_at'], $utc) : null];
+        }
+        $regular = [];
+        try {
+            foreach (Db::all('SELECT id, regular_shift_id FROM att_departments') as $r) $regular[(int) $r['id']] = (int) ($r['regular_shift_id'] ?? 0);
+        } catch (\Throwable) {}
+        $defaultId = (int) Policy::get('default_shift_id', '');
+        $shiftRows = [];
+        foreach (Db::all('SELECT * FROM att_shifts') as $r) $shiftRows[(int) $r['id']] = $r;
+
+        $now = Time::nowUtc();
+        $plan = []; $skip = ['already' => 0, 'future' => 0, 'noshift' => 0];
+        foreach ($emps as $e) {
+            $eid = (int) $e['id'];
+            foreach ($dates as $wd) {
+                $inst = $insts[$eid][$wd] ?? null;
+                $sid = 0; $source = '';
+                if ($inst === null) {
+                    $sid = $regular[(int) $e['department_id']] ?? 0; $source = 'assigned';
+                    if ($sid <= 0 || !isset($shiftRows[$sid])) { $sid = $defaultId; $source = 'default_auto'; }
+                    if ($sid <= 0 || !isset($shiftRows[$sid])) { $skip['noshift']++; continue; }
+                    $w = Shifts::resolveWindow($shiftRows[$sid], $wd);
+                    $sStart = $w['starts_at']; $sEnd = $w['ends_at'];
+                } else {
+                    $sStart = new DateTimeImmutable((string) $inst['starts_at'], $utc); $sEnd = new DateTimeImmutable((string) $inst['ends_at'], $utc);
+                }
+                if ($mode === 'shift') {
+                    $tin = $sStart; $tout = $sEnd;
+                } else {
+                    $tin = (new DateTimeImmutable($wd . ' ' . $inT, $tz))->setTimezone($utc);
+                    $tout = null;
+                    if ($outT !== '') {
+                        $tout = (new DateTimeImmutable($wd . ' ' . $outT, $tz))->setTimezone($utc);
+                        if ($tout <= $tin) $tout = $tout->modify('+1 day');
+                    }
+                }
+                if ($tin > $now) { $skip['future']++; continue; }
+                if ($tout !== null && $tout > $now) $tout = null;           // not over yet: still inside
+                $clash = false;
+                foreach ($have[$eid] ?? [] as [$a, $b]) {
+                    if ($a < ($tout ?? new DateTimeImmutable('9999-12-31', $utc)) && ($b === null || $b > $tin)) { $clash = true; break; }
+                }
+                if ($clash) { $skip['already']++; continue; }
+                $have[$eid][] = [$tin, $tout];                              // two days of the same run never overlap either
+                $plan[] = [$e, $wd, $inst, $sid, $source, $tin, $tout];
+            }
+        }
+
+        $summary = ['people' => count($emps), 'days' => count($dates), 'to_add' => count($plan),
+                    'skipped_already' => $skip['already'], 'skipped_future' => $skip['future'], 'skipped_no_shift' => $skip['noshift'],
+                    'unknown_codes' => $unknown,
+                    'sample' => array_map(fn($p) => ['code' => $p[0]['code'], 'name' => $p[0]['full_name'], 'date' => $p[1],
+                        'in' => $p[5]->setTimezone($tz)->format('H:i'), 'out' => $p[6] ? $p[6]->setTimezone($tz)->format('H:i') : null], array_slice($plan, 0, 8))];
+        if (!$apply) {
+            return ['ok' => true, 'applied' => false] + $summary;
+        }
+
+        $added = 0; $failed = [];
+        foreach ($plan as [$e, $wd, $inst, $sid, $source, $tin, $tout]) {
+            try {
+                Db::tx(static function () use ($e, $wd, $inst, $sid, $source, $tin, $tout, $reason, $actorId, &$added) {
+                    $eid = (int) $e['id'];
+                    Db::run('SELECT id FROM att_employees WHERE id = ? FOR UPDATE', [$eid]);
+                    if (self::overlap($eid, $tin, $tout, 0) !== null) return;   // something arrived meanwhile: leave it
+                    $iid = $inst !== null ? (int) $inst['id']
+                        : (int) (Db::value('SELECT id FROM att_shift_instances WHERE employee_id = ? AND work_date = ?', [$eid, $wd])
+                                 ?? Shifts::assign($eid, $sid, $wd, $source, $actorId));
+                    $seq = (int) Db::value('SELECT COALESCE(MAX(entry_sequence), 0) + 1 FROM att_entry_cycles WHERE shift_instance_id = ?', [$iid]);
+                    $min = $tout !== null ? intdiv($tout->getTimestamp() - $tin->getTimestamp(), 60) : null;
+                    Db::run(
+                        "INSERT INTO att_entry_cycles (employee_id, shift_instance_id, entry_sequence, gate_in_event_id, opened_at, closed_at, present_minutes,
+                                                       in_source, close_source, edited_at, edited_by)
+                         VALUES (?, ?, ?, NULL, ?, ?, ?, 'admin', ?, ?, ?)",
+                        [$eid, $iid, $seq, Time::sql($tin), $tout ? Time::sql($tout) : null, $min, $tout ? 'admin' : 'gate', Time::sql(Time::nowUtc()), $actorId]
+                    );
+                    $id = Db::lastId();
+                    self::record($id, 'admin.entry_add', null, ['employee_code' => $e['code'], 'opened_at' => Time::sql($tin),
+                        'closed_at' => $tout ? Time::sql($tout) : null, 'present_minutes' => $min, 'bulk' => true], $reason, $actorId);
+                    $added++;
+                });
+            } catch (\Throwable $ex) {
+                if (count($failed) < 10) $failed[] = $e['code'] . ' ' . $wd . ': ' . $ex->getMessage();
+            }
+        }
+        return ['ok' => true, 'applied' => true, 'added' => $added, 'failed' => $failed] + $summary;
+    }
+
     // ------------------------------------------------------------- helpers
 
     private static function checkTimes(DateTimeImmutable $in, ?DateTimeImmutable $out): ?array
