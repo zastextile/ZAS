@@ -52,7 +52,10 @@
    multiple select emp to apply one stage … modern and fast"). One table of
    everybody from People Finance: filter by department or stage, tick any
    people, press a stage to give it or take it off. Each person's stages are
-   chips — click one to switch it. Every change saves at once, no reload. */
+   chips — click one to switch it. Every change saves at once, no reload.
+   Old production workers nobody in People Finance matches are not shown
+   here at all (owner: "no need such things here"); they are not offered on
+   Daily Entry, and their past entries stay in history untouched. */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 if (!is_admin() && !is_colleague()) { http_response_code(403); exit('Production access required.'); }
@@ -72,17 +75,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode($r);
         exit;
     }
-    if ($a === 'retire') {
-        /* ONLY FOR A WORKER NOBODY IN PEOPLE FINANCE MATCHES. Set inactive, never
-           deleted: every wage already booked keeps their name. */
-        $wid = (int)($_POST['worker_id'] ?? 0);
-        try {
-            $st = db()->prepare("UPDATE zp_workers SET is_active = 0 WHERE id = ? AND att_employee_id IS NULL");
-            $st->execute([$wid]);
-            $_SESSION['zp_msg'] = $st->rowCount() ? 'Made inactive. Their production entries and wages are kept.' : 'Nothing changed — that worker is in People Finance; change them there.';
-        } catch (Throwable $e) { $_SESSION['zp_msg'] = 'Could not change that worker.'; }
-        redirect('production_workers.php#notinpeople');
-    }
 }
 
 /* PEOPLE COME FROM PEOPLE FINANCE — copied on every open (see zp_people_sync). */
@@ -93,7 +85,6 @@ if (!empty($_SESSION['zp_msg'])) { $msg = $_SESSION['zp_msg']; unset($_SESSION['
 $all    = zp_workers();
 $inUse  = zp_people_in_use();
 $people = $inUse ? array_values(array_filter($all, fn($w) => $w['att_employee_id'] !== null)) : $all;
-$notIn  = zp_workers_not_in_people();
 $stages = zp_stage_all(true);
 $wsMap  = zp_worker_stage_map();
 $earned = [];
@@ -155,10 +146,6 @@ page_header('Production Workers');
 .pw .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1d2d3e;color:#fff;padding:9px 16px;border-radius:6px;font-size:12.5px;opacity:0;transition:.2s;pointer-events:none;z-index:50}
 .pw .toast.show{opacity:1}
 .pw .toast.err{background:#b00}
-.pw details.ni{margin-top:14px;border:1px solid #f0d9b5;background:#fffaf2;border-radius:6px;padding:8px 12px}
-.pw details.ni summary{cursor:pointer;font-weight:700;color:#8a5a06}
-.pw details.ni table{margin-top:8px}
-.pw details.ni button{border:1px solid #c9d3df;background:#fff;border-radius:5px;padding:3px 9px;font:inherit;font-size:12px;cursor:pointer}
 /* the shared skin paints every button white; these chips and the bar keep their own colours */
 .zskin .pw .chip{background:#fff !important;color:#8a97ab !important;border:1px solid #d6dee8 !important;box-shadow:none !important}
 .zskin .pw .chip.on{background:#0b2a4a !important;color:#fff !important;border-color:#0b2a4a !important}
@@ -210,22 +197,6 @@ page_header('Production Workers');
     <tbody id="tb"></tbody>
   </table></div>
 
-  <?php if ($notIn): ?>
-  <details class="ni" id="notinpeople">
-    <summary>Not in People Finance (<?= count($notIn) ?>) — old production workers, not offered on Daily Entry</summary>
-    <p style="margin:6px 0 0;color:#6a5a3a;font-size:12.5px">Their entries and wages are kept. If one still works, add them in
-      <a href="att_finance.php#people">People Finance › Employees</a> with this code (or as their <i>Production worker code</i>) — they join up by themselves. Otherwise make them inactive.</p>
-    <table><thead><tr><th>Code</th><th>Name</th><th>Department</th><th class="n">Entries</th><th class="n">Earned (PKR)</th><th></th></tr></thead><tbody>
-    <?php foreach ($notIn as $w): $wid = (int)$w['id']; $e2 = $earned[$wid] ?? ['n' => 0, 'amt' => 0]; ?>
-      <tr><td class="code"><?= e($w['worker_code']) ?></td><td><?= e($w['worker_name']) ?></td><td class="dept"><?= e($w['department'] ?: '—') ?></td>
-        <td class="n"><?= number_format($e2['n']) ?></td><td class="n"><?= number_format($e2['amt'], 2) ?></td>
-        <td><form method="post" style="margin:0" onsubmit="return confirm('Make <?= e(addslashes($w['worker_name'])) ?> inactive?\n\nTheir entries and wages are kept.')">
-          <?= csrf_field() ?><input type="hidden" name="action" value="retire"><input type="hidden" name="worker_id" value="<?= $wid ?>">
-          <button>Make inactive</button></form></td></tr>
-    <?php endforeach; ?>
-    </tbody></table>
-  </details>
-  <?php endif; ?>
   <div class="toast" id="toast"></div>
 </div>
 </div><?php /* closes .zskin */ ?>

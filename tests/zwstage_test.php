@@ -121,7 +121,7 @@ ok(str_contains($pw, "fd.append('_csrf', CSRF)"), '  and the screen sends the to
 ok(str_contains($zp, 'SELECT id FROM zp_workers WHERE id IN ($in)'), 'only workers that exist are changed');
 ok(str_contains($zp, 'INSERT IGNORE INTO zp_worker_stage') && str_contains($zp, 'DELETE FROM zp_worker_stage WHERE worker_id IN ($in) AND stage_id IN ($inS)'),
    '  and only the stage pressed is given or taken off — their other stages stay');
-ok(substr_count($pw, 'csrf_field()') >= 1, 'the remaining form (make inactive) is CSRF-guarded');
+ok(substr_count($pw, '<form') === 0, 'no plain forms are left on the page — every save is the CSRF-checked one above');
 ok(str_contains(preg_replace('/\s+/', ' ', $pw), 'NO STAGE TICKED MEANS NOT PRODUCTION'),
    'the rule is stated on the screen that sets it');
 
