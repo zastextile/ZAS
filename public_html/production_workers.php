@@ -68,6 +68,7 @@ header('Expires: 0');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close();   // read-only from here: other tabs need not wait
     $a = $_POST['action'] ?? '';
     if ($a === 'stage_bulk') {
         header('Content-Type: application/json');
@@ -77,10 +78,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-/* PEOPLE COME FROM PEOPLE FINANCE — copied on every open (see zp_people_sync). */
-zp_people_sync(true);
 $msg = '';
 if (!empty($_SESSION['zp_msg'])) { $msg = $_SESSION['zp_msg']; unset($_SESSION['zp_msg']); }
+
+/* THE SESSION IS LET GO BEFORE THE WORK BELOW (18 Nov 2026 slow log: this
+   page and others waited in session_start for minutes). PHP locks a session
+   until the page ends, so while this page worked every other tab of the same
+   user waited. The menu at the top is the last thing that writes to the
+   session, so it is made first, held back, and printed in its place. */
+csrf_token();
+ob_start();
+page_header('Production Workers');
+$pageHead = ob_get_clean();
+if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
+
+/* PEOPLE COME FROM PEOPLE FINANCE — copied on every open (see zp_people_sync). */
+zp_people_sync(true);
 
 $all    = zp_workers();
 $inUse  = zp_people_in_use();
@@ -102,7 +115,7 @@ $rows = array_map(fn($w) => [
 $depts = array_values(array_unique(array_filter(array_column($rows, 'dept'))));
 sort($depts);
 
-page_header('Production Workers');
+echo $pageHead;
 ?>
 <style>
 .pw{max-width:1280px;font-size:13px;color:#1d2d3e}

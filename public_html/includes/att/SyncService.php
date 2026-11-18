@@ -408,7 +408,13 @@ final class SyncService
             'ok'       => true,
             'cursor'   => $now->format('Y-m-d\TH:i:s.u\Z'),
             'confirmations' => $resolved,
-            'pending'  => HodService::pending(Roles::departmentScope($userId, Roles::HOD)),
+            /* Asked every 30 seconds by each HOD phone: today and yesterday
+               only (owner, 18 Nov 2026). Without a limit it read every
+               unconfirmed entry ever and sent the OLDEST 500, so once 500
+               had piled up, today's arrivals no longer reached the phone.
+               Older ones stay where they are, for HR. */
+            'pending'  => HodService::pending(Roles::departmentScope($userId, Roles::HOD), null, 500,
+                (new \DateTimeImmutable('yesterday', new \DateTimeZone('Asia/Karachi')))->format('Y-m-d')),
         ];
     }
 }

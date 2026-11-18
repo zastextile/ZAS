@@ -84,6 +84,17 @@ if ($route === '') {
 }
 $route = '/' . trim($route, '/');
 
+/* LET GO OF THE SESSION AT ONCE (18 Nov 2026 slow log: 51 of 75 stuck
+   requests were waiting in session_start). PHP keeps a session locked until
+   the request ends, so one slow call from a phone made every later call from
+   that phone queue behind it, each one holding a PHP worker, until none were
+   left and the server answered 502. Only these routes write to the session;
+   every other route only reads it, and $_SESSION stays readable after this. */
+if (session_status() === PHP_SESSION_ACTIVE
+    && !in_array($route, ['/auth/login', '/auth/phone-resume', '/auth/logout', '/auth/me', '/auth/phone-key'], true)) {
+    session_write_close();
+}
+
 try {
     switch (true) {
 

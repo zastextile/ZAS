@@ -227,9 +227,8 @@ $aj = $login('admin@zas.test');
 [$c, $raw] = $http('diagnose.php', $aj);
 ok($c === 200 && str_contains($raw, 'DIAGNOSTIC COMPLETED'), '  an admin still gets the report');
 ok(str_contains((string) shell_exec('cd ' . escapeshellarg($B) . ' && php diagnose.php 2>&1'), 'Database connection: OK'), '  and it still runs from SSH with no login');
-[$c, $raw] = $http('oc_clear_tmp.php');
-ok(in_array($c, [302, 303], true) && !str_contains($raw, 'opcache'), "the old open cache-clear address now sends a stranger to the login page ($c)");
-ok(!str_contains($src('oc_clear_tmp.php'), 'opcache_reset') && str_contains($src('oc_clear_tmp.php'), 'require_admin()'), '  it clears nothing itself and asks for an admin');
+/* 18 Nov 2026: both cache-clear pages are gone — new files show by themselves, and the slow log had them waiting minutes behind other tabs */
+ok(!is_file($B . 'oc_clear_tmp.php') && !is_file($B . 'opcache_clear.php'), 'the cache-clear pages are gone (not needed: uploaded files show by themselves)');
 
 $j1 = $login('col@zas.test'); $j2 = $login('col@zas.test');
 $me = fn(string $jar) => $http('api/v1/index.php?route=%2Fauth%2Fme', $jar)[0];

@@ -418,11 +418,18 @@ final class AttendanceService
         if ($last !== '' && strtotime($last . ' UTC') > time() - 300) {
             return null;
         }
-        Db::run(
-            "INSERT INTO att_policies (policy_key, value, value_type, description) VALUES ('auto_out_last_run', ?, 'string', '')
-             ON DUPLICATE KEY UPDATE value = VALUES(value)",
-            [gmdate('Y-m-d H:i:s')]
-        );
+        /* ONE PHONE RUNS IT, NOT EVERY PHONE THAT ASKS AT THE SAME MOMENT.
+           Reading "last run" and then writing it let several syncs pass the
+           check together and each close the same entries. The UPDATE below
+           only succeeds for whoever moves the time on first. */
+        Db::run("INSERT IGNORE INTO att_policies (policy_key, value, value_type, description) VALUES ('auto_out_last_run', '', 'string', '')");
+        $claimed = Db::run(
+            "UPDATE att_policies SET value = ? WHERE policy_key = 'auto_out_last_run' AND (value = '' OR value IS NULL OR value < ?)",
+            [gmdate('Y-m-d H:i:s'), gmdate('Y-m-d H:i:s', time() - 300)]
+        )->rowCount();
+        if ($claimed !== 1) {
+            return null;                              // another request is running it right now
+        }
         Policy::flush();
         return self::autoCloseDue();
     }

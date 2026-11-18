@@ -478,8 +478,11 @@ $hcodes = array_column($hsnap['body']['employees'] ?? [], 'code'); sort($hcodes)
 ok($hsnap['status'] === 200 && $hcodes === ['E001', 'E003', 'E004', 'E005'],
    'A HOD WITH ONLY THE HOD PERMISSION GETS THEIR OWN DEPARTMENT\'S LIST for the phone — and nobody else\'s (' . implode(',', $hcodes) . ')');
 ok(call('GET', '/employees/E002')['status'] === 404 && call('GET', '/employees/E001')['status'] === 200, '  the same for a single lookup');
-$pend = call('GET', '/sync/changes');
+$pend = call('GET', '/hod/pending');
 ok($pend['status'] === 200 && !str_contains($pend['raw'], 'attendance/') && str_contains($pend['raw'], 'has_photo'), 'the HOD\'s pending list carries has_photo and no key');
+$chg = call('GET', '/sync/changes');
+ok($chg['status'] === 200 && ($pend['body']['pending'] ?? []) !== [] && ($chg['body']['pending'] ?? null) === [],
+   'the 30-second poll sends only today and yesterday: these March entries stay off the phone, still listed for HR');
 signIn('nobody@zas.test');
 ok(call('GET', '/employees/E001/photo')['status'] === 403, 'a login with no attendance permission: 403');
 

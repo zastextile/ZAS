@@ -241,7 +241,7 @@ final class HodService
      * @param list<int>|null $departmentIds null = all
      * @return list<array<string,mixed>>
      */
-    public static function pending(?array $departmentIds, ?string $workDate = null, int $limit = 500): array
+    public static function pending(?array $departmentIds, ?string $workDate = null, int $limit = 500, ?string $sinceDate = null): array
     {
         if ($departmentIds === []) {
             return [];
@@ -266,6 +266,10 @@ final class HodService
         if ($workDate !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $workDate)) {
             $sql .= ' AND si.work_date = ?';
             $params[] = $workDate;
+        }
+        if ($sinceDate !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $sinceDate)) {
+            $sql .= ' AND si.work_date >= ?';
+            $params[] = $sinceDate;
         }
         $sql .= ' ORDER BY c.opened_at, c.id LIMIT ' . max(1, min(2000, $limit));
         return Db::all($sql, $params);
