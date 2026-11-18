@@ -114,16 +114,14 @@ ok($DB->log === [], 'a worker id of 0 writes nothing at all');
 /* ------------------------------------------------------------------ */
 echo "3. The screen saves against the right worker\n";
 
-/* Since 18 Nov 2026 nobody is created on this screen (people come from People
-   Finance), so the ticks are saved against an existing worker, checked first. */
-ok(str_contains($pw, "\$a === 'stages'") && str_contains($pw, 'zp_save_worker_stages($wid,')
-   && strpos($pw, 'SELECT id FROM zp_workers WHERE id = ?') < strpos($pw, 'zp_save_worker_stages($wid,'),
-   'the ticks are saved only against a worker that exists, checked before saving');
-ok(strpos($pw, 'zp_save_worker_stages') < strpos($pw, "redirect('production_workers.php')"),
-   '  and before the redirect, or nothing would be written');
-ok(str_contains($pw, 'name="stage[]"'), 'the form posts the ticks');
-ok(str_contains($pw, 'type="checkbox"'), '  as real checkboxes, so it works with no JavaScript');
-ok(substr_count($pw, 'csrf_field()') >= 2, 'every form on the page is still CSRF-guarded');
+/* Rebuilt 18 Nov 2026: stages are given and taken off for any number of
+   people at once (zp_stage_bulk), saved at once without a reload. */
+ok(strpos($pw, 'verify_csrf();') < strpos($pw, "\$a === 'stage_bulk'"), 'the save is CSRF-checked before anything else');
+ok(str_contains($pw, "fd.append('_csrf', CSRF)"), '  and the screen sends the token with every save');
+ok(str_contains($zp, 'SELECT id FROM zp_workers WHERE id IN ($in)'), 'only workers that exist are changed');
+ok(str_contains($zp, 'INSERT IGNORE INTO zp_worker_stage') && str_contains($zp, 'DELETE FROM zp_worker_stage WHERE worker_id IN ($in) AND stage_id IN ($inS)'),
+   '  and only the stage pressed is given or taken off — their other stages stay');
+ok(substr_count($pw, 'csrf_field()') >= 1, 'the remaining form (make inactive) is CSRF-guarded');
 ok(str_contains(preg_replace('/\s+/', ' ', $pw), 'NO STAGE TICKED MEANS NOT PRODUCTION'),
    'the rule is stated on the screen that sets it');
 

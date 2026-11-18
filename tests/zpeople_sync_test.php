@@ -23,19 +23,21 @@ function zp_meta_set(string $k, string $v): void { global $META; $META[$k] = $v;
 
 $src = file_get_contents(dirname(__DIR__) . '/public_html/includes/zprod.php');
 preg_match('/const ZP_CODE_MAX = (\d+);/', $src, $m); define('ZP_CODE_MAX', (int) $m[1]);
-foreach (['function zp_workers(bool', 'function zp_people_in_use(', 'function zp_people_sync(', 'function zp_workers_not_in_people('] as $sig) {
+function zp_stage_all(bool $activeOnly = false): array { return [['id' => 1, 'name' => 'Cutting'], ['id' => 2, 'name' => 'Stitching'], ['id' => 3, 'name' => 'Packing']]; }
+foreach (['function zp_workers(bool', 'function zp_people_in_use(', 'function zp_people_sync(', 'function zp_workers_not_in_people(', 'function zp_stage_bulk(', 'function zp_worker_stage_map('] as $sig) {
     $a = strpos($src, $sig); $b = strpos($src, "\n}\n", $a);
     eval(substr($src, $a, $b - $a + 3));
 }
 
 $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
-foreach (['att_employees', 'att_departments', 'zp_workers', 'zp_entries'] as $t) $pdo->exec("DROP TABLE IF EXISTS $t");
+foreach (['att_employees', 'att_departments', 'zp_workers', 'zp_entries', 'zp_worker_stage'] as $t) $pdo->exec("DROP TABLE IF EXISTS $t");
 $pdo->exec('SET FOREIGN_KEY_CHECKS=1');
 $pdo->exec("CREATE TABLE att_departments (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(120) NOT NULL) COLLATE utf8mb4_unicode_ci");
 $pdo->exec("CREATE TABLE att_employees (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, code VARCHAR(40) NOT NULL, full_name VARCHAR(160) NOT NULL,
             department_id BIGINT UNSIGNED NOT NULL, worker_code VARCHAR(40) NULL, active TINYINT(1) NOT NULL DEFAULT 1) COLLATE utf8mb4_unicode_ci");
 $pdo->exec("CREATE TABLE zp_workers (id INT AUTO_INCREMENT PRIMARY KEY, worker_code VARCHAR(40) NOT NULL, worker_name VARCHAR(120) NOT NULL, department VARCHAR(60) NULL,
             is_active TINYINT(1) NOT NULL DEFAULT 1, created_by INT NULL, att_employee_id BIGINT UNSIGNED NULL, UNIQUE KEY uniq_worker_code (worker_code)) COLLATE utf8mb4_0900_ai_ci");
+$pdo->exec("CREATE TABLE zp_worker_stage (id INT AUTO_INCREMENT PRIMARY KEY, worker_id INT NOT NULL, stage_id INT NOT NULL, UNIQUE KEY uniq_ws (worker_id, stage_id))");
 $pdo->exec("CREATE TABLE zp_entries (id INT AUTO_INCREMENT PRIMARY KEY, worker_id INT NOT NULL, amount DECIMAL(14,2) NOT NULL, status VARCHAR(12) NOT NULL DEFAULT 'active')");
 
 $pdo->exec("INSERT INTO att_departments (id, name) VALUES (1, 'STITCHING'), (2, 'PACKING')");
@@ -71,6 +73,16 @@ echo "3. A code that is somebody else's is never taken\n";
 $pdo->exec("INSERT INTO att_employees (code, full_name, department_id, worker_code) VALUES ('900', 'Second Person', 1, 'W145')");
 $r = zp_people_sync(true);
 ok(in_array('W145', $r['conflicts'], true) && $w('W145')['worker_name'] === 'Abdullah', 'W145 belongs to Abdullah: the second person is refused and named, Abdullah is untouched');
+
+echo "4. Many people, one stage (Production Workers)\n";
+$ids = array_map('intval', $pdo->query("SELECT id FROM zp_workers ORDER BY id")->fetchAll(PDO::FETCH_COLUMN));
+$pdo->exec("INSERT INTO zp_worker_stage (worker_id, stage_id) VALUES ({$ids[0]}, 3)");
+$r = zp_stage_bulk([$ids[0], $ids[1], 99999], [2], []);
+$first = $r['stages'][$ids[0]] ?? []; sort($first);
+ok($r['ok'] && $r['n'] === 2 && $first === [2, 3] && ($r['stages'][$ids[1]] ?? null) === [2], 'Stitching given to two people at once; an unknown id is ignored; the first keeps Packing (' . json_encode($r['stages'] ?? null) . ')');
+$r = zp_stage_bulk([$ids[0], $ids[1]], [], [2]);
+ok($r['ok'] && $r['stages'][$ids[0]] === [3] && $r['stages'][$ids[1]] === [], 'Stitching taken off both; Packing stays where it was');
+ok(zp_stage_bulk([], [2], [])['ok'] === false && zp_stage_bulk([$ids[0]], [999], [])['ok'] === false, 'nobody ticked, or a stage that does not exist, is refused');
 
 echo "\nPEOPLE FINANCE → PRODUCTION: $P passed, $F failed\n";
 exit($F ? 1 : 0);

@@ -2211,6 +2211,46 @@ function zp_apply_dept_stages(array $want, bool $replace = true): array {
    stage" — so this deletes first and only then inserts. Unknown stage ids are
    dropped rather than refused: a stage removed while the form was open should
    not cost somebody their other five ticks. */
+/* MANY PEOPLE, ONE STAGE (owner, 18 Nov 2026: "in one dept some workers are
+   only for one stage, others for another — allow selecting many and applying
+   one stage"). Adds and/or takes off stages for every worker id given, and
+   leaves every other stage they have exactly as it was. Answers with the
+   stages each of them has now, so the screen can redraw without a reload. */
+function zp_stage_bulk(array $workerIds, array $addIds, array $removeIds): array {
+    zp_ensure_schema();
+    $valid = [];
+    foreach (zp_stage_all(false) as $s) $valid[(int)$s['id']] = true;
+    $ids = array_values(array_unique(array_filter(array_map('intval', $workerIds), fn($x) => $x > 0)));
+    $add = array_values(array_unique(array_filter(array_map('intval', $addIds), fn($x) => isset($valid[$x]))));
+    $rem = array_values(array_unique(array_filter(array_map('intval', $removeIds), fn($x) => isset($valid[$x]))));
+    if (!$ids) return ['ok' => false, 'error' => 'Tick at least one person.'];
+    if (!$add && !$rem) return ['ok' => false, 'error' => 'Choose a stage.'];
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $known = db()->prepare("SELECT id FROM zp_workers WHERE id IN ($in)");
+    $known->execute($ids);
+    $ids = array_map('intval', $known->fetchAll(PDO::FETCH_COLUMN));
+    if (!$ids) return ['ok' => false, 'error' => 'Those people were not found — reload the page.'];
+    db()->beginTransaction();
+    try {
+        if ($rem) {
+            $in = implode(',', array_fill(0, count($ids), '?')); $inS = implode(',', array_fill(0, count($rem), '?'));
+            db()->prepare("DELETE FROM zp_worker_stage WHERE worker_id IN ($in) AND stage_id IN ($inS)")->execute(array_merge($ids, $rem));
+        }
+        if ($add) {
+            $ins = db()->prepare("INSERT IGNORE INTO zp_worker_stage (worker_id, stage_id) VALUES (?,?)");
+            foreach ($ids as $w) foreach ($add as $sid) $ins->execute([$w, $sid]);
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return ['ok' => false, 'error' => 'Could not save: ' . $e->getMessage()];
+    }
+    $map = zp_worker_stage_map();
+    $now = [];
+    foreach ($ids as $w) $now[$w] = array_values(array_map('intval', $map[$w] ?? []));
+    return ['ok' => true, 'n' => count($ids), 'stages' => $now];
+}
+
 function zp_save_worker_stages(int $workerId, array $stageIds): void {
     zp_ensure_schema();
     if ($workerId <= 0) return;

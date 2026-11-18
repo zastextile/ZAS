@@ -154,17 +154,11 @@ $r3 = zp_apply_dept_stages(['A DEPARTMENT THAT IS NOT THERE' => [10]], true);
 ok($r3['ok'] === true && $r3['people'] === 0 && $SAVED === [],
    'a department with nobody in it writes nothing');
 
-echo "8. The screen\n";
-ok(str_contains($pw, 'value="deptstage"'), 'the department form posts its own action');
-ok(str_contains($pw, 'name="dept[]"'), 'EVERY department on the form is submitted');
-ok(str_contains($pw, 'name="stage[<?= e($dept) ?>][]"'), '  with its ticks named per department');
-ok(str_contains($pw, '$want[$d] = array_map'),
-   'so a department with nothing ticked is still acted on — that is how "no production" is said');
-ok(str_contains($pw, 'these people do no production'), 'and the screen says what an empty row means');
-ok(str_contains($pw, '$all = $have > 0 && $have === $p[\'n\'];'),
-   'a box is pre-ticked only when EVERYBODY in the department already has it');
-ok(str_contains($pw, 'Still offering everybody:'),
-   'the screen names the stages that are not narrowed yet, so the first Apply does not look broken');
+echo "8. The screen (rebuilt 18 Nov 2026): a department is a filter, then tick everyone shown, then a stage\n";
+ok(str_contains($pw, 'id="fd"') && str_contains($pw, 'All departments'), 'the list filters by department');
+ok(str_contains($pw, 'id="all"') && str_contains($pw, 'shown().forEach(function(r){ sel[r.id] = on; })'), '  and one box ticks everyone shown — the whole department');
+ok(str_contains($pw, "fd.append('action', 'stage_bulk')") && str_contains($pw, "'worker_ids[]'"), '  and a stage button sends all of them in one save');
+ok(str_contains($pw, 'value="none">No stage yet'), 'who has no stage yet can be listed on its own');
 $pwF = preg_replace('/\s+/', ' ', $pw);
 ok(str_contains($pwF, 'NO STAGE TICKED MEANS NOT PRODUCTION'),
    'the rule at the top of the file was changed with the code');
