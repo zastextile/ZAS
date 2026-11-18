@@ -104,7 +104,7 @@ page_header('Attendance — Reports');
 .attr .tdet .st{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600}
 .attr .tdet .st.in{background:#e1edf9;color:#17467c}.attr .tdet .st.out{background:#eef1f5;color:#4b5563}
 .attr .tdet .pay{font-size:11.5px;color:var(--muted);white-space:nowrap}
-.attr .tdet .pb>.scroll{max-height:340px}
+.attr .tdet .pb>.scroll{overflow:auto}
 /* panels */
 .attr .cols{display:grid;grid-template-columns:minmax(0,2.1fr) minmax(260px,1fr);gap:12px;align-items:start}
 .attr .panel{background:#fff;border:1px solid var(--line);border-radius:4px;min-width:0}
@@ -404,7 +404,8 @@ page_header('Attendance — Reports');
      the dashboard already sent (d.roll): no reload, no extra request. With
      no tile picked it shows the latest movements, newest first. The choice
      survives the refresh every minute. */
-  var TD = { pick: 'latest', who: 'staff' };
+  var TD = { pick: 'latest', who: 'staff', all: false };
+  var TD_ROWS = 8;                                   // rows shown before the list scrolls
   try { TD.who = localStorage.getItem('attr-td-who') || 'staff'; } catch (e) {}
   function drawToday(){
     get('/reports/dashboard').then(function(d){
@@ -542,9 +543,28 @@ page_header('Attendance — Reports');
         return el('button', { type: 'button', 'aria-pressed': TD.who === o[0] ? 'true' : 'false', text: o[1], click: function(){ TD.who = o[0]; try { localStorage.setItem('attr-td-who', TD.who); } catch (e) {} paint(); } });
       })) : null;
       var back = TD.pick !== 'latest' ? el('button', { type: 'button', class: 'act', text: 'Latest movements', click: function(){ pick('latest'); } }) : null;
+      var more = rows.length > TD_ROWS ? el('button', { type: 'button', class: 'act', text: TD.all ? 'Show fewer' : 'Show all ' + rows.length, click: function(){ TD.all = !TD.all; paint(); } }) : null;
       det.textContent = '';
-      det.appendChild(el('div', { class: 'ph' }, [el('h3', { text: K.label }), el('span', { class: 'n', text: rows.length + (rows.length === 1 ? ' person' : ' people') }), el('span', { class: 'grow' }), who, back]));
-      det.appendChild(el('div', { class: 'pb flush' }, [rows.length ? detailTable(TD.pick, rows, R, anyCon) : none(TD.pick === 'latest' ? 'Nobody has come in yet today.' : 'Nobody here.')]));
+      det.appendChild(el('div', { class: 'ph' }, [el('h3', { text: K.label }), el('span', { class: 'n', text: rows.length + (rows.length === 1 ? ' person' : ' people') }), el('span', { class: 'grow' }), who, more, back]));
+      var box = rows.length ? detailTable(TD.pick, rows, R, anyCon) : none(TD.pick === 'latest' ? 'Nobody has come in yet today.' : 'Nobody here.');
+      det.appendChild(el('div', { class: 'pb flush' }, [box]));
+      fitRows(box);
+    }
+    /* THE BOX ENDS ON A WHOLE ROW (owner, 18 Nov 2026: the last line was cut in
+       half). It is measured once the panel is on the page: the header plus
+       the first TD_ROWS rows, so the list stops cleanly and scrolls for the
+       rest. "Show all" lifts the limit. */
+    function fitRows(box){
+      if (!box.querySelector || !box.querySelector('tbody')) return;
+      box.style.maxHeight = '';
+      if (TD.all) return;
+      requestAnimationFrame(function(){
+        var trs = box.querySelectorAll('tbody tr');
+        if (trs.length <= TD_ROWS) return;
+        var head = box.querySelector('thead'), last = trs[TD_ROWS - 1];
+        var h = (head ? head.offsetHeight : 0) + last.offsetTop + last.offsetHeight - (trs[0].offsetTop);
+        if (h > 0) box.style.maxHeight = h + 'px';
+      });
     }
     paint();
     return { tiles: tiles, det: det };
