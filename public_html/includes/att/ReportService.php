@@ -493,6 +493,7 @@ final class ReportService
                     ev.received_at, ev.source, ev.reconciliation_status,
                     e.code AS employee_code, e.full_name, d.name AS department_name,
                     dv.label AS phone, " . ($users ? 'u.name' : 'NULL') . " AS recorded_by,
+                    " . (Db::tableExists('att_fin_profiles') ? '(SELECT f.pay_type FROM att_fin_profiles f WHERE f.employee_id = e.id)' : 'NULL') . " AS pay_type,
                     COALESCE(ci.entry_sequence, co.entry_sequence) AS entry_sequence,
                     h.occurred_at AS hod_confirmed_at, " . ($users ? 'hu.name' : 'NULL') . " AS hod_name
                FROM att_events ev
