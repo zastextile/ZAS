@@ -933,7 +933,8 @@ page_header('Attendance — Setup');
         el('p', { class: 'note', text: 'An employee who has not been given a shift for the day uses the default shift. Give shifts by department only where people work different hours from the default.' }),
         el('div', { class: 'bar' }, [
           CAN.c ? btn('Add shift', function(){ editShift(null); }, true) : null,
-          CAN.c && live.length ? btn('Give a shift to a department…', function(){ assignDialog(live); }) : null
+          CAN.c && live.length ? btn('Give a shift to a department…', function(){ assignDialog(live); }) : null,
+          CAN.c ? btn('Day off…', function(){ dayOffDialog(); }) : null
         ]),
         r.shifts.length ? table(['Shift', 'Hours', 'Break', 'Early / late allowed', 'Days given ahead', 'State', ''], r.shifts, function(s){
           var on = parseInt(s.active, 10) === 1, night = parseInt(s.crosses_midnight, 10) === 1;
@@ -973,6 +974,41 @@ page_header('Attendance — Setup');
       }
     });
     name.focus();
+  }
+  /* DAY OFF — the shift taken away on chosen days, so they read as day off, not
+     "did not come". A day with a scan or an entry is never touched. */
+  function dayOffDialog(){
+    var today = new Date(), iso = function(d){ return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); };
+    var dp = el('select', { class: 'full' }, options(activeDepts(), 'id', 'name', '', 'Choose…'));
+    var codes = el('textarea', { class: 'full', rows: 2, placeholder: 'Employee codes, e.g. 234, 379 (leave empty for the whole department)' });
+    var from = el('input', { type: 'date', class: 'full', value: iso(today) });
+    var to = el('input', { type: 'date', class: 'full', value: iso(today) });
+    var boxes = DAYS.map(function(d, i){ var c = el('input', { type: 'checkbox', checked: true, value: i + 1 }); return { c: c, node: el('label', { class: 'inline' }, [c, d]) }; });
+    var why = el('input', { type: 'text', class: 'full', placeholder: 'e.g. weekly off, leave, public holiday' });
+    var out = el('p', { class: 'okmsg' });
+    dialog({
+      title: 'Day off', okText: 'Give day off',
+      text: 'These days become "day off" instead of "did not come". A day on which the person was scanned, or has an entry, is never changed. If they come in on the day off after all, the scan works as on any day.',
+      fields: [el('div', { class: 'two' }, [field('Department', dp), field('Or only these codes', codes)]),
+        el('div', { class: 'two' }, [field('First day', from), field('Last day', to)]),
+        el('div', {}, [el('label', { text: 'On these days of the week (e.g. only Fri for a weekly off)' })].concat(boxes.map(function(b){ return b.node; }))),
+        field('Reason', why), out],
+      submit: function(){
+        var days = boxes.filter(function(b){ return b.c.checked; }).map(function(b){ return parseInt(b.c.value, 10); });
+        if (!days.length) { dlgError('Tick at least one day of the week.'); return null; }
+        return call('POST', '/admin/shifts/day-off', { department_id: parseInt(dp.value, 10) || 0, codes: codes.value, from: from.value, to: to.value, weekdays: days.length === 7 ? [] : days, reason: why.value })
+          .then(function(r){
+            if (!r.ok) return r;
+            out.textContent = 'Done: ' + r.removed + ' shift day' + (r.removed === 1 ? '' : 's') + ' are now day off'
+              + (r.already_off ? ' (' + r.already_off + ' had no shift already)' : '') + '.'
+              + (r.kept.length ? ' Kept, because they were scanned or have an entry: ' + r.kept.slice(0, 12).join(', ') + (r.kept.length > 12 ? ' and ' + (r.kept.length - 12) + ' more' : '') + '.' : '')
+              + (r.unknown_codes.length ? ' No employee with code ' + r.unknown_codes.join(', ') + '.' : '');
+            document.getElementById('attsdlg-ok').hidden = true;
+            document.getElementById('attsdlg-cancel').textContent = 'Close';
+            return { keepOpen: true };
+          });
+      }
+    });
   }
   function assignDialog(shifts){
     var today = new Date(), iso = function(d){ return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); };

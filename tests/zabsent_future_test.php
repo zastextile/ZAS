@@ -13,8 +13,8 @@ function ok($c, $m) { global $P, $F; if ($c) { $P++; } else { $F++; echo "  FAIL
 $dsn  = getenv('ATT_TEST_DSN') ?: 'mysql:host=127.0.0.1;port=3306;dbname=zas_att_test;charset=utf8mb4';
 $user = getenv('ATT_TEST_USER') ?: 'zas';
 $pass = getenv('ATT_TEST_PASS'); if ($pass === false) { $pass = 'zaspw'; }
-foreach (['Db', 'Migrations', 'Policy', 'Audit', 'Roles', 'Employees', 'Time', 'Shifts', 'ReportService'] as $c) { require_once $B . "includes/att/$c.php"; }
-use Att\Db; use Att\Employees; use Att\Migrations; use Att\ReportService; use Att\Shifts; use Att\Time;
+foreach (['Db', 'Migrations', 'Policy', 'Audit', 'Roles', 'Employees', 'Time', 'Shifts', 'ReportService', 'AdminService'] as $c) { require_once $B . "includes/att/$c.php"; }
+use Att\AdminService; use Att\Db; use Att\Employees; use Att\Migrations; use Att\ReportService; use Att\Shifts; use Att\Time;
 try { $pdo = new PDO($dsn, $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false]); }
 catch (Throwable $e) { echo "SKIP: no MySQL\n"; exit(0); }
 Db::bind($pdo); Db::useUtc();
@@ -48,5 +48,25 @@ $d = ReportService::dashboard(null);
 $abs = array_column($d['absent_with_shift'] ?? [], 'employee_code');
 ok(!in_array('234', $abs, true), 'Today › Did not come leaves out the shift that has not started');
 
-echo "\nNOT YET STARTED: $P passed, $F failed\n";
+
+echo "2. Day off\n";
+$day = Shifts::create(['name' => 'DAY', 'start_time' => '09:00', 'end_time' => '18:00', 'grace_in_minutes' => 15, 'grace_out_minutes' => 15]);
+$dd = []; for ($i = 5; $i >= 3; $i--) $dd[] = $now->modify("-$i days")->format('Y-m-d');
+foreach ($dd as $wd) { Shifts::assign($a, $day, $wd, 'assigned', null); Shifts::assign($b, $day, $wd, 'assigned', null); }
+/* 379 came on the middle day: an entry an administrator added */
+$si = (int) $pdo->query("SELECT id FROM att_shift_instances WHERE employee_id = $b AND work_date = '{$dd[1]}'")->fetchColumn();
+$pdo->prepare("INSERT INTO att_entry_cycles (employee_id, shift_instance_id, entry_sequence, opened_at, closed_at, present_minutes, in_source, close_source) VALUES (?,?,1,?,?,480,'admin','admin')")
+    ->execute([$b, $si, $dd[1] . ' 04:00:00', $dd[1] . ' 12:00:00']);
+$abs0 = array_filter(ReportService::attendance(['from' => $dd[0], 'to' => $dd[2]], null)['rows'], fn($x) => $x['status'] === 'absent');
+ok(count($abs0) === 5, '(before: five "did not come" days — 234 three, 379 two)');
+ok(AdminService::dayOff($dd[0], $dd[2], [], $dept, [], '', 1)['ok'] === false, 'no reason, no day off');
+$r = AdminService::dayOff($dd[0], $dd[2], [], 0, ['234', '379', '999'], 'weekly off', 1);
+ok($r['ok'] && $r['removed'] === 5 && count($r['kept']) === 1 && str_starts_with($r['kept'][0], '379') && $r['unknown_codes'] === ['999'],
+   'five shift days become day off; 379\'s day with an entry is kept and named; 999 is reported as unknown (' . json_encode($r) . ')');
+$rows = ReportService::attendance(['from' => $dd[0], 'to' => $dd[2]], null)['rows'];
+ok(count($rows) === 1 && $rows[0]['employee_code'] === '379' && $rows[0]['status'] === 'present', 'after: no "did not come" at all; only 379\'s worked day is left');
+ok((int) $pdo->query("SELECT COUNT(*) FROM att_entry_cycles")->fetchColumn() === 1, 'the entry itself is untouched');
+ok((int) $pdo->query("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'shift.day_off'")->fetchColumn() === 1, 'one audit line with the reason');
+
+echo "\nNOT YET STARTED / DAY OFF: $P passed, $F failed\n";
 exit($F ? 1 : 0);

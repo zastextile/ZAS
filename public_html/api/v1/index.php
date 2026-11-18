@@ -892,6 +892,18 @@ try {
                 is_array($ids) ? array_values($ids) : [], (int) $u['id']));
             break;
 
+        /* Day off: the shift taken away on chosen days, so they read as day off, not absent. */
+        case $method === 'POST' && $route === '/admin/shifts/day-off':
+            Http::requireCsrf();
+            $u   = Http::requirePermission('attadm', 'c');
+            $wd  = Http::input('weekdays', []);
+            $cs  = Http::input('codes', '');
+            admin_answer(AdminService::dayOff(
+                (string) Http::input('from', ''), (string) Http::input('to', ''), is_array($wd) ? array_values($wd) : [],
+                (int) Http::input('department_id', 0), is_array($cs) ? array_values($cs) : preg_split('/[\s,;]+/', (string) $cs),
+                (string) Http::input('reason', ''), (int) $u['id']));
+            break;
+
         case $method === 'GET' && $route === '/admin/users':
             require_erp_admin();
             Http::json(AdminService::users());

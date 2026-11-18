@@ -773,6 +773,92 @@ final class AdminService
     }
 
     /**
+     * DAY OFF (owner, 19 Nov 2026: a night guard's weekly off showed as "did
+     * not come"). Takes the shift away from a department, or from the codes
+     * given, on the chosen days, so those days read as "no shift / day off"
+     * everywhere instead of an absence. A day with anything recorded on it — an
+     * IN, an entry an administrator added — is never touched and is listed back.
+     * If the person comes in on the day off after all, the gate gives him his
+     * department's regular shift as on any day without one, so nothing is lost.
+     *
+     * @param list<int> $weekdays ISO weekdays, empty = every day
+     * @param list<string> $codes employee codes; used when no department is given
+     */
+    public static function dayOff(string $from, string $to, array $weekdays, int $departmentId, array $codes, string $reason, int $actorId): array
+    {
+        $reason = trim($reason);
+        if ($reason === '') {
+            return self::no('REASON_REQUIRED', 'Say why (for example "weekly off").');
+        }
+        $d1 = self::date($from);
+        $d2 = self::date($to);
+        if ($d1 === null || $d2 === null) {
+            return self::no('VALIDATION', 'Give the first and last day.');
+        }
+        if ($d2 < $d1) {
+            return self::no('VALIDATION', 'The last day is before the first day.');
+        }
+        if ((int) $d1->diff($d2)->days + 1 > self::ASSIGN_MAX_DAYS) {
+            return self::no('VALIDATION', 'At most ' . self::ASSIGN_MAX_DAYS . ' days at a time.');
+        }
+        $today = new DateTimeImmutable(self::factoryToday(), new DateTimeZone('UTC'));
+        if ($d1 < $today->modify('-62 days')) {
+            return self::no('VALIDATION', 'The first day is more than 62 days in the past.');
+        }
+        $weekdays = array_values(array_unique(array_filter(array_map('intval', $weekdays), static fn($n) => $n >= 1 && $n <= 7)));
+        $unknown = [];
+        if ($departmentId > 0 && $codes === []) {
+            $emps = Db::all('SELECT id, code FROM att_employees WHERE department_id = ? AND active = 1', [$departmentId]);
+        } else {
+            $codes = array_values(array_unique(array_filter(array_map(static fn($c) => trim((string) $c), $codes), static fn($c) => $c !== '')));
+            if ($codes === []) {
+                return self::no('VALIDATION', 'Choose a department, or type the employee codes.');
+            }
+            $emps = Db::all('SELECT id, code FROM att_employees WHERE code IN (' . implode(',', array_fill(0, count($codes), '?')) . ')'
+                . ($departmentId > 0 ? ' AND department_id = ?' : ''), $departmentId > 0 ? array_merge($codes, [$departmentId]) : $codes);
+            $found = array_flip(array_map(static fn($e) => mb_strtoupper((string) $e['code']), $emps));
+            foreach ($codes as $c) { if (!isset($found[mb_strtoupper($c)])) { $unknown[] = $c; } }
+        }
+        if ($emps === []) {
+            return self::no('VALIDATION', 'Nobody found to give the day off to' . ($unknown ? ' (no employee ' . implode(', ', $unknown) . ')' : '') . '.');
+        }
+        $dates = [];
+        for ($d = $d1; $d <= $d2; $d = $d->modify('+1 day')) {
+            if ($weekdays === [] || in_array((int) $d->format('N'), $weekdays, true)) { $dates[] = $d->format('Y-m-d'); }
+        }
+        if ($dates === []) {
+            return self::no('VALIDATION', 'None of the chosen weekdays fall between those two days.');
+        }
+        $codeOf = [];
+        foreach ($emps as $e) { $codeOf[(int) $e['id']] = (string) $e['code']; }
+        $ids = array_keys($codeOf);
+        return Db::tx(static function () use ($ids, $dates, $codeOf, $reason, $actorId, $from, $to, $weekdays, $departmentId, $unknown): array {
+            $removed = 0; $kept = []; $already = 0;
+            foreach (array_chunk($ids, 500) as $chunk) {
+                $in = implode(',', array_fill(0, count($chunk), '?'));
+                $dIn = implode(',', array_fill(0, count($dates), '?'));
+                $rows = Db::all("SELECT si.id, si.employee_id, si.work_date, (SELECT COUNT(*) FROM att_entry_cycles c WHERE c.shift_instance_id = si.id) AS n
+                                   FROM att_shift_instances si WHERE si.employee_id IN ($in) AND si.work_date IN ($dIn)", array_merge($chunk, $dates));
+                $already += count($chunk) * count($dates) - count($rows);
+                $gone = [];
+                foreach ($rows as $r) {
+                    if ((int) $r['n'] > 0) { $kept[] = $codeOf[(int) $r['employee_id']] . ' (' . substr((string) $r['work_date'], 5) . ')'; continue; }
+                    $gone[] = (int) $r['id'];
+                }
+                foreach (array_chunk($gone, 500) as $g) {
+                    $removed += Db::run('DELETE FROM att_shift_instances WHERE id IN (' . implode(',', array_fill(0, count($g), '?')) . ')', $g)->rowCount();
+                }
+            }
+            Audit::record('shift.day_off', 'att_shift_instance', 0, null, [
+                'from' => $from, 'to' => $to, 'weekdays' => $weekdays, 'department_id' => $departmentId ?: null, 'employees' => count($ids),
+                'days' => count($dates), 'shift_days_removed' => $removed, 'kept_with_entries' => $kept, 'reason' => $reason,
+            ], $actorId);
+            return ['ok' => true, 'employees' => count($ids), 'days' => count($dates), 'removed' => $removed,
+                    'already_off' => max(0, $already), 'kept' => $kept, 'unknown_codes' => $unknown];
+        });
+    }
+
+    /**
      * Give a shift to a department, or to named employees, for a run of days.
      *
      * @param list<int> $weekdays  ISO weekdays to include, 1 = Monday … 7 = Sunday. Empty = every day.
