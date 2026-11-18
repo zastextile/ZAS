@@ -41,6 +41,16 @@ $me     = current_user();
 $userId = (int)($me['id'] ?? 0);
 $editId = isset($_GET['part']) ? (int)$_GET['part'] : 0;
 
+/* SEARCH every operation and rate (words + meaning) — JSON for the box at the
+   top of the page. Read only. See includes/op_search.php. */
+if (isset($_GET['find'])) {
+    require_once __DIR__ . '/includes/op_search.php';
+    header('Content-Type: application/json');
+    try { echo json_encode(ops_search((string)$_GET['find'])); }
+    catch (Throwable $e) { error_log('part_library find: ' . $e->getMessage()); echo json_encode(['ok' => false, 'rows' => [], 'note' => 'The search could not run.']); }
+    exit;
+}
+
 /* ------------------------------------------------------------------
    EXPORT — before any output, because it sends its own headers.
    ------------------------------------------------------------------ */
@@ -492,6 +502,61 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
 
   <?php if ($msg): ?><div class="zp-flash ok"><?= e($msg) ?></div><?php endif; ?>
   <?php if ($err): ?><div class="zp-flash bad"><?= e($err) ?></div><?php endif; ?>
+
+  <!-- ===================== SEARCH every operation and rate ===================== -->
+  <div class="zp-card ops-find">
+    <div class="of-bar">
+      <input class="zin" id="opFind" type="search" autocomplete="off" placeholder="Search operations &amp; rates — e.g. hem pillow, overlock, cutting duvet, packing bag cost" aria-label="Search operations and rates">
+      <span id="opHow" class="of-how"></span>
+    </div>
+    <div id="opRes" hidden></div>
+  </div>
+  <style>
+  .ops-find{padding:10px 12px;margin-bottom:10px}
+  .ops-find .of-bar{display:flex;gap:10px;align-items:center}
+  .ops-find .of-bar .zin{flex:1;min-width:0}
+  .ops-find .of-how{font-size:11px;color:#8a97ab;white-space:nowrap}
+  .ops-find table{width:100%;margin-top:8px}
+  .ops-find td.n,.ops-find th.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .ops-find tr.of-row{cursor:pointer}
+  .ops-find tr.of-row:hover td{background:rgba(14,168,201,.07)}
+  .ops-find tr.of-part td{font-weight:700}
+  .ops-find .of-mut{color:#8a97ab;font-size:11.5px}
+  .ops-find .of-none{margin:8px 2px 0;font-size:12.5px;color:#8a97ab}
+  </style>
+  <script>
+  (function(){
+    var box = document.getElementById('opFind'), res = document.getElementById('opRes'), how = document.getElementById('opHow');
+    var timer = null, last = '', seq = 0;
+    function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+    function money(v){ return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function run(){
+      var q = box.value.trim();
+      if (q === last) return; last = q;
+      if (q.length < 2) { res.hidden = true; how.textContent = ''; return; }
+      var my = ++seq; how.textContent = 'Searching…';
+      fetch('part_library.php?find=' + encodeURIComponent(q), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+        .then(function(r){ return r.json(); }).then(function(d){
+          if (my !== seq) return;
+          how.textContent = d.how === 'meaning' ? 'by words + meaning' : 'by words';
+          var rows = d.rows || [];
+          if (!rows.length) { res.innerHTML = '<p class="of-none">' + esc(d.note || 'Nothing matches.') + '</p>'; res.hidden = false; return; }
+          var h = '<table class="zp-t"><thead><tr><th>Part</th><th>Stage</th><th>Operation</th><th class="n">Rate</th><th>Used in</th></tr></thead><tbody>';
+          rows.forEach(function(r){
+            var rate = money(r.rate) + (r.lo !== null && (r.lo !== r.rate || r.hi !== r.rate) ? ' <span class="of-mut">(' + money(r.lo) + (r.hi !== r.lo ? '–' + money(r.hi) : '') + ')</span>' : '');
+            var used = r.products.length ? esc(r.products.join(', ')) + (r.more ? ' <span class="of-mut">+' + r.more + '</span>' : '') : '<span class="of-mut">—</span>';
+            h += '<tr class="of-row' + (r.kind === 'part' ? ' of-part' : '') + '" data-href="part_library.php?part=' + r.part_id + '#partform">'
+               + '<td>' + esc(r.part) + '</td><td>' + esc(r.stage || '') + '</td><td>' + esc(r.op) + '</td><td class="n">' + rate + ' <span class="of-mut">/' + esc(r.uom) + '</span></td><td>' + used + '</td></tr>';
+          });
+          res.innerHTML = h + '</tbody></table>' + (d.note ? '<p class="of-none">' + esc(d.note) + '</p>' : '');
+          res.hidden = false;
+        }).catch(function(){ if (my === seq) { how.textContent = ''; res.innerHTML = '<p class="of-none">The search could not run.</p>'; res.hidden = false; } });
+    }
+    box.addEventListener('input', function(){ clearTimeout(timer); timer = setTimeout(run, 350); });
+    box.addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); last = ''; run(); } });
+    res.addEventListener('click', function(e){ var tr = e.target.closest('tr.of-row'); if (tr) location.href = tr.getAttribute('data-href'); });
+  })();
+  </script>
 
   <div class="zp-split">
 
