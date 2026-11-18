@@ -69,7 +69,8 @@ echo "1. A month of attendance\n";
 $admin = $mk('Admin Person', 'admin@zas.test', 'admin');
 $day = Shifts::create(['name' => 'Day', 'start_time' => '09:00', 'end_time' => '17:00', 'grace_in_minutes' => 10, 'grace_out_minutes' => 10]);
 Policy::set('default_shift_id', (string) $day, null, 'string');
-Policy::set('auto_out_enabled', '0', null, 'bool'); Policy::flush();
+Policy::set('auto_out_enabled', '0', null, 'bool');
+Policy::set('weekly_off_day', '0', null, 'int'); Policy::flush();      // these figures were worked out with no weekly off; Friday off is tested in zabsent_future_test.php
 $depts = ['Stitching' => 10, 'Packing' => 8, 'Cutting' => 8];
 $special = ['S001' => 'Absent Thrice', 'S002' => 'Often Late', 'P001' => 'Short Days', 'C007' => 'Mostly Away', 'C008' => 'Has Left'];
 $awayDays = [3, 5, 7, 10, 14, 17, 21, 24];          // Mostly Away: 8 days not come, scattered

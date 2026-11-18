@@ -531,6 +531,8 @@ const closed = (page) => page.waitForFunction(() => !document.querySelector('#at
     await page.waitForSelector('#attsdlg[open]');
     await page.locator('#attsdlg-fields select').nth(0).selectOption({ label: 'Evening' });
     await page.locator('#attsdlg-fields select').nth(1).selectOption({ label: 'Quality' });
+    check('Friday, the weekly off, starts unticked', !(await page.locator('#attsdlg-fields input[type=checkbox]').nth(4).isChecked()));
+    await page.locator('#attsdlg-fields input[type=checkbox]').nth(4).check();     // this test gives Friday too
     await page.locator('#attsdlg-fields input[type=checkbox]').nth(6).uncheck();   // Sunday
     await page.click('#attsdlg-ok');
     await page.waitForSelector('#attsdlg-fields .okmsg:not(:empty)');

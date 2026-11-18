@@ -1375,6 +1375,7 @@ page_header('People Finance');
     show([el('p', { class: 'muted', text: 'Loading…' })]);
     call('GET', '/finance/people').then(function(r){
       if (!r.ok) return show([fail(r)]);
+      if (r.weekly_off_default !== undefined) { OFF.def = +r.weekly_off_default || 0; OFF.on = !!r.own_off; }
       /* who is listed: on the roll (the default — a short list), left the company, or everyone */
       var onState = function(p){ return PF.state === 'all' || (PF.state === 'left' ? !+p.active : +p.active); };
       var seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Kind of pay' }, [['', 'Everyone'], ['salary', 'Fixed salary'], ['daily', 'Daily wages'], ['contract', 'Contractors'], ['none', 'Not set up']].map(function(x){
@@ -1444,7 +1445,7 @@ page_header('People Finance');
           var rp = REP[p.employee_id];
           tb.appendChild(el('tr', { class: 'click' + (rp ? ' rep' : ''), tabindex: '0', click: function(){ person(p); }, keydown: function(e){ if (e.key === 'Enter') person(p); } }, [
             tickOn ? el('td', { class: 'tick' }, [cb]) : null,
-            el('td', { 'data-sort': PF.rep && rp ? repKey(p.full_name) : p.full_name }, [el('b', { text: p.full_name }), el('div', { class: 'muted small' }, [p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + ' ', todayChip(p)]),
+            el('td', { 'data-sort': PF.rep && rp ? repKey(p.full_name) : p.full_name }, [el('b', { text: p.full_name }), el('div', { class: 'muted small' }, [p.code + ' · ' + p.department_name + (p.worker_code ? ' · production ' + p.worker_code : '') + (p.weekly_off_day !== null && p.weekly_off_day !== undefined ? (+p.weekly_off_day ? ' · off ' + DAYN[+p.weekly_off_day] : ' · no weekly off') : '') + ' ', todayChip(p)]),
               rp ? el('div', {}, [el('span', { class: 'tchip rep', text: 'Repeat? ' + Object.keys(rp.why).join(', ') + ' as ' + Object.keys(rp.others).join(', ') })]) : null]),
             el('td', {}, [el('span', { class: 'pill ' + (p.pay_type ? '' : 'none'), text: p.pay_type ? KIND1[p.pay_type] : 'Not set up' })]),
             el('td', { text: rate, 'data-sort': p.pay_type === 'salary' ? (p.basic_paisa === null ? '' : +p.basic_paisa + (+p.allowance_paisa || 0)) : p.pay_type === 'daily' ? +p.daily_rate_paisa : '' }), el('td', { class: 'num', 'data-sort': +p.balance || 0 }, [el('b', { text: rs(p.balance) }), p.on_sheet ? el('div', {}, [el('span', { class: 'pill waiting', text: 'on a sheet' })]) : null, adv])]));
@@ -1712,7 +1713,10 @@ page_header('People Finance');
      paid, what they were owed on day one. Type it, or copy a block of cells in
      Excel and paste it into the first cell. Existing people are edited in the
      same grid; empty lines at the bottom are for new people. One Save. */
-  var SF_COLS = ['code', 'name', 'dept', 'worker', 'type', 'amt', 'alw', 'ot', 'method', 'bank', 'open', 'oadv', 'oper', 'state'];
+  var SF_COLS = ['code', 'name', 'dept', 'worker', 'type', 'amt', 'alw', 'ot', 'method', 'bank', 'open', 'oadv', 'oper', 'state', 'off'];
+  /* a person's own weekly off day (owner, 19 Nov 2026): empty = the factory's day, Friday for 90%+ of people */
+  var OFF = { def: 5, on: false }, DAYN = ['None', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  function offText(v){ v = String(v || '').toLowerCase().trim(); if (v === '') return ''; if (/^(no|none|0)/.test(v)) return '0'; for (var i = 1; i < 8; i++) if (v.indexOf(DAYN[i].toLowerCase()) === 0) return String(i); return /^[1-7]$/.test(v) ? v : ''; }
   function staffForm(list, blanks){
     var c = S.caps;
     if (list.length > 300) list = list.slice(0, 300);
@@ -1737,7 +1741,10 @@ page_header('People Finance');
            Once entered it is changed under Advances & loans, so here it is shown and locked. */
         oadv: txt(p.opening_advance_paisa ? plain(p.opening_advance_paisa) : '', 14, !c.pay || hide || !!p.opening_advance_paisa, '', 'n'),
         oper: txt(p.opening_advance_per_pay_paisa ? plain(p.opening_advance_per_pay_paisa) : '', 14, !c.pay || hide || !!p.opening_advance_paisa, '', 'n'),
-        state: el('select', { disabled: isNew || !c.staff }, [el('option', { value: 'on', text: 'On roll' }), el('option', { value: 'left', text: 'Left' })]) };
+        state: el('select', { disabled: isNew || !c.staff }, [el('option', { value: 'on', text: 'On roll' }), el('option', { value: 'left', text: 'Left' })]),
+        off: el('select', { disabled: !c.staff || !OFF.on, title: OFF.on ? 'Empty = the factory\'s weekly off (' + DAYN[OFF.def] + ')' : 'Available after the update is run (att_migrate.php)' },
+          [['', DAYN[OFF.def] + ' (factory)']].concat([1, 2, 3, 4, 5, 6, 7].map(function(d){ return [String(d), DAYN[d]]; })).concat([['0', 'No weekly off']]).map(function(x){ return el('option', { value: x[0], text: x[1] }); })) };
+      o.off.value = p.weekly_off_day === null || p.weekly_off_day === undefined ? '' : String(p.weekly_off_day); o.offWas = o.off.value;
       o.state.value = isNew || +p.active ? 'on' : 'left';
       o.type.value = p.pay_type || ''; o.method.value = p.pay_method || 'cash';
       o.vis = function(){ var t = o.type.value, off = !c.setup || hide; o.amt.disabled = off || t === 'contract' || t === ''; o.alw.disabled = off || t !== 'salary'; o.ot.disabled = off || t === 'contract' || t === '';
@@ -1767,6 +1774,7 @@ page_header('People Finance');
           if (k === 'type') { if (!o.type.disabled) o.type.value = typeOf(v); o.vis(); return; }
           if (k === 'method') { if (!o.method.disabled) o.method.value = /bank/i.test(v) ? 'bank' : 'cash'; o.vis(); return; }
           if (k === 'state') { if (!o.state.disabled) o.state.value = /left|inactive|off|no/i.test(v) ? 'left' : 'on'; return; }
+          if (k === 'off') { if (!o.off.disabled) o.off.value = offText(v); return; }
           if (!inp.disabled || k === 'amt' || k === 'alw' || k === 'ot' || k === 'bank') inp.value = (k === 'amt' || k === 'alw' || k === 'ot' || k === 'open' || k === 'oadv' || k === 'oper') ? v.replace(/,/g, '') : v;
         });
         o.vis(); o.cb.checked = true;
@@ -1808,6 +1816,7 @@ page_header('People Finance');
           row.opening_advance_paisa = oa; row.opening_advance_per_pay_paisa = pp;
         }
         if (!o.isNew && c.staff && !o.state.disabled && (o.state.value === 'on') !== !!+o.p.active) { row.active = o.state.value === 'on'; if (!row.active) anyLeft = true; }
+        if (c.staff && !o.off.disabled && o.off.value !== o.offWas) row.weekly_off_day = o.off.value;
         out.push(row);
       });
       if (!bad && anyLeft && !reason.value.trim()) bad = 'Give a reason in the box below for those marked as Left — it is kept with each of them.';
@@ -1844,7 +1853,7 @@ page_header('People Finance');
       el('p', { class: 'muted small', style: 'margin:0', text: 'One line per person: who they are, how they are paid, and what they were owed on day one — or owed the company (opening advance / loan, recovered from each pay). Copy cells in Excel and paste into the first cell to fill many lines. Leave Code empty and the next number is given. A line is saved when it is ticked; typing in it ticks it.' }),
       el('div', { class: 'cardx' }, [tools]),
       el('div', { class: 'scroll', style: 'max-height:50vh' }, [el('table', { class: 't bulk staff' }, [el('thead', {}, [el('tr', {}, [el('th', {}, [all])].concat(
-        ['Code', 'Name', 'Department', 'Production code', 'Paid as', 'Salary / day rate', 'Allowance', 'Overtime / hour', 'Paid by', 'Bank account', 'Opening balance', 'Opening advance / loan', 'Recover each pay', 'State'].map(function(h){ return el('th', { text: h }); })))]), rowsEl])]),
+        ['Code', 'Name', 'Department', 'Production code', 'Paid as', 'Salary / day rate', 'Allowance', 'Overtime / hour', 'Paid by', 'Bank account', 'Opening balance', 'Opening advance / loan', 'Recover each pay', 'State', 'Weekly off'].map(function(h){ return el('th', { text: h }); })))]), rowsEl])]),
       reason, errBox, el('div', { class: 'row', style: 'justify-content:space-between' }, [countEl, save])], true).classList.add('xwide');
     count();
   }

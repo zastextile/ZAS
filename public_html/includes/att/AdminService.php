@@ -86,6 +86,8 @@ final class AdminService
             'help' => 'An entry with no exit scan after this long is listed for HR as a likely missed exit.'],
         'auto_out_enabled'          => ['type' => 'bool', 'label' => 'Automatic OUT for a forgotten exit scan',
             'help' => 'On: someone still not scanned OUT well after their shift ended is closed by the system AT THE SHIFT END (or shift end plus approved overtime), and marked "not scanned out" on reports and for HR.'],
+        'weekly_off_day'            => ['type' => 'int', 'min' => 0, 'max' => 7, 'label' => 'Weekly off day (1 = Mon … 5 = Fri … 7 = Sun, 0 = none)',
+            'help' => 'Owner, 19 Nov 2026: Friday. Nobody is "did not come" on this day, and a salary is never cut for it. Anyone who comes in that day is counted as present, and daily wages are paid as usual.'],
         'auto_out_after_minutes'    => ['type' => 'int', 'min' => 30, 'max' => 720, 'label' => 'Automatic OUT: wait after shift end for a real OUT (minutes)',
             'help' => 'For example 240: with a 6 pm shift end, anyone not scanned out by 10 pm is closed at 6 pm. Approved overtime moves both times later.'],
         'sync_backlog_warn_minutes' => ['type' => 'int', 'min' => 10, 'max' => 1440, 'label' => 'Warn when a phone has unsent scans older than (minutes)',

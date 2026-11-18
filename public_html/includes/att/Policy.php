@@ -26,6 +26,7 @@ final class Policy
         'auto_shift_on_gate_in'     => '1',
         'app_pin_required'          => '0',
         'app_lock_minutes'          => '30',
+        'weekly_off_day'            => '5',   // Friday (1 = Mon … 7 = Sun, 0 = none): no scan that day is a day off, never an absence
         'phone_remember_days'       => '30',
         'hod_match_window_minutes'  => '240',
         'sync_backlog_warn_minutes' => '120',

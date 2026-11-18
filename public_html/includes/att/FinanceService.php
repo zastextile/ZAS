@@ -141,6 +141,7 @@ final class FinanceService
         [$w, $p] = self::deptWhere($caps['departments']);
         $rows = Db::all(
             "SELECT e.id AS employee_id, e.code, e.full_name, e.active, d.name AS department_name, e.department_id, e.worker_code, e.qr_payload,
+                    " . (ReportService::hasOwnOff() ? 'e.weekly_off_day' : 'NULL AS weekly_off_day') . ",
                     (e.reference_photo_key IS NOT NULL) AS has_photo, (e.notice_ack_at IS NOT NULL) AS notice_given,
                     f.pay_type, f.basic_paisa, f.allowance_paisa, f.daily_rate_paisa, f.ot_rate_paisa, f.pay_method, f.bank_account
                FROM att_employees e
@@ -189,7 +190,7 @@ final class FinanceService
             }
         }
         unset($r);
-        return ['ok' => true, 'people' => $rows];
+        return ['ok' => true, 'people' => $rows, 'weekly_off_default' => Policy::int('weekly_off_day', 5), 'own_off' => ReportService::hasOwnOff()];
     }
 
     /**
@@ -428,6 +429,19 @@ final class FinanceService
                 if (!$r['ok']) { $fail((string) $r['error']); continue; }
                 if ($before === null) { $created++; $given[] = $code; } else { $updated++; }
                 $id = (int) $r['employee_id'];
+            }
+
+            // ---- their own weekly off day ('' = the factory's day)
+            if (array_key_exists('weekly_off_day', $row) && ReportService::hasOwnOff()) {
+                $v = trim((string) $row['weekly_off_day']);
+                $new = $v === '' ? null : max(0, min(7, (int) $v));
+                $wasOff = $before !== null && array_key_exists('weekly_off_day', $before) ? $before['weekly_off_day'] : null;
+                if (($wasOff === null ? null : (int) $wasOff) !== $new) {
+                    if (!$mayMaster) { $fail('you cannot change the weekly off day. Ask HR or an admin.'); continue; }
+                    Db::run('UPDATE att_employees SET weekly_off_day = ? WHERE id = ?', [$new, $id]);
+                    Audit::record('employee.weekly_off', 'att_employee', $id, ['weekly_off_day' => $wasOff], ['weekly_off_day' => $new], $actorId);
+                    if (!$masterChanged) { $updated++; }
+                }
             }
 
             // ---- how they are paid
@@ -1005,13 +1019,20 @@ final class FinanceService
         $add('overtime', 'overtime', 'earn', 'Overtime · ' . self::num($minutes / 60) . ' h', $paisa, 'approved and checked hours, from Attendance');
     }
 
-    /** Days a shift was assigned, already over, and nobody came. */
+    /** Days a shift was assigned, already over, and nobody came — never the weekly off day
+        (Settings, Friday unless changed; owner: "I never deduct Friday"). */
     private static function absentDays(int $employeeId, string $from, string $to): int
     {
+        $off = Policy::int('weekly_off_day', 5);
+        if (ReportService::hasOwnOff()) {
+            $own = Db::value('SELECT weekly_off_day FROM att_employees WHERE id = ?', [$employeeId]);
+            if ($own !== null && $own !== false) { $off = (int) $own; }          // this person's own weekly off
+        }
         return (int) Db::value(
             "SELECT COUNT(*) FROM att_shift_instances si
               WHERE si.employee_id = ? AND si.work_date BETWEEN ? AND ? AND si.work_date < ? AND si.source = 'assigned'
-                AND NOT EXISTS (SELECT 1 FROM att_entry_cycles c WHERE c.shift_instance_id = si.id)",
+                AND NOT EXISTS (SELECT 1 FROM att_entry_cycles c WHERE c.shift_instance_id = si.id)"
+              . ($off >= 1 && $off <= 7 ? ' AND WEEKDAY(si.work_date) <> ' . ($off - 1) : ''),
             [$employeeId, $from, $to, self::today()]);
     }
 

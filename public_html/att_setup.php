@@ -1017,7 +1017,8 @@ page_header('Attendance — Setup');
     var dp = el('select', { class: 'full' }, options(activeDepts(), 'id', 'name', '', 'Choose…'));
     var from = el('input', { type: 'date', class: 'full', value: iso(today) });
     var to = el('input', { type: 'date', class: 'full', value: iso(end) });
-    var boxes = DAYS.map(function(d, i){ var c = el('input', { type: 'checkbox', checked: true, value: i + 1 }); return { c: c, node: el('label', { class: 'inline' }, [c, d]) }; });
+    /* Friday, the weekly off, is left out unless ticked (owner, 19 Nov 2026) */
+    var boxes = DAYS.map(function(d, i){ var c = el('input', { type: 'checkbox', value: i + 1 }); c.checked = i !== 4; return { c: c, node: el('label', { class: 'inline' }, [c, d]) }; });
     var out = el('p', { class: 'okmsg' });
     dialog({
       title: 'Give a shift to a department', okText: 'Give shift',

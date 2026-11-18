@@ -407,6 +407,7 @@ final class ReportService
             "SELECT si.id AS shift_instance_id, si.work_date, si.starts_at, si.ends_at, si.source AS shift_source,
                     s.name AS shift_name, s.grace_in_minutes, s.grace_out_minutes,
                     e.id AS employee_id, e.code AS employee_code, e.full_name, e.active AS employee_active, d.name AS department_name,
+                    " . (self::hasOwnOff() ? 'e.weekly_off_day' : 'NULL') . " AS own_off_day,
                     COUNT(c.id) AS entries, MIN(c.opened_at) AS first_in, MAX(c.closed_at) AS last_out,
                     SUM(CASE WHEN c.id IS NOT NULL AND c.closed_at IS NULL THEN 1 ELSE 0 END) AS open_entries,
                     COALESCE(SUM(c.present_minutes), 0) AS present_minutes,
@@ -467,8 +468,23 @@ final class ReportService
            absent from a shift before it begins, so such a day is left out of
            every figure until its start time; if he then comes, it is a normal
            day, and if not, it shows as "did not come" from the start time on. */
+        /* THE WEEKLY OFF DAY (Settings, Friday unless changed) is a day off for
+           everybody: no scan that day is not "did not come". Coming in is counted. */
         $now = self::nowUtc();
-        return array_values(array_filter($rows, static fn($r) => $r['entries'] > 0 || new DateTimeImmutable((string) $r['starts_at']) <= $now));
+        $factory = Policy::int('weekly_off_day', 5);
+        return array_values(array_filter($rows, static function ($r) use ($now, $factory): bool {
+            if ($r['entries'] > 0) { return true; }
+            if (new DateTimeImmutable((string) $r['starts_at']) > $now) { return false; }
+            $off = $r['own_off_day'] !== null ? (int) $r['own_off_day'] : $factory;      // the person's own day, else the factory's
+            return $off < 1 || (int) (new DateTimeImmutable((string) $r['work_date']))->format('N') !== $off;
+        }));
+    }
+
+    /** True once migration 0021 (a person's own weekly off day) has run. */
+    public static function hasOwnOff(): bool
+    {
+        static $has = null;
+        return $has ??= Db::columnExists('att_employees', 'weekly_off_day');
     }
 
     // ============================================================== movements
