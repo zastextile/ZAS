@@ -114,10 +114,11 @@ ok($DB->log === [], 'a worker id of 0 writes nothing at all');
 /* ------------------------------------------------------------------ */
 echo "3. The screen saves against the right worker\n";
 
-/* A NEW worker posts id 0. Saving the ticks against the posted id would write
-   them against nobody — they have to go against the id the save returned. */
-ok(preg_match('/zp_save_worker_stages\(\(int\)\$r\[.id.\]/', $pw) === 1,
-   'the ticks are saved against the id zp_save_worker returned, not the posted one');
+/* Since 18 Nov 2026 nobody is created on this screen (people come from People
+   Finance), so the ticks are saved against an existing worker, checked first. */
+ok(str_contains($pw, "\$a === 'stages'") && str_contains($pw, 'zp_save_worker_stages($wid,')
+   && strpos($pw, 'SELECT id FROM zp_workers WHERE id = ?') < strpos($pw, 'zp_save_worker_stages($wid,'),
+   'the ticks are saved only against a worker that exists, checked before saving');
 ok(strpos($pw, 'zp_save_worker_stages') < strpos($pw, "redirect('production_workers.php')"),
    '  and before the redirect, or nothing would be written');
 ok(str_contains($pw, 'name="stage[]"'), 'the form posts the ticks');

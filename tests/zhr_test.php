@@ -261,9 +261,9 @@ ok(str_contains($zpC, 'MODIFY worker_code VARCHAR(40) NOT NULL'),
 ok(str_contains($zpC, 'const ZP_CODE_MAX = 40;'), 'and the limit is one named number');
 ok(!str_contains($zpC, 'is longer than 20 characters'),
    '  with no hard-coded 20 left behind to disagree with it');
-ok(str_contains($pw, 'maxlength="<?= ZP_CODE_MAX ?>"'),
-   'the boxes on screen follow the same number, not a copy of it');
-ok(substr_count($pw, 'maxlength="<?= ZP_CODE_MAX ?>"') === 2, '  both of them');
+/* Since 18 Nov 2026 no code is typed on Production Workers: it comes from People Finance (zp_people_sync), which refuses one over ZP_CODE_MAX too. */
+ok(!str_contains($pw, 'name="worker_code"'), 'no code box on the screen any more — codes come from People Finance');
+ok(str_contains($zp, 'mb_strlen($code) > ZP_CODE_MAX) { $conflicts[] = $code . \' (too long)\''), '  and the copy from People Finance refuses a code over the same limit');
 
 /* REFUSED, NOT TRUNCATED. The two numbers below are 24 characters and differ
    only at the very end — exactly the pair that a 20-character cut would turn
@@ -289,17 +289,12 @@ ok($r1['ok'] === false, 'a code over the limit is REFUSED, not cut to fit');
 ok(str_contains($r1['error'], '41 characters'), '  and the message says how long it actually is: ' . $r1['error']);
 ok(str_contains($r1['error'], 'I will widen the column'), '  and what to do about it');
 
-echo "8. The screen\n";
-ok(str_contains($pw, "value=\"hrcheck\""), 'there is an Update from HR button');
-ok(str_contains($pw, "value=\"hrapply\""), 'and a separate Apply, so nothing writes on a look');
-ok(str_contains($pw, '$f = zp_hr_fetch();' ) && substr_count($pw, 'zp_hr_fetch()') >= 2,
-   'APPLY RE-READS HR rather than trusting a plan posted back from the browser');
-ok(str_contains($pw, 'no longer in the HR app'), 'the alert names the people HR has dropped');
-ok(str_contains($pw, 'Nobody is removed. No stage allotment is touched.'),
-   '  and the button says what it will not do');
-ok(str_contains($pw, 'zp_hr_token_masked()'), 'the token is shown masked on screen');
-ok(str_contains($pw, 'leave blank to keep it'), '  and can be kept without retyping it');
-ok(str_contains($pw, "!is_admin()"), 'only an admin may change the connection');
+echo "8. The screen — People Finance is the list of people now (owner, 18 Nov 2026)\n";
+ok(!str_contains($pw, 'value="hrcheck"') && !str_contains($pw, 'value="hrapply"') && !str_contains($pw, 'Workers from the HR app'),
+   'the HR app card is gone from Production Workers');
+ok(str_contains($pw, 'People come from') && str_contains($pw, 'att_finance.php#people'), '  and the screen says people come from People Finance › Employees');
+ok(str_contains($pw, 'zp_people_sync(true);'), '  and copies them on every open');
+ok(str_contains($zp, 'function zp_hr_fetch(') && str_contains($zp, 'function zp_hr_apply('), 'the HR engine is still on disk (nothing deleted), only no longer offered');
 
 if (is_resource($ph)) { proc_terminate($ph); proc_close($ph); }
 echo "\n$P passed, $F failed\n";

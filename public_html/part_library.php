@@ -460,6 +460,18 @@ table.zp-t tr.on td{background:#eaf8fc}
 details.paste{margin-top:12px}
 details.paste summary{cursor:pointer;font-size:12.5px;color:#0b7f99;font-weight:700}
 textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+/* the operations & rates search box at the top */
+  .ops-find{padding:10px 12px;margin-bottom:10px}
+  .ops-find .of-bar{display:flex;gap:10px;align-items:center}
+  .ops-find .of-bar .zin{flex:1;min-width:0}
+  .ops-find .of-how{font-size:11px;color:#8a97ab;white-space:nowrap}
+  .ops-find table{width:100%;margin-top:8px}
+  .ops-find td.n,.ops-find th.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .ops-find tr.of-row{cursor:pointer}
+  .ops-find tr.of-row:hover td{background:rgba(14,168,201,.07)}
+  .ops-find tr.of-part td{font-weight:700}
+  .ops-find .of-mut{color:#8a97ab;font-size:11.5px}
+  .ops-find .of-none{margin:8px 2px 0;font-size:12.5px;color:#8a97ab}
 </style>
 <?php /* THE SKIN, OPTED IN. Every rule in assets/css/zskin.css is scoped
          under .zskin, so this one attribute is the whole of the restyle and
@@ -511,19 +523,6 @@ textarea.zin{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;
     </div>
     <div id="opRes" hidden></div>
   </div>
-  <style>
-  .ops-find{padding:10px 12px;margin-bottom:10px}
-  .ops-find .of-bar{display:flex;gap:10px;align-items:center}
-  .ops-find .of-bar .zin{flex:1;min-width:0}
-  .ops-find .of-how{font-size:11px;color:#8a97ab;white-space:nowrap}
-  .ops-find table{width:100%;margin-top:8px}
-  .ops-find td.n,.ops-find th.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
-  .ops-find tr.of-row{cursor:pointer}
-  .ops-find tr.of-row:hover td{background:rgba(14,168,201,.07)}
-  .ops-find tr.of-part td{font-weight:700}
-  .ops-find .of-mut{color:#8a97ab;font-size:11.5px}
-  .ops-find .of-none{margin:8px 2px 0;font-size:12.5px;color:#8a97ab}
-  </style>
   <script>
   (function(){
     var box = document.getElementById('opFind'), res = document.getElementById('opRes'), how = document.getElementById('opHow');

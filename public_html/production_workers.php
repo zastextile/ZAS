@@ -3,6 +3,14 @@
   PRODUCTION WORKERS — the people on the machines.
   ================================================
 
+  FROM 18 NOV 2026, PEOPLE COME FROM PEOPLE FINANCE › EMPLOYEES — the owner
+  wants one list of people. Code, name, department and on-the-roll are copied
+  from there by zp_people_sync() (includes/zprod.php); nobody adds, pastes or
+  renames a person here, and the external HR app is no longer read. What
+  stays here is production's own decision: the stages each person works.
+  The notes below describe the screen as it was before that, and are kept
+  for the history of why the stage rules are what they are.
+
   Deliberately the smallest screen in the module: a code, a name, a department,
   the stages they work, active or not. Everything else about a worker — what
   they made, what they were paid — lives in the entries and is read from there.
@@ -53,58 +61,26 @@ header('Expires: 0');
 $editId = (int)($_GET['w'] ?? 0);
 $msg = ''; $err = '';
 
+/* PEOPLE COME FROM PEOPLE FINANCE (owner's decision, 18 Nov 2026).
+   Code, name, department and on-the-roll are copied from People Finance ›
+   Employees by zp_people_sync() — nobody types or pastes a person here, and
+   the external HR app is no longer read. What this screen still decides is
+   production's own business: which stages each person works. */
+zp_people_sync(true);
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $a = $_POST['action'] ?? '';
-    if ($a === 'save') {
-        $r = zp_save_worker(
-            (int)($_POST['worker_id'] ?? 0),
-            (string)($_POST['worker_code'] ?? ''),
-            (string)($_POST['worker_name'] ?? ''),
-            (string)($_POST['department'] ?? ''),
-            isset($_POST['is_active']) ? 1 : 0
-        );
-        if ($r['ok']) {
-            /* SAVED AGAINST THE ID THE SAVE RETURNED, not the one that was
-               posted — on a new worker the posted id is 0 and the ticks would
-               be written against nobody. */
-            zp_save_worker_stages((int)$r['id'], (array)($_POST['stage'] ?? []));
-            $_SESSION['zp_msg'] = 'Worker saved.';
+    if ($a === 'stages') {
+        $wid = (int)($_POST['worker_id'] ?? 0);
+        $ok = false;
+        try { $st = db()->prepare("SELECT id FROM zp_workers WHERE id = ?"); $st->execute([$wid]); $ok = (bool)$st->fetchColumn(); } catch (Throwable $e) {}
+        if ($ok) {
+            zp_save_worker_stages($wid, (array)($_POST['stage'] ?? []));
+            $_SESSION['zp_msg'] = 'Stages saved.';
             redirect('production_workers.php');
         }
-        $err = $r['error'];
-        $editId = (int)($_POST['worker_id'] ?? 0);
-    } elseif ($a === 'import') {
-        /* THE PASTED SHEET COMES BACK AS FOUR PARALLEL ARRAYS, one per
-           column, because that is what a grid of named inputs posts. They
-           are zipped into rows here rather than in the engine — the engine
-           should not have to know what shape a form happens to be. */
-        $rows = [];
-        $n = max(count((array)($_POST['w_code'] ?? [])), count((array)($_POST['w_name'] ?? [])));
-        for ($i = 0; $i < $n; $i++) {
-            $rows[] = [
-                'code'   => $_POST['w_code'][$i]   ?? '',
-                'name'   => $_POST['w_name'][$i]   ?? '',
-                'dept'   => $_POST['w_dept'][$i]   ?? '',
-                'stages' => $_POST['w_stages'][$i] ?? '',
-            ];
-        }
-        $r = zp_import_workers($rows);
-        if ($r['ok']) {
-            $msgTxt = $r['saved'] . ' worker' . ($r['saved'] === 1 ? '' : 's') . ' added.';
-            if ($r['warn']) $msgTxt .= ' ' . count($r['warn']) . ' of those names were already on the list ('
-                . e(implode(', ', array_slice($r['warn'], 0, 4)))
-                . (count($r['warn']) > 4 ? ' and ' . (count($r['warn']) - 4) . ' more' : '')
-                . ') — check they are different people.';
-            $_SESSION['zp_msg'] = $msgTxt;
-            redirect('production_workers.php');
-        }
-        /* NOTHING WAS SAVED, so the sheet has to come back with the paste
-           still on it. Sending them away to a blank grid would mean pasting
-           two hundred rows again to fix one typo. */
-        $err = implode(' | ', array_slice($r['errors'], 0, 8))
-             . (count($r['errors']) > 8 ? ' … and ' . (count($r['errors']) - 8) . ' more' : '');
-        $impRows = $rows;
+        $err = 'That worker was not found.';
     } elseif ($a === 'deptstage') {
         /* THE WHOLE POINT OF THIS ACTION IS THAT IT IS NOT ONE WORKER.
            The form posts stage[<department>][] — a department that appears
@@ -124,61 +100,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect('production_workers.php#bulk');
         }
         $err = $r['error'];
-    } elseif ($a === 'hrsave') {
-        /* ONLY AN ADMIN SETS THE ADDRESS AND THE TOKEN. Everyone who can
-           reach this screen may press Update; nobody but an admin may point
-           it somewhere else. */
-        if (!is_admin()) { $err = 'Only an admin can change the HR connection.'; }
-        else {
-            $r = zp_hr_save_settings((string)($_POST['hr_url'] ?? ''), (string)($_POST['hr_token'] ?? ''));
-            if ($r['ok']) { $_SESSION['zp_msg'] = 'HR connection saved.'; redirect('production_workers.php#hr'); }
-            $err = $r['error'];
-        }
-    } elseif ($a === 'hrcheck') {
-        /* CHECK READS AND SHOWS. It writes nothing at all — the plan goes on
-           screen and he decides. A sync that acts first and reports after is
-           a sync nobody trusts twice. */
-        $f = zp_hr_fetch();
-        if (!$f['ok']) $err = $f['error'];
-        else { $hrPlan = zp_hr_plan($f['rows']); $hrTotal = count($f['rows']); }
-    } elseif ($a === 'hrapply') {
-        /* APPLY RE-READS. It does not trust a plan posted back from the
-           browser: between the check and the click, HR may have changed and
-           the form could be made to say anything. The plan is worked out
-           again here, from the live answer, and that is what is written. */
-        $f = zp_hr_fetch();
-        if (!$f['ok']) $err = $f['error'];
-        else {
-            $plan = zp_hr_plan($f['rows']);
-            $r = zp_hr_apply($plan);
-            if (!$r['ok']) $err = implode(' | ', array_slice($r['errors'], 0, 6));
-            else {
-                $parts = [];
-                if ($r['added'])   $parts[] = $r['added'] . ' new worker' . ($r['added'] === 1 ? '' : 's') . ' added';
-                if ($r['changed']) $parts[] = $r['changed'] . ' updated';
-                if (!$parts)       $parts[] = 'Nothing changed — the list already matches HR';
-                if ($plan['gone']) $parts[] = count($plan['gone']) . ' no longer in HR (left here untouched — see the list)';
-                $_SESSION['zp_msg'] = implode('. ', $parts) . '.';
-                redirect('production_workers.php#hr');
-            }
-        }
-    } elseif ($a === 'delete') {
-        $r = zp_delete_worker((int)($_POST['worker_id'] ?? 0));
-        $_SESSION['zp_msg'] = $r['msg'];
-        redirect('production_workers.php');
+    } elseif ($a === 'retire') {
+        /* ONLY FOR A WORKER NOBODY IN PEOPLE FINANCE MATCHES. Set inactive, never
+           deleted: every wage already booked keeps their name. */
+        $wid = (int)($_POST['worker_id'] ?? 0);
+        try {
+            $st = db()->prepare("UPDATE zp_workers SET is_active = 0 WHERE id = ? AND att_employee_id IS NULL");
+            $st->execute([$wid]);
+            $_SESSION['zp_msg'] = $st->rowCount() ? 'Made inactive. Their production entries and wages are kept.' : 'Nothing changed — that worker is in People Finance; change them there.';
+        } catch (Throwable $e) { $_SESSION['zp_msg'] = 'Could not change that worker.'; }
+        redirect('production_workers.php#notinpeople');
     }
 }
 if (!empty($_SESSION['zp_msg'])) { $msg = $_SESSION['zp_msg']; unset($_SESSION['zp_msg']); }
 
-/* THE ALERT IS NOT ONLY SHOWN RIGHT AFTER A SYNC. Somebody who has left HR
-   but is still on this list is a standing fact, not a one-off message, so
-   the last known list is kept and shown every time the screen opens. He
-   asked for an alert, and an alert you have to press a button to see is a
-   report. */
-$hrPlan  = $hrPlan  ?? null;
-$hrTotal = $hrTotal ?? 0;
 
-$workers = zp_workers();
+$all = zp_workers();
+$inUse = zp_people_in_use();
+/* the main list is the people from People Finance; the rest are listed apart, below */
+$workers = $inUse ? array_values(array_filter($all, fn($w) => $w['att_employee_id'] !== null)) : $all;
+$notIn = zp_workers_not_in_people();
 $edit = null;
 foreach ($workers as $w) if ((int)$w['id'] === $editId) { $edit = $w; break; }
 
@@ -211,18 +152,6 @@ $stageCount = [];
 foreach ($wsMap as $wid => $sids) foreach ($sids as $sid) $stageCount[$sid] = ($stageCount[$sid] ?? 0) + 1;
 $anyStage = count(array_filter($workers, fn($w) => empty($wsMap[(int)$w['id']])));
 
-/* The paste grid: whatever came back from a refused import, or six blank
-   rows to start. Six because a grid with one row looks like a form; six
-   looks like somewhere to paste. */
-if (!isset($impRows) || !$impRows) {
-    $impRows = array_fill(0, 6, ['code' => '', 'name' => '', 'dept' => '', 'stages' => '']);
-}
-$deptList = function_exists('inv_departments') ? [] : [];
-foreach ($workers as $w) {
-    $d = trim((string)$w['department']);
-    if ($d !== '' && !in_array($d, $deptList, true)) $deptList[] = $d;
-}
-sort($deptList);
 
 page_header('Production Workers');
 ?>
@@ -310,15 +239,12 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
   <?php if ($msg): ?><div class="flash ok"><?= e($msg) ?></div><?php endif; ?>
   <?php if ($err): ?><div class="flash bad"><?= e($err) ?></div><?php endif; ?>
 
-  <?php /* ==================================================================
-           THE HR APP IS THE MASTER LIST OF PEOPLE
-           ==================================================================
-           One button. It reads the HR app, works out what WOULD change, and
-           prints it. Nothing is written until Apply is pressed.
+  <div class="note" style="margin-bottom:14px">
+    <b>People come from <a href="att_finance.php#people">People Finance › Employees</a>.</b>
+    Code, name, department and who has left are taken from there by themselves &mdash; add or change a person there,
+    and it shows here and on Daily Entry. This screen decides only <b>which stages</b> each person works.
+  </div>
 
-           Nobody is ever removed from here, and no stage allotment is ever
-           touched — both of those are his rules, stated on screen so the
-           person pressing the button knows them without asking. */ ?>
   <?php /* ==================================================================
            STAGES BY DEPARTMENT — two hundred edits become ten
            ==================================================================
@@ -433,166 +359,13 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
     <?php endif; ?>
   </div>
 
-  <div class="zp-card" id="hr">
-    <h2>Workers from the HR app</h2>
-    <p class="sub">Employee number, name and department come from HR. Stages stay yours.
-      The employee number becomes the worker code here, exactly as HR spells it —
-      that is what matches a person between the two systems, so it is never
-      shortened or cut. Up to <?= ZP_CODE_MAX ?> characters; anything longer is
-      refused by name rather than silently trimmed.</p>
-
-    <?php if (!zp_hr_configured()): ?>
-      <div class="note info" style="margin-bottom:11px">
-        Not connected yet<?= is_admin() ? ' — put the address and the token in below.' : '. Ask an admin to set it up.' ?>
-      </div>
-    <?php else: ?>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:11px">
-        <form method="post" style="display:inline"><?= csrf_field() ?>
-          <input type="hidden" name="action" value="hrcheck">
-          <button class="zp-b pri" type="submit">Update from HR</button></form>
-        <span style="font-size:11.5px;color:#8a97ab">
-          <?= e(zp_hr_url()) ?> · token <?= e(zp_hr_token_masked()) ?>
-          <?php $last = zp_meta_get('hr_last_sync'); if ($last): ?>
-            · last applied <?= e($last) ?>
-          <?php endif; ?>
-        </span>
-      </div>
-    <?php endif; ?>
-
-    <?php if ($hrPlan !== null):
-        $nAdd = count($hrPlan['add']); $nChg = count($hrPlan['change']); $nGone = count($hrPlan['gone']); ?>
-      <div class="note <?= ($nAdd || $nChg) ? 'info' : 'ok' ?>" style="margin-bottom:11px">
-        <b>HR answered with <?= (int)$hrTotal ?> employee(s).</b>
-        <?php if (!$nAdd && !$nChg): ?>
-          Nothing to change — the list here already matches.
-        <?php else: ?>
-          <?= $nAdd ?> to add, <?= $nChg ?> to update, <?= (int)$hrPlan['same'] ?> already correct.
-        <?php endif; ?>
-      </div>
-
-      <?php if ($nAdd): ?>
-        <h3 style="font-size:12.5px;margin:12px 0 5px;color:#152033">New people — these will be added</h3>
-        <table class="zp-t"><thead><tr><th style="width:110px">Employee no.</th><th>Name</th><th>Department</th></tr></thead>
-          <tbody><?php foreach ($hrPlan['add'] as $r): ?>
-            <tr><td class="code"><?= e($r['code']) ?></td><td><?= e($r['name']) ?></td>
-                <td><?= $r['dept'] !== '' ? e($r['dept']) : '<span style="color:#b6c0cf">not stated</span>' ?></td></tr>
-          <?php endforeach; ?></tbody></table>
-      <?php endif; ?>
-
-      <?php if ($nChg): ?>
-        <h3 style="font-size:12.5px;margin:12px 0 5px;color:#152033">Changed in HR — these will be updated here</h3>
-        <table class="zp-t"><thead><tr><th style="width:110px">Employee no.</th><th>What changes</th></tr></thead>
-          <tbody><?php foreach ($hrPlan['change'] as $c): ?>
-            <tr><td class="code"><?= e($c['code']) ?></td><td>
-              <?php foreach ($c['diff'] as $field => $pair): ?>
-                <div><?= $field === 'name' ? 'Name' : 'Department' ?>:
-                  <span style="color:#8a97ab;text-decoration:line-through"><?= $pair[0] !== '' ? e($pair[0]) : '(blank)' ?></span>
-                  &rarr; <b><?= $pair[1] !== '' ? e($pair[1]) : '(blank)' ?></b></div>
-              <?php endforeach; ?>
-            </td></tr>
-          <?php endforeach; ?></tbody></table>
-      <?php endif; ?>
-
-      <?php /* THE ALERT HE ASKED FOR, IN SO MANY WORDS: "if any id or worker
-               removed so you do not remove here even if its started job
-               somewhere but give me alert". Nothing below is touched. */ ?>
-      <?php if ($nGone): ?>
-        <div class="note warn" style="margin-top:12px">
-          <b><?= $nGone ?> worker(s) here are no longer in the HR app.</b>
-          Nothing has been done to them — they are still active, still on every
-          picker, and every wage already booked keeps their name on it. Switch
-          anyone off by hand below if they have really left.
-        </div>
-        <table class="zp-t"><thead><tr><th style="width:110px">Employee no.</th><th>Name</th>
-          <th>Department</th><th class="r" style="width:120px">Entries booked</th></tr></thead>
-          <tbody><?php foreach ($hrPlan['gone'] as $g): ?>
-            <tr><td class="code"><?= e($g['code']) ?></td><td><?= e($g['name']) ?></td>
-                <td><?= e($g['dept']) ?></td>
-                <td class="r"><?= $g['entries'] > 0
-                    ? '<b style="color:#9a2740">' . number_format($g['entries']) . '</b>'
-                    : '<span style="color:#b6c0cf">none</span>' ?></td></tr>
-          <?php endforeach; ?></tbody></table>
-      <?php endif; ?>
-
-      <?php if ($nAdd || $nChg): ?>
-        <form method="post" style="margin-top:12px"><?= csrf_field() ?>
-          <input type="hidden" name="action" value="hrapply">
-          <button class="zp-b ok" type="submit">Apply — add <?= $nAdd ?>, update <?= $nChg ?></button>
-          <span style="font-size:11.5px;color:#8a97ab;margin-left:8px">
-            Nobody is removed. No stage allotment is touched.</span>
-        </form>
-      <?php endif; ?>
-    <?php endif; ?>
-
-    <?php if (is_admin()): ?>
-      <details style="margin-top:13px"<?= zp_hr_configured() ? '' : ' open' ?>>
-        <summary style="cursor:pointer;font-size:12px;color:#5a6b82">Connection settings</summary>
-        <form method="post" style="margin-top:9px"><?= csrf_field() ?>
-          <input type="hidden" name="action" value="hrsave">
-          <div class="fgrid">
-            <div style="grid-column:span 3">
-              <span class="lab">Address of the employee list</span>
-              <input class="zin" name="hr_url" value="<?= e(zp_hr_url()) ?>"
-                     placeholder="http://portal.example.com/zes/emp.php" autocomplete="off">
-            </div>
-            <div style="grid-column:span 2">
-              <span class="lab">Token</span>
-              <?php /* THE TOKEN IS NEVER PRINTED BACK. The box shows a mask,
-                       and saving with the mask still in it leaves the stored
-                       token alone — see zp_hr_save_settings(). */ ?>
-              <input class="zin" name="hr_token" type="text" autocomplete="off"
-                     placeholder="<?= zp_hr_token() !== '' ? e(zp_hr_token_masked()) . ' — leave blank to keep it' : 'paste the bearer token' ?>">
-            </div>
-          </div>
-          <button class="zp-b" type="submit" style="margin-top:9px">Save connection</button>
-          <p style="font-size:11px;color:#8a97ab;margin:8px 0 0">
-            The token is stored in this app's own settings, never in a file that
-            gets uploaded, and it is never shown in full again. If the address
-            starts with <b>http://</b> rather than https, the token travels
-            across your network in clear text — that is a matter for your network,
-            not something this screen can fix, but you should know it.</p>
-        </form>
-      </details>
-    <?php endif; ?>
-  </div>
-
-  <div class="zp-card">
-    <h2><?= $edit ? 'Edit ' . e($edit['worker_name']) : 'Add a worker' ?></h2>
+  <?php if ($edit): ?>
+  <div class="zp-card" id="stages">
+    <h2>Stages &mdash; <?= e($edit['worker_name']) ?> <span class="code" style="font-weight:400">(<?= e($edit['worker_code']) ?><?= $edit['department'] ? ' · ' . e($edit['department']) : '' ?>)</span></h2>
     <form method="post">
-      <?= csrf_field() ?><input type="hidden" name="action" value="save">
+      <?= csrf_field() ?><input type="hidden" name="action" value="stages">
       <input type="hidden" name="worker_id" value="<?= (int)$editId ?>">
-      <div class="fgrid" style="margin-top:12px">
-        <div>
-          <span class="lab">Code</span>
-          <input class="zin code" name="worker_code" maxlength="<?= ZP_CODE_MAX ?>" autocomplete="off"
-                 value="<?= e($edit['worker_code'] ?? '') ?>" placeholder="leave blank"
-                 title="Leave it blank and the next free code is used. You never have to invent one.">
-        </div>
-        <div style="grid-column:span 2">
-          <span class="lab">Name</span>
-          <input class="zin" name="worker_name" required maxlength="120" autocomplete="off"
-                 value="<?= e($edit['worker_name'] ?? '') ?>" placeholder="Muhammad Aslam">
-        </div>
-        <div>
-          <span class="lab">Department / Floor</span>
-          <input class="zin" name="department" list="deptList" maxlength="60" autocomplete="off"
-                 value="<?= e($edit['department'] ?? '') ?>" placeholder="Stitching Floor 1">
-          <datalist id="deptList"><?php foreach ($depts as $d): ?><option value="<?= e($d) ?>"><?php endforeach; ?></datalist>
-        </div>
-        <div style="display:flex;align-items:flex-end">
-          <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:#5a6b82;cursor:pointer;padding-bottom:7px">
-            <input type="checkbox" name="is_active" value="1" <?= ($edit ? (int)$edit['is_active'] : 1) ? 'checked' : '' ?>>
-            Active</label>
-        </div>
-      </div>
-
-      <?php /* THE STAGES THIS PERSON WORKS.
-               Checkboxes dressed as chips — a real <input type="checkbox">
-               under each one, so the form posts without a line of JavaScript
-               and works with the keyboard. Nothing ticked is a valid answer
-               and it means NOT PRODUCTION, which is what the strip below
-               says — see the rule at the top of this file. */ ?>
-      <div style="margin-top:13px">
+      <div style="margin-top:10px">
         <span class="lab">Stages this person works &mdash; tick any number</span>
         <?php if (!$stages): ?>
           <div class="note">No stages are set up yet. Add them on
@@ -607,90 +380,23 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
           <?php endforeach; ?>
           <a class="zw-chip add" href="production_stages.php">+ add a stage</a>
         </div>
-        <div class="zw-hint">
-          <?= $editWs
-              ? 'Untick them all and ' . e($edit['worker_name'] ?? 'this worker')
-                . ' stops being offered on any production list — which is right for office and'
-                . ' kitchen staff, and keeps every wage already booked to them.'
-              : 'Nothing ticked = not offered on any production list. Use the department table'
-                . ' above to set a whole floor at once.' ?>
-        </div>
+        <div class="zw-hint">Nothing ticked = not offered on any production list (office and kitchen staff). Wages already booked are always kept.</div>
         <?php endif; ?>
       </div>
-
       <div style="display:flex;gap:9px;margin-top:13px;flex-wrap:wrap">
-        <button class="zp-b pri"><?= $edit ? 'Save Changes' : 'Add Worker' ?></button>
-        <?php if ($edit): ?><a class="zp-b" href="production_workers.php">New worker instead</a><?php endif; ?>
-        <span style="font-size:11.5px;color:#8a97ab;align-self:center">
-          Leave the code blank and the next free one is given automatically.</span>
+        <button class="zp-b pri">Save stages</button>
+        <a class="zp-b" href="production_workers.php">Close</a>
+        <span style="font-size:11.5px;color:#8a97ab;align-self:center">Name, code or department wrong? Change them in
+          <a href="att_finance.php#people">People Finance › Employees</a>.</span>
       </div>
     </form>
   </div>
-
-  <?php /* MANY AT ONCE. Three hundred people typed one at a time is a week
-           of somebody's life. The same keyboard and the same paste that the
-           Proforma and the Commercial Invoice grids use — assets/js/grid.js,
-           shared so the three cannot drift apart. */ ?>
-  <div class="zp-card">
-    <h2><?= $edit ? 'Or add many at once' : 'Add many at once' ?></h2>
-    <p style="margin:3px 0 12px;font-size:12.5px;color:#8a97ab;line-height:1.55">
-      Copy the columns out of Excel &mdash; <b>Code, Name, Department, Stages</b> &mdash; click the first cell
-      and paste. Rows are added as they are needed.
-      <b>Leave Code empty</b> and the next free number is given. Several stages go in one cell,
-      separated by a comma.</p>
-
-    <form method="post" id="impForm">
-      <?= csrf_field() ?><input type="hidden" name="action" value="import">
-      <div style="overflow-x:auto">
-      <table class="zp-t" id="impTbl">
-        <thead><tr>
-          <th style="width:34px">#</th>
-          <th style="width:110px">Code</th>
-          <th style="min-width:180px">Name</th>
-          <th style="min-width:150px">Department</th>
-          <th style="min-width:180px">Stages</th>
-          <th style="width:32px"></th>
-        </tr></thead>
-        <tbody>
-        <?php foreach ($impRows as $ix => $ir): ?>
-          <tr>
-            <td class="code"><?= $ix + 1 ?></td>
-            <td><input class="zin code" data-c="code" name="w_code[]" maxlength="<?= ZP_CODE_MAX ?>" autocomplete="off"
-                       placeholder="auto" value="<?= e((string)($ir['code'] ?? '')) ?>"></td>
-            <td><input class="zin" data-c="name" name="w_name[]" maxlength="120" autocomplete="off"
-                       value="<?= e((string)($ir['name'] ?? '')) ?>"></td>
-            <td><input class="zin" data-c="dept" data-lov="wdept" name="w_dept[]" maxlength="60" autocomplete="off"
-                       placeholder="Enter opens the list"
-                       value="<?= e((string)($ir['dept'] ?? '')) ?>"></td>
-            <td><input class="zin" data-c="stages" data-lov="wstage" name="w_stages[]" maxlength="200" autocomplete="off"
-                       placeholder="<?= $stages ? 'Enter opens the list' : 'none set up yet' ?>"
-                       value="<?= e((string)($ir['stages'] ?? '')) ?>"></td>
-            <td><button type="button" class="zp-b sm red" tabindex="-1" onclick="zpImpDrop(this)">&times;</button></td>
-          </tr>
-        <?php endforeach; ?>
-        </tbody>
-      </table>
-      </div>
-
-      <div style="display:flex;gap:9px;margin-top:12px;flex-wrap:wrap;align-items:center">
-        <button class="zp-b pri">Add these workers</button>
-        <button type="button" class="zp-b" onclick="zpImpAdd()">+ Row</button>
-        <button type="button" class="zp-b" onclick="zpImpClear()">Clear the sheet</button>
-        <span style="font-size:11.5px;color:#8a97ab" id="impCount"></span>
-      </div>
-      <div class="note" style="margin-top:12px">
-        <b>All of them go in, or none of them do.</b>
-        A sheet half-saved is worse than one refused &mdash; you cannot tell which half went in, and
-        pasting it again to be sure would create every one of them twice. If a row is wrong it is named,
-        nothing is written, and your paste stays on screen to correct.
-      </div>
-    </form>
-  </div>
+  <?php endif; ?>
 
   <div class="zp-card">
     <h2>Everyone</h2>
     <?php if (!$workers): ?>
-      <div class="empty">No workers yet. Add the first one above &mdash; you only need a name.</div>
+      <div class="empty">Nobody yet. Add people in <a href="att_finance.php#people">People Finance › Employees</a> &mdash; they appear here by themselves.</div>
     <?php else: ?>
     <div style="overflow-x:auto">
     <table class="zp-t">
@@ -724,13 +430,7 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
           <td class="num"><?= number_format($e2['n']) ?></td>
           <td class="num"><?= number_format($e2['amt'], 2) ?></td>
           <td style="white-space:nowrap">
-            <a class="zp-b sm" href="production_workers.php?w=<?= $wid ?>">Edit</a>
-            <form method="post" style="display:inline"
-                  onsubmit="return confirm('Remove <?= e(addslashes($w['worker_name'])) ?>?\n\nIf they have any production entries they will be set inactive instead, so their wages keep their name.')">
-              <?= csrf_field() ?><input type="hidden" name="action" value="delete">
-              <input type="hidden" name="worker_id" value="<?= $wid ?>">
-              <button class="zp-b sm red">Remove</button>
-            </form>
+            <a class="zp-b sm" href="production_workers.php?w=<?= $wid ?>#stages">Stages</a>
           </td>
         </tr>
       <?php endforeach; ?>
@@ -759,186 +459,33 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
     </div>
     <?php endif; ?>
 
-    <div class="note" style="margin-top:14px">
-      <b>Removing somebody who has worked does not delete them.</b>
-      Their name is on every entry they were paid for. They are set <b>inactive</b> instead: off every picker
-      from now on, still on every wage record that already exists. Only a worker with no entries at all is
-      really deleted.
-    </div>
   </div>
+
+  <?php if ($notIn): ?>
+  <div class="zp-card" id="notinpeople">
+    <h2>Not in People Finance (<?= count($notIn) ?>)</h2>
+    <p class="sub">Old production workers nobody in People Finance matches. They are <b>not offered</b> on Daily Entry any more;
+      every entry and wage already booked to them is kept. To keep one working: add them in
+      <a href="att_finance.php#people">People Finance › Employees</a> with this code (or put it as their
+      <i>Production worker code</i>) &mdash; they join up by themselves. Otherwise make them inactive.</p>
+    <table class="zp-t">
+      <thead><tr><th>Code</th><th>Name</th><th>Department</th><th class="num">Entries</th><th class="num">Earned (PKR)</th><th></th></tr></thead>
+      <tbody>
+      <?php foreach ($notIn as $w): $wid = (int)$w['id']; $e2 = $earned[$wid] ?? ['n' => 0, 'amt' => 0]; ?>
+        <tr>
+          <td class="code wrapcode"><b><?= e($w['worker_code']) ?></b></td><td><?= e($w['worker_name']) ?></td>
+          <td style="color:#5a6b82"><?= e($w['department'] ?: '—') ?></td>
+          <td class="num"><?= number_format($e2['n']) ?></td><td class="num"><?= number_format($e2['amt'], 2) ?></td>
+          <td><form method="post" style="display:inline" onsubmit="return confirm('Make <?= e(addslashes($w['worker_name'])) ?> inactive?\n\nTheir entries and wages are kept.')">
+              <?= csrf_field() ?><input type="hidden" name="action" value="retire"><input type="hidden" name="worker_id" value="<?= $wid ?>">
+              <button class="zp-b sm">Make inactive</button></form></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+  <?php endif; ?>
 </div>
 </div><?php /* closes .zskin */ ?>
 
-<link rel="stylesheet" href="assets/css/lov.css?v=3">
-<script src="assets/js/lov.js?v=3"></script>
-<script src="assets/js/grid.js?v=2"></script>
-<script>
-var WDEPTS  = <?= json_encode(array_values($deptList), JSON_UNESCAPED_UNICODE) ?>;
-var WSTAGES = <?= json_encode(array_map(fn($s) => (string)$s['name'], $stages), JSON_UNESCAPED_UNICODE) ?>;
-
-/* TWO LISTS, OPENED BY THE KEYBOARD.
-   These were <datalist> boxes, which need the mouse or a guess at which
-   arrow key the browser decided on. They are the same picker the stock
-   screens use now: focus or Enter opens it, typing narrows it, Enter takes
-   the row, Escape puts it back. */
-if (window.LOV) {
-  /* WHAT IS ALREADY CHOSEN, AND WHAT IS BEING TYPED NOW.
-     The stages cell holds a LIST, and the picker hands the whole cell over
-     as the search text. A cell reading "Packing" therefore searched for
-     "Packing" the instant it reopened, found only Packing, and a second
-     stage could never be added — found by driving it, not by reading it.
-
-     Everything that is already a real stage name is CHOSEN. Whatever is
-     left over is what is being typed. So "Packing" searches for nothing and
-     offers the lot; "Packing, st" searches for "st"; and "st" typed into an
-     empty cell searches for "st" as it always did. */
-  function wsPick(v){
-    return String(v || '').split(/[,\/;|]+/).map(function(x){ return x.trim(); })
-             .filter(function(x){ return x !== ''; });
-  }
-  function wsChosen(v){
-    return wsPick(v).filter(function(x){
-      return WSTAGES.some(function(t){ return t.toLowerCase() === x.toLowerCase(); }); });
-  }
-  function wsTyping(v){
-    var parts = wsPick(v);
-    if (!parts.length) return '';
-    var last = parts[parts.length - 1];
-    /* the last piece is only a search if it is not itself a chosen stage */
-    return WSTAGES.some(function(t){ return t.toLowerCase() === last.toLowerCase(); }) ? '' : last;
-  }
-  LOV.register('wdept', {
-    cols: [{ label:'Department', w:'1fr', cls:'nm', get:function(r,q){ return LOV.hl(r.v, q); } }],
-    title: function(){ return 'Department'; },
-    empty: function(f, q){
-      return WDEPTS.length ? 'No department matches “' + LOV.esc(q) + '”. Type it in — it will be added.'
-                           : 'No departments yet. Type one in.';
-    },
-    rows: function(f, q, showAll, cb){
-      var out = [];
-      WDEPTS.forEach(function(v){ var sc = LOV.score(q, v, '', ''); if(sc > 0) out.push({ v:v, sc:sc }); });
-      out.sort(function(a,b){ return a.sc !== b.sc ? b.sc - a.sc : a.v.localeCompare(b.v); });
-      cb(out, 0);
-    },
-    pick: function(f, r){ f.value = r.v; }
-  });
-
-  LOV.register('wstage', {
-    cols: [
-      { label:'Stage', w:'1fr', cls:'nm', get:function(r,q){ return LOV.hl(r.v, wsTyping(q)); } },
-      { label:'', w:'92px', cls:'gg',
-        get:function(r){ return r.on ? '<span style="color:#0b5f8a;font-weight:700">already on</span>' : ''; } }
-    ],
-    /* ENTER ADDS ONE AND LEAVES THE CURSOR WHERE IT IS, so the next Enter
-       opens the list again and adds another. Without this the grid moves
-       down a row the instant the list closes, and a second stage can only
-       be added by coming back to the cell. */
-    stayOnEnter: true,
-    title: function(f){
-      /* A PERSON CAN WORK SEVERAL STAGES, so the list says what taking one
-         will do rather than leaving the operator to wonder whether it
-         replaces what is already in the cell. */
-      return (f && f.value.trim()) ? 'Add another stage — Enter again for more' : 'Stage';
-    },
-    empty: function(){ return WSTAGES.length ? 'No stage matches that.' : 'No stages set up yet.'; },
-    rows: function(f, q, showAll, cb){
-      var has = wsChosen(f.value).map(function(x){ return x.toLowerCase(); });
-      var q2 = wsTyping(q);
-      var out = [];
-      WSTAGES.forEach(function(v){
-        var sc = LOV.score(q2, v, '', ''); if(sc <= 0) return;
-        out.push({ v:v, on: has.indexOf(v.toLowerCase()) >= 0, sc:sc });
-      });
-      /* The ones not yet on this person first — those are the ones being
-         looked for. */
-      out.sort(function(a,b){
-        if(a.on !== b.on) return a.on ? 1 : -1;
-        return a.sc !== b.sc ? b.sc - a.sc : a.v.localeCompare(b.v);
-      });
-      cb(out, 0);
-    },
-    pick: function(f, r){
-      /* ADDS, IT DOES NOT REPLACE — and taking the same one twice does not
-         put it in twice. wsChosen() drops the half-typed word that found the
-         row, so it is never left behind in the cell as a fifth stage. */
-      var cur = wsChosen(f.value);
-      if(!cur.some(function(x){ return x.toLowerCase() === r.v.toLowerCase(); })) cur.push(r.v);
-      f.value = cur.join(', ');
-    },
-    /* Typed something, chose nothing, tabbed away: put back only the stages
-       that are really stages, so a half-typed word never survives as one. */
-    revert: function(f){ f.value = wsChosen(f.value).join(', '); }
-  });
-}
-</script>
-<script>
-/* THE SAME GRID THE PROFORMA AND THE INVOICE USE.
-   Tab across, Enter down, paste a block from Excel and it fills across and
-   down adding rows as it needs them. Shared rather than re-written, so the
-   three cannot learn different keys. */
-(function(){
-  var tb = document.querySelector('#impTbl tbody');
-  if(!tb || !window.GRID) return;
-
-  function renumber(){
-    [].forEach.call(tb.rows, function(tr, i){
-      var c = tr.cells[0]; if(c) c.textContent = i + 1;
-    });
-    count();
-  }
-  /* WHAT WILL ACTUALLY BE ADDED, said before the button is pressed. A
-     sheet of sixty rows where eleven are blank should not be a surprise
-     at the other end. */
-  function count(){
-    var n = 0;
-    [].forEach.call(tb.rows, function(tr){
-      var f = tr.querySelector('[data-c="name"]');
-      if(f && f.value.trim() !== '') n++;
-    });
-    var el = document.getElementById('impCount');
-    if(el) el.textContent = n ? n + ' row' + (n === 1 ? '' : 's') + ' with a name — the rest are ignored'
-                              : 'nothing to add yet';
-  }
-
-  function blankRow(){
-    var last = tb.rows[tb.rows.length - 1];
-    var tr = last.cloneNode(true);
-    [].forEach.call(tr.querySelectorAll('input'), function(el){ el.value = ''; });
-    tb.appendChild(tr);
-    renumber();
-    return tr;
-  }
-
-  window.zpImpAdd = function(){
-    var tr = blankRow();
-    var f = tr.querySelector('[data-c="code"]'); if(f) f.focus();
-  };
-  window.zpImpDrop = function(btn){
-    var tr = btn.closest('tr'); if(!tr) return;
-    /* Never leave the sheet with no rows at all — there would be nothing
-       left to paste into and nothing to clone the next row from. */
-    if(tb.rows.length > 1) tr.remove();
-    else [].forEach.call(tr.querySelectorAll('input'), function(el){ el.value = ''; });
-    renumber();
-  };
-  window.zpImpClear = function(){
-    while(tb.rows.length > 1) tb.rows[tb.rows.length - 1].remove();
-    [].forEach.call(tb.rows[0].querySelectorAll('input'), function(el){ el.value = ''; });
-    renumber();
-    var f = tb.rows[0].querySelector('[data-c="code"]'); if(f) f.focus();
-  };
-
-  /* LOV FIRST, GRID SECOND. Both listen on this same table, and the one
-     registered first sees the key first. With the picker first, Enter opens
-     the list and stops there; the grid's own check (window.LOV.isOpen) then
-     covers the other order too, so between them it cannot go wrong. */
-  if (window.LOV) LOV.attach(tb);
-  GRID.attach(tb, {
-    cols: ['code','name','dept','stages'],
-    addRow: blankRow,
-    afterChange: count
-  });
-  count();
-})();
-</script>
 <?php page_footer(); ?>

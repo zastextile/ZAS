@@ -1900,8 +1900,116 @@ function zp_line_set_drift(int $proformaItemId, int $productId): array {
    ============================================================ */
 function zp_workers(bool $activeOnly = false): array {
     zp_ensure_schema();
-    $sql = "SELECT * FROM zp_workers" . ($activeOnly ? " WHERE is_active=1" : "") . " ORDER BY worker_name";
-    try { return db()->query($sql)->fetchAll(); } catch (Throwable $e) { return []; }
+    zp_people_sync();
+    /* THE PICKERS OFFER ONLY PEOPLE FROM PEOPLE FINANCE (owner's decision,
+       18 Nov 2026). An old production worker who is not there keeps every
+       wage already booked to them and stays on the history lists — the
+       full list, $activeOnly = false — but is not offered for new work. */
+    $where = $activeOnly ? " WHERE is_active=1" . (zp_people_in_use() ? " AND att_employee_id IS NOT NULL" : "") : "";
+    try { return db()->query("SELECT * FROM zp_workers" . $where . " ORDER BY worker_name")->fetchAll(); }
+    catch (Throwable $e) {
+        try { return db()->query("SELECT * FROM zp_workers" . ($activeOnly ? " WHERE is_active=1" : "") . " ORDER BY worker_name")->fetchAll(); }
+        catch (Throwable $e2) { return []; }
+    }
+}
+
+/* ============================================================
+   PEOPLE FINANCE IS THE ONLY LIST OF PEOPLE
+   ============================================================
+   Owner, 18 Nov 2026: "i only need everything from now on from
+   att_finance.php#people". Production keeps its own worker rows — every
+   wage ever booked points at one, by id — but their code, name,
+   department and on-the-roll state are copied from People Finance ›
+   Employees, never typed here:
+
+     · a person in People Finance gets a production worker of their own,
+       under their production code (the "Production worker code" on their
+       card, or else their employee code);
+     · an existing worker is matched first by the link already made, then
+       by that code, and from then on follows the person: renamed, moved,
+       left — all of it shows in production by itself;
+     · a worker nobody in People Finance matches is left exactly as it is,
+       wages and all, and listed on Production Workers to be made inactive.
+
+   Cheap to call on every page: it compares one fingerprint of the
+   employee list with the one it last worked from, and only does the work
+   when that changed. Which stages a person works stays on Production
+   Workers — that is production's own decision. */
+function zp_people_in_use(): bool {
+    static $on = null;
+    if ($on !== null) return $on;
+    try { $on = (int)db()->query("SELECT COUNT(*) FROM att_employees")->fetchColumn() > 0; }
+    catch (Throwable $e) { $on = false; }
+    return $on;
+}
+
+function zp_people_sync(bool $force = false): array {
+    if (!zp_people_in_use()) return ['ok' => true, 'skipped' => true];
+    try { db()->query("SELECT att_employee_id FROM zp_workers LIMIT 1"); }
+    catch (Throwable $e) {
+        try { db()->exec("ALTER TABLE zp_workers ADD COLUMN att_employee_id BIGINT UNSIGNED NULL DEFAULT NULL"); } catch (Throwable $e2) { return ['ok' => false, 'error' => 'no link column']; }
+    }
+    try {
+        $fp = (string)db()->query("SELECT CONCAT(COUNT(*), '|', COALESCE(SUM(CRC32(CONCAT_WS('|', e.id, e.code, COALESCE(e.worker_code, ''), e.full_name, e.active, COALESCE(d.name, '')))), 0))
+                                     FROM att_employees e LEFT JOIN att_departments d ON d.id = e.department_id")->fetchColumn();
+        $fp .= '|' . (string)db()->query("SELECT CONCAT(COUNT(*), '|', COALESCE(MAX(id), 0), '|', COALESCE(SUM(CRC32(CONCAT_WS('|', id, worker_code, worker_name, COALESCE(department, ''), is_active, COALESCE(att_employee_id, 0)))), 0)) FROM zp_workers")->fetchColumn();
+    } catch (Throwable $e) { return ['ok' => false, 'error' => $e->getMessage()]; }
+    if (!$force && zp_meta_get('people_fp') === $fp) return ['ok' => true, 'skipped' => true];
+
+    $emps = db()->query("SELECT e.id, e.code, e.worker_code, e.full_name, e.active, d.name AS dept
+                           FROM att_employees e LEFT JOIN att_departments d ON d.id = e.department_id ORDER BY e.id")->fetchAll();
+    $ws = db()->query("SELECT id, worker_code, worker_name, department, is_active, att_employee_id FROM zp_workers")->fetchAll();
+    $byEmp = []; $byCode = []; $empIds = [];
+    foreach ($emps as $e) $empIds[(int)$e['id']] = true;
+    foreach ($ws as $i => $w) {
+        if ($w['att_employee_id'] !== null && isset($empIds[(int)$w['att_employee_id']])) $byEmp[(int)$w['att_employee_id']] = $i;
+        $byCode[mb_strtoupper(trim((string)$w['worker_code']))] = $i;
+    }
+    $added = 0; $updated = 0; $conflicts = [];
+    $upd = db()->prepare("UPDATE zp_workers SET worker_code = ?, worker_name = ?, department = ?, is_active = ?, att_employee_id = ? WHERE id = ?");
+    $ins = db()->prepare("INSERT INTO zp_workers (worker_code, worker_name, department, is_active, att_employee_id) VALUES (?,?,?,?,?)");
+    foreach ($emps as $e) {
+        $eid = (int)$e['id'];
+        $code = mb_strtoupper(trim((string)($e['worker_code'] ?? '') !== '' ? (string)$e['worker_code'] : (string)$e['code']));
+        if ($code === '' || mb_strlen($code) > ZP_CODE_MAX) { $conflicts[] = $code . ' (too long)'; continue; }
+        $name = mb_substr(trim((string)$e['full_name']), 0, 120);
+        $dept = $e['dept'] !== null && trim((string)$e['dept']) !== '' ? mb_substr(trim((string)$e['dept']), 0, 60) : null;
+        $act = (int)$e['active'] ? 1 : 0;
+        $i = $byEmp[$eid] ?? null;
+        if ($i === null && isset($byCode[$code])) {
+            $c = $ws[$byCode[$code]];
+            if ($c['att_employee_id'] === null || !isset($empIds[(int)$c['att_employee_id']]) || (int)$c['att_employee_id'] === $eid) $i = $byCode[$code];
+            else { $conflicts[] = $code; continue; }                       // that code is somebody else's
+        }
+        if ($i === null) {
+            try { $ins->execute([$code, $name, $dept, $act, $eid]); $added++; } catch (Throwable $ex) { $conflicts[] = $code; }
+            continue;
+        }
+        $w = $ws[$i];
+        $newCode = $code;
+        if (mb_strtoupper(trim((string)$w['worker_code'])) !== $code && isset($byCode[$code]) && $byCode[$code] !== $i) $newCode = (string)$w['worker_code']; // code taken: keep the old one
+        if ((string)$w['worker_code'] !== $newCode || (string)$w['worker_name'] !== $name || (string)($w['department'] ?? '') !== (string)($dept ?? '')
+            || (int)$w['is_active'] !== $act || (int)($w['att_employee_id'] ?? 0) !== $eid) {
+            try { $upd->execute([$newCode, $name, $dept, $act, $eid, (int)$w['id']]); $updated++; } catch (Throwable $ex) { $conflicts[] = $code; }
+        }
+    }
+    /* a link to somebody deleted from People Finance is let go — the worker stays, with their wages */
+    try { db()->exec("UPDATE zp_workers w LEFT JOIN att_employees e ON e.id = w.att_employee_id SET w.att_employee_id = NULL WHERE w.att_employee_id IS NOT NULL AND e.id IS NULL"); } catch (Throwable $e) {}
+    try {
+        $fp = (string)db()->query("SELECT CONCAT(COUNT(*), '|', COALESCE(SUM(CRC32(CONCAT_WS('|', e.id, e.code, COALESCE(e.worker_code, ''), e.full_name, e.active, COALESCE(d.name, '')))), 0))
+                                     FROM att_employees e LEFT JOIN att_departments d ON d.id = e.department_id")->fetchColumn()
+            . '|' . (string)db()->query("SELECT CONCAT(COUNT(*), '|', COALESCE(MAX(id), 0), '|', COALESCE(SUM(CRC32(CONCAT_WS('|', id, worker_code, worker_name, COALESCE(department, ''), is_active, COALESCE(att_employee_id, 0)))), 0)) FROM zp_workers")->fetchColumn();
+        zp_meta_set('people_fp', $fp);
+    } catch (Throwable $e) {}
+    return ['ok' => true, 'added' => $added, 'updated' => $updated, 'conflicts' => $conflicts];
+}
+
+/* Production workers nobody in People Finance matches: kept with their wages, not offered for new work. */
+function zp_workers_not_in_people(): array {
+    if (!zp_people_in_use()) return [];
+    zp_people_sync();
+    try { return db()->query("SELECT * FROM zp_workers WHERE att_employee_id IS NULL AND is_active = 1 ORDER BY worker_name")->fetchAll(); }
+    catch (Throwable $e) { return []; }
 }
 
 /* How long a worker code may be. One number, in one place, read by the

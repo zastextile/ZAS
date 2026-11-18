@@ -28,7 +28,8 @@
 /* WORKER PAY (OLD SCREEN) LEAVES THE MENU BY ITSELF. People Finance pays
    production (contract) workers now, and carries in what was paid on the old
    screen. The old screen is only still needed for an active production worker
-   with no contractor under the same code in People Finance — the same rule as
+   who has production wages and no contractor under the same code in People
+   Finance — the same rule as
    FinanceService::unlinkedWorkers(). Once there is none, the link goes. The
    page itself stays on the server (its history is still readable by its
    address). Worked out at most every five minutes per session; if the tables
@@ -41,7 +42,8 @@ function zas_menu_old_pay_needed(): bool {
         return (bool) $_SESSION['zas_oldpay'][1];
     }
     try {
-        $n = (int) db()->query("SELECT COUNT(*) FROM zp_workers w WHERE w.is_active = 1 AND NOT EXISTS (
+        $n = (int) db()->query("SELECT COUNT(*) FROM zp_workers w WHERE w.is_active = 1
+              AND EXISTS (SELECT 1 FROM zp_entries en WHERE en.worker_id = w.id AND en.status = 'active') AND NOT EXISTS (
                 SELECT 1 FROM att_fin_profiles f JOIN att_employees e ON e.id = f.employee_id
                  WHERE f.pay_type = 'contract'
                    AND CONVERT(LOWER(TRIM(COALESCE(NULLIF(TRIM(e.worker_code), ''), e.code))) USING utf8mb4) COLLATE utf8mb4_unicode_ci = CONVERT(LOWER(TRIM(w.worker_code)) USING utf8mb4) COLLATE utf8mb4_unicode_ci)")->fetchColumn();

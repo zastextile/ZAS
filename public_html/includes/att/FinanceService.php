@@ -755,7 +755,10 @@ final class FinanceService
         }
         $linked = array_flip(self::contractWorkers());
         $out = [];
-        foreach (Db::all('SELECT id, worker_code, worker_name FROM zp_workers WHERE is_active = 1 ORDER BY worker_name') as $w) {
+        /* only people with production wages are paid on the old screen — since People Finance
+           became the one list of people, everybody (office and kitchen too) has a worker row */
+        $hasWages = Db::tableExists('zp_entries') ? " AND EXISTS (SELECT 1 FROM zp_entries en WHERE en.worker_id = zp_workers.id AND en.status = 'active')" : '';
+        foreach (Db::all('SELECT id, worker_code, worker_name FROM zp_workers WHERE is_active = 1' . $hasWages . ' ORDER BY worker_name') as $w) {
             if (!isset($linked[(int) $w['id']])) {
                 $out[] = ['id' => (int) $w['id'], 'code' => (string) $w['worker_code'], 'name' => (string) $w['worker_name']];
             }
