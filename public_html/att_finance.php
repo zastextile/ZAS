@@ -1869,7 +1869,8 @@ page_header('People Finance');
      a courtesy; the server works every one out again from Production's own
      records, and what Production booked is never changed. */
   var PA = { from: '', to: '', dept: '' };
-  function prodAdjust(){
+  /* only: the person chosen on the Employee Ledger (owner, 19 Nov 2026) — none chosen = every contractor */
+  function prodAdjust(only){
     if (!PA.from) { PA.from = S.today.slice(0, 8) + '01'; PA.to = S.today; }
     var num = function(v){ v = String(v === null || v === undefined ? '' : v).replace(/,/g, '').trim(); if (v === '' || v === '-' ) return null; var n = Number(v); return isFinite(n) ? n : NaN; };
     var paisa = function(n){ return Math.round(n * 100); };
@@ -1956,7 +1957,10 @@ page_header('People Finance');
         if (mine !== loadSeq) return;
         holder.textContent = '';
         if (!x.ok) return holder.appendChild(fail(x));
-        if (!x.contractors.length) return holder.appendChild(el('div', { class: 'empty', text: 'No contractor linked to Production here. In Employees, set the person to "Contractor" with their production worker code.' }));
+        if (only) x.contractors = x.contractors.filter(function(c){ return +c.employee_id === +only.employee_id; });
+        if (!x.contractors.length) return holder.appendChild(el('div', { class: 'empty', text: only
+          ? only.full_name + ' has no production booked between these dates, or is not a contractor linked to Production (Employees › Paid as "Contractor", with the production worker code).'
+          : 'No contractor linked to Production here. In Employees, set the person to "Contractor" with their production worker code.' }));
         var tb = el('tbody');
         x.contractors.forEach(function(c){
           var r = { c: c, edits: {}, pct: null, open: false, sub: [] };
@@ -2005,7 +2009,7 @@ page_header('People Finance');
     var save = btn('Save adjustments', function(){ send(false); }, 'pri'), saveNow = S.caps.admin ? btn('Save and approve now', function(){ send(true); }, 'pri go') : null;
     [from, to, dept].forEach(function(i){ i.addEventListener('change', load); });
     var box = modal([
-      el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Production adjustment — contractors' }), btn('Close', closeModal, 'sm')]),
+      el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Production adjustment — ' + (only ? only.full_name + ' (' + only.code + ')' : 'contractors') }), btn('Close', closeModal, 'sm')]),
       el('p', { class: 'muted small', style: 'margin:0', text: 'Change the pieces or the rate of what Production booked, for one contractor or many, or give a fixed amount. What Production booked is never changed: each difference becomes its own line in the contractor\'s ledger, with the reason and your name.' }),
       el('div', { class: 'formgrid', style: 'grid-template-columns:150px 150px 1fr 2fr' }, [field('Production from', from), field('to', to), field('Department', dept), field('Reason (one for every line; a line can have its own)', reason)]),
       el('div', { class: 'cardx row', style: 'justify-content:space-between;padding:8px 12px' }, [
@@ -2203,7 +2207,7 @@ page_header('People Finance');
         mayEnter ? btn('− Add Deduction', function(){ entryForm('deduction'); }, 'act-ded') : null,
         mayEnter ? btn('Record Payment', function(){ entryForm('payment'); }, 'act-pay') : null,
         c.pay ? btn('Advance / Loan', function(){ give(LG.emp); }, 'act-adv') : null,
-        (c.adjust || c.wage) ? btn('± Production adjustment', function(){ prodAdjust(); }, 'act-prod') : null,
+        (c.adjust || c.wage) ? btn('± Production adjustment', function(){ prodAdjust(LG.emp); }, 'act-prod') : null,
         el('span', { class: 'lgtip', text: mayEnter ? (c.direct_deduct ? 'Earnings and payments wait for approval; a deduction is taken off at once.' : 'Entries wait for a second person\'s approval.') + ' Click any line to open where it came from.' : 'Click any line to open where it came from.' })]);
       var holder = el('div', { class: 'stack' }, [el('p', { class: 'muted', text: 'Loading…' })]);
       show([peopleList('fin-emps'), filters, actions, holder]);
@@ -2286,7 +2290,9 @@ page_header('People Finance');
   };
   function entryForm(mode, preset){
     loadPeople().then(function(){
-      var title = { earning: 'Add earning', deduction: 'Add deduction', payment: 'Record payment' }[mode];
+      /* opened from the Employee Ledger with a person chosen: for that person only (owner, 19 Nov 2026) */
+      var one1 = !preset && S.tab === 'ledger' && LG.emp ? LG.emp : null;
+      var title = { earning: 'Add earning', deduction: 'Add deduction', payment: 'Record payment' }[mode] + (one1 ? ' — ' + one1.full_name + ' (' + one1.code + ')' : '');
       var note = { earning: 'Overtime, an incentive, a bonus or any other earning — for one person or many. It waits for approval; once approved it is in their ledger and is paid with their next pay, or by Record payment. Overtime that Attendance already has is added to the pay sheet by itself: enter here only what Attendance does not know.',
                    deduction: 'A penalty, unpaid leave, advance or loan recovery, or any other deduction — for one person or many. ' + (S.caps.direct_deduct ? 'It is an adjustment, not a payment, so it is taken off at once, with your name and the reason.' : 'It waits for approval.') + ' It can never take off more than is owed to the person. Absences that Attendance already has are taken off the pay sheet by itself.',
                    payment: 'Pay part or all of what a person is owed, by cash or bank. It waits for approval like a pay sheet; then Accounts records the payment.' }[mode];
@@ -2297,7 +2303,7 @@ page_header('People Finance');
       var lines = [];
       function addLine(p, pre){
         var L = { p: p || null, info: null };
-        var who = el('input', { type: 'text', list: 'fin-emps2', placeholder: 'Name or code', value: p ? personLabel(p) : '', 'aria-label': 'Employee' });
+        var who = el('input', { type: 'text', list: one1 ? null : 'fin-emps2', placeholder: 'Name or code', value: p ? personLabel(p) : '', 'aria-label': 'Employee', readonly: one1 ? 'readonly' : null });
         var amt = el('input', { type: 'text', inputmode: 'decimal', class: 'n', placeholder: '0', 'aria-label': 'Amount' });
         var tr = el('tr');
         L.amt = amt; L.who = who; L.tr = tr;
@@ -2314,7 +2320,7 @@ page_header('People Finance');
           cells.push(el('td', {}, [L.type]), el('td', {}, [L.label, L.adv]), el('td', {}, [amt]));
           L.type.addEventListener('change', function(){ info(); });
         }
-        cells.push(el('td', {}, [el('button', { type: 'button', class: 'x', title: 'Remove this line', text: '×', click: function(){ lines.splice(lines.indexOf(L), 1); tr.remove(); sum(); } })]));
+        cells.push(el('td', {}, [one1 ? null : el('button', { type: 'button', class: 'x', title: 'Remove this line', text: '×', click: function(){ lines.splice(lines.indexOf(L), 1); tr.remove(); sum(); } })]));
         cells.forEach(function(td){ tr.appendChild(td); });
         function info(){
           if (L.adv) L.adv.hidden = true;
@@ -2400,7 +2406,7 @@ page_header('People Finance');
         el('p', { class: 'muted small', style: 'margin:0', text: note }),
         el('div', { class: 'formgrid' }, [field('Date', date), mode === 'payment' ? null : field('Type for new lines', defType), field(mode === 'payment' ? 'Note' : 'Reason / what it is for', reason)].filter(Boolean)),
         el('div', { class: 'scroll', style: 'max-height:46vh' }, [table]),
-        el('div', { class: 'row', style: 'justify-content:space-between' }, [el('div', { class: 'row' }, [btn('+ Add line', function(){ addLine(null).who.focus(); sum(); }, 'sm'), dsel]),
+        one1 ? null : el('div', { class: 'row', style: 'justify-content:space-between' }, [el('div', { class: 'row' }, [btn('+ Add line', function(){ addLine(null).who.focus(); sum(); }, 'sm'), dsel]),
           el('div', { class: 'row' }, [el('div', { style: 'width:170px' }, [same]), fill])]),
         errBox,
         el('div', { class: 'row', style: 'justify-content:space-between' }, [el('span', { class: 'muted small' }, ['Total: ', totalB]), el('div', { class: 'row' }, [btn('Close', closeModal), save, saveNow])])], true);
