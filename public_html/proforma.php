@@ -629,7 +629,7 @@ if ($id) {
     ?>
     <div class="zskin">
     <div class="topbar"><div><h1>Proforma Invoice — <?= e($pf['pi_no']) ?></h1><p class="lead">Customer-facing only. <?= $pf['product_id'] ? 'Linked to product #'.(int)$pf['product_id'].' · costing #'.(int)$pf['costing_version_id'].' (rev '.(int)$pf['costing_revision'].').' : 'Created directly — not linked to a Product Costing version.' ?></p></div>
-      <div style="display:flex;gap:8px"><a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>" href="proforma.php">← All Proformas</a><a class="<?= $btnC ?>" style="<?= $btn ?>" target="_blank" href="proforma_print.php?id=<?= (int)$id ?>">Print / PDF</a></div></div>
+      <div style="display:flex;gap:8px"><a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>" href="proforma.php">← All Proformas</a><a class="<?= $btnC ?>" style="<?= $btn ?>" target="_blank" href="proforma_print.php?id=<?= (int)$id ?>">Print / PDF</a><?php if ($id > 0): /* what this order needs, item by item — see demand.php */ ?><a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>" href="demand.php?proforma=<?= (int)$id ?>">Demand sheet</a><?php endif; ?></div></div>
     <form method="post" enctype="multipart/form-data" id="pfImport"><?= csrf_field() ?><input type="hidden" name="action" value="import_csv"><input type="hidden" name="id" value="<?= (int)$id ?>"></form>
     <?php /* the size guard runs on submit — see pfSizeGuard(). It only ever
              blocks; it never changes what is posted. */ ?>

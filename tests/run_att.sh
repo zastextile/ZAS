@@ -96,7 +96,7 @@ cd "$ROOT/tests"
 RC=0
 SUITES=("${@:-}")
 if [ -z "${SUITES[0]:-}" ]; then
-  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_m3_test.php zatt_m4_test.php zatt_api_test.php zatt_pwa_test.php zatt_admin_test.php zatt_m5_test.php zatt_m6_test.php zatt_m7_test.php zatt_m8_test.php zatt_autoout_test.php zatt_entries_test.php zatt_fin_test.php zatt_finweb_test.php zfix_test.php zlinelinks_test.php zatt_insights_test.php zatt_live_test.php zschema_once_test.php zpm_speed_test.php zatt_phonekey_test.php zops_search_test.php zpeople_sync_test.php zsession_lock_test.php)
+  SUITES=(zatt_m1_test.php zatt_m2_test.php zatt_m3_test.php zatt_m4_test.php zatt_api_test.php zatt_pwa_test.php zatt_admin_test.php zatt_m5_test.php zatt_m6_test.php zatt_m7_test.php zatt_m8_test.php zatt_autoout_test.php zatt_entries_test.php zatt_fin_test.php zatt_finweb_test.php zfix_test.php zlinelinks_test.php zatt_insights_test.php zatt_live_test.php zschema_once_test.php zpm_speed_test.php zatt_phonekey_test.php zops_search_test.php zpeople_sync_test.php zsession_lock_test.php zdemand_test.php)
 fi
 
 for t in "${SUITES[@]}"; do
