@@ -400,6 +400,9 @@ final class ReportService
             ? ", (SELECT l.actual_minutes FROM att_ot_request_employees l WHERE l.employee_id = si.employee_id AND l.work_date = si.work_date AND l.approval_status = 'approved' LIMIT 1) AS ot_actual_minutes,
                  (SELECT l.approved_minutes FROM att_ot_request_employees l WHERE l.employee_id = si.employee_id AND l.work_date = si.work_date AND l.approval_status = 'approved' LIMIT 1) AS ot_approved_minutes"
             : ', NULL AS ot_actual_minutes, NULL AS ot_approved_minutes';
+        /* how the person is paid, so the screens can count staff (fixed salary,
+           daily wages) apart from contractors, who are paid by production */
+        $ot .= Db::tableExists('att_fin_profiles') ? ', (SELECT f.pay_type FROM att_fin_profiles f WHERE f.employee_id = e.id) AS pay_type' : ', NULL AS pay_type';
         $rows = Db::all(
             "SELECT si.id AS shift_instance_id, si.work_date, si.starts_at, si.ends_at, si.source AS shift_source,
                     s.name AS shift_name, s.grace_in_minutes, s.grace_out_minutes,
