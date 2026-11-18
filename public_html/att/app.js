@@ -28,9 +28,12 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.6.0';
+  var APP_VERSION = '1.6.1';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 30 * 60 * 1000;   // until the server says otherwise (Settings: app_lock_minutes)
+  /* The PIN is the owner's choice (Settings: app_pin_required, off by default):
+     off, the phone signs in once with email and password and stays signed in. */
+  function pinOn() { return !!(S && S.policies && S.policies.pinOn); }
   function lockAfterMs() { var m = S && S.policies && +S.policies.lockMin; return m > 0 ? m * 60 * 1000 : LOCK_AFTER_MS; }
 
   var S = {
@@ -168,6 +171,7 @@
           S.policies.dup = r.body.policies.duplicate_window_seconds || 60;
           S.policies.warnMin = r.body.policies.sync_backlog_warn_minutes || 120;
           S.policies.lockMin = r.body.policies.app_lock_minutes || 30;
+          S.policies.pinOn = !!r.body.policies.app_pin_required;
         }
         return Promise.all([AttDB.setMeta('user', S.user), AttDB.setMeta('can', S.can), AttDB.setMeta('policies', S.policies)])
           .then(ensureDevice).then(getPhoneKey).then(function () { return true; });
@@ -1033,7 +1037,7 @@
         btn.disabled = false;
         if (problem) { err.textContent = problem; return; }
         if (!S.can.gate && !S.can.hod) { err.textContent = 'This login has no gate or HOD permission. Ask an admin.'; return; }
-        S.screen = S.pin ? 'main' : 'pinset'; S.tab = S.can.gate ? 'gate' : 'hod';
+        S.screen = (pinOn() && !S.pin) ? 'pinset' : 'main'; S.tab = S.can.gate ? 'gate' : 'hod';
         render(); if (S.screen === 'main') afterUnlock();
       });
     } } });
@@ -1183,7 +1187,7 @@
       body.appendChild(el('div', { class: 'card', id: 'queueinfo' }));
       body.appendChild(el('div', { class: 'row' }, [
         el('button', { class: 'btn primary', id: 'btn-send', text: 'Send now', on: { click: function () { syncNow().then(refreshLookups).then(function () { refreshLists(); paintStatus(); }); } } }),
-        el('button', { class: 'btn', id: 'btn-lock', text: 'Lock', on: { click: function () { S.screen = 'locked'; render(); } } }),
+        pinOn() && S.pin ? el('button', { class: 'btn', id: 'btn-lock', text: 'Lock', on: { click: function () { S.screen = 'locked'; render(); } } }) : null,
         el('button', { class: 'btn', id: 'btn-out2', text: 'Sign out', on: { click: signOut } })
       ]));
       function sw(id, label, key) {
@@ -1382,10 +1386,11 @@
     }).then(refreshSession).then(function () {
       if (!S.user) { S.screen = S.online ? 'login' : 'firstrun'; }
       else if (!S.can.gate && !S.can.hod) { S.screen = 'login'; }
+      else if (!pinOn()) { S.screen = 'main'; }
       else if (!S.pin) { S.screen = 'pinset'; }
       else { S.screen = 'locked'; }
       S.tab = S.can.gate ? 'gate' : 'hod';
-      render();
+      render(); if (S.screen === 'main') afterUnlock();
     }).catch(function (e) {
       root.textContent = '';
       root.appendChild(el('div', { class: 'card' }, [
@@ -1398,7 +1403,7 @@
     window.addEventListener('offline', function () { S.online = false; paintStatus(); });
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { S.hiddenAt = Date.now(); return; }
-      if (S.screen === 'main' && S.pin && S.hiddenAt && Date.now() - S.hiddenAt > lockAfterMs()) { S.screen = 'locked'; render(); return; }
+      if (S.screen === 'main' && pinOn() && S.pin && S.hiddenAt && Date.now() - S.hiddenAt > lockAfterMs()) { S.screen = 'locked'; render(); return; }
       if (S.screen === 'main') afterUnlock();
     });
     setInterval(function () {

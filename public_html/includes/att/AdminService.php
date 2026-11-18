@@ -74,6 +74,8 @@ final class AdminService
             'help' => 'Used when an employee reaches the gate on a day nobody gave them a shift. They are let in and this shift is attached, marked as filled in by the system.'],
         'auto_shift_on_gate_in'     => ['type' => 'bool',  'label' => 'Let in an employee who has no shift for the day',
             'help' => 'On: they are admitted on the default shift. Off: the scan is held for HR instead.'],
+        'app_pin_required'          => ['type' => 'bool', 'label' => 'Gate and HOD phones: ask for a PIN',
+            'help' => 'No: one sign-in with email and password, and the phone stays signed in. Yes: the phone also asks for its own 4–6 digit PIN when the app opens. A lost phone is stopped in Setup › Phones either way.'],
         'app_lock_minutes'          => ['type' => 'int', 'min' => 1, 'max' => 720, 'label' => 'Gate and HOD phones: ask for the PIN after the app was away for (minutes)',
             'help' => 'A phone whose screen slept or was used for something else for longer than this asks for its PIN again. The Lock button still locks at once.'],
         'phone_remember_days'       => ['type' => 'int', 'min' => 1, 'max' => 90, 'label' => 'Gate and HOD phones: stay signed in for (days)',

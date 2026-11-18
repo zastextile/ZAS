@@ -24,6 +24,7 @@ final class Policy
         'duplicate_window_seconds'  => '60',
         'default_shift_id'          => '',
         'auto_shift_on_gate_in'     => '1',
+        'app_pin_required'          => '0',
         'app_lock_minutes'          => '30',
         'phone_remember_days'       => '30',
         'hod_match_window_minutes'  => '240',

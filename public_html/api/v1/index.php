@@ -187,6 +187,7 @@ try {
                 'policies' => [
                     'duplicate_window_seconds'  => Policy::int('duplicate_window_seconds'),
                     'sync_backlog_warn_minutes' => Policy::int('sync_backlog_warn_minutes'),
+                    'app_pin_required'          => Policy::bool('app_pin_required', false),
                     'app_lock_minutes'          => Policy::int('app_lock_minutes', 30),
                 ],
             ]);

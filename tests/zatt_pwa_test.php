@@ -85,6 +85,8 @@ Employees::create(['code' => 'E003', 'full_name' => 'Bilal Toor', 'department_id
 Employees::create(['code' => 'P001', 'full_name' => 'Packing Person', 'department_id' => $dP]);
 $all = Shifts::create(['name' => 'All day', 'start_time' => '00:00', 'end_time' => '23:59', 'grace_out_minutes' => 2]);
 Policy::set('default_shift_id', (string) $all, null, 'string');
+/* the PIN checks below need the PIN on; section 5 checks the default (off) */
+Policy::set('app_pin_required', '1', null, 'bool');
 
 $port = 8721;
 $srv = proc_open(sprintf('exec php -S 127.0.0.1:%d -t %s', $port, escapeshellarg(rtrim($B, '/'))),
@@ -540,6 +542,46 @@ ok(Db::value('SELECT review_state FROM att_sync_receipts WHERE event_uuid = ?', 
 ok($n('SELECT COUNT(*) FROM att_devices WHERE revoked_at IS NOT NULL AND revoked_by = ?', [$hr]) === 1, 'one phone withdrawn, by HR');
 ok($n('SELECT COUNT(*) FROM att_corrections WHERE actor_id = ? AND CHAR_LENGTH(reason) > 10', [$hr]) === 3,
    'three decisions, three rows in att_corrections, each with its reason');
+
+/* ===================================================================== */
+echo "5. No PIN — the default: one sign-in, and the phone stays signed in\n";
+Policy::set('app_pin_required', '0', null, 'bool');
+file_put_contents($work . '/nopin.js', <<<'JS'
+const { chromium } = require('playwright');
+const BASE = process.argv[2];
+const out = [];
+const check = (name, pass, extra) => out.push({ name, pass: !!pass, extra: extra === undefined ? '' : String(extra) });
+(async () => {
+  const browser = await chromium.launch();
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+    const page = await ctx.newPage();
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    await page.goto(BASE + '/att/');
+    await page.waitForSelector('#email', { timeout: 20000 });
+    await page.fill('#email', 'both@zas.test');
+    await page.fill('#password', 'CorrectHorse9');
+    await page.click('#signin');
+    await page.waitForSelector('#status', { timeout: 20000 });
+    check('NO PIN: after email and password the gate screen opens at once — no PIN is asked', !(await page.isVisible('#pin')));
+    await page.reload();
+    await page.waitForSelector('#status', { timeout: 20000 });
+    check('NO PIN: reopening the app goes straight to work — no PIN, no email and password',
+      !(await page.isVisible('#pin')) && !(await page.isVisible('#email')));
+    await page.evaluate(() => { const e = new Event('visibilitychange'); Object.defineProperty(document, 'hidden', { value: false, configurable: true }); document.dispatchEvent(e); });
+    check('NO PIN: there is no Lock button to get stuck behind', (await page.locator('#btn-lock').count()) === 0);
+    check('no script error on the page', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  } catch (e) { check('the no-PIN run completed', false, e && e.message); }
+  finally { await browser.close(); }
+  console.log('RESULT' + JSON.stringify(out));
+})();
+JS);
+$raw = (string) shell_exec('cd ' . escapeshellarg($work) . ' && timeout 120 node nopin.js ' . escapeshellarg("http://127.0.0.1:$port") . ' 2>&1');
+$results = [];
+if (preg_match('/RESULT(\[.*\])\s*$/s', $raw, $m)) { $results = json_decode($m[1], true) ?: []; }
+ok(count($results) >= 4, 'the no-PIN run reported its checks (' . count($results) . ')' . (count($results) ? '' : "\n$raw"));
+foreach ($results as $r) { ok($r['pass'], $r['name'] . ($r['pass'] ? '' : ' — ' . $r['extra'])); }
 
 echo "\n$P passed, $F failed\n";
 exit($F === 0 ? 0 : 1);
