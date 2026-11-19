@@ -3,11 +3,13 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
 if (is_production_staff()) { http_response_code(403); exit('Production Staff cannot access shipments.'); }
 
-$q  = trim($_GET['q'] ?? '');
-$st = trim($_GET['status'] ?? '');
-$params = [];
-$where = [];
-
+/* THE SHIPMENTS LIST, FIORI STYLE (owner, 19 Nov 2026).
+   ONE read of the shipments this user may see, plus one grouped read of the
+   payments; everything else — KPI cards, status tabs, buyer / country /
+   currency, dates, sorting, totals and the Excel file — runs in the browser
+   (assets/js/zflist.js). Typing in the search asks the server nothing. */
+require_once __DIR__ . '/includes/export.php';
+$where = []; $params = [];
 if (!is_admin()) {
     $ids = assigned_shipment_ids();
     if ($ids === ['ALL']) {
@@ -18,101 +20,91 @@ if (!is_admin()) {
         $params = array_merge($params, $ids);
     }
 }
-if ($q !== '') {
-    $where[] = "(s.invoice_no LIKE ? OR s.buyer_name LIKE ? OR s.buyer_country LIKE ? OR s.destination_port LIKE ?)";
-    $like = "%{$q}%"; array_push($params, $like, $like, $like, $like);
-}
-if (in_array($st, ['draft','submitted','approved_locked'], true)) {
-    $where[] = "s.status = ?"; $params[] = $st;
-}
-
-$sql = "SELECT s.* FROM shipments s";
-if ($where) $sql .= " WHERE " . implode(' AND ', $where);
-$sql .= " ORDER BY s.id DESC LIMIT 200";
-$stmt = db()->prepare($sql);
+$money = can_see_rates();
+$payOk = $money && function_exists('exp_can') && exp_can('payments');
+$stmt = db()->prepare("SELECT s.id, s.invoice_no, s.invoice_date, s.buyer_name, s.buyer_country, s.destination_port, s.currency,
+                              s.total_amount, s.total_qty, s.status, s.reopen_status
+                         FROM shipments s" . ($where ? " WHERE " . implode(' AND ', $where) : '') . " ORDER BY s.id DESC LIMIT 3000");
 $stmt->execute($params);
-$rows = $stmt->fetchAll();
-
-function ship_badge($status) {
-    $map = [
-        'draft'           => ['Draft','rgba(47,127,224,.16)','#2f7fe0','rgba(47,127,224,.3)'],
-        'submitted'       => ['Submitted','rgba(217,119,6,.16)','#d97706','rgba(217,119,6,.3)'],
-        'approved_locked' => ['Approved & Locked','rgba(22,163,74,.16)','#16a34a','rgba(22,163,74,.3)'],
-    ];
-    $x = $map[$status] ?? [ucfirst((string)$status),'#e3e9f2','#33415c','#cbd5e3'];
-    return 'padding:5px 11px;border-radius:20px;font-size:12px;font-weight:600;white-space:nowrap;background:'.$x[1].';color:'.$x[2].';border:1px solid '.$x[3];
+$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$paid = [];
+if ($payOk) {
+    try { foreach (db()->query("SELECT shipment_id, SUM(amount) a FROM shipment_payments WHERE is_void=0 GROUP BY shipment_id")->fetchAll() as $r) $paid[(int)$r['shipment_id']] = (float)$r['a']; }
+    catch (Throwable $e) { $paid = []; }
 }
-$cardCss = 'padding:22px;border-radius:18px;background:#ffffff;border:1px solid #e3e9f2;backdrop-filter:blur(12px)';
-$tabs = [''=>'All','draft'=>'Draft','submitted'=>'Submitted','approved_locked'=>'Approved & Locked'];
+$L = array_map(function ($r) use ($money, $payOk, $paid) {
+    $o = ['id' => (int)$r['id'], 'no' => (string)$r['invoice_no'], 'date' => (string)($r['invoice_date'] ?? ''), 'buyer' => (string)$r['buyer_name'],
+          'country' => trim((string)$r['buyer_country']), 'port' => (string)$r['destination_port'], 'qty' => (float)$r['total_qty'],
+          'status' => (string)$r['status'], 'reopen' => ($r['reopen_status'] ?? '') === 'reopened_for_correction' ? 1 : 0];
+    if ($money) { $o['cur'] = (string)$r['currency']; $o['amt'] = (float)$r['total_amount']; }
+    if ($payOk) { $o['rec'] = $paid[(int)$r['id']] ?? 0.0; $o['bal'] = round($o['amt'] - $o['rec'], 2); }
+    return $o;
+}, $rows);
 
 page_header('Shipments');
 flash();
+$J = fn($v) => json_encode($v, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 ?>
-<style>
-.sh-tab{padding:7px 15px;border-radius:20px;border:1px solid #cbd5e3;background:#f6f8fc;color:#33415c;cursor:pointer;font-size:12.5px;text-decoration:none;white-space:nowrap;transition:.15s}
-.sh-tab:hover{border-color:rgba(14,168,201,.4);background:rgba(14,168,201,.1)}
-.sh-tab.on{background:linear-gradient(100deg,#0ea8c9,#6d5bd0);color:#fff;font-weight:700;border-color:transparent}
-.sh-bar input{flex:1;border:none;background:transparent;color:#152033;font-size:14px;outline:none;padding:8px 12px}
-</style>
-
-<div class="topbar">
-  <div><h1>Shipments</h1><p class="lead">Search &amp; manage commercial invoice and packing records.</p></div>
-  <?php if (!is_staff()): ?><a class="btn green" href="shipment_form.php">+ New Shipment</a><?php endif; ?>
-</div>
-
-<div style="<?= $cardCss ?>;margin-bottom:18px">
-  <form method="get" style="display:flex;gap:10px;padding:8px;border-radius:14px;background:#ffffff;border:1px solid #e3e9f2;margin-bottom:16px" class="sh-bar">
-    <?php if($st!==''): ?><input type="hidden" name="status" value="<?= e($st) ?>"><?php endif; ?>
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8a97ab" stroke-width="2" style="align-self:center;margin-left:8px"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
-    <input name="q" value="<?= e($q) ?>" placeholder="Search invoice, buyer, country, destination…" autocomplete="off">
-    <button class="btn green" style="padding:10px 20px">Search</button>
-  </form>
-  <div style="display:flex;flex-wrap:wrap;gap:8px">
-    <?php foreach($tabs as $k=>$label):
-      $href = 'shipments.php?status='.urlencode($k).($q!==''?'&q='.urlencode($q):''); ?>
-      <a class="sh-tab <?= $st===$k?'on':'' ?>" href="<?= e($href) ?>"><?= e($label) ?></a>
-    <?php endforeach; ?>
+<link rel="stylesheet" href="assets/css/zf.css?v=4">
+<script src="assets/js/zflist.js?v=3"></script>
+<div class="zf">
+  <div class="zf-hd">
+    <div><h1>Shipments</h1><div class="zf-sub">Commercial invoices and packing — click a card or a tab to narrow the list, a row to open it.</div></div>
+    <?php if (!is_staff()): ?><a class="zf-btn pri" href="shipment_form.php">+ New Shipment</a><?php endif; ?>
   </div>
+  <div id="shList"></div>
 </div>
-
-<div style="<?= $cardCss ?>">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-    <h2 style="font-size:15px;margin:0">Records</h2>
-    <span style="color:#8a97ab;font-size:12px"><?= count($rows) ?> shown · click a row to open</span>
-  </div>
-  <div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px">
-      <thead><tr style="text-align:left;color:#8a97ab;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em">
-        <th style="padding:8px 10px">Invoice</th><th style="padding:8px 10px">Date</th><th style="padding:8px 10px">Buyer</th><th style="padding:8px 10px">Country</th><th style="padding:8px 10px">Destination</th>
-        <?php if(can_see_rates()): ?><th style="padding:8px 10px;text-align:right">Amount</th><?php endif; ?>
-        <th style="padding:8px 10px">Status</th>
-        <?php if(is_admin()): ?><th style="padding:8px 10px"></th><?php endif; ?>
-        </tr></thead>
-      <tbody>
-      <?php if($rows): foreach ($rows as $r): ?>
-        <tr onclick="location.href='shipment_view.php?id=<?= (int)$r['id'] ?>'" style="cursor:pointer;border-top:1px solid #f6f8fc" onmouseover="this.style.background='#f6f8fc'" onmouseout="this.style.background='transparent'">
-          <td style="padding:12px 10px;font-weight:600;color:#0ea8c9"><?= e($r['invoice_no']) ?></td>
-          <td style="padding:12px 10px;color:#5a6b82"><?= e($r['invoice_date']) ?></td>
-          <td style="padding:12px 10px"><?= e($r['buyer_name']) ?></td>
-          <td style="padding:12px 10px;color:#5a6b82"><?= e($r['buyer_country']) ?></td>
-          <td style="padding:12px 10px;color:#5a6b82"><?= e($r['destination_port']) ?></td>
-          <?php if(can_see_rates()): ?><td style="padding:12px 10px;text-align:right;font-family:'Space Grotesk',system-ui,sans-serif;font-weight:600"><?= e(money_fmt($r['total_amount'], $r['currency'])) ?></td><?php endif; ?>
-          <td style="padding:12px 10px"><span style="<?= ship_badge($r['status']) ?>"><?= e(ucwords(str_replace('_',' ',$r['status']))) ?></span></td>
-          <?php if(is_admin()): ?>
-          <td style="padding:12px 10px" onclick="event.stopPropagation()">
-            <?php if($r['status']==='draft'): ?>
-            <button type="button" onclick="showDeleteModal(<?= (int)$r['id'] ?>,'<?= e(addslashes($r['invoice_no'])) ?>')" style="padding:6px 11px;border-radius:8px;border:1px solid rgba(224,67,93,.3);background:rgba(224,67,93,.1);color:#b8283f;font-size:11.5px;font-weight:600;cursor:pointer">Delete</button>
-            <?php endif; ?>
-          </td>
-          <?php endif; ?>
-        </tr>
-      <?php endforeach; else: ?>
-        <tr><td colspan="8" style="padding:30px;text-align:center;color:#8a97ab">No shipments match your filters.</td></tr>
-      <?php endif; ?>
-      </tbody>
-    </table>
-  </div>
-</div>
+<script>
+(function(){
+  var R = <?= $J($L) ?>, MONEY = <?= $money ? 'true' : 'false' ?>, PAY = <?= $payOk ? 'true' : 'false' ?>, ADMIN = <?= is_admin() ? 'true' : 'false' ?>;
+  var Z = window.ZF, esc = Z.esc, month = new Date().toISOString().slice(0, 7);
+  var ST = { draft: ['Draft', 'p-draft'], submitted: ['Submitted', 'p-sub'], approved_locked: ['Approved & locked', 'p-ok'] };
+  /* money is owed once the invoice is approved (or something was already received) — a draft is not "unpaid" */
+  function due(r){ return r.amt > 0 && (r.status === 'approved_locked' || r.rec > 0.004); }
+  function pay(r){ if (!PAY || !due(r)) return ''; return r.rec <= 0.004 ? '<span class="zf-pill p-red">Unpaid</span>' : (r.bal > 0.004 ? '<span class="zf-pill p-sub">Part paid</span>' : '<span class="zf-pill p-ok">Paid</span>'); }
+  var kpis = [];
+  if (MONEY) kpis.push({ id: 'month', label: 'This month', cls: 'k-blue', test: function(r){ return r.date.slice(0, 7) === month; },
+    value: function(rows){ var m = rows.filter(function(r){ return r.date.slice(0, 7) === month; }); return [Z.curText(Z.byCur(m, 'cur', 'amt'), true), m.length + ' invoice' + (m.length === 1 ? '' : 's') + ' dated this month']; } });
+  kpis.push({ id: 'draft', label: 'Drafts', cls: 'k-grey', test: function(r){ return r.status === 'draft'; }, value: function(rows){ var n = rows.filter(function(r){ return r.status === 'draft'; }).length; return [String(n), 'not submitted yet']; } });
+  kpis.push({ id: 'sub', label: 'Waiting for approval', cls: 'k-amber', test: function(r){ return r.status === 'submitted'; }, value: function(rows){ var n = rows.filter(function(r){ return r.status === 'submitted'; }).length; return [String(n), n ? 'Admin to approve & lock' : 'nothing waiting']; } });
+  kpis.push({ id: 'reopen', label: 'Reopened for correction', cls: 'k-amber', test: function(r){ return r.reopen; }, value: function(rows){ var n = rows.filter(function(r){ return r.reopen; }).length; return [String(n), n ? 'colleague to correct' : 'none']; } });
+  if (PAY) kpis.push({ id: 'open', label: 'Still to receive', cls: 'k-red', test: function(r){ return due(r) && r.bal > 0.004; },
+    value: function(rows){ var o = rows.filter(function(r){ return due(r) && r.bal > 0.004; }); return [Z.curText(Z.byCur(o, 'cur', 'bal'), true), o.length + ' invoice' + (o.length === 1 ? '' : 's') + ' not fully paid']; } });
+  var cols = [
+    { k: 'no', label: 'Invoice', sort: function(r){ return r.id; }, html: function(r){ return '<a class="lk" href="shipment_view.php?id=' + r.id + '">' + esc(r.no) + '</a>' + (r.reopen ? '<div class="s2" style="color:#9a5710">reopened</div>' : ''); } },
+    { k: 'date', label: 'Date', sort: function(r){ return r.date; }, html: function(r){ return '<span style="white-space:nowrap">' + esc(Z.nice(r.date)) + '</span>'; } },
+    { k: 'buyer', label: 'Buyer', sort: function(r){ return r.buyer.toLowerCase(); }, html: function(r){ return '<span class="nw" title="' + esc(r.buyer) + '">' + esc(r.buyer) + '</span>' + (r.country ? '<div class="s2">' + esc(r.country) + '</div>' : ''); } },
+    { k: 'port', label: 'Destination', sort: function(r){ return r.port.toLowerCase(); }, html: function(r){ return esc(r.port || ''); } },
+    { k: 'qty', label: 'Qty', num: 1, sort: function(r){ return r.qty; }, html: function(r){ return r.qty ? Z.n0(r.qty) : '<span style="color:#9aa8b6">—</span>'; } }
+  ];
+  if (MONEY) cols.push({ k: 'amt', label: 'Amount', num: 1, sort: function(r){ return r.amt; }, html: function(r){ return '<b style="font-weight:600">' + esc(r.cur) + ' ' + Z.n2(r.amt) + '</b>'; } });
+  if (PAY) cols.push({ k: 'bal', label: 'Balance', num: 1, sort: function(r){ return r.bal; }, html: function(r){ return due(r) ? (r.bal > 0.004 ? '<span style="color:#b42318">' + esc(r.cur) + ' ' + Z.n2(r.bal) + '</span>' : '<span style="color:#256f3a">0.00</span>') : ''; } });
+  cols.push({ k: 'status', label: 'Status', sort: function(r){ return r.status; }, html: function(r){ var s = ST[r.status] || [r.status, 'p-grey']; return '<span class="zf-pill ' + s[1] + '">' + esc(s[0]) + '</span> ' + pay(r); } });
+  if (ADMIN) cols.push({ k: 'x', label: '', html: function(r){ return r.status === 'draft' ? '<button type="button" class="zf-btn sm danger" data-del="' + r.id + '" data-no="' + esc(r.no) + '">Delete</button>' : ''; } });
+  var csv = [['Invoice', function(r){ return r.no; }], ['Date', function(r){ return r.date; }], ['Buyer', function(r){ return r.buyer; }], ['Country', function(r){ return r.country; }], ['Destination', function(r){ return r.port; }], ['Qty', function(r){ return r.qty; }]];
+  if (MONEY) csv.push(['Currency', function(r){ return r.cur; }], ['Amount', function(r){ return r.amt.toFixed(2); }]);
+  if (PAY) csv.push(['Received', function(r){ return r.rec.toFixed(2); }], ['Balance', function(r){ return r.bal.toFixed(2); }]);
+  csv.push(['Status', function(r){ return (ST[r.status] || [r.status])[0]; }]);
+  ZFList({
+    root: 'shList', rows: R, cols: cols, kpis: kpis, dateKey: 'date', sort: 'no', dir: -1, csv: csv, csvName: 'shipments', empty: 'No shipments yet.',
+    searchHint: 'Search invoice, buyer, country, port…',
+    hay: function(r){ return r.no + ' ' + r.buyer + ' ' + r.country + ' ' + r.port + ' ' + (r.cur || ''); },
+    href: function(r){ return 'shipment_view.php?id=' + r.id; },
+    segs: [['', 'All'], ['draft', 'Draft', function(r){ return r.status === 'draft'; }], ['submitted', 'Submitted', function(r){ return r.status === 'submitted'; }], ['approved_locked', 'Approved & locked', function(r){ return r.status === 'approved_locked'; }]],
+    selects: [{ k: 'buyer', label: 'Buyer' }, { k: 'country', label: 'Country' }].concat(MONEY ? [{ k: 'cur', label: 'Currency' }] : []),
+    foot: function(rows){
+      return cols.map(function(c){
+        if (c.k === 'no') return '<td>Total · ' + rows.length + '</td>';
+        if (c.k === 'qty') return '<td class="n">' + Z.n0(rows.reduce(function(t, r){ return t + r.qty; }, 0)) + '</td>';
+        if (c.k === 'amt') return '<td class="n">' + Z.curLines(Z.byCur(rows, 'cur', 'amt')) + '</td>';
+        if (c.k === 'bal') return '<td class="n" style="color:#b42318">' + Z.curLines(Z.byCur(rows.filter(due), 'cur', 'bal')) + '</td>';
+        return '<td></td>';
+      }).join('');
+    }
+  });
+  document.addEventListener('click', function(e){ var d = e.target.closest('[data-del]'); if (d && window.showDeleteModal) showDeleteModal(+d.getAttribute('data-del'), d.getAttribute('data-no')); });
+})();
+</script>
 
 <?php if (is_admin()): ?>
 <div id="deleteModal" style="display:none;position:fixed;inset:0;background:rgba(10,15,30,.5);z-index:999;align-items:center;justify-content:center;padding:16px">

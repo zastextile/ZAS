@@ -193,24 +193,27 @@ if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'id
 ?>
 <script src="assets/js/grid.js?v=2"></script>
 
-<div class="topbar">
-  <div><h1>Shipment <?= e($shipment['invoice_no']) ?></h1><p class="lead"><?= e($shipment['buyer_name']) ?> · <?= e($shipment['buyer_country']) ?> · <?= e($shipment['destination_port']) ?></p></div>
-  <?php if (is_admin() && $shipment['status'] === 'draft'): ?>
-  <button type="button" class="zbtn red" onclick="showDeleteModal()">Delete Shipment</button>
-  <?php endif; ?>
-</div>
-
-<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:18px">
-  <?= sv_badge($shipment['status']) ?>
-  <?php if($reopenedForCorrection): ?><span style="padding:5px 11px;border-radius:20px;font-size:12px;font-weight:600;background:rgba(217,119,6,.16);color:#d97706;border:1px solid rgba(217,119,6,.3)">Reopened for Correction</span><?php endif; ?>
-  <span style="padding:5px 11px;border-radius:20px;font-size:12px;font-weight:600;background:rgba(47,127,224,.16);color:#2f7fe0;border:1px solid rgba(47,127,224,.3)">Rev <?= e($shipment['revision_no']) ?></span>
-</div>
-
-<div class="zkpi">
-  <?php if($showRates): ?><div class="c"><div class="lab">Invoice Value</div><div class="val" style="color:#0ea8c9"><?= e(money_fmt($shipment['total_amount'], $shipment['currency'])) ?></div></div><?php endif; ?>
-  <div class="c"><div class="lab">Total Qty</div><div class="val"><?= e(num_fmt($shipment['total_qty'],0)) ?></div></div>
-  <div class="c"><div class="lab">Packages</div><div class="val"><?= e(num_fmt($shipment['total_packages'],0)) ?></div></div>
-  <div class="c"><div class="lab">Gross Weight</div><div class="val"><?= e(num_fmt($shipment['total_gross_weight'],3)) ?> kg</div></div>
+<?php /* ONE HEADER (owner, 19 Nov 2026). The tab strip above already says
+         which shipment, whose, and its status; the second title and the
+         badge row that repeated it are gone. What stays is a compact strip
+         of the four figures, with the revision and "reopened" beside them. */ ?>
+<link rel="stylesheet" href="assets/css/zf.css?v=4">
+<style>
+.svk{display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;margin:0 0 10px}
+.svk .c{background:#fff;border:1px solid #d9dee4;border-left:4px solid #1d2d3e;border-radius:4px;padding:6px 12px;min-width:150px}
+.svk .c span{display:block;font-size:11.5px;color:#556b82;font-weight:600}
+.svk .c b{display:block;font-size:17px;font-weight:600;color:#1d2d3e;font-variant-numeric:tabular-nums;white-space:nowrap}
+.svk .c.v{border-left-color:#0a6ed1}.svk .c.v b{color:#0a6ed1}
+.svk .meta{display:flex;gap:6px;align-items:center;margin-left:auto;flex-wrap:wrap}
+.svk .meta i{font-style:normal;font-size:11px;font-weight:600;padding:2px 8px;border-radius:3px;border:1px solid #c3dbf5;background:#eef5fd;color:#0a6ed1}
+.svk .meta i.o{border-color:#f0d3a8;background:#fff7ec;color:#9a5710}
+</style>
+<div class="svk">
+  <?php if($showRates): ?><div class="c v"><span>Invoice value</span><b><?= e(money_fmt($shipment['total_amount'], $shipment['currency'])) ?></b></div><?php endif; ?>
+  <div class="c"><span>Total qty</span><b><?= e(num_fmt($shipment['total_qty'],0)) ?></b></div>
+  <div class="c"><span>Packages</span><b><?= e(num_fmt($shipment['total_packages'],0)) ?></b></div>
+  <div class="c"><span>Gross weight</span><b><?= e(num_fmt($shipment['total_gross_weight'],3)) ?> kg</b></div>
+  <div class="meta"><i>Rev <?= e($shipment['revision_no']) ?></i><?php if($reopenedForCorrection): ?><i class="o">Reopened for correction</i><?php endif; ?></div>
 </div>
 
 <form method="post" action="shipment_save.php" onsubmit="return confirmLockedEdit()">
@@ -229,9 +232,9 @@ if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'id
 <div class="zalert err">This shipment is submitted for approval. You can edit only after Admin clicks Reopen for Correction.</div>
 <?php endif; ?>
 
-<?php if(is_admin() && $shipment['status'] !== 'draft'): ?>
-<div class="zcard">
-  <div class="zhead"><h2>Reopen for Colleague Correction</h2></div>
+<?php if(is_admin() && $shipment['status'] !== 'draft'): /* opened from the action bar — "Reopen for correction" */ ?>
+<div class="zcard" id="reopenCard" hidden>
+  <div class="zhead"><h2>Reopen for Colleague Correction</h2><button type="button" class="zbtn sec" style="padding:5px 10px" onclick="document.getElementById('reopenCard').hidden=true">Close</button></div>
   <div class="znote">Opening/viewing this shipment does not allow colleague editing. Use this only when you want the assigned colleague to correct the record.</div>
   <label class="zlabel" style="margin-top:12px;display:block">Reopen Reason *<textarea class="zin" name="reopen_reason" style="min-height:60px" placeholder="Example: Buyer requested correction in Line 2 quantity."></textarea></label>
   <button class="zbtn org" style="margin-top:12px" formaction="reopen_shipment.php" formmethod="post" onclick="return confirm('Reopen this shipment for colleague correction?')">Reopen for Correction</button>
@@ -354,67 +357,76 @@ if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'id
   </div>
 
   <?php if($showRates): ?>
-  <div class="zhead" style="margin-top:22px"><h2>Charges / Adjustments</h2><?php if($editInvoice): ?><button type="button" class="zbtn sec" onclick="addChargeRow()">+ Add Charge</button><?php endif; ?></div>
+  <?php /* CHARGES, COMPACT (owner, 19 Nov 2026): a narrow table on the right,
+           under the amounts it adds to, the final value in bold. Same rows,
+           same names, same recalcInvoice(). */ ?>
+  <div style="display:flex;justify-content:flex-end;margin-top:12px">
+  <div style="width:min(560px,100%)">
+  <div class="zhead" style="margin-bottom:6px"><h2 style="font-size:13.5px">Charges / adjustments</h2><?php if($editInvoice): ?><button type="button" class="zbtn sec" style="padding:5px 10px;font-size:12px" onclick="addChargeRow()">+ Add charge</button><?php endif; ?></div>
   <div style="overflow-x:auto">
-    <table class="ztable" style="min-width:500px">
+    <table class="ztable sv-ch" style="min-width:0">
       <thead><tr><th>Charge Name</th><th class="num">Amount</th><th style="width:36px"></th></tr></thead>
       <tbody id="chargeRows">
         <?php for($c=0;$c<max(1,count($charges));$c++): $ch=$charges[$c]??['charge_name'=>'','amount'=>'0']; ?>
         <tr class="charge-row"><td><input class="zin" name="charge_name[]" value="<?= e($ch['charge_name']) ?>" <?= $ro ?>></td><td><input class="zin num charge-amount" name="charge_amount[]" value="<?= e(trim_num($ch['amount'], 2)) ?>" oninput="recalcInvoice()" <?= $ro ?>></td><td><?php if($editInvoice): ?><button type="button" class="zbtn red" onclick="this.closest('tr').remove();recalcInvoice()">✕</button><?php endif; ?></td></tr>
         <?php endfor; ?>
-        <tr class="total-row"><td>Final Invoice Value</td><td class="num" id="finalValue" style="color:#0ea8c9">0.00</td><td></td></tr>
+        <tr class="total-row"><td style="font-size:13.5px">Final invoice value <span class="curtag" style="color:#556b82;font-weight:600"><?= e((string)$shipment['currency']) ?></span></td><td class="num" id="finalValue" style="color:#0a6ed1;font-size:15px">0.00</td><td></td></tr>
       </tbody>
     </table>
   </div>
+  </div></div>
   <?php endif; ?>
 </div>
 
-<div class="zcard">
-  <div class="zhead"><h2>Packing List</h2><a class="zbtn sec" href="packing_list.php?id=<?= e($id) ?>">Open Packing List →</a></div>
-  <div class="znote">Packing list is controlled separately. Staff can only select invoice items already created above; they cannot type new product names.</div>
-</div>
-
-<div class="zcard" style="display:flex;flex-wrap:wrap;gap:10px">
+<?php /* ONE ACTION BAR (owner, 19 Nov 2026), fixed to the bottom of the
+         screen so Save is always in reach. The first three are the work;
+         everything that prints sits in Print, everything else in More. The
+         same buttons with the same names and targets as before — only
+         grouped. The Packing List card that held one note is now a link. */
+$canCustomsPrint = [];
+if (expdoc_can_view()) foreach (EXPDOC_VIEWS as $vk => $vn) { $vc = expdoc_check($id, $vk); if ($vc['can_print']) $canCustomsPrint[$vk] = $vn; }
+?>
+<style>
+.svbar{position:sticky;bottom:0;z-index:30;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 12px;margin:10px 0 0;
+  background:rgba(255,255,255,.97);border:1px solid #d9dee4;border-radius:6px;box-shadow:0 -4px 16px rgba(16,32,56,.08)}
+.svbar .grow{flex:1}
+.svbar .st{font-size:12px;color:#556b82}
+</style>
+<div class="zf svbar">
   <?php if($editInvoice): ?>
-    <button class="zbtn" name="save_only" value="1">Save Shipment</button>
-    <?php if(!$locked): ?><button class="zbtn org" name="save_and_submit" value="1" onclick="return confirm('Save and submit for Admin approval?')">Save &amp; Submit for Approval</button><?php endif; ?>
+    <button class="zf-btn pri" name="save_only" value="1">Save</button>
+    <?php if(!$locked): ?><button class="zf-btn warn" name="save_and_submit" value="1" onclick="return confirm('Save and submit for Admin approval?')">Save &amp; submit for approval</button><?php endif; ?>
   <?php endif; ?>
-  <?php if(is_admin() && !$locked): ?><button type="submit" class="zbtn org" formaction="approve.php" formmethod="post" onclick="return confirm('Approve and lock this record?')">Approve &amp; Lock</button><?php endif; ?>
-  <?php if(is_admin() && $locked): ?><button type="submit" class="zbtn sec" formaction="embed.php" formmethod="post" onclick="return confirm('Create / regenerate the AI embedding for this shipment? This uses OpenAI tokens.')">Create / Regenerate Embedding</button>
-  <?php elseif(is_admin()): ?><span class="zbtn sec off" title="Approve and lock before embedding">Embedding After Lock Only</span><?php endif; ?>
-  <?php if(!is_staff() && can_see_rates()): ?><a class="zbtn sec" target="_blank" href="invoice_print.php?id=<?= e($id) ?>">Print Commercial Invoice</a><?php endif; ?>
-  <?php if(!is_staff()): ?><a class="zbtn sec" target="_blank" href="invoice_print_norate.php?id=<?= e($id) ?>">Print Items (No Rate)</a><?php endif; ?>
-  <?php if(!is_staff()): ?><a class="zbtn sec" target="_blank" href="packing_print.php?id=<?= e($id) ?>">Print Packing List</a><?php endif; ?>
-  <?php if(is_admin()): ?><a class="zbtn sec" href="assign.php?id=<?= e($id) ?>">Assign Users</a><?php endif; ?>
-  <?php
-  /* The other two invoices. Shown only once they have lines, so the row does
-     not fill up with buttons that lead to an empty document. The CUSTOMS tab
-     is where they are built. */
-  if (expdoc_can_view()):
-      foreach (EXPDOC_VIEWS as $vk => $vn):
-          $vc = expdoc_check($id, $vk);
-          if (!$vc['can_print']) continue; ?>
-    <a class="zbtn sec" target="_blank" href="customs_print.php?id=<?= e($id) ?>&view=<?= e($vk) ?>&doc=invoice"><?= e($vn) ?> Invoice</a>
-  <?php endforeach; endif; ?>
-  <a class="zbtn sec" href="audit.php?id=<?= e($id) ?>">Audit Log</a>
-  <?php if(is_admin()): ?><button type="button" class="zbtn" style="background:linear-gradient(100deg,#6d5bd0,#0ea8c9)" onclick="runAICheck()">AI Check</button><?php endif; ?>
-  <?php if(is_admin()): ?><a class="zbtn sec" target="_blank" href="costing_report_print.php?id=<?= e($id) ?>">View Costing Report</a><?php endif; ?>
-  <?php if(is_admin()): ?><a class="zbtn sec" href="final_costing.php?shipment_id=<?= e($id) ?>">Final Costing</a><?php endif; ?>
-  <?php
-  /* ONE DOOR FOR DOCUMENTS.
-     This used to go to upload_file.php, which still works and still serves
-     every file already attached. But a shipment with two upload buttons —
-     one with document types and versions, one without — is two places to
-     look and two places to forget. So the button goes to the Documents tab
-     for anyone who has it, and the old files are listed there as read-only
-     legacy rows alongside the versioned ones. Nobody who only has the old
-     permission loses their button. */
-  if (exp_can('documents')): ?>
-    <a class="zbtn sec" href="shipment_documents.php?id=<?= e($id) ?>">Documents</a>
-  <?php else: ?>
-    <a class="zbtn sec" href="upload_file.php?id=<?= e($id) ?>">Files</a>
+  <?php if(is_admin() && !$locked): ?><button type="submit" class="zf-btn ok" formaction="approve.php" formmethod="post" onclick="return confirm('Approve and lock this record?')">Approve &amp; lock</button><?php endif; ?>
+  <?php if(is_admin() && $shipment['status'] !== 'draft'): ?><button type="button" class="zf-btn" onclick="var c=document.getElementById('reopenCard');c.hidden=false;c.scrollIntoView({behavior:'smooth',block:'center'});c.querySelector('textarea').focus()">Reopen for correction</button><?php endif; ?>
+  <span class="grow"></span>
+  <a class="zf-btn" href="packing_list.php?id=<?= e($id) ?>" title="Packing list is controlled separately; staff can only pick invoice items already made above">Packing list →</a>
+  <?php if(!is_staff()): ?>
+  <details class="zf-menu"><summary class="zf-btn">Print</summary><div class="zf-pop">
+    <?php if(can_see_rates()): ?><a target="_blank" href="invoice_print.php?id=<?= e($id) ?>">Commercial invoice</a><?php endif; ?>
+    <a target="_blank" href="invoice_print_norate.php?id=<?= e($id) ?>">Items (no rate)</a>
+    <a target="_blank" href="packing_print.php?id=<?= e($id) ?>">Packing list</a>
+    <?php foreach ($canCustomsPrint as $vk => $vn): ?><a target="_blank" href="customs_print.php?id=<?= e($id) ?>&view=<?= e($vk) ?>&doc=invoice"><?= e($vn) ?> invoice</a><?php endforeach; ?>
+    <?php if(is_admin()): ?><div class="sep"></div><a target="_blank" href="costing_report_print.php?id=<?= e($id) ?>">Costing report</a><?php endif; ?>
+  </div></details>
   <?php endif; ?>
+  <details class="zf-menu"><summary class="zf-btn">More</summary><div class="zf-pop">
+    <?php if (exp_can('documents')): ?><a href="shipment_documents.php?id=<?= e($id) ?>">Documents</a><?php else: ?><a href="upload_file.php?id=<?= e($id) ?>">Files</a><?php endif; ?>
+    <a href="audit.php?id=<?= e($id) ?>">Audit log</a>
+    <?php if(is_admin()): ?>
+      <a href="assign.php?id=<?= e($id) ?>">Assign users</a>
+      <a href="final_costing.php?shipment_id=<?= e($id) ?>">Final costing</a>
+      <button type="button" onclick="this.closest('details').open=false;runAICheck()">AI check</button>
+      <?php if($locked): ?><button type="submit" formaction="embed.php" formmethod="post" onclick="return confirm('Create / regenerate the AI embedding for this shipment? This uses OpenAI tokens.')">Create / regenerate embedding</button>
+      <?php else: ?><span class="dim" style="display:block;padding:7px 10px;font-size:12.5px" title="Approve and lock before embedding">Embedding — after lock only</span><?php endif; ?>
+      <?php if($shipment['status'] === 'draft'): ?><div class="sep"></div><button type="button" class="dz" onclick="this.closest('details').open=false;showDeleteModal()">Delete shipment</button><?php endif; ?>
+    <?php endif; ?>
+  </div></details>
 </div>
+<script>
+/* one menu open at a time; a click elsewhere closes it */
+document.addEventListener('click', function(e){ document.querySelectorAll('details.zf-menu[open]').forEach(function(d){ if (!d.contains(e.target)) d.open = false; }); });
+</script>
 </form>
 
 <?php if($files && !exp_can('documents')): /* shown in the Documents tab instead for anyone who has it */ ?>

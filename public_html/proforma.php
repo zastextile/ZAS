@@ -1315,56 +1315,97 @@ if ($id) {
     page_footer(); exit;
 }
 
-/* ---------- list ---------- */
-$rows=db()->query("SELECT pf.*, p.name pname FROM proforma_invoices pf LEFT JOIN products p ON p.id=pf.product_id ORDER BY pf.id DESC LIMIT 300")->fetchAll();
+/* ---------- list ----------
+   FIORI STYLE (owner, 19 Nov 2026): one read of the proformas and one grouped
+   read of their values; KPI cards, tabs, filters, sorting, totals, Excel and
+   "convert the ticked ones" all run in the browser (assets/js/zflist.js). */
+$rows = db()->query("SELECT pf.id, pf.pi_no, pf.pi_date, pf.customer_name, pf.currency, pf.status, pf.converted_shipment_id, pf.production_enabled, pf.production_status, p.name pname
+                       FROM proforma_invoices pf LEFT JOIN products p ON p.id=pf.product_id ORDER BY pf.id DESC LIMIT 3000")->fetchAll(PDO::FETCH_ASSOC);
+$pfVal = []; $pfQty = [];
+try { foreach (db()->query("SELECT proforma_id, SUM(qty*unit_price) v, SUM(qty) q FROM proforma_items GROUP BY proforma_id")->fetchAll() as $r) { $pfVal[(int)$r['proforma_id']] = (float)$r['v']; $pfQty[(int)$r['proforma_id']] = (float)$r['q']; } } catch (Throwable $e) {}
 $canConvertShipment = !is_staff() && can_see_rates();
+$pfMoney = can_see_rates();
+$PL = array_map(function ($r) use ($pfVal, $pfQty, $pfMoney) {
+    $o = ['id' => (int)$r['id'], 'no' => (string)$r['pi_no'], 'date' => (string)($r['pi_date'] ?? ''), 'cust' => (string)($r['customer_name'] ?? ''),
+          'prod' => (string)($r['pname'] ?? ''), 'cur' => (string)$r['currency'], 'status' => (string)($r['status'] ?: 'draft'),
+          'ship' => (int)($r['converted_shipment_id'] ?? 0), 'pe' => (int)($r['production_enabled'] ?? 0),
+          'ps' => ucwords(str_replace('_', ' ', (string)($r['production_status'] ?? 'not_started'))), 'qty' => $pfQty[(int)$r['id']] ?? 0.0];
+    if ($pfMoney) $o['val'] = $pfVal[(int)$r['id']] ?? 0.0;
+    return $o;
+}, $rows);
 page_header('Proforma Invoices'); flash();
+$J = fn($v) => json_encode($v, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 ?>
-<div class="zskin">
-<div class="topbar"><div><h1>Proforma Invoices</h1><p class="lead">Start blank for a quick quote, or convert one from Product Costing — customer-facing only.</p></div>
-  <?php if (costing_perm('proforma')): ?>
-  <form method="post" style="margin:0"><?= csrf_field() ?><input type="hidden" name="action" value="create_blank"><button class="<?= $btnC ?>" style="<?= $btn ?>">+ New Proforma</button></form>
-  <?php endif; ?>
-</div>
-<div class="<?= $cardC ?>" style="<?= $card ?>">
-  <?php if ($canConvertShipment): ?>
-  <div id="pfBulkBar" style="display:none;margin-bottom:12px;padding:12px 14px;border-radius:12px;background:#eef6ff;border:1px solid #cfe4fb;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-    <span style="font-size:12.5px;color:#0f4c81;font-weight:700"><span id="pfBulkCount">0</span> proforma(s) selected</span>
-    <div style="display:flex;gap:8px">
-      <button type="button" class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>;padding:8px 12px;font-size:12px" onclick="pfClearSelection()">Clear</button>
-      <button type="submit" form="pfConvertForm" class="<?= $btnC ?>" style="<?= $btn ?>;padding:8px 14px;font-size:12px" onclick="return confirm('Create one new shipment from the selected proforma invoice(s)?')">Convert Selected to Shipment</button>
-    </div>
+<link rel="stylesheet" href="assets/css/zf.css?v=4">
+<script src="assets/js/zflist.js?v=3"></script>
+<div class="zf">
+  <div class="zf-hd">
+    <div><h1>Proforma Invoices</h1><div class="zf-sub">Quotes and order confirmations, customer-facing. Tick confirmed ones to make one shipment from them.</div></div>
+    <?php if (costing_perm('proforma')): ?>
+    <form method="post" style="margin:0"><?= csrf_field() ?><input type="hidden" name="action" value="create_blank"><button class="zf-btn pri">+ New Proforma</button></form>
+    <?php endif; ?>
   </div>
-  <form method="post" id="pfConvertForm">
-    <?= csrf_field() ?>
-    <input type="hidden" name="action" value="convert_to_shipment">
-  <?php endif; ?>
-  <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:680px">
-    <thead><tr style="text-align:left;color:#8a97ab;font-size:11px;text-transform:uppercase"><?php if($canConvertShipment): ?><th style="padding:9px 10px"></th><?php endif; ?><th style="padding:9px 10px">PI No.</th><th style="padding:9px 10px">Date</th><th style="padding:9px 10px">Customer</th><th style="padding:9px 10px">Product</th><th style="padding:9px 10px">Currency</th><th style="padding:9px 10px">Status</th><th></th></tr></thead>
-    <tbody>
-    <?php if($rows): foreach($rows as $r): ?>
-      <tr style="border-top:1px solid #f6f8fc">
-        <?php if($canConvertShipment): ?><td style="padding:11px 10px"><input type="checkbox" name="pf_ids[]" value="<?= (int)$r['id'] ?>" class="pfSelChk" onchange="pfUpdateBar()" style="width:16px;height:16px"></td><?php endif; ?>
-        <td style="padding:11px 10px;color:#0ea8c9;font-weight:600"><?= e($r['pi_no']) ?></td>
-        <td style="padding:11px 10px;color:#5a6b82"><?= e($r['pi_date']) ?></td>
-        <td style="padding:11px 10px"><?= e($r['customer_name'] ?: '—') ?></td>
-        <td style="padding:11px 10px;color:#5a6b82"><?= e($r['pname'] ?: '—') ?></td>
-        <td style="padding:11px 10px"><?= e($r['currency']) ?></td>
-        <td style="padding:11px 10px"><?= e(ucfirst($r['status'] ?? 'draft')) ?><?php if(!empty($r['converted_shipment_id'])): ?><br><a style="font-size:11px;color:#16a34a;font-weight:700;text-decoration:none" href="shipment_view.php?id=<?= (int)$r['converted_shipment_id'] ?>">→ Shipment</a><?php endif; ?><?php if(!empty($r['production_enabled'])): ?><br><span style="font-size:10.5px;color:#16a34a;font-weight:700">● Production: <?= e(ucwords(str_replace('_',' ',$r['production_status'] ?? 'not_started'))) ?></span><?php endif; ?></td>
-        <td style="padding:11px 10px"><a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>;padding:6px 12px;font-size:12px" href="proforma.php?id=<?= (int)$r['id'] ?>">Open</a></td>
-      </tr>
-    <?php endforeach; else: ?><tr><td colspan="<?= $canConvertShipment?8:7 ?>" style="padding:26px;text-align:center;color:#8a97ab">No proforma invoices yet. Convert one from Product Costing.</td></tr><?php endif; ?>
-    </tbody>
-  </table></div>
-  <?php if ($canConvertShipment): ?></form><?php endif; ?>
+  <div id="pfList"></div>
   <?php if ($canConvertShipment): ?>
-  <script>
-  function pfUpdateBar(){var n=document.querySelectorAll('.pfSelChk:checked').length;var bar=document.getElementById('pfBulkBar');document.getElementById('pfBulkCount').textContent=n;bar.style.display=n>0?'flex':'none'}
-  function pfClearSelection(){document.querySelectorAll('.pfSelChk').forEach(function(c){c.checked=false});pfUpdateBar()}
-  </script>
+  <form method="post" id="pfConvertForm" style="display:none"><?= csrf_field() ?><input type="hidden" name="action" value="convert_to_shipment"></form>
   <?php endif; ?>
 </div>
-</div><?php /* closes .zskin */ ?>
+<script>
+(function(){
+  var R = <?= $J($PL) ?>, MONEY = <?= $pfMoney ? 'true' : 'false' ?>, CONV = <?= $canConvertShipment ? 'true' : 'false' ?>;
+  var Z = window.ZF, esc = Z.esc, month = new Date().toISOString().slice(0, 7);
+  var ST = { draft: ['Draft', 'p-draft'], sent: ['Sent', 'p-sub'], confirmed: ['Confirmed', 'p-ok'], archived: ['Archived', 'p-grey'] };
+  var kpis = [];
+  if (MONEY) kpis.push({ id: 'month', label: 'This month', cls: 'k-blue', test: function(r){ return r.date.slice(0, 7) === month; },
+    value: function(rows){ var m = rows.filter(function(r){ return r.date.slice(0, 7) === month; }); return [Z.curText(Z.byCur(m, 'cur', 'val'), true), m.length + ' proforma' + (m.length === 1 ? '' : 's') + ' dated this month']; } });
+  kpis.push({ id: 'draft', label: 'Drafts', cls: 'k-grey', test: function(r){ return r.status === 'draft'; }, value: function(rows){ var n = rows.filter(function(r){ return r.status === 'draft'; }).length; return [String(n), 'not sent yet']; } });
+  kpis.push({ id: 'sent', label: 'Sent — waiting for the buyer', cls: 'k-amber', test: function(r){ return r.status === 'sent'; }, value: function(rows){ var n = rows.filter(function(r){ return r.status === 'sent'; }).length; return [String(n), n ? 'follow up for confirmation' : 'none waiting']; } });
+  kpis.push({ id: 'toship', label: 'Confirmed, not shipped', cls: 'k-green', test: function(r){ return r.status === 'confirmed' && !r.ship; },
+    value: function(rows){ var c = rows.filter(function(r){ return r.status === 'confirmed' && !r.ship; }); return [MONEY ? Z.curText(Z.byCur(c, 'cur', 'val'), true) : String(c.length), c.length + ' order' + (c.length === 1 ? '' : 's') + ' to make into a shipment']; } });
+  kpis.push({ id: 'prod', label: 'In production', cls: 'k-blue', test: function(r){ return r.pe; }, value: function(rows){ var n = rows.filter(function(r){ return r.pe; }).length; return [String(n), 'orders open on the floor']; } });
+  var cols = [
+    { k: 'no', label: 'PI no.', sort: function(r){ return r.id; }, html: function(r){ return '<a class="lk" href="proforma.php?id=' + r.id + '">' + esc(r.no) + '</a>'; } },
+    { k: 'date', label: 'Date', sort: function(r){ return r.date; }, html: function(r){ return '<span style="white-space:nowrap">' + esc(Z.nice(r.date)) + '</span>'; } },
+    { k: 'cust', label: 'Customer', sort: function(r){ return r.cust.toLowerCase(); }, html: function(r){ return r.cust ? '<span class="nw" title="' + esc(r.cust) + '">' + esc(r.cust) + '</span>' : '<span style="color:#9aa8b6">—</span>'; } },
+    { k: 'prod', label: 'Costing product', sort: function(r){ return r.prod.toLowerCase(); }, html: function(r){ return esc(r.prod || ''); } },
+    { k: 'qty', label: 'Qty', num: 1, sort: function(r){ return r.qty; }, html: function(r){ return r.qty ? Z.n0(r.qty) : ''; } }
+  ];
+  if (MONEY) cols.push({ k: 'val', label: 'Value', num: 1, sort: function(r){ return r.val; }, html: function(r){ return '<b style="font-weight:600">' + esc(r.cur) + ' ' + Z.n2(r.val) + '</b>'; } });
+  else cols.push({ k: 'cur', label: 'Currency', sort: function(r){ return r.cur; }, html: function(r){ return esc(r.cur); } });
+  cols.push({ k: 'status', label: 'Status', sort: function(r){ return r.status; }, html: function(r){ var s = ST[r.status] || [r.status, 'p-grey'];
+    return '<span class="zf-pill ' + s[1] + '">' + esc(s[0]) + '</span>' + (r.ship ? ' <a class="zf-pill p-ok" style="text-decoration:none" href="shipment_view.php?id=' + r.ship + '">→ Shipment</a>' : '')
+      + (r.pe ? '<div class="s2" style="color:#256f3a">● Production: ' + esc(r.ps) + '</div>' : ''); } });
+  var csv = [['PI no.', function(r){ return r.no; }], ['Date', function(r){ return r.date; }], ['Customer', function(r){ return r.cust; }], ['Costing product', function(r){ return r.prod; }], ['Qty', function(r){ return r.qty; }], ['Currency', function(r){ return r.cur; }]];
+  if (MONEY) csv.push(['Value', function(r){ return r.val.toFixed(2); }]);
+  csv.push(['Status', function(r){ return (ST[r.status] || [r.status])[0]; }], ['Shipment made', function(r){ return r.ship ? 'yes' : ''; }]);
+  var L = ZFList({
+    root: 'pfList', rows: R, cols: cols, kpis: kpis, dateKey: 'date', sort: 'no', dir: -1, csv: csv, csvName: 'proformas',
+    empty: 'No proforma invoices yet — start one with + New Proforma, or convert one from Product Costing.',
+    searchHint: 'Search PI no., customer, product…',
+    hay: function(r){ return r.no + ' ' + r.cust + ' ' + r.prod + ' ' + r.cur; },
+    href: function(r){ return 'proforma.php?id=' + r.id; },
+    segs: [['', 'All'], ['draft', 'Draft', function(r){ return r.status === 'draft'; }], ['sent', 'Sent', function(r){ return r.status === 'sent'; }], ['confirmed', 'Confirmed', function(r){ return r.status === 'confirmed'; }], ['archived', 'Archived', function(r){ return r.status === 'archived'; }]],
+    selects: [{ k: 'cust', label: 'Customer' }, { k: 'cur', label: 'Currency' }],
+    select: CONV ? { key: 'id', bar: function(ids){ return '<button type="button" class="zf-btn sm pri" data-convert>Make one shipment from ' + ids.length + '</button>'; } } : null,
+    foot: function(rows){
+      return cols.map(function(c){
+        if (c.k === 'no') return '<td>Total · ' + rows.length + '</td>';
+        if (c.k === 'qty') return '<td class="n">' + Z.n0(rows.reduce(function(t, r){ return t + r.qty; }, 0)) + '</td>';
+        if (c.k === 'val') return '<td class="n">' + Z.curLines(Z.byCur(rows, 'cur', 'val')) + '</td>';
+        return '<td></td>';
+      }).join('');
+    }
+  });
+  document.addEventListener('click', function(e){
+    if (!e.target.closest('[data-convert]')) return;
+    var ids = L.picked(); if (!ids.length) return;
+    if (!confirm('Create one new shipment from the ' + ids.length + ' ticked proforma invoice' + (ids.length === 1 ? '' : 's') + '?')) return;
+    var f = document.getElementById('pfConvertForm');
+    ids.forEach(function(id){ var i = document.createElement('input'); i.type = 'hidden'; i.name = 'pf_ids[]'; i.value = id; f.appendChild(i); });
+    f.submit();
+  });
+})();
+</script>
 <script>
 /* The currency beside "Rate" and "Amount" follows the Currency box as it is
    changed, so the prices being typed are never in doubt. */
