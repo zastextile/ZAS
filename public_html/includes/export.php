@@ -1311,19 +1311,25 @@ function exp_tab_strip(array $shipment, string $active): void
     if (can_see_rates() && exp_can('payments')) $pay = exp_payment_summary($shipment);
     ?>
     <style>
-    .xtabs{display:flex;gap:4px;overflow-x:auto;margin:0 0 14px;padding-bottom:2px;-webkit-overflow-scrolling:touch}
-    .xtabs a{padding:8px 14px;border-radius:10px 10px 0 0;border:1px solid #e3e9f2;border-bottom:none;background:#f6f8fc;color:#5a6b82;font-size:11.5px;font-weight:700;letter-spacing:.04em;text-decoration:none;white-space:nowrap;transition:.15s}
-    .xtabs a:hover{background:rgba(14,168,201,.1);color:#0ea8c9}
-    .xtabs a.on{background:#fff;color:#0ea8c9;border-color:#cbd5e3;box-shadow:0 -2px 0 #0ea8c9 inset}
-    .xhead{padding:14px 18px;border-radius:14px;background:#fff;border:1px solid #e3e9f2;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
-    .xhead .t{font-size:15px;font-weight:800;color:#152033}
-    .xhead .s{font-size:12px;color:#5a6b82;margin-top:3px}
-    .xpill{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap}
-    .xpill.g{background:rgba(22,163,74,.14);color:#16a34a;border:1px solid rgba(22,163,74,.28)}
-    .xpill.o{background:rgba(217,119,6,.14);color:#d97706;border:1px solid rgba(217,119,6,.28)}
-    .xpill.r{background:rgba(224,67,93,.13);color:#b8283f;border:1px solid rgba(224,67,93,.28)}
-    .xpill.b{background:rgba(47,127,224,.14);color:#2f7fe0;border:1px solid rgba(47,127,224,.28)}
-    @media(max-width:700px){.xtabs a{padding:8px 11px;font-size:11px}.xhead{padding:12px 14px}}
+    /* FIORI OBJECT HEADER AND TAB BAR (owner, 19 Nov 2026): a plain white
+       header with the title, the facts in grey and the status as small
+       semantic tags; flat tabs in sentence case, the open one underlined in
+       blue. Colour, size and spacing only — the links are unchanged. */
+    .xhead{padding:10px 14px;border-radius:6px;background:#fff;border:1px solid #d9dee4;margin-bottom:0;border-bottom-left-radius:0;border-bottom-right-radius:0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+    .xhead .t{font-size:17px;font-weight:600;color:#1d2d3e}
+    .xhead .s{font-size:12.5px;color:#556b82;margin-top:2px}
+    .xhead .badge{border-radius:3px !important;font-size:11.5px !important;font-weight:600 !important;padding:2px 8px !important}
+    .xpill{padding:2px 8px;border-radius:3px;font-size:11.5px;font-weight:600;white-space:nowrap;border:1px solid}
+    .xpill.g{background:#eef8f0;color:#256f3a;border-color:#c6e6cf}
+    .xpill.o{background:#fff7ec;color:#9a5710;border-color:#f0d3a8}
+    .xpill.r{background:#fdf0ef;color:#b42318;border-color:#f3c6c2}
+    .xpill.b{background:#eef5fd;color:#0a6ed1;border-color:#c3dbf5}
+    .xtabs{display:flex;gap:0;overflow-x:auto;margin:0 0 10px;padding:0 6px;background:#fff;border:1px solid #d9dee4;border-top:0;border-radius:0 0 6px 6px;-webkit-overflow-scrolling:touch}
+    .xtabs a{padding:9px 14px 8px;border:0;background:none;color:#556b82;font-size:13px;font-weight:600;letter-spacing:0;text-decoration:none;white-space:nowrap;text-transform:lowercase;display:inline-block;box-shadow:inset 0 -3px 0 transparent;transition:color .12s}
+    .xtabs a::first-letter{text-transform:uppercase}
+    .xtabs a:hover{color:#0a6ed1}
+    .xtabs a.on{color:#0a6ed1;box-shadow:inset 0 -3px 0 #0a6ed1}
+    @media(max-width:700px){.xtabs a{padding:9px 10px 8px;font-size:12.5px}.xhead{padding:10px 12px}}
     </style>
     <div class="xhead">
       <div>

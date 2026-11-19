@@ -1,0 +1,61 @@
+/* ZFO — the object pages (Shipment, Proforma) in the SAP Fiori way
+   (owner, 19 Nov 2026: "design / colour and unit as cell are not
+   professional like SAP and Oracle"). A page opts in with class="zfo" next
+   to "zskin"; only colour, type, size and spacing change here — no names,
+   no behaviour. Rules carry !important because the skin's do.
+
+   The rules, the Fiori ones:
+   · one typeface everywhere — numbers too, with even-width digits, no
+     typewriter font;
+   · labels and column headings in sentence case, grey, never shouting;
+   · blue only for what you can click; black for data; colour for status;
+   · numbers right-aligned with thousands separators; amounts never cut off;
+   · quiet cells: a thin border, no resize handles, icon-size delete. */
+.zskin.zfo{--ui:"72","72full",-apple-system,"Segoe UI","IBM Plex Sans",Roboto,Helvetica,Arial,sans-serif;--ink:#1d2d3e;--mut:#556b82;--line:#d9dee4;--cell:#c9d3df;--pri:#0a6ed1}
+.zskin.zfo,.zskin.zfo input,.zskin.zfo textarea,.zskin.zfo select,.zskin.zfo button,.zskin.zfo td,.zskin.zfo th{font-family:var(--ui) !important}
+/* labels: sentence case, grey */
+.zskin.zfo .zlabel,.zskin.zfo .zlab,.zskin.zfo label[style*="uppercase"]{text-transform:none !important;letter-spacing:0 !important;font-size:12px !important;font-weight:500 !important;color:var(--mut) !important}
+.zskin.zfo .zin{height:30px;border:1px solid var(--cell) !important;border-radius:4px !important;padding:0 8px !important;font-size:13px !important;color:var(--ink) !important;background:#fff !important}
+.zskin.zfo textarea.zin{height:auto;padding:6px 8px !important;resize:vertical}
+.zskin.zfo .zin:focus{border-color:var(--pri) !important;box-shadow:0 0 0 2px rgba(10,110,209,.15) !important;outline:none !important}
+.zskin.zfo .zin[readonly],.zskin.zfo .zin[disabled]{background:#f5f6f7 !important;color:#32475b !important;opacity:1 !important;border-color:#e5e9ee !important}
+/* card titles */
+.zskin.zfo .zcard{border-radius:6px !important}
+.zskin.zfo .zhead h2,.zskin.zfo h2{font-size:14px !important;font-weight:600 !important;color:var(--ink) !important}
+/* tables: grey sentence-case headings, even rows, calm cells */
+.zskin.zfo .ztable th,.zskin.zfo #pfItems th{text-transform:none !important;letter-spacing:0 !important;font-size:12px !important;font-weight:600 !important;color:var(--mut) !important;background:#f5f6f7 !important;white-space:nowrap}
+.zskin.zfo .curtag{color:var(--mut) !important;font-weight:600 !important}
+.zskin.zfo .ztable td,.zskin.zfo #pfItems td{vertical-align:top !important;padding-top:5px !important;padding-bottom:5px !important}
+.zskin.zfo #pfItems td{padding-left:5px !important;padding-right:5px !important}
+.zskin.zfo .ztable td.num.amount-cell,.zskin.zfo #pfItems td.amt,.zskin.zfo .ztable td:last-child,.zskin.zfo #pfItems td:last-child{padding-top:10px !important}
+.zskin.zfo #invoiceRows td:first-child{padding-top:10px !important}
+.zskin.zfo .ztable .zin,.zskin.zfo #pfItems input:not([type=hidden]){height:28px !important;min-height:28px !important;border:1px solid var(--cell) !important;border-radius:3px !important;padding:0 7px !important;font-size:13px !important;background:#fff !important;box-shadow:none !important}
+.zskin.zfo .ztable textarea.zin{resize:none !important;overflow:hidden !important;padding:5px 7px !important;line-height:1.3 !important}
+.zskin.zfo .ztable .zin:hover,.zskin.zfo #pfItems input:hover{border-color:#8fa4b8 !important}
+.zskin.zfo .ztable .zin:focus,.zskin.zfo #pfItems input:focus{border-color:var(--pri) !important;box-shadow:0 0 0 2px rgba(10,110,209,.15) !important}
+/* numbers: the same typeface, even digits, right-aligned */
+.zskin.zfo .num,.zskin.zfo .zro,.zskin.zfo .amount-cell,.zskin.zfo .amt,.zskin.zfo td.num,.zskin.zfo input.num{font-family:var(--ui) !important;font-variant-numeric:tabular-nums !important;text-align:right !important;letter-spacing:0 !important}
+.zskin.zfo .amount-cell,.zskin.zfo .amt{color:var(--ink) !important;font-weight:600 !important;white-space:nowrap !important}
+.zskin.zfo .total-row td,.zskin.zfo #pfItems tfoot td{font-weight:600 !important;color:var(--ink) !important;background:#f7f9fb !important;font-family:var(--ui) !important}
+.zskin.zfo #finalValue{color:var(--pri) !important;font-size:15px !important}
+/* the line number: data, not a link */
+.zskin.zfo #invoiceRows td:first-child div{color:#6a7b8c !important;font-weight:500 !important;font-size:12.5px !important}
+/* delete a line: an icon, grey until you point at it */
+.zskin.zfo .ztable .zbtn.red,.zskin.zfo .rowx{background:transparent !important;border:0 !important;color:#8396a8 !important;padding:2px 7px !important;font-size:15px !important;line-height:1 !important;box-shadow:none !important;border-radius:3px !important}
+.zskin.zfo .ztable .zbtn.red:hover,.zskin.zfo .rowx:hover{color:#b42318 !important;background:#fdf0ef !important}
+/* the product / size link under a name */
+.zskin.zfo .linkchip{font-family:var(--ui) !important;font-size:11px !important;margin-top:2px !important}
+.zskin.zfo .linkchip .ok{background:transparent !important;border:0 !important;padding:0 !important;color:#256f3a !important;font-weight:500 !important}
+.zskin.zfo .linkchip .un{color:#9a5710 !important;font-weight:500 !important}
+.zskin.zfo .linkchip .rw{color:var(--mut) !important}
+/* helpers in small grey text, not a typewriter */
+.zskin.zfo .savebadge,.zskin.zfo .zcnt,.zskin.zfo .zhead span[style*="monospace"]{font-family:var(--ui) !important;font-size:11.5px !important;color:#8396a8 !important}
+.zskin.zfo .zbtn.sec,.zskin.zfo .zbt.sec{background:#fff !important;color:var(--pri) !important;border:1px solid var(--line) !important;border-radius:4px !important;font-weight:600 !important;box-shadow:none !important}
+.zskin.zfo .zbtn.sec:hover,.zskin.zfo .zbt.sec:hover{background:#eaf2fc !important;border-color:#b9d3f1 !important}
+/* a file is chosen with a button, not the browser's raw box */
+.zskin.zfo .zfo-file{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:4px;background:#fff;color:var(--pri);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.zskin.zfo .zfo-file:hover{background:#eaf2fc}
+.zskin.zfo .zfo-file input{display:none}
+/* the proforma grid's own number style used the typewriter face; one face everywhere */
+.zskin.zfo #pfItems input,.zskin.zfo #pfItems td,.zskin.zfo #pfItems input[type=number]{font-family:var(--ui) !important;font-variant-numeric:tabular-nums !important;letter-spacing:0 !important}
+.zskin.zfo #pfItems tfoot td,.zskin.zfo .total-row td{padding-top:8px !important;padding-bottom:8px !important;vertical-align:middle !important}

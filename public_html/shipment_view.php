@@ -3,6 +3,9 @@ require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
 require_once __DIR__ . '/includes/parties.php';
 require_login();
+/* a price as an accountant writes it: at least two decimals, up to four (6.40, 1.8750) */
+if (!function_exists('price_txt')) { function price_txt($v): string { $s = rtrim(number_format((float)$v, 4, '.', ''), '0'); $d = strlen(substr(strrchr($s, '.') ?: '.', 1)); return $d < 2 ? number_format((float)$v, 2, '.', '') : rtrim($s, '.'); } }
+
 exp_ensure_schema();
 pty_ensure_schema();
 
@@ -133,7 +136,8 @@ exp_tab_strip($shipment, 'invoice');
          .zskin, so this one attribute is the whole of the restyle and removing
          it puts the page back exactly as it was. Nothing below is edited: the
          page keeps its own class names, and the skin maps onto them. */ ?>
-<div class="zskin">
+<div class="zskin zfo">
+<link rel="stylesheet" href="assets/css/zfo.css?v=3">
 <style>
 .zcard{padding:15px;border-radius:18px;background:#ffffff;border:1px solid #e3e9f2;backdrop-filter:blur(12px);margin-bottom:11px}
 .zhead{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px}
@@ -252,30 +256,30 @@ if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'id
 @media(max-width:900px){.shh{grid-template-columns:1fr 1fr}.shh .c3,.shh .c2{grid-column:1/-1}.shh .r2{grid-row:auto}}
 </style>
 <div class="zcard">
-  <div class="zhead"><h2>Shipment Header</h2></div>
+  <div class="zhead"><h2>Buyer &amp; invoice</h2></div>
   <div class="shh">
-    <label class="zlabel c3">Buyer Name<input class="zin" name="buyer_name" value="<?= e($shipment['buyer_name']) ?>" <?= $ro ?> placeholder="Type to pick a customer"><?php if (!$ro): ?><input type="hidden" name="party_id" value="<?= (int)($shipment['party_id'] ?? 0) ?: '' ?>"><?php endif; ?></label>
-    <label class="zlabel">Invoice No.<input class="zin" name="invoice_no" value="<?= e($shipment['invoice_no']) ?>" <?= $ro ?>></label>
-    <label class="zlabel">Invoice Date<input class="zin" type="date" name="invoice_date" value="<?= e($shipment['invoice_date']) ?>" <?= $ro ?>></label>
+    <label class="zlabel c3">Buyer name<input class="zin" name="buyer_name" value="<?= e($shipment['buyer_name']) ?>" <?= $ro ?> placeholder="Type to pick a customer"><?php if (!$ro): ?><input type="hidden" name="party_id" value="<?= (int)($shipment['party_id'] ?? 0) ?: '' ?>"><?php endif; ?></label>
+    <label class="zlabel">Invoice no.<input class="zin" name="invoice_no" value="<?= e($shipment['invoice_no']) ?>" <?= $ro ?>></label>
+    <label class="zlabel">Invoice date<input class="zin" type="date" name="invoice_date" value="<?= e($shipment['invoice_date']) ?>" <?= $ro ?>></label>
     <?php if($showRates): ?>
     <label class="zlabel">Currency<select class="zin" name="currency" <?= $dis ?>><?php foreach(['USD','EUR','GBP','PKR'] as $cur): ?><option <?= $shipment['currency']===$cur?'selected':'' ?>><?= $cur ?></option><?php endforeach; ?></select></label>
     <?php else: ?><span></span><?php endif; ?>
-    <label class="zlabel c3 r2">Buyer Address<textarea class="zin" name="buyer_address" <?= $ro ?>><?= e($shipment['buyer_address']) ?></textarea></label>
-    <label class="zlabel">Buyer Country<input class="zin" name="buyer_country" value="<?= e($shipment['buyer_country']) ?>" <?= $ro ?>></label>
-    <label class="zlabel">Destination Port<input class="zin" name="destination_port" value="<?= e($shipment['destination_port']) ?>" <?= $ro ?>></label>
+    <label class="zlabel c3 r2">Buyer address<textarea class="zin" name="buyer_address" <?= $ro ?>><?= e($shipment['buyer_address']) ?></textarea></label>
+    <label class="zlabel">Country<input class="zin" name="buyer_country" value="<?= e($shipment['buyer_country']) ?>" <?= $ro ?>></label>
+    <label class="zlabel">Destination port<input class="zin" name="destination_port" value="<?= e($shipment['destination_port']) ?>" <?= $ro ?>></label>
     <label class="zlabel">Incoterm<input class="zin" name="incoterm" value="<?= e($shipment['incoterm'] ?? '') ?>" placeholder="e.g. FOB Karachi" <?= $ro ?>></label>
     <?php if($showRates): ?>
-    <label class="zlabel">Payment Terms<input class="zin" name="payment_terms" value="<?= e($shipment['payment_terms']) ?>" <?= $ro ?>></label>
+    <label class="zlabel">Payment terms<input class="zin" name="payment_terms" value="<?= e($shipment['payment_terms']) ?>" <?= $ro ?>></label>
     <?php else: ?><span></span><?php endif; ?>
-    <label class="zlabel">PO No.<input class="zin" name="po_no" value="<?= e($shipment['po_no']) ?>" <?= $ro ?>></label>
-    <label class="zlabel">BL / Container No.<input class="zin" name="bl_container_no" value="<?= e($shipment['bl_container_no']) ?>" <?= $ro ?>></label>
+    <label class="zlabel">PO no.<input class="zin" name="po_no" value="<?= e($shipment['po_no']) ?>" <?= $ro ?>></label>
+    <label class="zlabel">BL / container no.<input class="zin" name="bl_container_no" value="<?= e($shipment['bl_container_no']) ?>" <?= $ro ?>></label>
     <label class="opt c2"><input type="checkbox" name="optional_column_enabled" <?= $optOn?'checked':'' ?> <?= $dis ?> style="width:15px;height:15px;accent-color:#0a6ed1"> Extra column on the lines</label>
     <label class="zlabel c2" id="opt-title-wrap" style="display:<?= $optOn?'block':'none' ?>">Extra column title<input class="zin" name="optional_column_title" value="<?= e($shipment['optional_column_title']) ?>" <?= $ro ?>></label>
   </div>
 </div>
 
 <div class="zcard">
-  <div class="zhead"><h2>Commercial Invoice Items</h2><?php if($editInvoice): ?><span class="savebadge" id="saveBadge">saved</span><span style="font-size:11px;color:#8a97ab;font-family:monospace">Tab across &middot; Enter down &middot; Ctrl+D fill &middot; Ctrl+S save</span><button type="button" class="zbtn sec" onclick="addInvoiceRow()">+ Add Invoice Line</button><?php endif; ?></div>
+  <div class="zhead"><h2>Invoice lines</h2><?php if($editInvoice): ?><span class="savebadge" id="saveBadge">saved</span><span style="font-size:11px;color:#8a97ab;font-family:monospace">Tab across &middot; Enter down &middot; Ctrl+D fill &middot; Ctrl+S save</span><button type="button" class="zbtn sec" onclick="addInvoiceRow()">+ Add Invoice Line</button><?php endif; ?></div>
   <?php /* Excel paste: the column order below is what a pasted block must
            match, and a number this screen could not read is named here
            rather than left as an empty cell. */ ?>
@@ -293,7 +297,7 @@ if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'id
   <?php endif; ?>
   <div style="overflow-x:auto">
     <table class="ztable" style="min-width:560px;table-layout:fixed">
-      <thead><tr><th style="width:40px">Sr</th><th>Product / Article</th><th style="width:22%">Des / Col</th><?php if($optOn): ?><th style="width:12%"><?= e($shipment['optional_column_title']) ?></th><?php endif; ?><th class="num" style="width:64px">Qty</th><th style="width:58px">Unit</th><?php if($showRates): ?><th class="num" style="width:72px">Rate <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$shipment['currency']) ?></span></th><th class="num" style="width:84px">Amount <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$shipment['currency']) ?></span></th><?php endif; ?><th style="width:36px"></th></tr></thead>
+      <thead><tr><th style="width:38px">#</th><th>Product / Article</th><th style="width:22%">Des / Col</th><?php if($optOn): ?><th style="width:12%"><?= e($shipment['optional_column_title']) ?></th><?php endif; ?><th class="num" style="width:86px">Qty</th><th style="width:78px">Unit</th><?php if($showRates): ?><th class="num" style="width:92px">Rate <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$shipment['currency']) ?></span></th><th class="num" style="width:132px">Amount <span class="curtag" style="font-weight:800;color:#b45309"><?= e((string)$shipment['currency']) ?></span></th><?php endif; ?><th style="width:34px"></th></tr></thead>
       <tbody id="invoiceRows">
       <?php foreach($items as $i=>$it): ?>
         <tr class="item-row">
@@ -337,21 +341,21 @@ if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'id
                                             . ($reworded ? ' <span class="rw">printing your wording</span>' : '')
                   : ($linkState === 'dead' ? '<span class="un">&#9888; product #' . $pidRow . ' no longer in master &mdash; pick again</span>'
                                            : '<span class="un">not linked &mdash; production will have to guess</span>') ?></div></td>
-          <td><textarea class="zin" data-c="desc" name="des_col[]" style="min-height:34px" <?= $ro ?>><?= e($it['des_col']) ?></textarea></td>
+          <td><textarea class="zin" data-c="desc" name="des_col[]" rows="1" <?= $ro ?>><?= e($it['des_col']) ?></textarea></td>
           <?php if($optOn): ?><td><input class="zin" name="optional_value[]" value="<?= e($it['optional_value']) ?>" <?= $ro ?>></td><?php endif; ?>
           <?php $ov = $overIds[(int)$it['id']] ?? null; ?>
           <td<?= $ov !== null ? ' class="qty-over"' : '' ?>><input class="zin num" data-c="qty" name="qty[]" value="<?= e(trim_num($it['qty'], 3)) ?>"<?= $ov !== null ? ' data-packed="' . e(trim_num($ov, 3)) . '" style="border-color:#e0435d;background:rgba(224,67,93,.08);color:#b8283f;font-weight:700"' : '' ?> oninput="recalcInvoice()" <?= $ro ?>><?php if ($ov !== null): ?><div style="font-size:11px;color:#b8283f;font-weight:700;margin-top:3px">packed <?= e(trim_num($ov, 3)) ?></div><?php endif; ?></td>
           <td><input class="zin" data-c="unit" name="unit[]" value="<?= e($it['unit']) ?>" <?= $ro ?>></td>
           <?php if($showRates): ?>
-          <td><input class="zin num" data-c="rate" name="rate[]" value="<?= e(trim_num($it['rate'], 4)) ?>" oninput="recalcInvoice()" <?= $ro ?>></td>
-          <td class="num amount-cell" style="color:#0ea8c9;font-weight:600"><?= e(number_format($it['amount'],2)) ?></td>
+          <td><input class="zin num" data-c="rate" name="rate[]" value="<?= e(price_txt($it['rate'])) ?>" oninput="recalcInvoice()" <?= $ro ?>></td>
+          <td class="num amount-cell"><?= e(number_format($it['amount'],2)) ?></td>
           <?php endif; ?>
           <td style="vertical-align:top"><?php if($editInvoice): ?><button type="button" class="zbtn red" onclick="this.closest('tr').remove();recalcInvoice()">✕</button><?php endif; ?></td>
         </tr>
       <?php endforeach; ?>
       </tbody>
       <tfoot>
-        <tr class="total-row"><td colspan="<?= $optOn?'4':'3' ?>">Product Subtotal</td><td class="num" id="invoiceQtyTotal">0</td><td></td><?php if($showRates): ?><td></td><td class="num" id="invoiceSubtotal">0.00</td><?php endif; ?><td></td></tr>
+        <tr class="total-row"><td colspan="<?= $optOn?'4':'3' ?>">Subtotal</td><td class="num" id="invoiceQtyTotal">0</td><td></td><?php if($showRates): ?><td></td><td class="num" id="invoiceSubtotal">0.00</td><?php endif; ?><td></td></tr>
       </tfoot>
     </table>
   </div>
@@ -441,6 +445,10 @@ document.addEventListener('click', function(e){ document.querySelectorAll('detai
 <script>
 document.addEventListener('DOMContentLoaded', function(){
   if (typeof recalcInvoice === 'function') recalcInvoice();
+  /* a description box is one line until it holds more (owner, 19 Nov 2026) */
+  var fit = function(t){ t.style.height = 'auto'; t.style.height = Math.max(28, t.scrollHeight + 2) + 'px'; };
+  document.querySelectorAll('textarea[data-c="desc"]').forEach(fit);
+  document.addEventListener('input', function(e){ if (e.target.matches && e.target.matches('textarea[data-c="desc"]')) fit(e.target); });
   var chk = document.querySelector('input[name="optional_column_enabled"]');
   if (chk) chk.addEventListener('change', function(){ document.getElementById('opt-title-wrap').style.display = this.checked ? 'block' : 'none'; });
 });

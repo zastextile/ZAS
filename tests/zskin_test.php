@@ -46,8 +46,8 @@ ok(!preg_match('/^\s*(body|html|table|input|button|a)\s*\{/m', $code),
 echo "2. The page opts in with ONE class, and can opt out again\n";
 /* the LIST moved to the shared compact list (assets/css/zf.css, 19 Nov 2026);
    the edit view keeps the skin */
-ok(substr_count($pf, '<div class="zskin">') === 1, 'the edit view is wrapped, got '
-   . substr_count($pf, '<div class="zskin">'));
+ok(substr_count($pf, '<div class="zskin zfo">') === 1, 'the edit view is wrapped (skin + Fiori object style), got '
+   . substr_count($pf, '<div class="zskin zfo">'));
 ok(substr_count($pf, 'closes .zskin') === 1, 'and closed');
 ok(str_contains($pf, '<link rel="stylesheet" href="assets/css/zf.css'), 'the list uses the shared compact style');
 ok(str_contains($pf, 'removing this attribute puts the'), 'and reversing it is written down');
@@ -279,8 +279,10 @@ ok(str_contains(flat($css), 'does not get to take a name a page is already using
 echo "8d. FOUR PAGES ARE IN, AND EACH CAN BE TAKEN BACK OUT\n";
 foreach ($pages as $pg) {
     $src = file_get_contents($B . $pg);
-    ok(substr_count($src, '<div class="zskin">') >= 1, "$pg opts in");
-    ok(substr_count($src, '<div class="zskin">') === substr_count($src, 'closes .zskin'),
+    /* "zskin zfo" is the skin plus the Fiori object style (19 Nov 2026) */
+    $open = preg_match_all('/<div class="zskin( zfo)?">/', $src);
+    ok($open >= 1, "$pg opts in");
+    ok($open === substr_count($src, 'closes .zskin'),
        "  $pg opens and closes the same number of times");
 }
 ok(str_contains(flat($css), 'a page should not have to be rewritten to be restyled'),

@@ -10,6 +10,9 @@ costing_ensure_schema();
 require_once __DIR__ . '/includes/production.php';
 require_once __DIR__ . '/includes/parties.php';
 pty_ensure_schema();
+/* a price as an accountant writes it: at least two decimals, up to four (6.40, 1.8750) */
+if (!function_exists('price_txt')) { function price_txt($v): string { $s = rtrim(number_format((float)$v, 4, '.', ''), '0'); $d = strlen(substr(strrchr($s, '.') ?: '.', 1)); return $d < 2 ? number_format((float)$v, 2, '.', '') : rtrim($s, '.'); } }
+
 /* Only for the bank list that fills the bank fields below. The proforma's own
    behaviour, schema and printing are untouched by this include. */
 require_once __DIR__ . '/includes/export.php';
@@ -643,7 +646,8 @@ if ($id) {
        page back exactly as it was — which is what makes doing the other
        screens one at a time safe. */
     ?>
-    <div class="zskin">
+    <div class="zskin zfo">
+    <link rel="stylesheet" href="assets/css/zfo.css?v=3">
     <div class="topbar"><div><h1>Proforma Invoice — <?= e($pf['pi_no']) ?></h1><p class="lead">Customer-facing only. <?= $pf['product_id'] ? 'Linked to product #'.(int)$pf['product_id'].' · costing #'.(int)$pf['costing_version_id'].' (rev '.(int)$pf['costing_revision'].').' : 'Created directly — not linked to a Product Costing version.' ?></p></div>
       <div style="display:flex;gap:8px"><a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>" href="proforma.php">← All Proformas</a><a class="<?= $btnC ?>" style="<?= $btn ?>" target="_blank" href="proforma_print.php?id=<?= (int)$id ?>">Print / PDF</a><?php if ($id > 0): /* what this order needs, item by item — see demand.php */ ?><a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>" href="demand.php?proforma=<?= (int)$id ?>">Demand sheet</a><?php endif; ?></div></div>
     <form method="post" enctype="multipart/form-data" id="pfImport"><?= csrf_field() ?><input type="hidden" name="action" value="import_csv"><input type="hidden" name="id" value="<?= (int)$id ?>"></form>
@@ -670,13 +674,13 @@ if ($id) {
         @media(max-width:900px){.pfh{grid-template-columns:1fr 1fr}.pfh .c3,.pfh .c2{grid-column:1/-1}.pfh .r2{grid-row:auto}}
         </style>
         <div class="pfh">
-          <label class="c3" style="<?= $lab ?>">Customer Name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="customer_name" value="<?= e($pf['customer_name']) ?>" placeholder="Type to pick a customer"><input type="hidden" name="party_id" value="<?= (int)($pf['party_id'] ?? 0) ?: '' ?>"></label>
-          <label class="<?= $labC ?>" style="<?= $lab ?>">PI No.<input class="<?= $inpC ?>" style="<?= $inp ?>" name="pi_no" value="<?= e($pf['pi_no']) ?>"></label>
-          <label class="<?= $labC ?>" style="<?= $lab ?>">PI Date<input class="<?= $inpC ?>" style="<?= $inp ?>" type="date" name="pi_date" value="<?= e($pf['pi_date']) ?>"></label>
+          <label class="c3" style="<?= $lab ?>">Customer name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="customer_name" value="<?= e($pf['customer_name']) ?>" placeholder="Type to pick a customer"><input type="hidden" name="party_id" value="<?= (int)($pf['party_id'] ?? 0) ?: '' ?>"></label>
+          <label class="<?= $labC ?>" style="<?= $lab ?>">PI no.<input class="<?= $inpC ?>" style="<?= $inp ?>" name="pi_no" value="<?= e($pf['pi_no']) ?>"></label>
+          <label class="<?= $labC ?>" style="<?= $lab ?>">PI date<input class="<?= $inpC ?>" style="<?= $inp ?>" type="date" name="pi_date" value="<?= e($pf['pi_date']) ?>"></label>
           <label class="<?= $labC ?>" style="<?= $lab ?>">Status<select class="<?= $inpC ?>" style="<?= $inp ?>" name="status"><?php foreach(['draft'=>'Draft','sent'=>'Sent','confirmed'=>'Confirmed','archived'=>'Archived'] as $k=>$t): ?><option value="<?= $k ?>" <?= ($pf['status']??'draft')===$k?'selected':'' ?>><?= $t ?></option><?php endforeach; ?></select></label>
-          <label class="c3 r2" style="<?= $lab ?>">Customer Address<textarea class="<?= $inpC ?>" style="<?= $inp ?>" name="customer_address"><?= e($pf['customer_address']) ?></textarea></label>
+          <label class="c3 r2" style="<?= $lab ?>">Customer address<textarea class="<?= $inpC ?>" style="<?= $inp ?>" name="customer_address"><?= e($pf['customer_address']) ?></textarea></label>
           <label class="<?= $labC ?>" style="<?= $lab ?>">Currency<select class="<?= $inpC ?>" style="<?= $inp ?>" name="currency"><?php foreach(['USD','EUR','GBP','PKR'] as $c): ?><option <?= $pf['currency']===$c?'selected':'' ?>><?= $c ?></option><?php endforeach; ?></select></label>
-          <label class="c2 <?= $labC ?>" style="<?= $lab ?>">Delivery Date<input class="<?= $inpC ?>" style="<?= $inp ?>" name="delivery_date" value="<?= e($pf['delivery_date'] ?? '') ?>" placeholder="e.g. 45 days after advance received"></label>
+          <label class="c2 <?= $labC ?>" style="<?= $lab ?>">Delivery date<input class="<?= $inpC ?>" style="<?= $inp ?>" name="delivery_date" value="<?= e($pf['delivery_date'] ?? '') ?>" placeholder="e.g. 45 days after advance received"></label>
         </div>
         <div class="pfsw">
           <label title="Lets Production Staff find this order's items in Daily Production Entry"><input type="checkbox" name="production_enabled" <?= !empty($pf['production_enabled'])?'checked':'' ?>> Production tracking <small>— staff can book work on this order</small></label>
@@ -717,7 +721,7 @@ if ($id) {
           <a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>;padding:7px 12px;font-size:12px" href="proforma.php?export_items=<?= (int)$id ?>">Export Current Items</a>
           <?php endif; ?>
           <a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>;padding:7px 12px;font-size:12px" href="proforma.php?csv_template=1">Download Blank Template</a>
-          <input form="pfImport" type="file" name="csv" accept=".csv" required class="<?= $inpC ?>" style="<?= $inp ?>;max-width:170px;padding:4px;font-size:11.5px">
+          <label class="zfo-file" title="Choose the .csv file to import"><input form="pfImport" type="file" name="csv" accept=".csv" required onchange="this.parentNode.lastChild.textContent=this.files[0]?this.files[0].name:'Choose CSV file…'"><span>Choose CSV file…</span></label>
           <button form="pfImport" type="submit" class="<?= $btnC ?>" style="<?= $btn ?>;padding:7px 14px;font-size:12px">Import</button>
           <span class="zsp"></span>
           <span class="zcnt" id="pfCnt"></span>
@@ -779,16 +783,16 @@ if ($id) {
                 <input type="hidden" class="sid" name="i_size_id[]" value="<?= (int)($r['product_size_id'] ?? 0) ?>">
                 <datalist id="szl<?= (int)$r['id'] ?>"></datalist>
                 <div class="linkchip szchip"></div></td>
-              <td><input class="num" data-c="qty" type="number" step="0.001" name="i_qty[]" value="<?= e($r['qty']) ?>" oninput="pfCalc()"></td>
+              <td><input class="num" data-c="qty" type="number" step="0.001" name="i_qty[]" value="<?= e(trim_num($r['qty'], 3)) ?>" oninput="pfCalc()"></td>
               <td><input data-c="unit" name="i_unit[]" value="<?= e($r['unit']) ?>"></td>
-              <td><input class="num" data-c="price" type="number" step="0.01" name="i_price[]" value="<?= e($r['unit_price']) ?>" oninput="pfCalc()"></td>
+              <td><input class="num" data-c="price" type="number" step="0.01" name="i_price[]" value="<?= e(price_txt($r['unit_price'])) ?>" oninput="pfCalc()"></td>
               <td class="zro amt"><?= e(number_format((float)$r['amount'],2)) ?></td>
               <td class="zpin-r" style="text-align:center"><button type="button" class="rowx" title="Remove this line" onclick="this.closest('tr').remove();pfCalc()">&times;</button></td>
             </tr>
           <?php endforeach; ?></tbody>
           <tfoot><tr>
-            <td colspan="6" style="text-align:right;font-weight:600">Total</td>
-            <td class="zro" style="font-weight:700" id="pfTotal">0.00</td><td></td>
+            <td colspan="6" style="text-align:right;font-weight:600">Total <span class="curtag"><?= e((string)$pf['currency']) ?></span></td>
+            <td class="zro amt" style="font-weight:700" id="pfTotal">0.00</td><td></td>
           </tr></tfoot>
         </table></div>
         <?php /* THE STATUS BAR. Add, state and the keys people forget, on the
@@ -962,7 +966,9 @@ if ($id) {
       return true;
     }
     function n(v){return parseFloat(v)||0}
-    function pfCalc(){var t=0;document.querySelectorAll('#pfItems tbody tr').forEach(function(tr){var q=n(tr.querySelector('[name="i_qty[]"]').value),p=n(tr.querySelector('[name="i_price[]"]').value);var a=q*p;t+=a;tr.querySelector('.amt').textContent=a.toFixed(2)});document.getElementById('pfTotal').textContent=t.toFixed(2)}
+    function pfCalc(){var t=0;document.querySelectorAll('#pfItems tbody tr').forEach(function(tr){var q=n(tr.querySelector('[name="i_qty[]"]').value),p=n(tr.querySelector('[name="i_price[]"]').value);var a=q*p;t+=a;tr.querySelector('.amt').textContent=pfMoney(a)});document.getElementById('pfTotal').textContent=pfMoney(t)}
+    /* amounts with thousands separators, as on the printed proforma */
+    function pfMoney(v){return (+v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
     var pfSzN = 0;
     function pfAddRow(){pfSzN++;var tb=document.querySelector('#pfItems tbody');var tr=document.createElement('tr');tr.innerHTML=`<td class="zpin-l"><input type="hidden" name="i_id[]" value="0"><input class="lovf" data-lov="prod" data-c="name" name="i_name[]" autocomplete="off"><input type="hidden" class="pid" name="i_pid[]" value="0"><div class="linkchip"><span class="un">not linked</span></div></td><td class="zdim"><input data-c="desc" name="i_desc[]"></td><td><input data-c="size" name="i_size[]" list="szlnew${pfSzN}" autocomplete="off" oninput="pfSize(this)" onchange="pfSize(this)"><input type="hidden" class="sid" name="i_size_id[]" value="0"><datalist id="szlnew${pfSzN}"></datalist><div class="linkchip szchip"></div></td><td><input class="num" data-c="qty" type="number" step="0.001" name="i_qty[]" value="0" oninput="pfCalc()"></td><td><input data-c="unit" name="i_unit[]"></td><td><input class="num" data-c="price" type="number" step="0.01" name="i_price[]" value="0" oninput="pfCalc()"></td><td class="zro amt">0.00</td><td class="zpin-r" style="text-align:center"><button type="button" class="rowx" title="Remove this line" onclick="this.closest('tr').remove();pfCalc()">&times;</button></td>`;tb.appendChild(tr);if(window.pfSizeRow)window.pfSizeRow(tr)}
     pfCalc();
