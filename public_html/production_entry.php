@@ -148,6 +148,19 @@ foreach ($lines as $l) {
 }
 
 $today   = zp_entries(['date' => $date], 400);
+/* HOW EACH WORKER IS PAID (owner, 19 Nov 2026): fixed salary, daily wages or
+   contractor, from People Finance, shown beside the name in the lists and on
+   the lines — one small query, read only. */
+$PAYT = [];
+try {
+    foreach (db()->query("SELECT w.id, f.pay_type FROM zp_workers w JOIN att_fin_profiles f ON f.employee_id = w.att_employee_id WHERE f.pay_type IS NOT NULL")->fetchAll() as $r) {
+        $PAYT[(int)$r['id']] = (string)$r['pay_type'];
+    }
+} catch (Throwable $e) { $PAYT = []; }
+function ze_pay_pill(?string $t): string {
+    $w = ['salary' => 'Fixed salary', 'daily' => 'Daily wages', 'contract' => 'Contractor'][$t ?? ''] ?? '';
+    return $w === '' ? '' : '<span class="ze-pt pt-' . e($t) . '">' . $w . '</span>';
+}
 $dayQty  = 0.0; $dayAmt = 0.0;
 foreach ($today as $t) if ($t['status'] === 'active') { $dayQty += (float)$t['qty']; $dayAmt += (float)$t['amount']; }
 
@@ -268,6 +281,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
          background:rgba(29,111,242,.08);border:1px solid #1d6ff2;border-radius:11px;padding:11px 13px}
 .ze-head h3{margin:0 0 2px;font-size:14.5px;font-weight:800;letter-spacing:-.015em;color:#152033}
 .ze-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+.ze-pt{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:5px;border:1px solid;white-space:nowrap;
+       font-family:inherit;letter-spacing:0;vertical-align:1px}
+.ze-pt.pt-salary{color:#1d4ed8;background:#eef4ff;border-color:#bcd0fb}
+.ze-pt.pt-daily{color:#15803d;background:#effaf2;border-color:#b5e2c3}
+.ze-pt.pt-contract{color:#b45309;background:#fff7ec;border-color:#f3d2a6}
 .ze-chip{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;background:#fff;
          border:1px solid #e2e9f1;color:#38495f}
 
@@ -458,7 +476,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
           <tr<?= $canc ? ' style="opacity:.55"' : '' ?>>
             <td class="code"><?= $i + 1 ?></td>
             <td><?= e($t['worker_name'] ?? '(removed worker)') ?>
-                <div class="code" style="font-size:10px"><?= e($t['worker_code'] ?? '') ?></div></td>
+                <div style="font-size:10px"><span class="code" style="font-size:10px"><?= e($t['worker_code'] ?? '') ?></span><?= ze_pay_pill($PAYT[(int)($t['worker_id'] ?? 0)] ?? null) ?></div></td>
             <td><?= e($t['product_name'] ?? '(removed product)') ?>
                 <?php if ($t['pi_no']): ?><div class="code" style="font-size:10px"><?= e($t['pi_no']) ?></div><?php endif; ?></td>
             <td><?= e($t['part_name'] ?? '—') ?>
@@ -531,18 +549,22 @@ table.zp-t tbody tr:hover{background:#fafcff}
    ==================================================================== */
 (function(){
   var WORK    = <?= json_encode($WORK) ?>;
-  var WORKERS = <?= json_encode(array_map(function ($w) use ($wsMap, $stNm) {
+  var WORKERS = <?= json_encode(array_map(function ($w) use ($wsMap, $stNm, $PAYT) {
       $sg = $wsMap[(int)$w['id']] ?? [];
       $sn = [];
       foreach ($sg as $sid) if (isset($stNm[$sid])) $sn[] = $stNm[$sid];
       return [
         'id' => (int)$w['id'], 'code' => (string)$w['worker_code'], 'name' => (string)$w['worker_name'],
+        'pt' => $PAYT[(int)$w['id']] ?? '',
         'dept' => (string)($w['department'] ?? ''),
         'sg'  => array_values(array_map('intval', $sg)),
         'hay' => mb_strtolower(trim($w['worker_code'] . ' ' . $w['worker_name'] . ' '
-                 . ($w['department'] ?? '') . ' ' . implode(' ', $sn))),
+                 . ($w['department'] ?? '') . ' ' . implode(' ', $sn) . ' '
+                 . (['salary' => 'fixed salary', 'daily' => 'daily wages', 'contract' => 'contractor'][$PAYT[(int)$w['id']] ?? ''] ?? ''))),
       ];
   }, $workers)) ?>;
+  var PAYW = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractor' };
+  function payPill(t){ return PAYW[t] ? '<span class="ze-pt pt-' + t + '">' + PAYW[t] + '</span>' : ''; }
   var HABIT   = <?= json_encode($HABIT) ?>;
   var MONEY   = <?= $showMoney ? 'true' : 'false' ?>;
 
@@ -643,7 +665,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
   function zeWorkerOpt(w, opId, click, ev){
     return { v:w.id, click:click, ev:ev,
              title: w.name, strong: w.code,
-             bits: [w.dept].filter(Boolean), chips: [],
+             bits: [w.dept].filter(Boolean), chips: [], pay: w.pt,
              usual: opId ? score(w.id, opId) > 0 : usualOps(w.id) > 0 };
   }
 
@@ -663,6 +685,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       +   (o.strong ? '<b style="color:#38495f">' + hl(o.strong, t) + '</b><i>&middot;</i>' : '')
       +   o.bits.map(function(b){ return hl(b, t); }).join('<i>&middot;</i>')
       +   o.chips.map(function(c){ return '<span class="ze-chip">' + hl(c, t) + '</span>'; }).join('')
+      +   (o.pay ? payPill(o.pay) : '')
       +   (o.rate && MONEY ? '<span style="font-family:ui-monospace,monospace">' + n2(o.rate) + '/pc</span>' : '')
       +   (o.usual ? '<span class="ze-usual">usually</span>' : '')
       + '</div></div>'
@@ -741,6 +764,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       : '<div class="ze-head"><div><h3>' + esc(w.name) + '</h3><div class="ze-chips">'
         + '<span class="ze-chip">' + esc(w.code) + '</span>'
         + (w.dept ? '<span class="ze-chip">' + esc(w.dept) + '</span>' : '')
+        + payPill(w.pt)
         + '</div></div><button type="button" class="zp-b sm" onclick="zeReset()">Change</button></div>';
     $('zeRes').innerHTML = ''; $('zeCnt').textContent = '';
     $('zeGrid').hidden = false;
@@ -1091,7 +1115,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
          re-derived its own kind then could book against the wrong table. */
       sheet.push({ item:work.item, op:work.op, kind:work.kind || 'part',
                    worker:worker.id, qty:v, rate:work.rate,
-                   what:work.pn + ' → ' + work.on, who:worker.name, pi:work.pi });
+                   what:work.pn + ' → ' + work.on, who:worker.name, pt:worker.pt, pi:work.pi });
     });
     zeReset();
     paintSheet();
@@ -1103,7 +1127,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
     var h = '<div class="ze-stash"><h4>Waiting to be saved — ' + sheet.length + ' line'
           + (sheet.length === 1 ? '' : 's') + '</h4>';
     sheet.forEach(function(x,i){
-      h += '<div class="ze-sl"><div><b>' + esc(x.who) + '</b> &middot; ' + esc(x.what)
+      h += '<div class="ze-sl"><div><b>' + esc(x.who) + '</b> ' + payPill(x.pt) + ' &middot; ' + esc(x.what)
          + ' <span style="color:#8a97ab">(' + esc(x.pi) + ')</span></div>'
          + '<div style="display:flex;gap:11px;align-items:center">'
          + '<span style="font-family:ui-monospace,monospace"><b>' + qn(x.qty) + '</b> pcs'
