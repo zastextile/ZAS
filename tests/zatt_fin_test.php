@@ -386,6 +386,9 @@ ok(count(Fin::saveStaff([['employee_id' => $emp['D003'], 'pay_type' => 'daily', 
 ok(Fin::mayEditStaff($admin) && Fin::mayEditStaff($hr) && !Fin::mayEditStaff($acc) && !Fin::mayEditStaff($hod), 'adding and changing employees: Admin and HR');
 ok(Fin::nextCode() !== Fin::nextCode([Fin::nextCode()]), 'two new lines in one save get two different codes');
 $sm = Fin::statement($emp['D002'], '2026-03-01', '2026-03-05', $C);
+$smMemo = array_values(array_filter($sm['rows'], fn($x) => !empty($x['memo'])));
+ok(count($smMemo) === 1 && str_starts_with($smMemo[0]['ref'], 'ADV-') && str_contains($smMemo[0]['label'], 'Advance given · Rs 5,000'), 'the day D002\'s advance was given shows as a grey "Advance given · Rs 5,000" line');
+$sm['rows'] = array_values(array_filter($sm['rows'], fn($x) => empty($x['memo'])));          // the money lines
 ok($sm['ok'] && $sm['opening_paisa'] === 0 && count($sm['rows']) === 3 && $sm['totals'] === ['earned' => 240000, 'deducted' => 100000, 'paid' => 140000] && $sm['closing_paisa'] === 0, 'LEDGER PAGE for D002, 1–5 March: brought forward 0, three lines, totals 2,400 / 1,000 / 1,400, balance 0');
 $refs = array_column($sm['rows'], 'ref');
 ok(preg_match('/^WAG-2603-\d{6}$/', $refs[0]) === 1 && preg_match('/^REC-2603-\d{6}$/', $refs[1]) === 1 && preg_match('/^PAY-2603-\d{6}$/', $refs[2]) === 1 && count(array_unique($refs)) === 3, '  every line has its own reference: WAG (wages), REC (advance recovery), PAY (payment) — ' . implode(', ', $refs));
@@ -464,6 +467,24 @@ ok($pz === null || $line($pz['lines'], 'adv:' . $adv) === null, '  and a paused 
 ok(Fin::changeAdvance($adv, 25000, 'Back to normal', $acc)['ok'] && $n("SELECT COUNT(*) FROM att_audit_logs WHERE action = 'fin.advance_change'") >= 2, '  the plan can be set again; every change is in the audit trail');
 $cx = Fin::cancelAdvance($adv, 'x', $acc);
 ok(!$cx['ok'], '  a loan with something already recovered cannot simply be cancelled');
+
+echo "12e2. A loan that starts coming back later; more time; the ledger shows it (owner, 19 Nov 2026)\n";
+ok($code(Fin::giveAdvance(['employee_id' => $emp['D001'], 'kind' => 'loan', 'amount_paisa' => 100000, 'per_pay_paisa' => 10000, 'given_on' => '2026-03-05', 'recover_from' => '2026-03-01'], $acc)) === 'VALIDATION',
+   'a start date before the day it was given is refused');
+ok(Fin::changeAdvance($adv, 25000, 'Wedding at home: starts in May', $acc, '2026-05-01')['ok'] && Db::value('SELECT recover_from FROM att_fin_advances WHERE id = ?', [$adv]) === '2026-05-01',
+   'MORE TIME: the start is moved to 1 May, with a reason');
+$pl = $row(Fin::preview('daily', '2026-02-27', '2026-03-05', $C), $emp['D001']);
+ok($pl === null || $line($pl['lines'], 'adv:' . $adv) === null, '  a pay sheet ending before 1 May takes nothing for it');
+ok(Fin::changeAdvance($adv, 12500, 'Half from each pay, as he asked', $acc, '')['ok'] && Db::value('SELECT recover_from FROM att_fin_advances WHERE id = ?', [$adv]) === null
+   && $n('SELECT per_pay_paisa FROM att_fin_advances WHERE id = ?', [$adv]) === 12500, 'PARTIAL: half each pay, starting with the next pay again');
+$stl = Fin::statement($emp['D001'], '2026-03-01', '2026-03-31', $C);
+$memo = array_values(array_filter($stl['rows'], fn($x) => !empty($x['memo'])));
+ok(count($memo) === 1 && $memo[0]['ref'] === 'LOAN-' . $adv && $memo[0]['earned'] + $memo[0]['deducted'] + $memo[0]['paid'] === 0 && str_contains($memo[0]['label'], 'Loan given'),
+   'THE LEDGER shows "Loan given" on the day it was given, with no figure in the columns');
+$sum = array_sum(array_map(fn($x) => empty($x['memo']) ? $x['earned'] - $x['deducted'] - $x['paid'] : 0, $stl['rows']));
+ok($stl['opening_paisa'] + $sum === $stl['closing_paisa'], '  so the balance is exactly what it was without that line');
+$owed = (int) Db::value("SELECT SUM(amount_paisa - recovered_paisa) FROM att_fin_advances WHERE employee_id = ? AND status = 'active'", [$emp['D001']]);
+ok($stl['advance_left_paisa'] === $owed && $owed > 0, '  and the statement says how much is still to recover (Rs ' . number_format($owed / 100) . ')');
 $sv = Fin::saveStaff([['employee_id' => $emp['D002'], 'qr_payload' => 'CARD-D002-X']], '', $A, true, $admin);
 ok($sv['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', 'the card text is kept from the same one form');
 ok(Fin::saveStaff([['employee_id' => $emp['D002'], 'full_name' => 'Dina Daily']], '', $A, true, $admin)['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', '  and a save that does not mention it leaves it alone');

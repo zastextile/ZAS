@@ -272,6 +272,8 @@ page_header('People Finance');
 .fin .lgcard.k-earn{border-left-color:#1f7a3a;background:#f4faf5}.fin .lgcard.k-earn b{color:#1f7a3a}
 .fin .lgcard.k-ded{border-left-color:#d9730d;background:#fff8f1}.fin .lgcard.k-ded b{color:#b85f08}
 .fin .lgcard.k-pay{border-left-color:var(--pri);background:#f3f8fd}.fin .lgcard.k-pay b{color:var(--pri)}
+.fin .lgcard.k-adv{border-left-color:#6b4fbb;background:#f6f3fc}.fin .lgcard.k-adv b{color:#5a3fa8}
+.fin table.lg tr.memo td{color:#6b5a8e;font-style:italic;background:#faf8fe}
 .fin .lghead .av{width:36px;height:36px}
 .fin table.stmt.lg th{background:var(--navy);color:#fff;border-bottom:0;font-size:12px;padding:8px 10px}
 .fin table.stmt.lg tr.open td{background:#e8f1fb;font-weight:600}
@@ -1667,14 +1669,15 @@ page_header('People Finance');
     var pct = a.amount_paisa ? Math.round(a.recovered_paisa * 100 / a.amount_paisa) : 0;
     return el('div', { class: 'row', style: 'justify-content:space-between;padding:8px 0;border-top:1px solid var(--soft)' }, [
       el('div', { class: 'nm', style: 'flex:1 1 200px' }, [el('b', { text: (withName ? a.full_name + ' · ' : '') + (a.kind === 'loan' ? 'Loan' : 'Advance') + ' ' + rs(a.amount_paisa) }),
-        el('span', { text: (withName ? a.code + ' · ' + a.department_name + ' · ' : '') + 'given ' + nice(a.given_on) + ' · ' + (a.status === 'active' && !a.per_pay_paisa ? 'recovery paused' : rs(a.per_pay_paisa) + ' from each pay') + (a.note ? ' · ' + a.note : '') })]),
+        el('span', { text: (withName ? a.code + ' · ' + a.department_name + ' · ' : '') + 'given ' + nice(a.given_on) + ' · ' + (a.status === 'active' && !a.per_pay_paisa ? 'recovery paused' : rs(a.per_pay_paisa) + ' from each pay')
+          + (a.recover_from && a.status === 'active' ? (a.recover_from > S.today ? ' · starts ' : ' · from ') + nice(a.recover_from) : '') + (a.note ? ' · ' + a.note : '') })]),
       el('div', { style: 'flex:1 1 120px' }, [el('div', { class: 'bar-r' }, [el('i', { style: 'width:' + pct + '%' })]), el('div', { class: 'small muted', text: rs(a.recovered_paisa) + ' recovered' })]),
       el('div', { class: 'num' }, [el('b', { text: rs(a.left_paisa) }), el('div', { class: 'small muted', text: a.status === 'closed' ? 'cleared' : 'still owed' })]),
       S.caps.pay && a.status === 'active' ? btn('Change plan', function(){
-        ask('Change the plan — ' + (a.kind === 'loan' ? 'loan' : 'advance') + ' of ' + rs(a.amount_paisa), 'Rs ' + rs(a.left_paisa) + ' is still owed. Set how much comes off each pay from now on, or 0 to pause the recovery (for example in Eid month).',
-          [{ k: 'per', label: 'From each pay', money: true, value: plain(a.per_pay_paisa) }, { k: 'reason', label: 'Why', wide: true }], 'Save', function(v){
+        ask('Change the plan — ' + (a.kind === 'loan' ? 'loan' : 'advance') + ' of ' + rs(a.amount_paisa), 'Rs ' + rs(a.left_paisa) + ' is still owed. Set how much comes off each pay from now on — less to give more time, half for half — or 0 to pause (for example in Eid month). Move the start date to begin later.',
+          [{ k: 'per', label: 'From each pay', money: true, value: plain(a.per_pay_paisa) }, { k: 'from', label: 'Start recovering from (empty = next pay)', type: 'date', value: a.recover_from || '' }, { k: 'reason', label: 'Why', wide: true }], 'Save', function(v){
             var per = v.per === '' ? null : toPaisa(v.per); if (per === null) return { ok: false, error: 'Give an amount, or 0 to pause.' };
-            return call('POST', '/finance/advances/' + a.id + '/change', { per_pay_paisa: per, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast(per ? 'Plan changed.' : 'Recovery paused.'); if (S.tab === 'advances') advances(); } return x; });
+            return call('POST', '/finance/advances/' + a.id + '/change', { per_pay_paisa: per, recover_from: v.from, reason: v.reason }).then(function(x){ if (x.ok) { closeModal(); toast(per ? 'Plan changed.' : 'Recovery paused.'); if (S.tab === 'advances') advances(); else if (S.tab === 'ledger') ledger(); } return x; });
           });
       }, 'sm') : null,
       (S.caps.salary || S.caps.wage || S.caps.adjust) && a.status === 'active' ? btn('Recover now', function(){
@@ -1686,7 +1689,7 @@ page_header('People Finance');
       }, 'sm') : null,
       S.caps.pay && a.status === 'active' && a.recovered_paisa === 0 ? btn('Cancel', function(){
         ask('Cancel this ' + a.kind, 'Only possible because nothing has been recovered yet.', [{ k: 'reason', label: 'Why', wide: true }], 'Cancel it', function(v){
-          return call('POST', '/finance/advances/' + a.id + '/cancel', v).then(function(x){ if (x.ok) { closeModal(); toast('Cancelled.'); if (S.tab === 'advances') advances(); } return x; }); });
+          return call('POST', '/finance/advances/' + a.id + '/cancel', v).then(function(x){ if (x.ok) { closeModal(); toast('Cancelled.'); if (S.tab === 'advances') advances(); else if (S.tab === 'ledger') ledger(); } return x; }); });
       }, 'sm danger') : null]);
   }
   function give(p){
@@ -1694,15 +1697,21 @@ page_header('People Finance');
       var fields = [];
       if (!p) fields.push({ k: 'employee_id', label: 'Employee', type: 'select', wide: true, options: list.map(function(x){ return [String(x.employee_id), x.full_name + ' (' + x.code + ') · ' + x.department_name]; }) });
       fields = fields.concat([{ k: 'kind', label: 'What', type: 'select', options: [['advance', 'Advance (short)'], ['loan', 'Loan (long)']] }, { k: 'amt', label: 'Amount given', money: true },
-        { k: 'per', label: 'Recover from each pay', money: true }, { k: 'given_on', label: 'Given on', type: 'date', value: S.today }, { k: 'method', label: 'Given by', type: 'select', options: [['cash', 'Cash'], ['bank', 'Bank']] }, { k: 'note', label: 'Note', wide: true }]);
+        { k: 'per', label: 'Recover from each pay', money: true }, { k: 'given_on', label: 'Given on', type: 'date', value: S.today }, { k: 'method', label: 'Given by', type: 'select', options: [['cash', 'Cash'], ['bank', 'Bank']] },
+        { k: 'from', label: 'Start recovering from (empty = next pay)', type: 'date' }, { k: 'note', label: 'Note', wide: true }]);
       var inputs = ask('Give an advance or loan' + (p ? ' to ' + p.full_name : ''), 'It is recovered a little from each pay sheet. On any sheet the recovery line can be changed or skipped, with a reason.', fields, 'Save', function(v){
         var a = toPaisa(v.amt), per = toPaisa(v.per);
         if (a === null || a <= 0) return { ok: false, error: 'Give the amount.' };
         if (per === null || per <= 0) return { ok: false, error: 'Give how much to recover from each pay.' };
-        return call('POST', '/finance/advances', { employee_id: p ? p.employee_id : +v.employee_id, kind: v.kind, amount_paisa: a, per_pay_paisa: per, given_on: v.given_on, method: v.method, note: v.note }).then(function(x){
-          if (x.ok) { closeModal(); toast('Saved.'); if (S.tab === 'advances') advances(); else refreshCounts(); } return x; });
+        return call('POST', '/finance/advances', { employee_id: p ? p.employee_id : +v.employee_id, kind: v.kind, amount_paisa: a, per_pay_paisa: per, given_on: v.given_on, method: v.method, recover_from: v.from, note: v.note }).then(function(x){
+          if (x.ok) { closeModal(); toast('Saved.'); if (S.tab === 'advances') advances(); else if (S.tab === 'ledger') ledger(); else refreshCounts(); } return x; });
       });
       inputs.given_on.max = S.today;
+      /* a short advance comes back whole from the next pay unless changed; a loan's instalment is typed (owner, 19 Nov 2026) */
+      var perTyped = false;
+      inputs.per.addEventListener('input', function(){ perTyped = true; });
+      function fillPer(){ if (!perTyped && inputs.kind.value === 'advance') inputs.per.value = inputs.amt.value; if (!perTyped && inputs.kind.value === 'loan') inputs.per.value = ''; }
+      inputs.amt.addEventListener('input', fillPer); inputs.kind.addEventListener('change', fillPer);
     };
     if (p) return go2();
     call('GET', '/finance/people').then(function(r){ if (!r.ok) return toast(r.error, true); go2(r.people.filter(function(x){ return +x.active; })); });
@@ -2252,22 +2261,36 @@ page_header('People Finance');
             el('div', { class: 'row' }, [el('div', { class: 'av', text: initials(p.full_name) }), el('div', { class: 'nm' }, [el('b', { text: p.full_name }),
               el('span', { text: p.code + ' · ' + p.department_name + (p.pay_type ? ' · ' + KIND1[p.pay_type] : '') + ' · Wages payable' })])]),
             btn('← Everyone', function(){ LG.emp = null; ledger(); }, 'sm')]));
-          holder.appendChild(cards([['Opening balance', r.opening_paisa, 'k-open'], ['Total earnings', r.totals.earned, 'k-earn'], ['Total deductions', r.totals.deducted, 'k-ded'], ['Total payments', r.totals.paid, 'k-pay'], ['Closing balance', r.closing_paisa, 'k-bal']]));
+          holder.appendChild(cards([['Opening balance', r.opening_paisa, 'k-open'], ['Total earnings', r.totals.earned, 'k-earn'], ['Total deductions', r.totals.deducted, 'k-ded'], ['Total payments', r.totals.paid, 'k-pay'], ['Closing balance', r.closing_paisa, 'k-bal']]
+            .concat(r.advance_left_paisa ? [['Advance / loan still to recover', r.advance_left_paisa, 'k-adv']] : [])));
           var tb = el('tbody');
           tb.appendChild(el('tr', { class: 'open' }, [el('td', { text: nice(r.from) }), el('td', { text: 'OPENING' }), el('td', {}, [el('b', { text: 'Balance brought forward' })]),
             dash(0), dash(0), dash(0), el('td', { class: 'num' }, [el('b', { text: rs(r.opening_paisa) })])]));
           r.rows.forEach(function(x){
+            if (x.memo) {             // an advance or loan given: shown, no figure in the columns — it comes back as a deduction
+              tb.appendChild(el('tr', { class: 'memo', title: 'Kept apart from wages: it comes back as a deduction on the pay sheets' }, [el('td', { text: nice(x.date) }), el('td', { text: x.ref }), el('td', { text: x.label }),
+                el('td', { class: 'num nil', text: '—' }), el('td', { class: 'num nil', text: '—' }), el('td', { class: 'num nil', text: '—' }), el('td', { class: 'num', text: rs(x.balance) })]));
+              return;
+            }
             var go2 = x.sheet_id ? function(){ openSheet(x.sheet_id); } : null;
             tb.appendChild(el('tr', { class: go2 ? 'click' : null, tabindex: go2 ? '0' : null, title: go2 ? 'Open the pay sheet or entry this came from' : null, click: go2, keydown: go2 ? function(e){ if (e.key === 'Enter') go2(); } : null }, [
               el('td', { text: nice(x.date) }), el('td', { text: x.ref }), el('td', { text: x.label + (x.kind === 'payment' && x.method ? ' · ' + (x.method === 'bank' ? 'bank' : 'cash') : '') }),
               dash(x.earned, 'c-earn'), dash(x.deducted, 'c-ded'), dash(x.paid, 'c-pay'), el('td', { class: 'num' }, [el('b', { text: rs(x.balance) })])]));
           });
           if (!r.rows.length) tb.appendChild(el('tr', {}, [el('td', { colspan: '7', class: 'muted', text: 'No entries between these dates.' })]));
-          tb.appendChild(el('tr', { class: 'tot' }, [el('td', {}, [el('b', { text: 'TOTAL' })]), el('td', { text: 'PERIOD TOTALS' }), el('td', { class: 'muted', text: r.rows.length + (r.rows.length === 1 ? ' entry' : ' entries') }),
+          var nE = r.rows.filter(function(x){ return !x.memo; }).length;
+          tb.appendChild(el('tr', { class: 'tot' }, [el('td', {}, [el('b', { text: 'TOTAL' })]), el('td', { text: 'PERIOD TOTALS' }), el('td', { class: 'muted', text: nE + (nE === 1 ? ' entry' : ' entries') }),
             el('td', { class: 'num c-earn', text: rs(r.totals.earned) }), el('td', { class: 'num c-ded', text: rs(r.totals.deducted) }), el('td', { class: 'num c-pay', text: rs(r.totals.paid) }), el('td', { class: 'num', text: rs(r.closing_paisa) })]));
           var table = el('table', { class: 't stmt lg' }, [el('thead', {}, [el('tr', {}, ['Date', 'Reference No.', 'Transaction description', 'Earnings (PKR)', 'Deductions (PKR)', 'Payments (PKR)', 'Running balance (PKR)'].map(function(h, i){ return el('th', { style: i > 2 ? 'text-align:right' : null, text: h }); }))]), tb]);
           printable = { title: 'Employee ledger — ' + p.full_name + ' (' + p.code + ')', sub: p.department_name + (p.pay_type ? ' · ' + KIND1[p.pay_type] : ''), table: table };
           holder.appendChild(el('div', { class: 'cardx scroll' }, [table]));
+          /* each advance and loan: given, recovered, still owed, the plan — changed here as on Advances & loans */
+          var advs = (r.advances || []).filter(function(a){ return a.status !== 'cancelled'; });
+          if (advs.length) {
+            advs.sort(function(a, b){ return (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1) || (a.given_on < b.given_on ? 1 : -1); });
+            holder.appendChild(el('div', { class: 'cardx' }, [el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h3', { text: 'Advances & loans' }),
+              el('span', { class: 'muted small', text: 'Still to recover: Rs ' + rs(r.advance_left_paisa || 0) + ' · comes off the pay sheets, never twice' })])].concat(advs.map(function(a){ return advRow(a, false); }))));
+          }
         });
       }
     });

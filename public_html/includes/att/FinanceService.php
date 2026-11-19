@@ -670,8 +670,26 @@ final class FinanceService
                        'earned' => $e, 'deducted' => $d, 'paid' => $p, 'balance' => $bal, 'sheet_id' => $l['sheet_id'] === null ? null : (int) $l['sheet_id'],
                        'method' => $l['method'], 'kind' => $l['kind'], 'line_kind' => $l['line_kind']];
         }
-        return ['ok' => true, 'employee' => $lg['employee'], 'from' => $from, 'to' => $to, 'opening_paisa' => $opening ?? $bal, 'rows' => $rows,
-                'totals' => $t, 'closing_paisa' => $bal];
+        /* ADVANCES AND LOANS IN THE LEDGER (owner, 19 Nov 2026). The ledger is
+           "Wages payable": an advance is kept apart and comes back as a
+           deduction on the pay sheets, so the day it is given is a grey line
+           with no figure in the columns — the balance stays right, and it is
+           still there to see. Below the table: each one, what is still owed. */
+        $advs = self::advancesFor($employeeId);
+        $opening ??= $bal;
+        foreach ($advs as $a) {
+            if ($a['given_on'] < $from || $a['given_on'] > $to) { continue; }
+            $at = $opening;
+            foreach ($rows as $x) { if (empty($x['memo']) && $x['date'] <= $a['given_on']) { $at = $x['balance']; } }
+            $rows[] = ['date' => $a['given_on'], 'ref' => ($a['kind'] === 'loan' ? 'LOAN-' : 'ADV-') . $a['id'],
+                       'label' => ($a['kind'] === 'loan' ? 'Loan given' : 'Advance given') . ' · Rs ' . self::rupees($a['amount_paisa']) . ' (' . $a['method'] . ')'
+                                  . ' · recover ' . self::rupees($a['per_pay_paisa']) . ' each pay' . ($a['recover_from'] ? ' from ' . date('j M Y', strtotime((string) $a['recover_from'])) : '') . ($a['note'] ? ' · ' . $a['note'] : ''),
+                       'earned' => 0, 'deducted' => 0, 'paid' => 0, 'balance' => $at, 'sheet_id' => null, 'method' => $a['method'], 'kind' => 'memo', 'line_kind' => $a['kind'], 'memo' => true];
+        }
+        usort($rows, static fn($x, $y) => strcmp($x['date'], $y['date']));
+        $left = 0; foreach ($advs as $a) { if ($a['status'] === 'active') { $left += $a['left_paisa']; } }
+        return ['ok' => true, 'employee' => $lg['employee'], 'from' => $from, 'to' => $to, 'opening_paisa' => $opening, 'rows' => $rows,
+                'totals' => $t, 'closing_paisa' => $bal, 'advances' => $advs, 'advance_left_paisa' => $left];
     }
 
     /**
@@ -788,9 +806,17 @@ final class FinanceService
 
     // ----------------------------------------------------------- advances
 
+    /** True once migration 0022 (when a loan starts coming back) has run. */
+    public static function hasRecoverFrom(): bool
+    {
+        static $has = null;
+        return $has ??= Db::columnExists('att_fin_advances', 'recover_from');
+    }
+
     public static function advancesFor(int $employeeId): array
     {
-        $rows = Db::all("SELECT id, employee_id, kind, amount_paisa, per_pay_paisa, recovered_paisa, given_on, method, note, status FROM att_fin_advances
+        $rf = self::hasRecoverFrom() ? 'recover_from' : 'NULL AS recover_from';
+        $rows = Db::all("SELECT id, employee_id, kind, amount_paisa, per_pay_paisa, recovered_paisa, given_on, $rf, method, note, status FROM att_fin_advances
                           WHERE employee_id = ? AND status <> 'cancelled' ORDER BY id", [$employeeId]);
         foreach ($rows as &$r) {
             foreach (['amount_paisa', 'per_pay_paisa', 'recovered_paisa'] as $k) { $r[$k] = (int) $r[$k]; }
@@ -806,6 +832,7 @@ final class FinanceService
         [$w, $p] = self::deptWhere($caps['departments']);
         $rows = Db::all(
             "SELECT a.id, a.employee_id, a.kind, a.amount_paisa, a.per_pay_paisa, a.recovered_paisa, a.given_on, a.method, a.note, a.status,
+                    " . (self::hasRecoverFrom() ? 'a.recover_from' : 'NULL AS recover_from') . ",
                     e.code, e.full_name, d.name AS department_name, f.pay_type
                FROM att_fin_advances a JOIN att_employees e ON e.id = a.employee_id JOIN att_departments d ON d.id = e.department_id
                LEFT JOIN att_fin_profiles f ON f.employee_id = e.id
@@ -838,10 +865,18 @@ final class FinanceService
         if (!self::isDate($on) || $on > self::today()) {
             return self::no('VALIDATION', 'The date given cannot be in the future.');
         }
+        /* when it starts coming back: empty = the next pay sheet */
+        $rf = trim((string) ($in['recover_from'] ?? ''));
+        if ($rf !== '' && (!self::isDate($rf) || $rf < $on)) {
+            return self::no('VALIDATION', 'Start recovering from: a date, not before the day it was given.');
+        }
         Db::run('INSERT INTO att_fin_advances (employee_id, kind, amount_paisa, per_pay_paisa, given_on, method, note, created_by) VALUES (?,?,?,?,?,?,?,?)',
             [$emp, $kind, (int) $amt, (int) $per, $on, ($in['method'] ?? 'cash') === 'bank' ? 'bank' : 'cash', mb_substr(trim((string) ($in['note'] ?? '')), 0, 255) ?: null, $actorId]);
         $id = Db::lastId();
-        Audit::record('fin.advance_give', 'att_fin_advance', $id, null, ['employee_id' => $emp, 'kind' => $kind, 'amount_paisa' => (int) $amt, 'per_pay_paisa' => (int) $per], $actorId);
+        if ($rf !== '' && self::hasRecoverFrom()) {
+            Db::run('UPDATE att_fin_advances SET recover_from = ? WHERE id = ?', [$rf, $id]);
+        }
+        Audit::record('fin.advance_give', 'att_fin_advance', $id, null, ['employee_id' => $emp, 'kind' => $kind, 'amount_paisa' => (int) $amt, 'per_pay_paisa' => (int) $per, 'recover_from' => $rf ?: null], $actorId);
         return ['ok' => true, 'advance_id' => $id];
     }
 
@@ -851,12 +886,17 @@ final class FinanceService
      * recovering more at once is an "Advance/Loan recovery" deduction entry,
      * giving more is a new advance. The reason is kept in the audit trail.
      */
-    public static function changeAdvance(int $id, mixed $perPay, string $reason, int $actorId): array
+    public static function changeAdvance(int $id, mixed $perPay, string $reason, int $actorId, ?string $recoverFrom = null): array
     {
         if (trim($reason) === '') {
             return self::no('REASON_REQUIRED', 'Say why the plan changes.');
         }
-        return Db::tx(static function () use ($id, $perPay, $reason, $actorId) {
+        /* more time: move the start date ('' = from the next pay sheet) */
+        $recoverFrom = $recoverFrom === null ? null : trim($recoverFrom);
+        if ($recoverFrom !== null && $recoverFrom !== '' && !self::isDate($recoverFrom)) {
+            return self::no('VALIDATION', 'Start recovering from: give a date, or leave it empty for the next pay.');
+        }
+        return Db::tx(static function () use ($id, $perPay, $reason, $actorId, $recoverFrom) {
             $a = Db::one('SELECT * FROM att_fin_advances WHERE id = ? FOR UPDATE', [$id]);
             if ($a === null) {
                 return self::no('NOT_FOUND', 'No such advance or loan.');
@@ -869,7 +909,12 @@ final class FinanceService
                 return self::no('VALIDATION', 'From each pay: between 0 (to pause) and the Rs ' . self::rupees($left) . ' still owed.');
             }
             Db::run('UPDATE att_fin_advances SET per_pay_paisa = ? WHERE id = ?', [(int) $perPay, $id]);
-            Audit::record('fin.advance_change', 'att_fin_advance', $id, ['per_pay_paisa' => (int) $a['per_pay_paisa']], ['per_pay_paisa' => (int) $perPay], $actorId, mb_substr(trim($reason), 0, 255));
+            $before = ['per_pay_paisa' => (int) $a['per_pay_paisa']]; $after = ['per_pay_paisa' => (int) $perPay];
+            if ($recoverFrom !== null && self::hasRecoverFrom()) {
+                Db::run('UPDATE att_fin_advances SET recover_from = ? WHERE id = ?', [$recoverFrom === '' ? null : $recoverFrom, $id]);
+                $before['recover_from'] = $a['recover_from'] ?? null; $after['recover_from'] = $recoverFrom === '' ? null : $recoverFrom;
+            }
+            Audit::record('fin.advance_change', 'att_fin_advance', $id, $before, $after, $actorId, mb_substr(trim($reason), 0, 255));
             return ['ok' => true, 'advance_id' => $id, 'per_pay_paisa' => (int) $perPay];
         });
     }
@@ -986,6 +1031,7 @@ final class FinanceService
             // A recovery follows the plan, but never takes more than the pay there is.
             $room = self::net($L);
             foreach (self::advancesFor($id) as $a) {
+                if ($a['recover_from'] !== null && (string) $a['recover_from'] > $to) { continue; }     // a loan that starts coming back later
                 $take = min($a['per_pay_paisa'], $a['left_paisa'], max(0, $room));
                 if ($a['status'] === 'active' && $take > 0) {
                     $add('adv:' . (int) $a['id'], $a['kind'], 'deduct', ($a['kind'] === 'loan' ? 'Loan' : 'Advance') . ' recovery', $take,

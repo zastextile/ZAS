@@ -1135,9 +1135,14 @@ try {
                     ['From', $stm['from'], 'To', $stm['to'], '', '', ''], ['Date', 'Reference', 'Description', 'Earnings', 'Deductions', 'Paid', 'Balance'],
                     [$stm['from'], 'OPENING', 'Balance brought forward', '', '', '', $rs($stm['opening_paisa'])]];
             foreach ($stm['rows'] as $r) {
-                $out[] = [$r['date'], $r['ref'], $r['label'], $rs($r['earned']), $rs($r['deducted']), $rs($r['paid']), $rs($r['balance'])];
+                $out[] = !empty($r['memo'])          // an advance or loan given: no figure in the columns, it comes back as a deduction
+                    ? [$r['date'], $r['ref'], $r['label'], '', '', '', $rs($r['balance'])]
+                    : [$r['date'], $r['ref'], $r['label'], $rs($r['earned']), $rs($r['deducted']), $rs($r['paid']), $rs($r['balance'])];
             }
             $out[] = ['', 'PERIOD TOTALS', 'All entries in the selected dates', $rs($stm['totals']['earned']), $rs($stm['totals']['deducted']), $rs($stm['totals']['paid']), $rs($stm['closing_paisa'])];
+            if (!empty($stm['advance_left_paisa'])) {
+                $out[] = ['', 'ADVANCE / LOAN', 'Still to recover from the pay sheets', '', '', '', $rs($stm['advance_left_paisa'])];
+            }
             send_csv('statement-' . $stm['employee']['code'] . '-' . $stm['from'] . '-to-' . $stm['to'] . '.csv', ['All amounts PKR', '', '', '', '', '', ''], $out);
             break;
 
@@ -1191,7 +1196,8 @@ try {
         case $method === 'POST' && preg_match('#^/finance/advances/(\d+)/change$#', $route, $m) === 1:
             Http::requireCsrf();
             [$u] = fin_caps('pay');
-            admin_answer(Fin::changeAdvance((int) $m[1], Http::input('per_pay_paisa'), (string) Http::input('reason', ''), (int) $u['id']));
+            $rf = Http::input('recover_from');
+            admin_answer(Fin::changeAdvance((int) $m[1], Http::input('per_pay_paisa'), (string) Http::input('reason', ''), (int) $u['id'], $rf === null ? null : (string) $rf));
             break;
 
         case $method === 'POST' && preg_match('#^/finance/advances/(\d+)/cancel$#', $route, $m) === 1:
