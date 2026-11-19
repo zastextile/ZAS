@@ -44,9 +44,12 @@ ok(!preg_match('/^\s*(body|html|table|input|button|a)\s*\{/m', $code),
    'no bare element selector anywhere');
 
 echo "2. The page opts in with ONE class, and can opt out again\n";
-ok(substr_count($pf, '<div class="zskin">') === 2, 'both views are wrapped, got '
+/* the LIST moved to the shared compact list (assets/css/zf.css, 19 Nov 2026);
+   the edit view keeps the skin */
+ok(substr_count($pf, '<div class="zskin">') === 1, 'the edit view is wrapped, got '
    . substr_count($pf, '<div class="zskin">'));
-ok(substr_count($pf, 'closes .zskin') === 2, 'and both are closed');
+ok(substr_count($pf, 'closes .zskin') === 1, 'and closed');
+ok(str_contains($pf, '<link rel="stylesheet" href="assets/css/zf.css'), 'the list uses the shared compact style');
 ok(str_contains($pf, 'removing this attribute puts the'), 'and reversing it is written down');
 
 echo "2b. THE GRID CELL IS FLAT UNTIL YOU ARE IN IT\n";
