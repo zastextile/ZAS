@@ -138,6 +138,19 @@ $HABIT = zp_worker_habit();
    the middle of it is PHP that the page's own test harness cannot lift out,
    and it broke that harness the first time I wrote it there. */
 $wsMap = zp_worker_stage_map();
+/* ONLY PEOPLE WITH A STAGE ARE PRODUCTION (owner, 19 Nov 2026). Head office,
+   admin and the rest are in People Finance but never book a piece, so the
+   pickers leave out anybody allotted no stage at all. Somebody on ANOTHER
+   stage is still found by typing — standing in for a day keeps working.
+   Safety net: until at least one person has a stage, everybody is offered,
+   so a new setup is never left with an empty list. */
+$PICK = $workers;
+foreach ($workers as $w) {
+    if (!empty($wsMap[(int)$w['id']])) {
+        $PICK = array_values(array_filter($workers, fn($x) => !empty($wsMap[(int)$x['id']])));
+        break;
+    }
+}
 $stNm  = [];
 foreach (zp_stage_all(false) as $s) $stNm[(int)$s['id']] = (string)$s['name'];
 
@@ -562,7 +575,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
                  . ($w['department'] ?? '') . ' ' . implode(' ', $sn) . ' '
                  . (['salary' => 'fixed salary', 'daily' => 'daily wages', 'contract' => 'contractor'][$PAYT[(int)$w['id']] ?? ''] ?? ''))),
       ];
-  }, $workers)) ?>;
+  }, $PICK)) ?>;
   var PAYW = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractor' };
   function payPill(t){ return PAYW[t] ? '<span class="ze-pt pt-' + t + '">' + PAYW[t] + '</span>' : ''; }
   var HABIT   = <?= json_encode($HABIT) ?>;
@@ -863,10 +876,16 @@ table.zp-t tbody tr:hover{background:#fafcff}
          no filter of mine should be able to say "that person is not here".
          Somebody standing in at another stage for a day is therefore always
          reachable, and the entry saves exactly as it always did. */
+      /* THE TICKS DECIDE, TYPING INCLUDED (owner, 19 Nov 2026): "if we making
+         cutting stage so list only who ticked as cutting". A Cutting job offers
+         only the people ticked for Cutting on Production Workers — a typed name
+         searches inside that list, not the whole floor. To let somebody stand
+         in, tick the stage for them there. The safety net stays: a stage that
+         NOBODY is ticked for yet still offers everybody. */
       var all = WORKERS.filter(function(w){ return hit(w.hay, t); });
       var sid = picked ? (picked.sid || 0) : 0;
       var use = all, narrowed = 0;
-      if (sid && !t.length) {
+      if (sid) {
         /* NARROW ONLY WHEN SOMEBODY IS REALLY ON THIS STAGE.
            Testing "is the short list non-empty" was not enough and the test
            caught it: workers allotted NOTHING pass wFits for every stage, so a
@@ -874,11 +893,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
            those few — and three hundred people vanished behind a footnote.
            So the count is of people who NAME this stage. None of them means
            the stage means nothing yet, and the whole floor is offered. */
-        var onStage = 0;
-        var fit = all.filter(function(w){
-          if (w.sg && w.sg.length && w.sg.indexOf(sid) >= 0) onStage++;
-          return wFits(w, sid);
-        });
+        var onStage = WORKERS.some(function(w){ return w.sg && w.sg.indexOf(sid) >= 0; });
+        var fit = all.filter(function(w){ return wFits(w, sid); });
         if (onStage) { narrowed = all.length - fit.length; use = fit; }
       }
       var outw = use.slice().sort(function(a,b){ return score(b.id, opId) - score(a.id, opId); })
@@ -891,12 +907,15 @@ table.zp-t tbody tr:hover{background:#fafcff}
          the allotment is doing its job. Nobody is unreachable: typing a
          name searches the whole floor. */
       outw.foot = narrowed
-        ? narrowed + ' not on ' + esc(picked.st) + ' — type a name or code to reach anybody.'
+        ? 'Only people ticked for ' + esc(picked.st) + ' are listed — tick more on Production Workers.'
         : '';
       return outw;
     }
     var wid = picked ? picked.id : 0;
-    return WORK.filter(function(w){ return !w.done && hit(w.hay, t); })
+    /* the other way round: a person picked first is offered only the work of
+       the stages they are ticked for (nobody ticked anywhere: everything) */
+    var mine = picked && picked.sg && picked.sg.length ? picked.sg : null;
+    return WORK.filter(function(w){ return !w.done && hit(w.hay, t) && (!mine || !w.sid || mine.indexOf(w.sid) >= 0); })
       .slice().sort(function(a,b){ return score(wid, b.op) - score(wid, a.op); })
       .map(function(w){
         var o = zeWorkOpt(w, click(), '');

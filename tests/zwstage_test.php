@@ -232,8 +232,8 @@ if (!is_array($J) || !is_array($J['R'] ?? null)) {
        show them on production pages if no relevant stage". */
     ok($R['packEmpty']['n'] === 26,
        'a packing job offers the 26 packers out of 331, got ' . $R['packEmpty']['n']);
-    ok(str_contains($R['packEmpty']['foot'], '305 not on Packing'),
-       '  and says the other 305 are there, got "' . $R['packEmpty']['foot'] . '"');
+    ok(str_contains($R['packEmpty']['foot'], 'Only people ticked for Packing are listed'),
+       '  and says the list follows the ticks, got "' . $R['packEmpty']['foot'] . '"');
     ok(!in_array(327, $R['packEmpty']['ids'], true),
        '  THE NEWCOMER WITH NOTHING ALLOTTED IS NOT IN THE LIST');
     ok(!in_array(1, $R['packEmpty']['ids'], true), '  and a stitcher is not');
@@ -260,13 +260,14 @@ if (!is_array($J) || !is_array($J['R'] ?? null)) {
        also matches Stitcher 17 and Stitcher 70 — "7" is in both. That is the
        screen's existing search and it is not the thing under test here. What
        is under test is that a stitcher is reachable at all on a packing job. */
-    ok(in_array(7, $R['typedName']['ids'], true),
-       'typing a stitcher name on a PACKING job still finds them');
-    ok(count($R['typedName']['ids']) < 331,
-       '  and the search still narrows, got ' . count($R['typedName']['ids']) . ' of 331');
-    ok($R['typedName']['foot'] === '', '  and nothing is said to have been hidden');
-    ok($R['typedCode']['n'] === 1 && $R['typedCode']['ids'][0] === 150,
-       'typing a code reaches straight through, got ' . json_encode($R['typedCode']['ids']));
+    /* THE TICKS DECIDE, TYPING INCLUDED (owner, 19 Nov 2026): "if we making
+       cutting stage so list only who ticked as cutting". A stitcher is NOT
+       offered on a packing job, even by name — tick Packing for them to let
+       them stand in. */
+    ok(!in_array(7, $R['typedName']['ids'], true),
+       'typing a stitcher name on a PACKING job does not offer them (not ticked for Packing)');
+    ok($R['typedCode']['n'] === 0,
+       '  nor does typing their code, got ' . json_encode($R['typedCode']['ids']));
     ok($R['nobody']['n'] === 0, 'and a search matching nobody is still empty');
 }
 
@@ -280,5 +281,14 @@ $line = substr($pe, $fa, 120);
 ok(str_contains($line, "'<div class=\"ze-none\">'"), 'the note is a ze-none div, not a ze-row');
 ok(!str_contains($line, 'ze-row'), '  so arrow keys and Enter step past it');
 
+echo "\nOnly people with a stage are production (owner, 19 Nov 2026)\n";
+ok(str_contains($pe, "\$PICK = array_values(array_filter(\$workers, fn(\$x) => !empty(\$wsMap[(int)\$x['id']])));") && str_contains($pe, '}, $PICK)) ?>;'),
+   'Daily Entry offers only people ticked for some stage');
+ok(str_contains($pe, '$PICK = $workers;'), '  and everybody while nobody has a stage yet, so a new setup is never empty');
+ok(str_contains($pe, "mine.indexOf(w.sid) >= 0"), 'a worker picked first is offered only the work of their own stages');
+$pw = file_get_contents($B . 'production_workers.php');
+ok(str_contains($pw, '<option value="prod">In production (has a stage)</option>'), 'Production Workers opens on the people in production');
+ok(str_contains($pw, "if (s === 'prod' && !r.st.length && !(q && PRODQ)) return false;"), '  hides the no-stage people, and still finds one by name to give a stage');
+ok(str_contains($pw, "if (s && s !== 'none' && s !== 'prod' && r.st.indexOf(+s) < 0) return false;"), '  and "In production" is not mistaken for a stage number (the demo caught it showing nobody)');
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

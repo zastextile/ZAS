@@ -178,7 +178,7 @@ echo $pageHead;
     <a class="chip" style="text-decoration:none;color:#33465f" href="production_entry.php">Daily Entry →</a>
   </div>
   <?php if ($msg): ?><div class="flash"><?= e($msg) ?></div><?php endif; ?>
-  <div class="src">People come from <a href="att_finance.php#people">People Finance › Employees</a> — add, rename or mark as left there. Here you only choose <b>which stages</b> each person works. On Daily Entry a stage's list shows the people on it — anybody else is still found by typing their name or code.</div>
+  <div class="src">People come from <a href="att_finance.php#people">People Finance › Employees</a> — add, rename or mark as left there. Here you only choose <b>which stages</b> each person works. <b>Only people with a stage are production</b>: this list and Daily Entry show them; somebody with no stage (head office, admin…) is left out — find them under <b>No stage</b> and give them a stage to add them. On Daily Entry a job lists only the people ticked for its stage — a Cutting job shows the Cutting people, Stitching the stitchers, Packing the packers, even when you type a name. To let somebody stand in, tick that stage for them here.</div>
 
   <?php if (!$stages): ?>
     <div class="src">No stages yet. Add them on <a href="production_stages.php">Production Stages</a>.</div>
@@ -188,7 +188,7 @@ echo $pageHead;
     <input type="search" id="q" placeholder="Search code or name" aria-label="Search code or name" autocomplete="off">
     <select id="fd" aria-label="Department"><option value="">All departments</option>
       <?php foreach ($depts as $d): ?><option><?= e($d) ?></option><?php endforeach; ?></select>
-    <select id="fs" aria-label="Stage"><option value="">Any stage</option><option value="none">No stage yet</option>
+    <select id="fs" aria-label="Stage"><option value="prod">In production (has a stage)</option><option value="">Everyone</option><option value="none">No stage yet</option>
       <?php foreach ($stages as $s): ?><option value="<?= (int)$s['id'] ?>">On <?= e($s['name']) ?></option><?php endforeach; ?></select>
     <label style="display:flex;gap:5px;align-items:center;color:#5a6b82"><input type="checkbox" id="fl"> Show who has left</label>
     <span class="cnt" id="cnt"></span>
@@ -221,6 +221,9 @@ echo $pageHead;
   var CSRF = <?= json_encode(csrf_token()) ?>;
   var $ = function(id){ return document.getElementById(id); };
   var sel = {}, byId = {};
+  /* nobody has a stage yet (a new setup): show everyone, or the page would open empty */
+  var PRODQ = true;
+  if (!ROWS.some(function(r){ return r.st.length; })) document.getElementById('fs').value = '';
   ROWS.forEach(function(r){ byId[r.id] = r; });
   function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function money(v){ return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -232,8 +235,9 @@ echo $pageHead;
     return ROWS.filter(function(r){
       if (!left && !r.on) return false;
       if (d && r.dept !== d) return false;
+      if (s === 'prod' && !r.st.length && !(q && PRODQ)) return false;   // typing a name still finds a no-stage person, to give them a stage
       if (s === 'none' && r.st.length) return false;
-      if (s && s !== 'none' && r.st.indexOf(+s) < 0) return false;
+      if (s && s !== 'none' && s !== 'prod' && r.st.indexOf(+s) < 0) return false;
       if (q && (r.code + ' ' + r.name).toLowerCase().indexOf(q) < 0) return false;
       return true;
     });
@@ -243,6 +247,7 @@ echo $pageHead;
     var h = STAGES.map(function(s){ var n = active.filter(function(r){ return r.st.indexOf(s.id) >= 0; }).length;
       return '<button type="button" data-fs="' + s.id + '"' + ($('fs').value === String(s.id) ? ' class="on"' : '') + '>' + esc(s.name) + ' <b>' + n + '</b></button>'; });
     var none = active.filter(function(r){ return !r.st.length; }).length;
+    h.unshift('<button type="button" data-fs="prod"' + ($('fs').value === 'prod' ? ' class="on"' : '') + '>In production <b>' + (active.length - none) + '</b></button>');
     h.push('<button type="button" data-fs="none"' + ($('fs').value === 'none' ? ' class="on"' : '') + '>No stage <b>' + none + '</b></button>');
     $('tot').innerHTML = h.join('');
   }
@@ -254,7 +259,7 @@ echo $pageHead;
     var list = shown();
     $('tb').innerHTML = list.length ? list.map(function(r){
       return '<tr data-id="' + r.id + '"' + (sel[r.id] ? ' class="sel"' : '') + '><td class="ck"><input type="checkbox" data-ck="' + r.id + '"' + (sel[r.id] ? ' checked' : '') + ' aria-label="Tick ' + esc(r.name) + '"></td>'
-        + '<td class="code">' + esc(r.code) + '</td><td>' + esc(r.name) + (r.on ? '' : '<span class="left">left</span>') + '</td><td class="dept">' + esc(r.dept || '—') + '</td>'
+        + '<td class="code">' + esc(r.code) + '</td><td>' + esc(r.name) + (r.on ? '' : '<span class="left">left</span>') + (!r.st.length && $('fs').value === 'prod' ? '<span class="left" style="background:#fff4e5;color:#a35a00">no stage · not production</span>' : '') + '</td><td class="dept">' + esc(r.dept || '—') + '</td>'
         + '<td>' + chips(r) + '</td><td class="n">' + r.n + '</td><td class="n">' + money(r.amt) + '</td></tr>';
     }).join('') : '<tr><td colspan="7" class="none">Nobody matches.</td></tr>';
     $('cnt').textContent = list.length + ' shown of ' + ROWS.filter(function(r){ return r.on; }).length + ' on the roll';

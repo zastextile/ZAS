@@ -60,12 +60,12 @@ echo "3. But a stage nobody is on yet still offers the whole floor\n";
 /* THE SAFETY NET. Without it, uploading this file makes every production
    list empty until 200 people have been allotted one by one — which is the
    opposite of what he asked for. */
-ok(str_contains($pe, 'var onStage = 0;'), 'the entry screen counts who NAMES the stage');
+ok(str_contains($pe, 'var onStage = WORKERS.some(function(w){ return w.sg && w.sg.indexOf(sid) >= 0; });'), 'the entry screen checks whether anybody NAMES the stage');
 ok(str_contains($pe, 'if (onStage) { narrowed = all.length - fit.length; use = fit; }'),
    '  and narrows only when somebody does');
 $peF = preg_replace('/\s+/', ' ', $pe);
-ok(str_contains($peF, 'type a name or code to reach anybody'),
-   'and the cut is said, with everybody still reachable by typing');
+ok(str_contains($peF, "'Only people ticked for ' + esc(picked.st) + ' are listed"),
+   'and the cut is said: the list follows the ticks (owner, 19 Nov 2026)');
 
 echo "4. The picture, department by department\n";
 $WORKERS = [
