@@ -485,6 +485,14 @@ $sum = array_sum(array_map(fn($x) => empty($x['memo']) ? $x['earned'] - $x['dedu
 ok($stl['opening_paisa'] + $sum === $stl['closing_paisa'], '  so the balance is exactly what it was without that line');
 $owed = (int) Db::value("SELECT SUM(amount_paisa - recovered_paisa) FROM att_fin_advances WHERE employee_id = ? AND status = 'active'", [$emp['D001']]);
 ok($stl['advance_left_paisa'] === $owed && $owed > 0, '  and the statement says how much is still to recover (Rs ' . number_format($owed / 100) . ')');
+$ev = Fin::ledgerSummary($C, '2026-03-01', '2026-03-31');
+$er = array_column($ev['rows'], null, 'code');
+$ok3 = true; foreach ($ev['rows'] as $x) { $ok3 = $ok3 && $x['net_paisa'] === $x['closing_paisa'] - $x['advance_left_paisa'] - $x['loan_left_paisa']; }
+ok(isset($er['D001']) && $er['D001']['advance_left_paisa'] + $er['D001']['loan_left_paisa'] === $owed && $ok3,
+   'EVERYONE LEDGER: each person shows the advance and loan still to recover, and net = wages owed − advance − loan');
+ok($ev['totals']['net_paisa'] === array_sum(array_column($ev['rows'], 'net_paisa')) && $ev['totals']['loan_left_paisa'] === array_sum(array_column($ev['rows'], 'loan_left_paisa')), '  and the totals add up');
+$quiet = Fin::ledgerSummary($C, '2030-01-01', '2030-01-01');
+ok(in_array('D001', array_column($quiet['rows'], 'code'), true), '  someone still owing a loan is listed even in a window with no wage lines');
 $sv = Fin::saveStaff([['employee_id' => $emp['D002'], 'qr_payload' => 'CARD-D002-X']], '', $A, true, $admin);
 ok($sv['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', 'the card text is kept from the same one form');
 ok(Fin::saveStaff([['employee_id' => $emp['D002'], 'full_name' => 'Dina Daily']], '', $A, true, $admin)['ok'] && Db::value('SELECT qr_payload FROM att_employees WHERE id = ?', [$emp['D002']]) === 'CARD-D002-X', '  and a save that does not mention it leaves it alone');

@@ -282,6 +282,7 @@ page_header('People Finance');
 .fin table.stmt.lg td{font-size:13px}
 .fin table.stmt.lg td:nth-child(2){font-family:var(--ff);font-weight:500;font-size:12.5px}
 .fin table.stmt td.c-earn{color:#1f7a3a;font-weight:600}.fin table.stmt td.c-ded{color:#c2620a;font-weight:600}.fin table.stmt td.c-pay{color:var(--pri);font-weight:600}
+.fin table.stmt td.c-adv{color:#5a3fa8;font-weight:600}.fin table.stmt td.c-neg b,.fin table.stmt tr.tot td.c-neg{color:#b42318}
 .fin table.stmt td.nil{color:#b6c0cb}
 .fin .gatepic{width:120px;height:150px;border:1px solid var(--line);border-radius:4px;background:var(--soft);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;overflow:hidden;flex:0 0 auto}
 .fin .gatepic img{width:100%;height:100%;object-fit:cover}
@@ -2237,19 +2238,26 @@ page_header('People Finance');
         holder.textContent = '';
         if (!r.ok) return holder.appendChild(fail(r));
         var rows = r.rows.filter(function(x){ return (!LG.dept || x.department_name === LG.dept) && (!LG.type || x.pay_type === LG.type); });
-        var t = { b: 0, e: 0, d: 0, p: 0, c: 0 };
-        rows.forEach(function(x){ t.b += x.before_paisa; t.e += x.earned; t.d += x.deducted; t.p += x.paid; t.c += x.closing_paisa; });
-        holder.appendChild(cards([['Owed before ' + nice(LG.from), t.b, 'k-open'], ['Total earnings', t.e, 'k-earn'], ['Total deductions', t.d, 'k-ded'], ['Total payments', t.p, 'k-pay'], ['Owed on ' + nice(LG.to), t.c, 'k-bal']]));
+        var t = { b: 0, e: 0, d: 0, p: 0, c: 0, a: 0, l: 0, n: 0 };
+        rows.forEach(function(x){ t.b += x.before_paisa; t.e += x.earned; t.d += x.deducted; t.p += x.paid; t.c += x.closing_paisa; t.a += x.advance_left_paisa || 0; t.l += x.loan_left_paisa || 0; t.n += x.net_paisa || 0; });
+        /* advance left, loan left and net beside the wages owed, as on one person's ledger (owner, 19 Nov 2026) */
+        var hasAL = t.a || t.l;
+        holder.appendChild(cards([['Owed before ' + nice(LG.from), t.b, 'k-open'], ['Total earnings', t.e, 'k-earn'], ['Total deductions', t.d, 'k-ded'], ['Total payments', t.p, 'k-pay'], ['Owed on ' + nice(LG.to) + ' · wages', t.c, 'k-bal']]
+          .concat(t.a ? [['Advances still to recover', t.a, 'k-adv']] : []).concat(t.l ? [['Loans still to recover', t.l, 'k-adv']] : [])
+          .concat(hasAL ? [['Net position · ' + (t.n < 0 ? 'staff owe the company' : 'the company owes staff'), t.n, 'k-net']] : [])));
         if (!rows.length) return holder.appendChild(el('div', { class: 'cardx empty', text: 'Nothing in the ledger for these dates.' }));
         var tb = el('tbody');
         rows.forEach(function(x){
           tb.appendChild(el('tr', { class: 'click', tabindex: '0', click: function(){ pick(x); }, keydown: function(e){ if (e.key === 'Enter') pick(x); } }, [
             el('td', { 'data-sort': x.full_name }, [el('b', { text: x.full_name }), el('div', { class: 'muted small', text: x.code + ' · ' + x.department_name + (x.pay_type ? ' · ' + KIND1[x.pay_type] : '') })]),
-            el('td', { class: 'num', text: rs(x.before_paisa) }), dash(x.earned, 'c-earn'), dash(x.deducted, 'c-ded'), dash(x.paid, 'c-pay'), el('td', { class: 'num' }, [el('b', { text: rs(x.closing_paisa) })])]));
+            el('td', { class: 'num', text: rs(x.before_paisa) }), dash(x.earned, 'c-earn'), dash(x.deducted, 'c-ded'), dash(x.paid, 'c-pay'), el('td', { class: 'num' }, [el('b', { text: rs(x.closing_paisa) })])]
+            .concat(hasAL ? [dash(x.advance_left_paisa, 'c-adv'), dash(x.loan_left_paisa, 'c-adv'), el('td', { class: 'num' + (x.net_paisa < 0 ? ' c-neg' : ''), 'data-sort': String(x.net_paisa) }, [el('b', { text: rs(x.net_paisa) })])] : [])));
         });
         tb.appendChild(el('tr', { class: 'tot' }, [el('td', {}, [el('b', { text: 'Total — ' + rows.length + (rows.length === 1 ? ' person' : ' people') })]), el('td', { class: 'num', text: rs(t.b) }),
-          el('td', { class: 'num c-earn', text: rs(t.e) }), el('td', { class: 'num c-ded', text: rs(t.d) }), el('td', { class: 'num c-pay', text: rs(t.p) }), el('td', { class: 'num', text: rs(t.c) })]));
-        var table = el('table', { class: 't stmt lg sortable' }, [el('thead', {}, [el('tr', {}, ['Employee', 'Owed before (PKR)', 'Earnings (PKR)', 'Deductions (PKR)', 'Payments (PKR)', 'Owed at end (PKR)'].map(function(h, i){ return el('th', { style: i ? 'text-align:right' : null, text: h }); }))]), tb]);
+          el('td', { class: 'num c-earn', text: rs(t.e) }), el('td', { class: 'num c-ded', text: rs(t.d) }), el('td', { class: 'num c-pay', text: rs(t.p) }), el('td', { class: 'num', text: rs(t.c) })]
+          .concat(hasAL ? [el('td', { class: 'num c-adv', text: rs(t.a) }), el('td', { class: 'num c-adv', text: rs(t.l) }), el('td', { class: 'num' + (t.n < 0 ? ' c-neg' : ''), text: rs(t.n) })] : [])));
+        var heads = ['Employee', 'Owed before (PKR)', 'Earnings (PKR)', 'Deductions (PKR)', 'Payments (PKR)', 'Owed at end (PKR)'].concat(hasAL ? ['Advance left (PKR)', 'Loan left (PKR)', 'Net (PKR)'] : []);
+        var table = el('table', { class: 't stmt lg sortable' }, [el('thead', {}, [el('tr', {}, heads.map(function(h, i){ return el('th', { style: i ? 'text-align:right' : null, text: h }); }))]), tb]);
         printable = { title: 'Employee ledger — everyone', sub: rows.length + (rows.length === 1 ? ' person' : ' people'), table: table };
         holder.appendChild(el('div', { class: 'cardx scroll' }, [table]));
       });

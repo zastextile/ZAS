@@ -500,7 +500,9 @@ const body = p => p.textContent('#fin-body');
     const e6 = []; g.on('pageerror', e => e6.push(e.message));
     await g.goto(BASE + '/att_finance.php#ledger');
     await g.waitForSelector('table.lg tr.click');
-    check('EMPLOYEE LEDGER: the five buttons, the figures and everyone in one table', (await g.locator('.lgacts button').count()) === 5 && (await g.locator('.lgcard').count()) === 5 && /Total —/.test(await body(g)));
+    check('EMPLOYEE LEDGER: the five buttons, the figures and everyone in one table', (await g.locator('.lgacts button').count()) === 5 && (await g.locator('.lgcard').count()) >= 5 && /Total —/.test(await body(g)));
+    { const nc = await g.locator('.lgcard').count(), hd = await g.locator('table.lg thead').innerText();
+      check('  with an advance or loan outstanding: its cards, and Advance left / Loan left / Net columns', nc === 5 ? !/Loan left/.test(hd) : /Advance left[\s\S]*Loan left[\s\S]*Net/.test(hd) && /Net position/.test(await body(g))); }
     await g.waitForTimeout(500); await shot(g, '13-ledger-everyone');
     await g.click('.lgacts button:has-text("Add Earning")');
     await g.waitForSelector('#fin-shade table.entry');

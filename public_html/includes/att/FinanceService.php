@@ -586,13 +586,23 @@ final class FinanceService
                LEFT JOIN att_fin_ledger l ON l.employee_id = e.id AND l.cancelled_at IS NULL AND l.entry_date <= ?
               WHERE 1 = 1 $w" . ($caps['see_salary'] ? '' : " AND COALESCE(f.pay_type, '') <> 'salary'") . '
               GROUP BY e.id, e.code, e.full_name, d.name, f.pay_type
-             HAVING COUNT(l.id) > 0
+             HAVING COUNT(l.id) > 0 OR e.id IN (SELECT a.employee_id FROM att_fin_advances a WHERE a.status = \'active\')
               ORDER BY e.full_name LIMIT 5000',
             array_merge([$from, $from, $to, $from, $to, $from, $to, $to], $p));
-        $t = ['before_paisa' => 0, 'earned' => 0, 'deducted' => 0, 'paid' => 0, 'closing_paisa' => 0];
+        /* what is still to recover of each person's advances and loans, today (owner, 19 Nov 2026):
+           kept apart from the wages owed, and netted only for the "net" column */
+        $left = [];
+        foreach (Db::all("SELECT employee_id, kind, SUM(amount_paisa - recovered_paisa) AS left_paisa
+                            FROM att_fin_advances WHERE status = 'active' GROUP BY employee_id, kind") as $a) {
+            $left[(int) $a['employee_id']][$a['kind'] === 'loan' ? 'loan' : 'advance'] = (int) $a['left_paisa'];
+        }
+        $t = ['before_paisa' => 0, 'earned' => 0, 'deducted' => 0, 'paid' => 0, 'closing_paisa' => 0, 'advance_left_paisa' => 0, 'loan_left_paisa' => 0, 'net_paisa' => 0];
         foreach ($rows as &$r) {
             foreach (['before_paisa', 'earned', 'deducted', 'paid'] as $k) { $r[$k] = (int) $r[$k]; }
             $r['closing_paisa'] = $r['before_paisa'] + $r['earned'] - $r['deducted'] - $r['paid'];
+            $r['advance_left_paisa'] = $left[(int) $r['employee_id']]['advance'] ?? 0;
+            $r['loan_left_paisa'] = $left[(int) $r['employee_id']]['loan'] ?? 0;
+            $r['net_paisa'] = $r['closing_paisa'] - $r['advance_left_paisa'] - $r['loan_left_paisa'];
             unset($r['line_count']);
             foreach ($t as $k => $_) { $t[$k] += $r[$k]; }
         }

@@ -1161,8 +1161,9 @@ try {
                 admin_answer($lg);
             }
             $rs = static fn(int $p): string => number_format($p / 100, 2, '.', '');
-            send_csv('people-ledger-' . $lg['from'] . '-to-' . $lg['to'] . '.csv', ['Code', 'Name', 'Department', 'Paid as', 'Owed before', 'Earned', 'Deducted', 'Paid', 'Owed at end'],
-                array_map(static fn(array $r): array => [$r['code'], $r['full_name'], $r['department_name'], (string) $r['pay_type'], $rs($r['before_paisa']), $rs($r['earned']), $rs($r['deducted']), $rs($r['paid']), $rs($r['closing_paisa'])], $lg['rows']));
+            send_csv('people-ledger-' . $lg['from'] . '-to-' . $lg['to'] . '.csv', ['Code', 'Name', 'Department', 'Paid as', 'Owed before', 'Earned', 'Deducted', 'Paid', 'Owed at end', 'Advance left (today)', 'Loan left (today)', 'Net (+ we owe / - he owes)'],
+                array_map(static fn(array $r): array => [$r['code'], $r['full_name'], $r['department_name'], (string) $r['pay_type'], $rs($r['before_paisa']), $rs($r['earned']), $rs($r['deducted']), $rs($r['paid']), $rs($r['closing_paisa']),
+                    $rs($r['advance_left_paisa']), $rs($r['loan_left_paisa']), $rs($r['net_paisa'])], $lg['rows']));
             break;
 
         case $method === 'POST' && preg_match('#^/finance/people/(\d+)/profile$#', $route, $m) === 1:
