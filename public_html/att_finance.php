@@ -274,6 +274,8 @@ page_header('People Finance');
 .fin .lgcard.k-pay{border-left-color:var(--pri);background:#f3f8fd}.fin .lgcard.k-pay b{color:var(--pri)}
 .fin .lgcard.k-adv{border-left-color:#6b4fbb;background:#f6f3fc}.fin .lgcard.k-adv b{color:#5a3fa8}
 .fin .lgcard.k-net{border-left-color:#1d2d3e;background:#fff;box-shadow:inset 0 0 0 1px #1d2d3e}
+.fin .lgcard.k-info{border-left-color:#8396a8;background:#f7f9fb;border-style:solid;border-color:#e3e8ee #e3e8ee #e3e8ee #8396a8}.fin .lgcard.k-info b{font-size:16px;color:#32475b}
+.fin .lgcard.k-info small{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fin table.lg tr.memo td{color:#6b5a8e;font-style:italic;background:#faf8fe}
 .fin .lghead .av{width:36px;height:36px}
 .fin table.stmt.lg th{background:var(--navy);color:#fff;border-bottom:0;font-size:12px;padding:8px 10px}
@@ -2276,7 +2278,8 @@ page_header('People Finance');
           var advL = leftOf('advance'), loanL = leftOf('loan');
           holder.appendChild(cards([['Opening balance', r.opening_paisa, 'k-open'], ['Total earnings', r.totals.earned, 'k-earn'], ['Total deductions', r.totals.deducted, 'k-ded'], ['Total payments', r.totals.paid, 'k-pay'], ['Closing balance · wages owed', r.closing_paisa, 'k-bal']]
             .concat(advL ? [['Advance still to recover', advL, 'k-adv']] : []).concat(loanL ? [['Loan still to recover', loanL, 'k-adv']] : [])
-            .concat(advL || loanL ? [['Net position · ' + (r.closing_paisa - advL - loanL < 0 ? 'he owes the company' : 'the company owes him'), r.closing_paisa - advL - loanL, 'k-net']] : [])));
+            .concat(advL || loanL ? [['Net position · ' + (r.closing_paisa - advL - loanL < 0 ? 'he owes the company' : 'the company owes him'), r.closing_paisa - advL - loanL, 'k-net']] : [])
+            .concat(infoCards(p, r, (advL ? 1 : 0) + (loanL ? 1 : 0) + (advL || loanL ? 1 : 0)))));
           var tb = el('tbody');
           tb.appendChild(el('tr', { class: 'open' }, [el('td', { text: nice(r.from) }), el('td', { text: 'OPENING' }), el('td', {}, [el('b', { text: 'Balance brought forward' })]),
             dash(0), dash(0), dash(0), el('td', { class: 'num' }, [el('b', { text: rs(r.opening_paisa) })])]));
@@ -2310,7 +2313,28 @@ page_header('People Finance');
     });
   }
   function cards(list){
-    return el('div', { class: 'lgcards' }, list.map(function(x){ return el('div', { class: 'lgcard ' + x[2] }, [el('span', { text: x[0] }), el('b', { text: 'PKR ' + rs(x[1]) })]); }));
+    return el('div', { class: 'lgcards' }, list.map(function(x){
+      if (x[2] === 'k-info') return el('div', { class: 'lgcard k-info' }, [el('span', { text: x[0] }), el('b', { text: x[1] }), el('small', { text: x[3] || '' })]);
+      return el('div', { class: 'lgcard ' + x[2] }, [el('span', { text: x[0] }), el('b', { text: 'PKR ' + rs(x[1]) })]);
+    }));
+  }
+  /* INFO CARDS on one person's ledger (owner, 19 Nov 2026): what the next pay takes back, the last payment and how he
+     is paid — read from what the page already has, no extra call. They fill the second row up to five cards. */
+  function infoCards(p, r, used){
+    var out = [], later = [], parts = [], take = 0;
+    (r.advances || []).forEach(function(a){
+      if (a.status !== 'active') return;
+      if (!a.per_pay_paisa) { later.push((a.kind === 'loan' ? 'loan' : 'advance') + ' paused'); return; }
+      if (a.recover_from && a.recover_from > S.today) { later.push((a.kind === 'loan' ? 'loan' : 'advance') + ' starts ' + nice(a.recover_from)); return; }
+      var x = Math.min(a.per_pay_paisa, a.left_paisa); take += x; parts.push((a.kind === 'loan' ? 'loan ' : 'advance ') + rs(x));
+    });
+    if (take || later.length) out.push(['Next pay takes back', take ? 'PKR ' + rs(take) : 'Nothing yet', 'k-info', parts.concat(later).join(' · ')]);
+    var last = (r.rows || []).filter(function(x){ return x.kind === 'payment' && x.paid > 0; }).pop();
+    out.push(['Last payment', last ? 'PKR ' + rs(last.paid) : 'None', 'k-info', last ? nice(last.date) + (last.method ? ' · ' + last.method : '') : 'from ' + nice(r.from) + ' to ' + nice(r.to)]);
+    var how = p.pay_type === 'salary' ? (p.basic_paisa === null || p.basic_paisa === undefined ? 'Fixed salary' : 'PKR ' + rs(p.basic_paisa) + ' a month')
+            : p.pay_type === 'daily' ? (p.daily_rate_paisa ? 'PKR ' + rs(p.daily_rate_paisa) + ' a day' : 'Daily wages') : p.pay_type === 'contract' ? 'By production' : '';
+    if (how) out.push(['Paid as · ' + (KIND1[p.pay_type] || ''), how, 'k-info', (p.pay_type === 'salary' && p.allowance_paisa ? '+ ' + rs(p.allowance_paisa) + ' allowance · ' : '') + (p.pay_method === 'bank' ? 'by bank' : p.pay_method === 'cash' ? 'in cash' : '')]);
+    return out.slice(0, Math.max(0, 5 - used));
   }
   /* Kept for the old way in: a person's statement in a dialog. */
   function statement(x){
