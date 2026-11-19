@@ -31,7 +31,8 @@ $PAGES = [
     'inv_verify.php'     => ['iv',  'zskin ivchk'],
     'inv_setup.php'      => ['iv',  'zskin ivset'],
     'inv_reset.php'      => ['ir',  'zskin'],
-    'inv_parties.php'    => ['ip',  'zskin'],
+    /* inv_parties.php left the sweep on 19 Nov 2026: it now has its own
+       compact Fiori-style page (list, side panel, customers) — see the file. */
     'inv_ordercost.php'  => ['oc',  'zskin'],
     'inv_exceptions.php' => ['ex',  'zskin'],
 ];
@@ -158,7 +159,7 @@ foreach ($PAGES as $f => [$pre, $cls]) {
     if (!preg_match('/<style>(.*?)<\/style>/s', $src, $m)) { ok(false, "$f has a stylesheet"); continue; }
     $cases[$f] = ['pre' => $pre, 'cls' => $cls, 'css' => $m[1], 'src' => $src];
 }
-ok(count($cases) === 11, 'all eleven stylesheets came out, got ' . count($cases));
+ok(count($cases) === 10, 'all ten stylesheets came out (Parties has its own page now), got ' . count($cases));
 
 $head = '<!doctype html><html><head><meta charset="utf-8">'
       . '<style>' . file_get_contents($B . 'assets/css/app.css') . '</style>';

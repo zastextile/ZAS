@@ -1,8 +1,10 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/export.php';
+require_once __DIR__ . '/includes/parties.php';
 require_login();
 exp_ensure_schema();
+pty_ensure_schema();
 
 function zas_ensure_reopen_columns_v26(): void {
     try { db()->exec("ALTER TABLE shipments ADD COLUMN reopen_status VARCHAR(40) NULL AFTER status"); } catch (Throwable $e) {}
@@ -236,24 +238,36 @@ if (function_exists('ll_script')) echo ll_script(['tbody' => '#invoiceRows', 'id
 </div>
 <?php endif; ?>
 
+<?php /* TIGHT HEADER (owner, 19 Nov 2026): buyer wide on the left, the
+         document facts beside it, six columns instead of loose auto-fit
+         boxes. Same field names, so shipment_save.php is unchanged. */ ?>
+<style>
+.shh{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px 12px;align-items:start}
+.shh .c3{grid-column:span 3}.shh .c2{grid-column:span 2}.shh .r2{grid-row:span 2}
+.shh textarea.zin{min-height:96px}
+.shh .opt{display:flex;align-items:center;gap:8px;font-size:12.5px;color:#33415c;cursor:pointer;padding-top:20px;white-space:nowrap}
+@media(max-width:900px){.shh{grid-template-columns:1fr 1fr}.shh .c3,.shh .c2{grid-column:1/-1}.shh .r2{grid-row:auto}}
+</style>
 <div class="zcard">
   <div class="zhead"><h2>Shipment Header</h2></div>
-  <div class="zgrid">
+  <div class="shh">
+    <label class="zlabel c3">Buyer Name<input class="zin" name="buyer_name" value="<?= e($shipment['buyer_name']) ?>" <?= $ro ?> placeholder="Type to pick a customer"><?php if (!$ro): ?><input type="hidden" name="party_id" value="<?= (int)($shipment['party_id'] ?? 0) ?: '' ?>"><?php endif; ?></label>
     <label class="zlabel">Invoice No.<input class="zin" name="invoice_no" value="<?= e($shipment['invoice_no']) ?>" <?= $ro ?>></label>
     <label class="zlabel">Invoice Date<input class="zin" type="date" name="invoice_date" value="<?= e($shipment['invoice_date']) ?>" <?= $ro ?>></label>
     <?php if($showRates): ?>
     <label class="zlabel">Currency<select class="zin" name="currency" <?= $dis ?>><?php foreach(['USD','EUR','GBP','PKR'] as $cur): ?><option <?= $shipment['currency']===$cur?'selected':'' ?>><?= $cur ?></option><?php endforeach; ?></select></label>
-    <label class="zlabel">Payment Terms<input class="zin" name="payment_terms" value="<?= e($shipment['payment_terms']) ?>" <?= $ro ?>></label>
-    <?php endif; ?>
-    <label class="zlabel zspan2">Buyer Name<input class="zin" name="buyer_name" value="<?= e($shipment['buyer_name']) ?>" <?= $ro ?>></label>
-    <label class="zlabel zspan2">Buyer Address<textarea class="zin" name="buyer_address" style="min-height:60px" <?= $ro ?>><?= e($shipment['buyer_address']) ?></textarea></label>
+    <?php else: ?><span></span><?php endif; ?>
+    <label class="zlabel c3 r2">Buyer Address<textarea class="zin" name="buyer_address" <?= $ro ?>><?= e($shipment['buyer_address']) ?></textarea></label>
     <label class="zlabel">Buyer Country<input class="zin" name="buyer_country" value="<?= e($shipment['buyer_country']) ?>" <?= $ro ?>></label>
     <label class="zlabel">Destination Port<input class="zin" name="destination_port" value="<?= e($shipment['destination_port']) ?>" <?= $ro ?>></label>
+    <label class="zlabel">Incoterm<input class="zin" name="incoterm" value="<?= e($shipment['incoterm'] ?? '') ?>" placeholder="e.g. FOB Karachi" <?= $ro ?>></label>
+    <?php if($showRates): ?>
+    <label class="zlabel">Payment Terms<input class="zin" name="payment_terms" value="<?= e($shipment['payment_terms']) ?>" <?= $ro ?>></label>
+    <?php else: ?><span></span><?php endif; ?>
     <label class="zlabel">PO No.<input class="zin" name="po_no" value="<?= e($shipment['po_no']) ?>" <?= $ro ?>></label>
     <label class="zlabel">BL / Container No.<input class="zin" name="bl_container_no" value="<?= e($shipment['bl_container_no']) ?>" <?= $ro ?>></label>
-    <label class="zlabel">Incoterm<input class="zin" name="incoterm" value="<?= e($shipment['incoterm'] ?? '') ?>" placeholder="e.g. FOB Pakistan" <?= $ro ?>></label>
-    <label class="zlabel zspan2" style="display:flex;align-items:center;gap:10px;margin-top:6px;color:#33415c;font-size:13px;cursor:pointer"><input type="checkbox" name="optional_column_enabled" <?= $optOn?'checked':'' ?> <?= $dis ?> style="width:16px;height:16px;accent-color:#0ea8c9"> Enable Optional Column</label>
-    <label class="zlabel zspan2" id="opt-title-wrap" style="display:<?= $optOn?'block':'none' ?>">Optional Column Title<input class="zin" name="optional_column_title" value="<?= e($shipment['optional_column_title']) ?>" <?= $ro ?>></label>
+    <label class="opt c2"><input type="checkbox" name="optional_column_enabled" <?= $optOn?'checked':'' ?> <?= $dis ?> style="width:15px;height:15px;accent-color:#0a6ed1"> Extra column on the lines</label>
+    <label class="zlabel c2" id="opt-title-wrap" style="display:<?= $optOn?'block':'none' ?>">Extra column title<input class="zin" name="optional_column_title" value="<?= e($shipment['optional_column_title']) ?>" <?= $ro ?>></label>
   </div>
 </div>
 
@@ -750,4 +764,10 @@ function hideDeleteModal(){ document.getElementById('deleteModal').style.display
   });
 })();
 </script>
+<?php if (!$ro):
+  $pCan = false; if (is_file(__DIR__ . '/includes/inventory.php')) { require_once __DIR__ . '/includes/inventory.php'; $pCan = function_exists('inv_perm') && inv_perm('master'); }
+  echo pty_picker(['name' => 'input[name="buyer_name"]', 'party_id' => 'input[name="party_id"]', 'address' => 'textarea[name="buyer_address"]', 'country' => 'input[name="buyer_country"]',
+                   'currency' => 'select[name="currency"]', 'payment_terms' => 'input[name="payment_terms"]', 'incoterm' => 'input[name="incoterm"]', 'destination_port' => 'input[name="destination_port"]'],
+                  pty_customers(), $pCan);
+endif; ?>
 <?php page_footer(); ?>

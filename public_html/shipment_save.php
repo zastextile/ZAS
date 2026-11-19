@@ -89,6 +89,12 @@ try {
             current_user()['id'],
             $id
         ]);
+        /* the customer the buyer was picked from (Parties). Its own statement,
+           so a database that has not got the column yet still saves the rest. */
+        if (array_key_exists('party_id', $_POST)) {
+            require_once __DIR__ . '/includes/parties.php';
+            try { db()->prepare("UPDATE shipments SET party_id=? WHERE id=?")->execute([pty_valid_id($_POST['party_id']), $id]); } catch (Throwable $e) {}
+        }
 
         /* THE LINES ARE UPDATED IN PLACE (was: every line deleted and
            inserted again).

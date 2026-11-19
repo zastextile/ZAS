@@ -8,6 +8,8 @@ if (is_staff() || is_production_staff()) { http_response_code(403); exit('Staff 
 require_costing('proforma');
 costing_ensure_schema();
 require_once __DIR__ . '/includes/production.php';
+require_once __DIR__ . '/includes/parties.php';
+pty_ensure_schema();
 /* Only for the bank list that fills the bank fields below. The proforma's own
    behaviour, schema and printing are untouched by this include. */
 require_once __DIR__ . '/includes/export.php';
@@ -210,6 +212,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
           $bankPosted['bank1_name'],$bankPosted['bank1_branch'],$bankPosted['bank1_title'],$bankPosted['bank1_swift'],$bankPosted['bank1_iban'],
           $bankPosted['bank2_name'],$bankPosted['bank2_branch'],$bankPosted['bank2_title'],$bankPosted['bank2_swift'],$bankPosted['bank2_iban'],
           $prodEnabled,$showPfooter,$pfid]);
+    /* the customer the name was picked from (Parties), on its own so the rest saves even without the column */
+    if (array_key_exists('party_id', $_POST)) {
+        try { db()->prepare("UPDATE proforma_invoices SET party_id=? WHERE id=?")->execute([pty_valid_id($_POST['party_id']), $pfid]); } catch (Throwable $e) {}
+    }
     // Feeds forward into every NEW proforma created after this — see
     // company_bank_defaults_merge() in includes/costing.php. A field left
     // blank here doesn't erase the shared default, so filling in only
@@ -319,6 +325,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'conve
         ->execute([$invoiceNo, date('Y-m-d'), $first['customer_name'] ?: '(set buyer name)', $first['customer_address'] ?: '', $first['currency'] ?: 'USD', current_user()['id'], current_user()['id']]);
     $shipmentId = (int)db()->lastInsertId();
     db()->prepare("INSERT IGNORE INTO shipment_assignments (shipment_id,user_id,assigned_by) VALUES (?,?,?)")->execute([$shipmentId, current_user()['id'], current_user()['id']]);
+    /* THE CUSTOMER COMES ACROSS (owner, 19 Nov 2026): the proforma's payment
+       and delivery terms, and from its customer in Parties the country and
+       the port — so the invoice header is not typed a second time. */
+    try {
+        $cust = null; $cpid = (int)($first['party_id'] ?? 0);
+        if ($cpid) { $cs = db()->prepare("SELECT * FROM inv_parties WHERE id=?"); $cs->execute([$cpid]); $cust = $cs->fetch() ?: null; }
+        db()->prepare("UPDATE shipments SET party_id=?, payment_terms=?, incoterm=?, buyer_country=?, destination_port=? WHERE id=?")
+          ->execute([$cust ? $cpid : null, (string)($first['payment_terms'] ?: ($cust['payment_terms'] ?? '')), ($first['delivery_terms'] ?: ($cust['incoterm'] ?? null)) ?: null,
+                     (string)($cust['country'] ?? ''), (string)($cust['destination_port'] ?? ''), $shipmentId]);
+    } catch (Throwable $e) {}
 
     $ins = db()->prepare("INSERT INTO shipment_items (shipment_id,line_no,product_name,des_col,qty,unit,rate,amount) VALUES (?,?,?,?,?,?,?,?)");
     $i = 0;
@@ -637,16 +653,34 @@ if ($id) {
       <?= csrf_field() ?><input type="hidden" name="action" value="save"><input type="hidden" name="id" value="<?= (int)$id ?>">
       <div class="<?= $cardC ?>" style="<?= $card ?>">
         <h2 style="font-size:13.5px;font-weight:600;margin:0 0 9px">Invoice &amp; Customer</h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:8px">
+        <?php /* TIGHT HEADER (owner, 19 Nov 2026): the customer first and wide, the
+                 document facts beside it, the two switches on one line each —
+                 the long explanations moved into the tooltip. Same fields, same
+                 names, so saving is unchanged. */ ?>
+        <style>
+        .pfh{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px 12px;align-items:start}
+        .pfh .c3{grid-column:span 3}.pfh .c2{grid-column:span 2}.pfh .r2{grid-row:span 2}
+        .pfh textarea{min-height:92px !important}
+        .pfsw{display:flex;gap:18px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid #eef1f4}
+        .pfsw label{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:#1d2d3e;cursor:pointer;white-space:nowrap}
+        .pfsw input{appearance:none;-webkit-appearance:none;width:30px;height:16px;border-radius:8px;background:#c4ccd6;position:relative;cursor:pointer;transition:background .15s;margin:0;flex:none}
+        .pfsw input::after{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:left .15s}
+        .pfsw input:checked{background:#0a6ed1}.pfsw input:checked::after{left:16px}
+        .pfsw small{color:#6a7b8c}
+        @media(max-width:900px){.pfh{grid-template-columns:1fr 1fr}.pfh .c3,.pfh .c2{grid-column:1/-1}.pfh .r2{grid-row:auto}}
+        </style>
+        <div class="pfh">
+          <label class="c3" style="<?= $lab ?>">Customer Name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="customer_name" value="<?= e($pf['customer_name']) ?>" placeholder="Type to pick a customer"><input type="hidden" name="party_id" value="<?= (int)($pf['party_id'] ?? 0) ?: '' ?>"></label>
           <label class="<?= $labC ?>" style="<?= $lab ?>">PI No.<input class="<?= $inpC ?>" style="<?= $inp ?>" name="pi_no" value="<?= e($pf['pi_no']) ?>"></label>
           <label class="<?= $labC ?>" style="<?= $lab ?>">PI Date<input class="<?= $inpC ?>" style="<?= $inp ?>" type="date" name="pi_date" value="<?= e($pf['pi_date']) ?>"></label>
-          <label class="<?= $labC ?>" style="<?= $lab ?>">Delivery Date<input class="<?= $inpC ?>" style="<?= $inp ?>" name="delivery_date" value="<?= e($pf['delivery_date'] ?? '') ?>" placeholder="e.g. 45 days after advance received"></label>
-          <label class="<?= $labC ?>" style="<?= $lab ?>">Currency<select class="<?= $inpC ?>" style="<?= $inp ?>" name="currency"><?php foreach(['USD','EUR','GBP','PKR'] as $c): ?><option <?= $pf['currency']===$c?'selected':'' ?>><?= $c ?></option><?php endforeach; ?></select></label>
           <label class="<?= $labC ?>" style="<?= $lab ?>">Status<select class="<?= $inpC ?>" style="<?= $inp ?>" name="status"><?php foreach(['draft'=>'Draft','sent'=>'Sent','confirmed'=>'Confirmed','archived'=>'Archived'] as $k=>$t): ?><option value="<?= $k ?>" <?= ($pf['status']??'draft')===$k?'selected':'' ?>><?= $t ?></option><?php endforeach; ?></select></label>
-          <label style="<?= $lab ?>;grid-column:span 2">Customer Name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="customer_name" value="<?= e($pf['customer_name']) ?>"></label>
-          <label style="<?= $lab ?>;grid-column:span 2">Customer Address<textarea class="<?= $inpC ?>" style="<?= $inp ?>;min-height:56px" name="customer_address"><?= e($pf['customer_address']) ?></textarea></label>
-          <label style="display:flex;align-items:center;gap:9px;margin-top:22px;color:#33415c;font-size:13px;cursor:pointer;grid-column:span 2"><input type="checkbox" name="production_enabled" <?= !empty($pf['production_enabled'])?'checked':'' ?> style="width:16px;height:16px;accent-color:#16a34a"> Enable for Production Tracking <span style="color:#8a97ab;font-weight:400">— lets Production Staff find this order's items in Daily Production Entry</span></label>
-          <label style="display:flex;align-items:center;gap:9px;margin-top:10px;color:#33415c;font-size:13px;cursor:pointer;grid-column:span 2"><input type="checkbox" name="show_pfooter" <?= ($pf['show_pfooter'] ?? 1)?'checked':'' ?> style="width:16px;height:16px;accent-color:#16a34a"> Show standard Terms footer on print <span style="color:#8a97ab;font-weight:400">— Order Acceptance / Production / Quality Claim clauses at the bottom of the printed PDF; untick to leave it off for this proforma</span></label>
+          <label class="c3 r2" style="<?= $lab ?>">Customer Address<textarea class="<?= $inpC ?>" style="<?= $inp ?>" name="customer_address"><?= e($pf['customer_address']) ?></textarea></label>
+          <label class="<?= $labC ?>" style="<?= $lab ?>">Currency<select class="<?= $inpC ?>" style="<?= $inp ?>" name="currency"><?php foreach(['USD','EUR','GBP','PKR'] as $c): ?><option <?= $pf['currency']===$c?'selected':'' ?>><?= $c ?></option><?php endforeach; ?></select></label>
+          <label class="c2 <?= $labC ?>" style="<?= $lab ?>">Delivery Date<input class="<?= $inpC ?>" style="<?= $inp ?>" name="delivery_date" value="<?= e($pf['delivery_date'] ?? '') ?>" placeholder="e.g. 45 days after advance received"></label>
+        </div>
+        <div class="pfsw">
+          <label title="Lets Production Staff find this order's items in Daily Production Entry"><input type="checkbox" name="production_enabled" <?= !empty($pf['production_enabled'])?'checked':'' ?>> Production tracking <small>— staff can book work on this order</small></label>
+          <label title="Order Acceptance / Production / Quality Claim clauses at the bottom of the printed PDF; switch off to leave them out for this proforma"><input type="checkbox" name="show_pfooter" <?= ($pf['show_pfooter'] ?? 1)?'checked':'' ?>> Terms footer on print <small>— standard clauses at the bottom of the PDF</small></label>
         </div>
         <?php if(!empty($pf['production_enabled'])): ?>
         <div style="margin-top:12px;padding:10px 14px;border-radius:10px;background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.2);font-size:12px;color:#16a34a;font-weight:600">Production status: <?= e(ucwords(str_replace('_',' ', $pf['production_status'] ?? 'not_started'))) ?></div>
@@ -1274,6 +1308,10 @@ if ($id) {
     </script>
     </div><?php /* closes .zskin */ ?>
     <?php
+    $pCan = false; if (is_file(__DIR__ . '/includes/inventory.php')) { require_once __DIR__ . '/includes/inventory.php'; $pCan = function_exists('inv_perm') && inv_perm('master'); }
+    echo pty_picker(['name' => 'input[name="customer_name"]', 'party_id' => 'input[name="party_id"]', 'address' => 'textarea[name="customer_address"]',
+                     'currency' => 'select[name="currency"]', 'payment_terms' => 'input[name="payment_terms"]', 'incoterm' => 'input[name="delivery_terms"]'],
+                    pty_customers(), $pCan);
     page_footer(); exit;
 }
 
