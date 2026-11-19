@@ -273,6 +273,7 @@ page_header('People Finance');
 .fin .lgcard.k-ded{border-left-color:#d9730d;background:#fff8f1}.fin .lgcard.k-ded b{color:#b85f08}
 .fin .lgcard.k-pay{border-left-color:var(--pri);background:#f3f8fd}.fin .lgcard.k-pay b{color:var(--pri)}
 .fin .lgcard.k-adv{border-left-color:#6b4fbb;background:#f6f3fc}.fin .lgcard.k-adv b{color:#5a3fa8}
+.fin .lgcard.k-net{border-left-color:#1d2d3e;background:#fff;box-shadow:inset 0 0 0 1px #1d2d3e}
 .fin table.lg tr.memo td{color:#6b5a8e;font-style:italic;background:#faf8fe}
 .fin .lghead .av{width:36px;height:36px}
 .fin table.stmt.lg th{background:var(--navy);color:#fff;border-bottom:0;font-size:12px;padding:8px 10px}
@@ -2261,8 +2262,13 @@ page_header('People Finance');
             el('div', { class: 'row' }, [el('div', { class: 'av', text: initials(p.full_name) }), el('div', { class: 'nm' }, [el('b', { text: p.full_name }),
               el('span', { text: p.code + ' · ' + p.department_name + (p.pay_type ? ' · ' + KIND1[p.pay_type] : '') + ' · Wages payable' })])]),
             btn('← Everyone', function(){ LG.emp = null; ledger(); }, 'sm')]));
-          holder.appendChild(cards([['Opening balance', r.opening_paisa, 'k-open'], ['Total earnings', r.totals.earned, 'k-earn'], ['Total deductions', r.totals.deducted, 'k-ded'], ['Total payments', r.totals.paid, 'k-pay'], ['Closing balance', r.closing_paisa, 'k-bal']]
-            .concat(r.advance_left_paisa ? [['Advance / loan still to recover', r.advance_left_paisa, 'k-adv']] : [])));
+          /* the running balances on cards (owner, 19 Nov 2026): wages owed, what is left of the advance and of the loan,
+             and the net — plus: the company owes him; minus: he owes the company */
+          var leftOf = function(k){ return (r.advances || []).filter(function(a){ return a.status === 'active' && a.kind === k; }).reduce(function(t, a){ return t + a.left_paisa; }, 0); };
+          var advL = leftOf('advance'), loanL = leftOf('loan');
+          holder.appendChild(cards([['Opening balance', r.opening_paisa, 'k-open'], ['Total earnings', r.totals.earned, 'k-earn'], ['Total deductions', r.totals.deducted, 'k-ded'], ['Total payments', r.totals.paid, 'k-pay'], ['Closing balance · wages owed', r.closing_paisa, 'k-bal']]
+            .concat(advL ? [['Advance still to recover', advL, 'k-adv']] : []).concat(loanL ? [['Loan still to recover', loanL, 'k-adv']] : [])
+            .concat(advL || loanL ? [['Net position · ' + (r.closing_paisa - advL - loanL < 0 ? 'he owes the company' : 'the company owes him'), r.closing_paisa - advL - loanL, 'k-net']] : [])));
           var tb = el('tbody');
           tb.appendChild(el('tr', { class: 'open' }, [el('td', { text: nice(r.from) }), el('td', { text: 'OPENING' }), el('td', {}, [el('b', { text: 'Balance brought forward' })]),
             dash(0), dash(0), dash(0), el('td', { class: 'num' }, [el('b', { text: rs(r.opening_paisa) })])]));
