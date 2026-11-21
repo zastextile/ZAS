@@ -813,14 +813,48 @@ if ($id) {
         </div>
       </div>
       <div class="<?= $cardC ?>" style="<?= $card ?>">
+        <?php /* TERMS AND BANK, COMPACT (owner, Step 5): the four terms on one row;
+                 the bank as ONE line — which bank prints, and its details — with
+                 Change to open the fields. Every field keeps its name, so saving
+                 and printing are exactly as before. */ ?>
+        <style>
+        .pft{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px 12px}
+        .pft .w2{grid-column:span 2}
+        .pfbk{margin-top:10px;border:1px solid #d9dee4;border-radius:6px;background:#fff}
+        .pfbk-sum{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:8px 12px}
+        .pfbk-sum .lbl{font-size:12px;color:#556b82;font-weight:500}
+        .pfbk-seg{display:inline-flex;border:1px solid #d9dee4;border-radius:4px;overflow:hidden}
+        .pfbk-seg button{height:28px;padding:0 12px;border:0;border-right:1px solid #d9dee4;background:#fff;color:#556b82;font-weight:600;font-size:12.5px;cursor:pointer}
+        .pfbk-seg button:last-child{border-right:0}.pfbk-seg button.on{background:#eaf2fc;color:#0a6ed1}
+        .pfbk-txt{flex:1;min-width:240px;font-size:13px;color:#1d2d3e}.pfbk-txt small{color:#556b82}
+        .pfbk-txt .none{color:#9a5710}
+        .pfbk-edit{border-top:1px solid #eef1f4;padding:9px 11px;border-radius:0 0 6px 6px;background:#fbfcfd}
+        .pfbk-row{display:grid;grid-template-columns:56px repeat(4,minmax(0,1fr)) minmax(0,1.6fr);gap:8px 10px;align-items:end;margin-bottom:8px}
+        .pfbk-row>b{font-size:12.5px;color:#1d2d3e;padding-bottom:7px}
+        @media(max-width:900px){.pft{grid-template-columns:1fr 1fr}.pfbk-row{grid-template-columns:1fr 1fr}.pfbk-row>b{grid-column:1/-1}}
+        </style>
         <h2 style="font-size:13.5px;font-weight:600;margin:0 0 9px">Terms</h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:8px">
-          <label class="<?= $labC ?>" style="<?= $lab ?>">Payment Terms<input class="<?= $inpC ?>" style="<?= $inp ?>" name="payment_terms" value="<?= e($pf['payment_terms']) ?>"></label>
-          <label class="<?= $labC ?>" style="<?= $lab ?>">Delivery Terms<input class="<?= $inpC ?>" style="<?= $inp ?>" name="delivery_terms" value="<?= e($pf['delivery_terms']) ?>"></label>
-          <label class="<?= $labC ?>" style="<?= $lab ?>">Shipment Terms<input class="<?= $inpC ?>" style="<?= $inp ?>" name="shipment_terms" value="<?= e($pf['shipment_terms']) ?>"></label>
+        <div class="pft">
+          <label class="<?= $labC ?>" style="<?= $lab ?>">Payment terms<input class="<?= $inpC ?>" style="<?= $inp ?>" name="payment_terms" value="<?= e($pf['payment_terms']) ?>" placeholder="e.g. 30% advance, 70% against BL"></label>
+          <label class="<?= $labC ?>" style="<?= $lab ?>">Delivery terms<input class="<?= $inpC ?>" style="<?= $inp ?>" name="delivery_terms" value="<?= e($pf['delivery_terms']) ?>" placeholder="e.g. FOB Karachi"></label>
+          <label class="<?= $labC ?>" style="<?= $lab ?>">Shipment terms<input class="<?= $inpC ?>" style="<?= $inp ?>" name="shipment_terms" value="<?= e($pf['shipment_terms']) ?>" placeholder="e.g. By sea, part shipment allowed"></label>
           <label class="<?= $labC ?>" style="<?= $lab ?>">Validity<input class="<?= $inpC ?>" style="<?= $inp ?>" name="validity" value="<?= e($pf['validity']) ?>" placeholder="e.g. 30 days"></label>
-          <label class="<?= $labC ?>" style="<?= $lab ?>">Bank on Print<select class="<?= $inpC ?>" style="<?= $inp ?>" name="bank_choice"><option value="1" <?= ($pf['bank_choice'] ?? '1')!=='2'?'selected':'' ?>>Bank 1</option><option value="2" <?= ($pf['bank_choice'] ?? '1')==='2'?'selected':'' ?>>Bank 2</option></select></label>
+          <label class="<?= $labC ?> w2" style="<?= $lab ?>">Packing details<input class="<?= $inpC ?>" style="<?= $inp ?>" name="packing_details" value="<?= e($pf['packing_details']) ?>"></label>
+          <label class="<?= $labC ?> w2" style="<?= $lab ?>">Terms &amp; conditions<textarea class="<?= $inpC ?>" style="<?= $inp ?>;min-height:30px" rows="1" name="remarks"><?= e($pf['remarks']) ?></textarea></label>
         </div>
+
+        <div class="pfbk" id="pfBank">
+          <div class="pfbk-sum">
+            <span class="lbl">Bank on print</span>
+            <input type="hidden" name="bank_choice" value="<?= ($pf['bank_choice'] ?? '1') === '2' ? '2' : '1' ?>">
+            <span class="pfbk-seg" id="pfBankSeg"><button type="button" data-b="1">Bank 1</button><button type="button" data-b="2">Bank 2</button></span>
+            <span class="pfbk-txt" id="pfBankTxt"></span>
+            <button type="button" class="zbtn sec" style="padding:0 12px;height:28px" id="pfBankChg">Change</button>
+          </div>
+          <div class="pfbk-edit" id="pfBankEdit" hidden>
+        <?php if (trim((string)($pf['bank1_details'] ?? '')) !== '' && trim((string)($pf['bank1_name'] ?? '')) === '' && trim((string)($pf['bank2_name'] ?? '')) === ''): ?>
+        <div style="margin-top:12px;padding:10px 14px;border-radius:10px;background:rgba(184,137,31,.08);border:1px solid rgba(184,137,31,.25);font-size:12px;color:#8a6410">This proforma still has bank details saved the old way (one free-text box) — it keeps printing exactly as before until you fill in the fields below, at which point those take over.</div>
+        <?php endif; ?>
         <?php
         /* PICK FROM THE BANK MASTER.
          *
@@ -849,8 +883,8 @@ if ($id) {
               <?php endforeach; ?>
             </select>
           </label>
-          <button type="button" class="zbtn sec" style="padding:8px 14px;border-radius:9px;border:1px solid #cbd5e3;background:#f6f8fc;color:#152033;font-size:12.5px;font-weight:600;cursor:pointer" onclick="pfFillBank(1)">Into Bank 1</button>
-          <button type="button" class="zbtn sec" style="padding:8px 14px;border-radius:9px;border:1px solid #cbd5e3;background:#f6f8fc;color:#152033;font-size:12.5px;font-weight:600;cursor:pointer" onclick="pfFillBank(2)">Into Bank 2</button>
+          <button type="button" class="zbtn sec" style="padding:0 12px;height:30px" onclick="pfFillBank(1)">Into Bank 1</button>
+          <button type="button" class="zbtn sec" style="padding:0 12px;height:30px" onclick="pfFillBank(2)">Into Bank 2</button>
         </div>
         <script>
         function pfFillBank(slot) {
@@ -864,51 +898,65 @@ if ($id) {
           }
           var choice = document.querySelector('[name="bank_choice"]');
           if (choice) choice.value = String(slot);
+          if (window.pfBankPaint) pfBankPaint();
         }
         </script>
         <?php endif; ?>
 
-        <?php if (trim((string)($pf['bank1_details'] ?? '')) !== '' && trim((string)($pf['bank1_name'] ?? '')) === '' && trim((string)($pf['bank2_name'] ?? '')) === ''): ?>
-        <div style="margin-top:12px;padding:10px 14px;border-radius:10px;background:rgba(184,137,31,.08);border:1px solid rgba(184,137,31,.25);font-size:12px;color:#8a6410">This proforma still has bank details saved the old way (one free-text box) — it keeps printing exactly as before until you fill in the fields below, at which point those take over.</div>
-        <?php endif; ?>
-        <div class="zsub" style="margin-top:9px;padding:9px 11px;border-radius:6px;background:#fbfcfc;border:1px solid #dde2eb">
-          <div class="zsubh" style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#68737d;margin-bottom:6px">Bank 1</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">
-            <label class="<?= $labC ?>" style="<?= $lab ?>">Bank Name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_name" value="<?= e($pf['bank1_name'] ?? '') ?>" placeholder="Meezan Bank Limited"></label>
+          <div class="pfbk-row">
+            <b>Bank 1</b>
+            <label class="<?= $labC ?>" style="<?= $lab ?>">Bank name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_name" value="<?= e($pf['bank1_name'] ?? '') ?>" placeholder="Meezan Bank Limited"></label>
             <label class="<?= $labC ?>" style="<?= $lab ?>">Branch<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_branch" value="<?= e($pf['bank1_branch'] ?? '') ?>" placeholder="Faisalabad, Pakistan"></label>
-            <label class="<?= $labC ?>" style="<?= $lab ?>">Account Title<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_title" value="<?= e($pf['bank1_title'] ?? '') ?>" placeholder="ZAS Textile"></label>
-            <label class="<?= $labC ?>" style="<?= $lab ?>">SWIFT Code<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_swift" value="<?= e($pf['bank1_swift'] ?? '') ?>" placeholder="MEZNPKKA"></label>
-            <label style="<?= $lab ?>;grid-column:span 2">Account / IBAN<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_iban" value="<?= e($pf['bank1_iban'] ?? '') ?>" placeholder="PK00 MEZN 0000 0000 0000 0000"></label>
+            <label class="<?= $labC ?>" style="<?= $lab ?>">Account title<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_title" value="<?= e($pf['bank1_title'] ?? '') ?>" placeholder="ZAS Textile"></label>
+            <label class="<?= $labC ?>" style="<?= $lab ?>">SWIFT<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_swift" value="<?= e($pf['bank1_swift'] ?? '') ?>" placeholder="MEZNPKKA"></label>
+            <label class="<?= $labC ?> w2" style="<?= $lab ?>">Account / IBAN<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank1_iban" value="<?= e($pf['bank1_iban'] ?? '') ?>" placeholder="PK00 MEZN 0000 0000 0000 0000"></label>
           </div>
-        </div>
-        <div style="margin-top:12px;padding:14px 16px;border-radius:12px;background:#f6f8fc;border:1px solid #e3e9f2">
-          <div class="zsubh" style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#68737d;margin-bottom:6px">Bank 2</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">
-            <label class="<?= $labC ?>" style="<?= $lab ?>">Bank Name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_name" value="<?= e($pf['bank2_name'] ?? '') ?>" placeholder="Habib Bank Limited (HBL)"></label>
+          <div class="pfbk-row">
+            <b>Bank 2</b>
+            <label class="<?= $labC ?>" style="<?= $lab ?>">Bank name<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_name" value="<?= e($pf['bank2_name'] ?? '') ?>" placeholder="Habib Bank Limited (HBL)"></label>
             <label class="<?= $labC ?>" style="<?= $lab ?>">Branch<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_branch" value="<?= e($pf['bank2_branch'] ?? '') ?>" placeholder="Faisalabad, Pakistan"></label>
-            <label class="<?= $labC ?>" style="<?= $lab ?>">Account Title<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_title" value="<?= e($pf['bank2_title'] ?? '') ?>" placeholder="ZAS Textile"></label>
-            <label class="<?= $labC ?>" style="<?= $lab ?>">SWIFT Code<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_swift" value="<?= e($pf['bank2_swift'] ?? '') ?>" placeholder="HABBPKKA"></label>
-            <label style="<?= $lab ?>;grid-column:span 2">Account / IBAN<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_iban" value="<?= e($pf['bank2_iban'] ?? '') ?>" placeholder="PK00 HABB 0000 0000 0000 0000"></label>
+            <label class="<?= $labC ?>" style="<?= $lab ?>">Account title<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_title" value="<?= e($pf['bank2_title'] ?? '') ?>" placeholder="ZAS Textile"></label>
+            <label class="<?= $labC ?>" style="<?= $lab ?>">SWIFT<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_swift" value="<?= e($pf['bank2_swift'] ?? '') ?>" placeholder="HABBPKKA"></label>
+            <label class="<?= $labC ?> w2" style="<?= $lab ?>">Account / IBAN<input class="<?= $inpC ?>" style="<?= $inp ?>" name="bank2_iban" value="<?= e($pf['bank2_iban'] ?? '') ?>" placeholder="PK00 HABB 0000 0000 0000 0000"></label>
+          </div>
           </div>
         </div>
-        <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:8px">
-          <label style="<?= $lab ?>;grid-column:span 2">Packing Details<input class="<?= $inpC ?>" style="<?= $inp ?>" name="packing_details" value="<?= e($pf['packing_details']) ?>"></label>
-          <label style="<?= $lab ?>;grid-column:span 2">Terms &amp; Conditions<textarea class="<?= $inpC ?>" style="<?= $inp ?>;min-height:56px" name="remarks"><?= e($pf['remarks']) ?></textarea></label>
-        </div>
+        <script>
+        /* the bank line: what prints, read from the fields themselves */
+        (function(){
+          var q = function(n){ var el = document.querySelector('[name="' + n + '"]'); return el ? el.value.trim() : ''; };
+          var esc = function(s){ return String(s).replace(/[&<>"]/g, function(c){ return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+          window.pfBankPaint = function(){
+            var b = q('bank_choice') === '2' ? '2' : '1';
+            document.querySelectorAll('#pfBankSeg button').forEach(function(x){ x.classList.toggle('on', x.getAttribute('data-b') === b); });
+            var nm = q('bank' + b + '_name'), rest = [q('bank' + b + '_branch'), q('bank' + b + '_title'), q('bank' + b + '_swift') ? 'SWIFT ' + q('bank' + b + '_swift') : '', q('bank' + b + '_iban')].filter(Boolean);
+            document.getElementById('pfBankTxt').innerHTML = nm ? '<b style="font-weight:600">' + esc(nm) + '</b>' + (rest.length ? ' <small>· ' + esc(rest.join(' · ')) + '</small>' : '')
+              : '<span class="none">No details for Bank ' + b + ' yet — press Change to add them</span>';
+          };
+          document.getElementById('pfBankSeg').addEventListener('click', function(e){ var x = e.target.closest('button'); if (!x) return; document.querySelector('[name="bank_choice"]').value = x.getAttribute('data-b'); pfBankPaint(); });
+          document.getElementById('pfBankChg').addEventListener('click', function(){ var ed = document.getElementById('pfBankEdit'); ed.hidden = !ed.hidden; this.textContent = ed.hidden ? 'Change' : 'Done'; });
+          document.getElementById('pfBankEdit').addEventListener('input', pfBankPaint);
+          pfBankPaint();
+        })();
+        </script>
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px">
-        <button class="<?= $btnC ?>" style="<?= $btn ?>">Save Proforma</button>
+      <?php /* ONE ACTION BAR, as on the shipment page: fixed to the bottom so
+               Save is always in reach. Same buttons, same targets. */ ?>
+      <link rel="stylesheet" href="assets/css/zf.css?v=4">
+      <div class="zf" style="position:sticky;bottom:0;z-index:30;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 12px;margin:10px 0 24px;background:rgba(255,255,255,.97);border:1px solid #d9dee4;border-radius:6px;box-shadow:0 -4px 16px rgba(16,32,56,.08)">
+        <button class="zf-btn pri">Save</button>
+        <a class="zf-btn" target="_blank" href="proforma_print.php?id=<?= (int)$id ?>">Print / PDF</a>
+        <span style="flex:1"></span>
         <?php if (costing_perm('proforma')): ?>
         <?php /* Submits its own form (pfDupForm, below), not this one: a copy
                  is made from what is saved, so the size check that guards
                  Save has nothing to say about it. */ ?>
-        <button type="submit" form="pfDupForm" class="<?= $btnC ?>"
-                onclick="return confirm('Make a copy of <?= e((string)$pf['pi_no']) ?> as a new draft proforma?\n\nThe copy is taken from what is saved — Save first if you have changed anything on this screen.')"
-                style="<?= $btn ?>;background:rgba(14,168,201,.12);color:#0b6f86;border:1px solid rgba(14,168,201,.35)">Duplicate</button>
+        <button type="submit" form="pfDupForm" onclick="return confirm('Make a copy of <?= e((string)$pf['pi_no']) ?> as a new draft proforma?\n\nThe copy is taken from what is saved — Save first if you have changed anything on this screen.')"
+                class="zf-btn">Duplicate</button>
         <?php endif; ?>
         <?php if(costing_perm('delete')): ?>
         <input type="hidden" id="pfDeletePassword" name="delete_password" value="">
-        <button formaction="proforma.php" name="action" value="delete" onclick="return pfConfirmDelete()" class="<?= $btnC ?> del" style="<?= $btn ?>;background:rgba(224,67,93,.15);color:#b8283f;border:1px solid rgba(224,67,93,.3)">Delete</button>
+        <button formaction="proforma.php" name="action" value="delete" onclick="return pfConfirmDelete()" class="zf-btn danger">Delete</button>
         <?php endif; ?>
       </div>
     </form>

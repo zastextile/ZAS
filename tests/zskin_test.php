@@ -92,8 +92,9 @@ ok(str_contains($css, '.zskin .zbt.del:hover{background:var(--bad-soft)'), '  an
 /* the per-ROW remove is no longer a .zbt at all — a red button repeated sixty
    times down a grid is the loudest thing on the screen, so it became .rowx:
    a quiet glyph that only turns red on the row you are on */
-ok(substr_count($pf, '$btnC ?> del') === 1, 'the page-level destructive button uses it, got '
-   . substr_count($pf, '$btnC ?> del'));
+/* Step 5 (owner): the page buttons moved to the shared action bar, where
+   the destructive one is .zf-btn.danger — red text, red only on hover */
+ok(substr_count($pf, 'class="zf-btn danger">Delete') === 1, 'the page-level destructive button is the quiet red one');
 ok(str_contains($css, '.zskin .rowx'), 'and the per-row remove is a quieter control');
 ok(str_contains($css, '.zskin .rowx:hover{background:var(--bad-soft)'), '  that still goes red on hover');
 ok(str_contains(flat($css), 'repeated sixty times down a grid is the loudest thing'),
@@ -130,7 +131,7 @@ ok(!str_contains($pf, 'minmax(200px,1fr));gap:14px'), '  nor the other one');
 ok(str_contains($pf, "margin-bottom:3px';"), 'labels sit 3px from their field, not 5');
 ok(str_contains($pf, 'font-size:13.5px;font-weight:600;margin:0 0 9px'),
    'card headings are 13.5px with 9px under them');
-ok(str_contains($pf, 'padding:9px 11px;border-radius:6px'), 'the bank sub-panels are tightened');
+ok(str_contains($pf, '.pfbk-edit{border-top:1px solid #eef1f4;padding:9px 11px'), 'the bank panel is tight, and folded behind Change (Step 5)');
 ok(str_contains($css, 'min-height:54px'), 'a textarea keeps a usable height rather than collapsing');
 
 echo "6. Both themes are defined at token level, and dark is OPT-IN\n";
