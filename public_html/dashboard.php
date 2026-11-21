@@ -593,6 +593,47 @@ if ($canSeeAnalytics) {
         foreach ($names as $k => $title) if (!empty($byType[$k])) $curBlocks[] = ['title' => $title, 'rows' => $byType[$k]];
     } catch (Throwable $e) {}
 }
+/* WHO IS BEHIND EACH TOTAL (owner, 21 Nov 2026): the three biggest parties
+   of each card, in PKR with the Settings rates — one grouped read each. */
+$topParties = [];
+if ($canSeeAnalytics) {
+    $addTop = function (string $title, string $name, string $cur, float $v) use (&$topParties, $pkrFor1) {
+        $one = $pkrFor1($cur); $name = trim($name) !== '' ? trim($name) : '(no party)';
+        $topParties[$title][$name] = ($topParties[$title][$name] ?? 0) + $v * ($one > 0 ? $one : 1);
+    };
+    try {
+        $st = db()->prepare("SELECT pf.customer_name n, UPPER(COALESCE(NULLIF(pf.currency,''),'USD')) cur, COALESCE(SUM(pit.amount),0) v
+            FROM proforma_invoices pf LEFT JOIN proforma_items pit ON pit.proforma_id = pf.id
+            WHERE COALESCE(pf.pi_date, DATE(pf.created_at)) BETWEEN ? AND ? AND COALESCE(pf.status,'') <> 'cancelled'
+            GROUP BY pf.customer_name, UPPER(COALESCE(NULLIF(pf.currency,''),'USD'))");
+        $st->execute([$curFrom, $curTo]);
+        foreach ($st->fetchAll() as $r) $addTop('Orders (proforma invoices)', (string)$r['n'], (string)$r['cur'], (float)$r['v']);
+    } catch (Throwable $e) {}
+    try {
+        $st = db()->prepare("SELECT c.contract_type t, p.name n, UPPER(COALESCE(NULLIF(c.currency,''),'PKR')) cur, COALESCE(SUM(ci.amount),0) v
+            FROM inv_contracts c LEFT JOIN inv_contract_items ci ON ci.contract_id = c.id LEFT JOIN inv_parties p ON p.id = c.party_id
+            WHERE COALESCE(c.contract_date, DATE(c.created_at)) BETWEEN ? AND ? AND c.status <> 'cancelled'
+            GROUP BY c.contract_type, p.name, UPPER(COALESCE(NULLIF(c.currency,''),'PKR'))");
+        $st->execute([$curFrom, $curTo]);
+        $tn = ['sales' => 'Sales contracts', 'purchase' => 'Purchase contracts', 'jobwork_out' => 'Job work — we send', 'jobwork_in' => 'Job work — we do'];
+        foreach ($st->fetchAll() as $r) if (isset($tn[$r['t']])) $addTop($tn[$r['t']], (string)($r['n'] ?? ''), (string)$r['cur'], (float)$r['v']);
+    } catch (Throwable $e) {}
+    foreach ($topParties as &$tp) { arsort($tp); } unset($tp);
+}
+
+/* A rupee total the way it is said in Pakistan, in Urdu:
+   339,027,276 → "33 کروڑ 90 لاکھ 27 ہزار 276 روپے". */
+function dash_urdu_rupees(float $v): string {
+    $n = (int) round(abs($v));
+    if ($n === 0) return '0 روپے';
+    $parts = [];
+    foreach ([[1000000000, 'ارب'], [10000000, 'کروڑ'], [100000, 'لاکھ'], [1000, 'ہزار']] as [$unit, $word]) {
+        if ($n >= $unit) { $parts[] = intdiv($n, $unit) . ' ' . $word; $n %= $unit; }
+    }
+    if ($n > 0) $parts[] = (string)$n;
+    return implode(' ', $parts) . ' روپے';
+}
+
 $fxMissingList = array_keys($fxMissing);
 sort($fxMissingList);
 
@@ -959,12 +1000,43 @@ function zdash_palette(string $html): string {
       $stripItems[] = ['title' => $blk['title'], 'tot' => $tot, 'cnt' => $cnt, 'noRate' => array_keys($noRate)];
   }
   if ($stripItems): ?>
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:16px">
-  <?php foreach ($stripItems as $it): ?>
-  <div class="dash-card" style="<?= $cardCss ?>;padding:14px 18px">
-    <span style="color:#5a6b82;font-size:12.5px"><?= e($it['title']) ?></span>
-    <div style="font-size:20px;font-weight:700;color:#152033;font-variant-numeric:tabular-nums;margin-top:2px"><?= number_format($it['tot'], 0) ?></div>
-    <div style="font-size:11.5px;color:#8a97ab"><?= (int)$it['cnt'] ?> in <?= e($periodLabel) ?> · PKR<?= $it['noRate'] ? ' · <b style="color:#9b1c2a">no rate for ' . e(implode(', ', $it['noRate'])) . '</b>' : '' ?></div>
+<?php /* EACH CARD SAYS WHO IS BEHIND ITS TOTAL (owner, 21 Nov 2026): the
+         total stays on the left as before; the empty right side lists the
+         three biggest parties and says the total in Urdu, the Pakistani way. */
+  $tone = ['Orders (proforma invoices)' => ['#eaf2fc', '#0a4f96'], 'Sales contracts' => ['#eef8f0', '#1f6b35'], 'Purchase contracts' => ['#fff6e5', '#8a5a00']];
+  $ico = ['Orders (proforma invoices)' => '<path d="M3 4h2l2.2 10.2a1 1 0 0 0 1 .8h8.6a1 1 0 0 0 1-.8L19.5 8H6.2"/><circle cx="9" cy="19" r="1.3"/><circle cx="17" cy="19" r="1.3"/>',
+          'Sales contracts' => '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 16h5"/>',
+          'Purchase contracts' => '<path d="M3 21V10l5 3V10l5 3V10l5 3v8z"/><path d="M3 21h18"/>'];
+?>
+<style>
+.dash-pc{display:grid;grid-template-columns:minmax(150px,.85fr) minmax(0,1.4fr);gap:14px;align-items:stretch}
+.dash-pc .r{border-left:1px solid #e6ebf1;padding-left:14px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.dash-pc .p{display:flex;align-items:center;gap:7px;font-size:12px;color:#33415c;padding:2px 0;border-bottom:1px solid #f1f4f7;min-width:0}
+.dash-pc .p:last-of-type{border-bottom:0}
+.dash-pc .p svg{flex:none;width:14px;height:14px;fill:none;stroke:#8a97ab;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.dash-pc .p span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-pc .p b{font-weight:600;color:#152033;white-space:nowrap;font-variant-numeric:tabular-nums}
+.dash-pc .ur{margin-top:auto;direction:rtl;text-align:right;font-family:'Noto Naskh Arabic','Jameel Noori Nastaleeq','Segoe UI',Tahoma,sans-serif;font-size:13px;border-radius:4px;padding:4px 9px;line-height:1.5}
+.dash-pc .none{font-size:12px;color:#8a97ab}
+@media(max-width:700px){.dash-pc{grid-template-columns:1fr}.dash-pc .r{border-left:0;padding-left:0;border-top:1px solid #e6ebf1;padding-top:8px}}
+</style>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:16px">
+  <?php foreach ($stripItems as $it):
+      $tp = array_slice($topParties[$it['title']] ?? [], 0, 3, true);
+      $tc = $tone[$it['title']] ?? ['#f2f4f6', '#33415c'];
+      $ic = $ico[$it['title']] ?? $ico['Sales contracts']; ?>
+  <div class="dash-card dash-pc" style="<?= $cardCss ?>;padding:14px 18px">
+    <div>
+      <span style="color:#5a6b82;font-size:12.5px"><?= e($it['title']) ?></span>
+      <div style="font-size:20px;font-weight:700;color:#152033;font-variant-numeric:tabular-nums;margin-top:2px"><?= number_format($it['tot'], 0) ?></div>
+      <div style="font-size:11.5px;color:#8a97ab"><?= (int)$it['cnt'] ?> in <?= e($periodLabel) ?> · PKR<?= $it['noRate'] ? ' · <b style="color:#9b1c2a">no rate for ' . e(implode(', ', $it['noRate'])) . '</b>' : '' ?></div>
+    </div>
+    <div class="r">
+      <?php if ($tp): foreach ($tp as $nm => $v): ?>
+        <div class="p" title="<?= e($nm) ?> — PKR <?= number_format($v, 0) ?>"><svg viewBox="0 0 24 24"><?= $ic ?></svg><span><?= e($nm) ?></span><b>PKR <?= number_format($v, 0) ?></b></div>
+      <?php endforeach; else: ?><div class="none">No party named in this period.</div><?php endif; ?>
+      <div class="ur" style="background:<?= $tc[0] ?>;color:<?= $tc[1] ?>" title="<?= e(number_format($it['tot'], 0)) ?> rupees">کل رقم: <?= e(dash_urdu_rupees($it['tot'])) ?></div>
+    </div>
   </div>
   <?php endforeach; ?>
 </div>
