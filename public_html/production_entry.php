@@ -103,8 +103,15 @@ function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, st
     if (abs($wasQty - $newQty) < 0.0001 && $worker === (int)$f['worker_id']) return ['ok' => false, 'error' => 'Nothing changed.'];
 
     $reason = 'Edited: was ' . $qn($wasQty) . ', now ' . $qn($newQty) . ($worker !== (int)$f['worker_id'] ? ', worker changed' : '') . ' — ' . $why;
-    $c = ze_cancel_all($ids, mb_substr($reason, 0, 250), $userId);
-    if (!$c['ok']) return $c;
+    /* THE RESULT IS CHECKED, NOT THE HALF-WAY POINT. Cancelling 900 of cutting
+       on its own would leave stitching above the cut for a moment, and the
+       cancel guard would refuse it — though 900 → 800 is a perfectly good
+       correction. So the old lines are marked cancelled here directly, the new
+       quantity is booked, and only then is the whole flow checked; anything
+       wrong and both steps are undone. */
+    $prog0 = zp_progress_map();          // how the flow stood before, so old problems do not block a new fix
+    db()->prepare('UPDATE zp_entries SET status=\'cancelled\', cancelled_by=?, cancelled_at=NOW(), cancel_reason=? WHERE status=\'active\' AND id IN ('
+        . implode(',', array_fill(0, count($ids), '?')) . ')')->execute(array_merge([$userId ?: null, mb_substr($reason, 0, 250)], $ids));
 
     /* share the new quantity down the same merged row the list shows, first
        operation first, oldest line first — with the old lines already freed */
@@ -117,14 +124,35 @@ function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, st
     if (!$grp) { ze_restore($ids); return ['ok' => false, 'error' => 'That job is no longer on the list (switched off or removed). Nothing was changed.']; }
     if ($newQty > $grp['left'] + 0.0001) { ze_restore($ids); return ['ok' => false, 'error' => 'Only ' . $qn($grp['left']) . ' can be booked on that row. Nothing was changed.']; }
     $rows = []; $rem = round($newQty, 2);
+    $tag = 'edit ' . bin2hex(random_bytes(4)) . ' of #' . mb_substr(implode(',', $ids), 0, 60);
     foreach ($grp['mem'] as $m) {
         if ($rem <= 0.0001) break;
         $take = min($m[2], $rem); if ($take <= 0) continue;
-        $rows[] = ['item_id' => $m[0], 'op_id' => $m[1], 'op_kind' => $kind, 'worker_id' => $worker, 'qty' => $take, 'note' => 'edit of #' . implode(',', $ids)];
+        $rows[] = ['item_id' => $m[0], 'op_id' => $m[1], 'op_kind' => $kind, 'worker_id' => $worker, 'qty' => $take, 'note' => $tag];
         $rem = round($rem - $take, 2);
     }
     $b = zp_book($date, $rows, $userId);
     if (!$b['ok']) { ze_restore($ids); return ['ok' => false, 'error' => implode(' ', $b['errors']) . ' Nothing was changed.']; }
+    /* now the whole flow of every line this edit touched */
+    $st = db()->prepare('SELECT id, proforma_item_id, part_id FROM zp_entries WHERE note=? AND status=\'active\'');
+    $st->execute([$tag]);
+    $new = $st->fetchAll();
+    $touch = [];
+    foreach (array_merge($old, $new) as $x) if ($x['part_id']) $touch[(int)$x['proforma_item_id'] . ':' . (int)$x['part_id']] = [(int)$x['proforma_item_id'], (int)$x['part_id']];
+    $prog = zp_progress_map();
+    foreach ($touch as [$ti, $tp]) {
+        $why2 = zp_flow_problem($ti, $tp, $prog);
+        /* refused only when THIS edit breaks the order; a line that was
+           already out of order (booked under the old rule) is left to be fixed */
+        if ($why2 !== '' && zp_flow_problem($ti, $tp, $prog0) === '') {
+            /* the new lines were made by this request a moment ago and nobody
+               has seen them: they are removed, and the old ones put back */
+            $nid = array_map(fn($x) => (int)$x['id'], $new);
+            if ($nid) db()->prepare('DELETE FROM zp_entries WHERE id IN (' . implode(',', array_fill(0, count($nid), '?')) . ')')->execute($nid);
+            ze_restore($ids);
+            return ['ok' => false, 'error' => $why2 . ' Reduce the later stage first. Nothing was changed.'];
+        }
+    }
     return ['ok' => true, 'msg' => 'Edited: ' . $qn($wasQty) . ' → ' . $qn($newQty) . '. The old line stays on the list, marked, with the reason.'];
 }
 

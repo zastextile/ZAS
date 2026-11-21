@@ -51,13 +51,18 @@ function zp_qty_map(int $pid): array { return $GLOBALS['QTY'][$pid] ?? []; }
 $GLOBALS['STAGE_ROWS'] = [
     ['id' => 11, 'seq' => 1, 'name' => 'Laser Cut',     'is_active' => 1],
     ['id' => 12, 'seq' => 2, 'name' => 'Direct Sewing', 'is_active' => 1],
+    ['id' => 13, 'seq' => 3, 'name' => 'Final Pack',    'is_active' => 1],
 ];
+/* a part's operations, by stage — none for the parts above, so their limits
+   are exactly the cut count as before; part 7 below has all three stages */
+function zp_part_ops(int $partId, bool $activeOnly = false): array { return $GLOBALS['OPS'][$partId] ?? []; }
 function zp_stage_all(bool $activeOnly = false): array { return $GLOBALS['STAGE_ROWS']; }
 function zp_stage_first(): ?array { $r = zp_stage_all(true); return $r ? $r[0] : null; }
 
 define('ZP_NO_SIZE', -1.0);
 function zp_size_problem(array $l): string { return ''; }
 foreach (['zp_is_cutting', 'zp_qty_for', 'zp_line_size_id', 'zp_pieces_needed',
+          'zp_part_stage_ops', 'zp_stage_pos', 'zp_stage_feeder', 'zp_stage_through', 'zp_flow_problem',
           'zp_remaining', 'zp_rate_for'] as $fn) {
     $c = lift($src, $fn);
     if ($c === '') { echo "  FAIL could not lift $fn\n"; $F++; continue; }
@@ -250,9 +255,13 @@ t('cancelling twice is refused', str_contains($src, 'already cancelled'));
 head('  and cancelling cutting cannot strand stitching');
 /* stitching stands on cutting: undoing the cut under finished stitching would
    leave pieces that were stitched but never cut — unfixable afterwards */
-t('the check exists', str_contains($canc, '$cut - (float)$e[\'qty\'] < $stitched - 0.0001'));
-t('  and it names the number in the way', str_contains($src, 'pieces have already been stitched against it'));
-t('  telling you what to do instead', str_contains($src, 'Cancel the stitching first'));
+/* compared with the BIGGEST single later operation, not all of them added
+   together (owner, 21 Nov 2026) — Overlock 600 + Hem 500 is 600 pieces, not 1,100 */
+t('the check exists', str_contains($canc, '$cut - (float)$e[\'qty\'] < $most - 0.0001'));
+t('  against the biggest single operation, not the sum', str_contains($canc, 'if ($d > $most)') && !str_contains($canc, "['stitched']"));
+t('  and it names the number in the way', str_contains($src, 'pieces have already been through {$what} against it'));
+t('  telling you what to do instead', str_contains($src, 'Cancel or reduce the {$what} first'));
+t('a later stage cannot drop below what went on from it', str_contains($src, 'have already gone on to {$next[\'name\']} from it'));
 
 head('A CANCELLED ROW STOPS HOLDING ITS LIMIT DOWN');
 $pm2 = code_only(lift($src, 'zp_progress_map'));
@@ -267,6 +276,27 @@ t('it is one grouped query, not one per line',
   str_contains($pm2, 'GROUP BY proforma_item_id, part_id, op_id, op_kind, stage'));
 t('  and the grouping tells the two kinds of work apart',
   str_contains($pm2, "op_kind"));
+
+head('A LATER STAGE WAITS FOR THE ONE BEFORE IT (owner, 21 Nov 2026)');
+$GLOBALS['OPS'][7] = [
+    ['id' => 71, 'stage_id' => 11, 'stage' => 'Laser Cut',     'is_active' => 1],
+    ['id' => 72, 'stage_id' => 12, 'stage' => 'Direct Sewing', 'is_active' => 1],   // Overlock
+    ['id' => 73, 'stage_id' => 12, 'stage' => 'Direct Sewing', 'is_active' => 1],   // Hem
+    ['id' => 74, 'stage_id' => 13, 'stage' => 'Final Pack',    'is_active' => 1],
+];
+$GLOBALS['QTY'][9][7] = [20 => 1.0, 21 => 1.0];
+$pg = ['op' => [100 => [7 => [71 => 900, 72 => 900, 73 => 600, 74 => 0]]], 'stage' => [100 => [7 => ['cut' => 900, 'stitched' => 1500]]]];
+$big = array_merge($line, ['ordered_qty' => 2000.0]);      // 2000 ordered, 900 cut
+t('Overlock is still limited by the cut: 900 - 900 = 0', zp_remaining($big, 7, 72, 'Direct Sewing', $pg) === 0.0, zp_remaining($big, 7, 72, 'Direct Sewing', $pg));
+t('Hem is limited by the cut too: 300 left', zp_remaining($big, 7, 73, 'Direct Sewing', $pg) === 300.0, zp_remaining($big, 7, 73, 'Direct Sewing', $pg));
+t('PACKING waits for EVERY sewing operation: Overlock 900, Hem 600 → 600, not 900',
+  zp_remaining($big, 7, 74, 'Final Pack', $pg) === 600.0, zp_remaining($big, 7, 74, 'Final Pack', $pg));
+t('a part with no sewing operation packs against the cut, as before', zp_stage_feeder(5, 'Final Pack') === null);
+t('the flow is in order here', zp_flow_problem(100, 7, $pg) === '');
+$bad = $pg; $bad['op'][100][7][74] = 700;
+t('packing past the sewing is reported', str_contains(zp_flow_problem(100, 7, $bad), 'Final Pack has 700'), zp_flow_problem(100, 7, $bad));
+$bad = $pg; $bad['stage'][100][7]['cut'] = 800;
+t('sewing past the cut is reported', str_contains(zp_flow_problem(100, 7, $bad), 'only 800 were cut'), zp_flow_problem(100, 7, $bad));
 
 head('THE LIST NEVER HIDES A WAGE IT IS STILL COUNTING');
 $ent = code_only(lift($src, 'zp_entries'));

@@ -1483,6 +1483,70 @@ function zp_size_note(array $line): string {
  * allowance, because each is a separate job done to every piece. Capping them
  * against a shared pool was a real bug in the old module: booking 150 on one
  * silently ate the other's allowance. */
+/* THE STAGES OF ONE PART, IN ORDER (owner, 21 Nov 2026: "packing must not go
+   ahead of stitching"). [stage position => ['name' => .., 'ops' => [op ids]]]
+   for the ACTIVE stages this part has active operations in. Position 0 is the
+   first stage — the one that makes the pieces. Held for the request: the
+   entry list asks once per order line. */
+function zp_part_stage_ops(int $partId): array {
+    static $cache = [];
+    if (isset($cache[$partId])) return $cache[$partId];
+    $pos = []; $nm = [];
+    foreach (zp_stage_all(true) as $i => $st) { $pos[(int)$st['id']] = $i; $nm[mb_strtolower(trim((string)$st['name']))] = $i; }
+    $out = [];
+    foreach (zp_part_ops($partId, true) as $o) {
+        $i = $pos[(int)($o['stage_id'] ?? 0)] ?? ($nm[mb_strtolower(trim((string)$o['stage']))] ?? null);
+        if ($i === null) continue;                       // a stage switched off is not part of the flow
+        $out[$i]['name'] = (string)(zp_stage_all(true)[$i]['name'] ?? '');
+        $out[$i]['ops'][] = (int)$o['id'];
+    }
+    ksort($out);
+    return $cache[$partId] = $out;
+}
+function zp_stage_pos(string $stage): ?int {
+    foreach (zp_stage_all(true) as $i => $st) if (mb_strtolower(trim((string)$st['name'])) === mb_strtolower(trim($stage))) return $i;
+    return null;
+}
+/* THE STAGE THAT FEEDS THIS ONE on this part: the nearest earlier stage the
+   part has operations in. Null when that is the first stage (cutting) or
+   there is none — then the cut count is the limit, exactly as before. */
+function zp_stage_feeder(int $partId, string $stage): ?array {
+    $me = zp_stage_pos($stage);
+    if ($me === null || $me === 0) return null;
+    $all = zp_part_stage_ops($partId);
+    for ($i = $me - 1; $i >= 1; $i--) if (!empty($all[$i]['ops'])) return $all[$i];
+    return null;
+}
+/* how many pieces have been through EVERY operation of a stage = the smallest */
+function zp_stage_through(array $prog, int $itemId, int $partId, array $opIds): float {
+    $m = null;
+    foreach ($opIds as $id) { $d = (float)($prog['op'][$itemId][$partId][$id] ?? 0); $m = $m === null ? $d : min($m, $d); }
+    return (float)($m ?? 0);
+}
+
+/* DOES THIS ORDER LINE + PART STILL FLOW IN ORDER? '' when yes. Every later
+   stage within what the stage before it has finished, cutting first. Used
+   after an edit, which cancels and re-books, to check the RESULT rather than
+   refusing the cancel half way through. */
+function zp_flow_problem(int $itemId, int $partId, ?array $prog = null): string {
+    $prog ??= zp_progress_map();
+    $qn = fn($v) => rtrim(rtrim(number_format($v, 2), '0'), '.');
+    $cut = (float)($prog['stage'][$itemId][$partId]['cut'] ?? 0);
+    $prev = null;
+    foreach (zp_part_stage_ops($partId) as $i => $sg) {
+        if ($i === 0) { $prev = $sg; continue; }
+        $most = 0.0;
+        foreach ($sg['ops'] as $oid) $most = max($most, (float)($prog['op'][$itemId][$partId][$oid] ?? 0));
+        if ($most > $cut + 0.0001) return "{$sg['name']} has " . $qn($most) . " pieces but only " . $qn($cut) . " were cut.";
+        if ($prev && $i > 0 && !zp_is_cutting($prev['name'])) {
+            $through = zp_stage_through($prog, $itemId, $partId, $prev['ops']);
+            if ($most > $through + 0.0001) return "{$sg['name']} has " . $qn($most) . " pieces but only " . $qn($through) . " have been through every {$prev['name']} operation.";
+        }
+        $prev = $sg;
+    }
+    return '';
+}
+
 function zp_remaining(array $line, int $partId, int $opId, string $stage, array $prog): float {
     $itemId = (int)$line['item_id'];
     $needed = zp_pieces_needed($line, $partId);
@@ -1498,6 +1562,11 @@ function zp_remaining(array $line, int $partId, int $opId, string $stage, array 
     } else {
         $cut = (float)($prog['stage'][$itemId][$partId]['cut'] ?? 0);
         $ceiling = min($needed, $cut);
+        /* A LATER STAGE WAITS FOR THE ONE BEFORE IT, not only for cutting:
+           Packing cannot pass the pieces that have been through every
+           Stitching operation (Overlock 900, Hem 600 → 600 can be packed). */
+        $feed = zp_stage_feeder($partId, $stage);
+        if ($feed) $ceiling = min($ceiling, zp_stage_through($prog, $itemId, $partId, $feed['ops']));
     }
     return max(0.0, $ceiling - $done);
 }
@@ -3409,9 +3478,12 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
 
         if ($qty > $left + 0.0001) {
             $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
+            $feed = zp_is_cutting($op['stage']) ? null : zp_stage_feeder($partId, (string)$op['stage']);
             $why = zp_is_cutting($op['stage'])
                 ? "that is all the order needs"
-                : "only {$num} have been cut, and you cannot stitch more than was cut";
+                : ($feed
+                   ? "{$op['stage']} cannot go past what has been through every {$feed['name']} operation"
+                   : "only {$num} have been cut, and you cannot stitch more than was cut");
             $errors[] = "$label: only {$num} left for {$op['operation_name']} on \"{$op['part_name']}\" — {$why}.";
             continue;
         }
@@ -3485,14 +3557,40 @@ function zp_cancel_entry(int $id, string $reason, ?int $userId = null): array {
     /* STITCHING STANDS ON CUTTING. Cancelling a cutting entry that stitching
        has already been booked against would leave stitched pieces that were
        never cut — a number that can never be made true again. */
-    if (zp_is_cutting((string)$e['stage'])) {
+    /* Compared with the BIGGEST single later operation, not all of them added
+       together (owner, 21 Nov 2026): Overlock 600 + Hem 500 on 900 cut means
+       the cut can come down to 600, not that nothing can be corrected. */
+    $it = (int)$e['proforma_item_id']; $pt = (int)$e['part_id'];
+    $qn = fn($v) => rtrim(rtrim(number_format($v, 2), '0'), '.');
+    if (zp_is_cutting((string)$e['stage']) && ($e['op_kind'] ?? 'part') === 'part') {
         $prog = zp_progress_map();
-        $it = (int)$e['proforma_item_id']; $pt = (int)$e['part_id'];
-        $cut      = (float)($prog['stage'][$it][$pt]['cut'] ?? 0);
-        $stitched = (float)($prog['stage'][$it][$pt]['stitched'] ?? 0);
-        if ($cut - (float)$e['qty'] < $stitched - 0.0001) {
-            $n = rtrim(rtrim(number_format($stitched, 2), '0'), '.');
-            return ['ok' => false, 'error' => "Cannot cancel this cutting entry — {$n} pieces have already been stitched against it. Cancel the stitching first."];
+        $cut  = (float)($prog['stage'][$it][$pt]['cut'] ?? 0);
+        $most = 0.0; $what = '';
+        foreach (zp_part_stage_ops($pt) as $i => $sg) {
+            if ($i === 0) continue;
+            foreach ($sg['ops'] as $oid) { $d = (float)($prog['op'][$it][$pt][$oid] ?? 0); if ($d > $most) { $most = $d; $what = $sg['name']; } }
+        }
+        if ($cut - (float)$e['qty'] < $most - 0.0001) {
+            return ['ok' => false, 'error' => "Cannot cancel this cutting entry — " . $qn($most) . " pieces have already been through {$what} against it, and only " . $qn($cut) . " were cut. Cancel or reduce the {$what} first."];
+        }
+    } elseif (($e['op_kind'] ?? 'part') === 'part') {
+        /* THE SAME FOR A LATER STAGE: Stitching cannot drop below what has
+           already been packed from it. */
+        $all = zp_part_stage_ops($pt); $me = zp_stage_pos((string)$e['stage']);
+        $next = null;
+        if ($me !== null) foreach ($all as $i => $sg) if ($i > $me) { $next = $sg; break; }
+        if ($next && !empty($all[$me]['ops'])) {
+            $prog = zp_progress_map();
+            $before = zp_stage_through($prog, $it, $pt, $all[$me]['ops']);
+            $prog['op'][$it][$pt][(int)$e['op_id']] = (float)($prog['op'][$it][$pt][(int)$e['op_id']] ?? 0) - (float)$e['qty'];
+            $through = zp_stage_through($prog, $it, $pt, $all[$me]['ops']);
+            $most = 0.0;
+            foreach ($next['ops'] as $oid) $most = max($most, (float)($prog['op'][$it][$pt][$oid] ?? 0));
+            /* refused only when this cancel lowers the stage BELOW what went on
+               from it — not for an op that is not the bottleneck */
+            if ($through < $most - 0.0001 && $through < $before - 0.0001) {
+                return ['ok' => false, 'error' => "Cannot cancel this entry — " . $qn($most) . " pieces have already gone on to {$next['name']} from it. Cancel or reduce the {$next['name']} first."];
+            }
         }
     }
 
