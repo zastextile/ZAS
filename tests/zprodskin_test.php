@@ -29,6 +29,7 @@ function grab(string $src, string $needle): string {
     exit(1);
 }
 $lifted = grab($pe, 'function stStyle(')
+        . grab($pe, 'function stTint(')
         . grab($pe, 'function stChip(')
         . grab($pe, 'function szText(')
         . grab($pe, 'function zeWorkOpt(')

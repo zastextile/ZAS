@@ -74,8 +74,10 @@ ok(str_contains($pe, "'item_id'   => \$_POST['r_item'][\$i]"), 'and reads the sa
 /* count CALLS, not mentions — the picker's header comment names zp_book() to
    say the server re-checks every line, and that is documentation, not a route. */
 $peCode = preg_replace('!/\*.*?\*/!s', ' ', $pe);
-ok(substr_count($peCode, 'zp_book(') === 1,
-   'there is exactly one way in, got ' . substr_count($peCode, 'zp_book('));
+/* Two calls since 21 Nov 2026: the day's sheet, and Edit on a booked row —
+   both through zp_book(), and nothing on the page writes an entry itself. */
+ok(substr_count($peCode, 'zp_book(') === 2 && !preg_match('/INSERT\s+INTO\s+zp_entries/i', $peCode),
+   'every booking goes through zp_book (the sheet and Edit), got ' . substr_count($peCode, 'zp_book('));
 $book = lift($zp, 'zp_book');
 ok(str_contains($book, 'zp_remaining('), 'the server re-checks what is left');
 ok(!str_contains($book, "\$r['rate']"), 'and never takes a rate from the browser');

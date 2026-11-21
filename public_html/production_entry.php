@@ -60,6 +60,74 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) $date = date('Y-m-d');
 
 $msg = ''; $errors = [];
 
+function ze_post_ids(): array {
+    return array_values(array_unique(array_filter(array_map('intval', explode(',', (string)($_POST['entry_id'] ?? ''))))));
+}
+/* put cancelled lines back to active — only ever lines this request itself cancelled */
+function ze_restore(array $ids): void {
+    if (!$ids) return;
+    db()->prepare('UPDATE zp_entries SET status=\'active\', cancelled_by=NULL, cancelled_at=NULL, cancel_reason=NULL WHERE status=\'cancelled\' AND id IN ('
+        . implode(',', array_fill(0, count($ids), '?')) . ')')->execute(array_values($ids));
+}
+function ze_cancel_all(array $ids, string $reason, int $userId): array {
+    if (!$ids) return ['ok' => false, 'error' => 'Nothing to cancel.'];
+    $done = [];
+    foreach ($ids as $eid) {
+        $r = zp_cancel_entry($eid, $reason, $userId);
+        if (!$r['ok']) { ze_restore($done); return ['ok' => false, 'error' => $r['error'] . ' Nothing was cancelled.']; }
+        $done[] = $eid;
+    }
+    return ['ok' => true, 'error' => ''];
+}
+function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, string $why, int $userId): array {
+    $why = trim($why);
+    if (!$ids)          return ['ok' => false, 'error' => 'Nothing to edit.'];
+    if ($newQty <= 0)   return ['ok' => false, 'error' => 'The new quantity must be more than 0. To remove the line, use Cancel.'];
+    if ($why === '')    return ['ok' => false, 'error' => 'Give a reason for the edit — it is kept against the old line.'];
+    $st = db()->prepare('SELECT * FROM zp_entries WHERE id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') ORDER BY id');
+    $st->execute($ids);
+    $old = $st->fetchAll();
+    if (count($old) !== count($ids)) return ['ok' => false, 'error' => 'Some of those lines no longer exist. Reload the page.'];
+    $f = $old[0];
+    foreach ($old as $o) {
+        /* the row must be ONE booked row of THIS day: same worker, stage, rate, still active */
+        if ($o['status'] !== 'active' || $o['entry_date'] !== $date || (int)$o['worker_id'] !== (int)$f['worker_id']
+            || $o['stage'] !== $f['stage'] || (string)$o['rate_applied'] !== (string)$f['rate_applied']
+            || (string)$o['op_kind'] !== (string)$f['op_kind'] || (int)$o['proforma_id'] !== (int)$f['proforma_id']) {
+            return ['ok' => false, 'error' => 'Those lines changed since the page opened. Reload and try again.'];
+        }
+    }
+    $wasQty = array_sum(array_map(fn($o) => (float)$o['qty'], $old));
+    $worker = $newWorker ?: (int)$f['worker_id'];
+    $qn = fn($v) => rtrim(rtrim(number_format($v, 2), '0'), '.');
+    if (abs($wasQty - $newQty) < 0.0001 && $worker === (int)$f['worker_id']) return ['ok' => false, 'error' => 'Nothing changed.'];
+
+    $reason = 'Edited: was ' . $qn($wasQty) . ', now ' . $qn($newQty) . ($worker !== (int)$f['worker_id'] ? ', worker changed' : '') . ' — ' . $why;
+    $c = ze_cancel_all($ids, mb_substr($reason, 0, 250), $userId);
+    if (!$c['ok']) return $c;
+
+    /* share the new quantity down the same merged row the list shows, first
+       operation first, oldest line first — with the old lines already freed */
+    $kind = (string)($f['op_kind'] ?: 'part');
+    $grp = null;
+    foreach (ze_merge_work(zp_work_index()) as $g) {
+        if (($g['kind'] ?? 'part') !== $kind) continue;
+        foreach ($g['mem'] as $m) if ($m[0] === (int)$f['proforma_item_id'] && $m[1] === (int)$f['op_id']) { $grp = $g; break 2; }
+    }
+    if (!$grp) { ze_restore($ids); return ['ok' => false, 'error' => 'That job is no longer on the list (switched off or removed). Nothing was changed.']; }
+    if ($newQty > $grp['left'] + 0.0001) { ze_restore($ids); return ['ok' => false, 'error' => 'Only ' . $qn($grp['left']) . ' can be booked on that row. Nothing was changed.']; }
+    $rows = []; $rem = round($newQty, 2);
+    foreach ($grp['mem'] as $m) {
+        if ($rem <= 0.0001) break;
+        $take = min($m[2], $rem); if ($take <= 0) continue;
+        $rows[] = ['item_id' => $m[0], 'op_id' => $m[1], 'op_kind' => $kind, 'worker_id' => $worker, 'qty' => $take, 'note' => 'edit of #' . implode(',', $ids)];
+        $rem = round($rem - $take, 2);
+    }
+    $b = zp_book($date, $rows, $userId);
+    if (!$b['ok']) { ze_restore($ids); return ['ok' => false, 'error' => implode(' ', $b['errors']) . ' Nothing was changed.']; }
+    return ['ok' => true, 'msg' => 'Edited: ' . $qn($wasQty) . ' → ' . $qn($newQty) . '. The old line stays on the list, marked, with the reason.'];
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $a = $_POST['action'] ?? '';
@@ -88,19 +156,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                is saved as three lines; the count is only for this message */
             $nb = max(1, min((int)$r['saved'], (int)($_POST['n_book'] ?? $r['saved'])));
             $_SESSION['zp_msg'] = $nb . ' booking' . ($nb === 1 ? '' : 's') . ' saved'
-                . ($nb < (int)$r['saved'] ? ' (' . (int)$r['saved'] . ' size lines)' : '')
+                . ($nb < (int)$r['saved'] ? ' (' . (int)$r['saved'] . ' lines)' : '')
                 . ($showMoney ? ' — PKR ' . number_format($r['amount'], 2) . ' in wages.' : '.');
             redirect('production_entry.php?d=' . urlencode($date));
         }
         $errors = $r['errors'];
 
     } elseif ($a === 'cancel_entry') {
-        /* a summarised row carries every size line it stands for: "12,13,14" */
-        $ids = array_values(array_filter(array_map('intval', explode(',', (string)($_POST['entry_id'] ?? '')))));
-        $okN = 0; $errs = [];
-        foreach ($ids as $eid) { $r = zp_cancel_entry($eid, (string)($_POST['reason'] ?? ''), $userId); if ($r['ok']) $okN++; else $errs[] = $r['error']; }
-        if ($okN) $_SESSION['zp_msg'] = 'Entry cancelled' . ($okN > 1 ? ' (' . $okN . ' size lines)' : '') . '. It stays on the list, marked, so the correction is visible.';
-        if ($errs) $_SESSION['zp_err'] = implode(' ', array_unique($errs));
+        /* a summarised row carries every line it stands for: "12,13,14".
+           ALL OR NOTHING: if one line refuses (cutting that stitching stands
+           on), the ones already cancelled are put back, so a row is never
+           left half cancelled. */
+        $ids = ze_post_ids();
+        $r = ze_cancel_all($ids, (string)($_POST['reason'] ?? ''), $userId);
+        if ($r['ok']) $_SESSION['zp_msg'] = 'Entry cancelled' . (count($ids) > 1 ? ' (' . count($ids) . ' lines)' : '') . '. It stays on the list, marked, so the correction is visible.';
+        else          $_SESSION['zp_err'] = $r['error'];
+        redirect('production_entry.php?d=' . urlencode($date));
+
+    } elseif ($a === 'edit_entry') {
+        /* EDIT A BOOKED ROW (owner, 21 Nov 2026: "make it easy to edit").
+           Nothing is overwritten: the old lines are cancelled with the reason
+           "Edited: was 500, now 450 — <why>", and the new quantity / worker is
+           booked through zp_book(), which checks and prices it like any other
+           line. If the new booking is refused, the old lines are put back
+           exactly as they were. */
+        $r = ze_edit_row(ze_post_ids(), $date, (float)($_POST['new_qty'] ?? 0), (int)($_POST['new_worker'] ?? 0), (string)($_POST['reason'] ?? ''), $userId);
+        if ($r['ok']) $_SESSION['zp_msg'] = $r['msg'];
+        else          $_SESSION['zp_err'] = $r['error'];
         redirect('production_entry.php?d=' . urlencode($date));
     }
 }
@@ -168,6 +250,28 @@ foreach ($lines as $l) {
 }
 
 $today   = zp_entries(['date' => $date], 400);
+/* MORE ABOUT EACH BOOKED LINE (owner, 21 Nov 2026): customer, size,
+   description, who booked it and when — one small query for the day's ids. */
+if ($today) {
+    try {
+        $tid = array_map(fn($t) => (int)$t['id'], $today);
+        $st = db()->prepare('SELECT e.id, pf.customer_name, pi.size, pi.description, u.name uname
+                             FROM zp_entries e
+                             LEFT JOIN proforma_items pi ON pi.id = e.proforma_item_id
+                             LEFT JOIN proforma_invoices pf ON pf.id = e.proforma_id
+                             LEFT JOIN users u ON u.id = e.created_by
+                             WHERE e.id IN (' . implode(',', array_fill(0, count($tid), '?')) . ')');
+        $st->execute($tid);
+        $more = [];
+        foreach ($st->fetchAll() as $m) $more[(int)$m['id']] = $m;
+        foreach ($today as &$t) {
+            $m = $more[(int)$t['id']] ?? [];
+            $t['customer'] = (string)($m['customer_name'] ?? ''); $t['size'] = (string)($m['size'] ?? '');
+            $t['descr'] = trim((string)($m['description'] ?? '')); $t['uname'] = (string)($m['uname'] ?? '');
+        }
+        unset($t);
+    } catch (Throwable $e) {}
+}
 /* HOW EACH WORKER IS PAID (owner, 19 Nov 2026): fixed salary, daily wages or
    contractor, from People Finance, shown beside the name in the lists and on
    the lines — one small query, read only. */
@@ -190,18 +294,29 @@ function ze_stage_style(string $st): string {
 }
 /* the page skin sets its own chip colours with !important; the stage colour must win */
 function ze_stage_css(string $st): string { return str_replace(';', ' !important;', ze_stage_style($st)) . ' !important'; }
+/* THE ROW TINT (owner, 21 Nov 2026: "background colour different for each
+   stage"): a very light shade of the stage colour and a bar on the left. */
+function ze_stage_tint(string $st): string {
+    if ($st === '') return '';
+    preg_match('/background:(#[0-9a-f]{6});color:(#[0-9a-f]{6})/', ze_stage_style($st), $m);
+    return 'background:' . $m[1] . ';box-shadow:inset 4px 0 0 ' . $m[2];
+}
 function ze_stage_pill(string $st): string {
     return $st === '' ? '' : '<span class="pill" style="' . ze_stage_css($st) . ';font-weight:600">' . e($st) . '</span>';
 }
 
 /* THE SUMMARISED LIST (owner, 21 Nov 2026): "sum qty where the proforma is the
-   same and part, stage and rate / pc match — forget sizes". One row per
-   proforma + part + operation + stage + rate; its LEFT is every size added up.
-   The operation stays in the key, or two different jobs at the same rate
-   would merge. A different rate stays its own row. Each row keeps its
-   members (order line + what is left there), oldest line first, so a booking
-   is shared across the sizes FIRST COME FIRST: the server still checks and
-   prices every size line exactly as before. */
+   same and part, stage and rate / pc match — forget sizes", and then "if stage
+   and rate are the same but it is two lines, sum it and show the operations
+   with commas: Overlock, Hem, Flat lock".
+   So one row per proforma + part + stage + rate. Its LEFT is every size and
+   every operation of that stage added up, and its name lists the operations.
+   A different rate or a different stage stays its own row.
+   Each row keeps its members (order line, operation, what is left there),
+   first operation first and, inside it, oldest line first: a booking is
+   shared down that list (answer: "sum like sizes"). The pay is the same
+   whichever member takes it, because the rate is the same; the server still
+   checks and prices every member line exactly as before. */
 function ze_merge_work(array $rows): array {
     $desc = [];
     $ids = array_values(array_unique(array_map(fn($r) => (int)$r['item'], $rows)));
@@ -212,34 +327,44 @@ function ze_merge_work(array $rows): array {
             foreach ($st->fetchAll() as $d) $desc[(int)$d['id']] = trim((string)($d['description'] ?? ''));
         } catch (Throwable $e) {}
     }
-    $out = []; $at = [];
+    $out = []; $at = []; $opPos = []; $itPos = [];
     foreach ($rows as $r) {
-        $key = $r['pifull'] . '|' . ($r['kind'] ?? 'part') . '|' . (int)$r['part'] . '|' . (int)$r['op'] . '|' . (int)$r['sid'] . '|' . number_format((float)$r['rate'], 2, '.', '');
+        $kind = (string)($r['kind'] ?? 'part');
+        $opPos[$kind . ':' . (int)$r['op']] ??= count($opPos);    // the part's own order of operations
+        $itPos[(int)$r['item']] ??= count($itPos);                 // the order's own order of lines
+        $key = $r['pifull'] . '|' . $kind . '|' . (int)$r['part'] . '|' . (int)$r['sid'] . '|' . number_format((float)$r['rate'], 2, '.', '');
         $d = $desc[(int)$r['item']] ?? '';
         if (!isset($at[$key])) {
             $g = $r;
             $g['k'] = 'g' . substr(md5($key), 0, 12);
-            $g['mem'] = []; $g['left'] = 0.0; $g['sizes'] = []; $g['desc'] = []; $g['dk'] = []; $g['done'] = 1;
+            $g['mem'] = []; $g['left'] = 0.0; $g['sz'] = []; $g['ons'] = []; $g['desc'] = []; $g['dk'] = []; $g['done'] = 1;
             $at[$key] = count($out); $out[] = $g;
         }
         $g =& $out[$at[$key]];
-        $g['mem'][] = [(int)$r['item'], round((float)$r['left'], 2)];
+        $g['mem'][] = [(int)$r['item'], (int)$r['op'], round((float)$r['left'], 2), $opPos[$kind . ':' . (int)$r['op']], $itPos[(int)$r['item']]];
         $g['left'] = round($g['left'] + (float)$r['left'], 2);
         if (!$r['done']) $g['done'] = 0;
-        if (($r['size'] ?? '') !== '') $g['sizes'][] = (string)$r['size'];   // one per line, so "3 sizes" counts the lines
+        $g['sz'][(int)$r['item']] = (string)($r['size'] ?? '');
+        if (!in_array((string)$r['on'], $g['ons'], true)) $g['ons'][] = (string)$r['on'];
         /* the same words typed twice with different capitals or spaces are one description */
         $dk = mb_strtolower(preg_replace('/\s+/', ' ', $d));
         if ($d !== '' && !isset($g['dk'][$dk])) { $g['dk'][$dk] = 1; $g['desc'][] = $d; }
-        if (!str_contains($g['hay'], mb_strtolower((string)$r['size']))) $g['hay'] .= ' ' . mb_strtolower((string)$r['size']);
+        $g['hay'] .= ' ' . mb_strtolower((string)$r['on'] . ' ' . (string)($r['size'] ?? ''));
         unset($g);
     }
     foreach ($out as &$g) {
-        foreach ($g['mem'] as $m) if ($m[1] > 0.0001) { $g['item'] = $m[0]; break; }   // the first line that still has work
-        $g['nsz'] = count($g['sizes']);
-        $g['size'] = $g['nsz'] === 1 ? $g['sizes'][0] : '';
-        $g['sizes'] = implode(', ', $g['sizes']);
+        /* first operation first, then oldest line first */
+        usort($g['mem'], fn($a, $b) => [$a[3], $a[4]] <=> [$b[3], $b[4]]);
+        $g['mem'] = array_map(fn($m) => [$m[0], $m[1], $m[2]], $g['mem']);
+        foreach ($g['mem'] as $m) if ($m[2] > 0.0001) { $g['item'] = $m[0]; $g['op'] = $m[1]; break; }  // the first that still has work
+        $g['on'] = implode(', ', $g['ons']);
+        $g['nop'] = count($g['ons']);
+        $sizes = array_values(array_filter($g['sz'], fn($x) => $x !== ''));
+        $g['nsz'] = count($g['sz']);
+        $g['size'] = $g['nsz'] === 1 ? ($sizes[0] ?? '') : '';
+        $g['sizes'] = implode(', ', $sizes);
         $g['desc'] = mb_substr(implode(' / ', $g['desc']), 0, 90);
-        unset($g['dk']);
+        unset($g['dk'], $g['sz'], $g['ons']);
         $g['hay'] .= ' ' . mb_strtolower($g['desc']);
     }
     unset($g);
@@ -247,19 +372,26 @@ function ze_merge_work(array $rows): array {
 }
 
 /* THE BOOKED TABLE, SUMMARISED THE SAME WAY: one row per worker + order +
-   part + operation + rate + state; a merged booking saved as several size
-   lines shows as one, and Cancel cancels them together. */
+   part + stage + rate + state, the operations listed with commas; a merged
+   booking saved as several lines shows as one, and Cancel cancels them all. */
 function ze_group_today(array $today): array {
     $out = []; $at = [];
     foreach ($today as $t) {
-        $key = implode('|', [(int)($t['worker_id'] ?? 0), (string)($t['pi_no'] ?? ''), (string)($t['product_name'] ?? ''), (int)($t['part_id'] ?? 0), (int)($t['op_id'] ?? 0),
+        $key = implode('|', [(int)($t['worker_id'] ?? 0), (string)($t['pi_no'] ?? ''), (string)($t['product_name'] ?? ''), (int)($t['part_id'] ?? 0),
                              (string)$t['stage'], number_format((float)$t['rate_applied'], 2, '.', ''), (string)$t['status']]);
-        if (!isset($at[$key])) { $g0 = $t; $g0['ids'] = []; $g0['qty'] = 0.0; $g0['amount'] = 0.0; $g0['n'] = 0; $at[$key] = count($out); $out[] = $g0; }
+        if (!isset($at[$key])) { $g0 = $t; $g0['ids'] = []; $g0['qty'] = 0.0; $g0['amount'] = 0.0; $g0['n'] = 0; $g0['ops'] = []; $g0['items'] = []; $at[$key] = count($out); $out[] = $g0; }
         $g =& $out[$at[$key]];
         $g['ids'][] = (int)$t['id']; $g['n']++;
+        $on = (string)($t['operation_name'] ?? '(removed operation)');
+        /* operations in the order they were booked, oldest first (the list arrives newest first) */
+        $g['ops'][$on] = min($g['ops'][$on] ?? PHP_INT_MAX, (int)$t['id']);
+        $g['items'][(int)($t['proforma_item_id'] ?? 0)] = (string)($t['size'] ?? '');
+        if ((string)($t['created_at'] ?? '') < (string)($g['created_at'] ?? '')) { $g['created_at'] = $t['created_at']; $g['uname'] = $t['uname'] ?? ''; }
         $g['qty'] += (float)$t['qty']; $g['amount'] += (float)$t['amount'];
         unset($g);
     }
+    foreach ($out as &$g) { asort($g['ops']); $g['ops'] = array_keys($g['ops']); }
+    unset($g);
     return $out;
 }
 
@@ -372,6 +504,31 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .ze-row:last-child{border-bottom:0}
 .ze-row:hover{background:rgba(29,111,242,.07)}
 .ze-row[data-cur="1"]{background:rgba(29,111,242,.11);box-shadow:inset 3px 0 0 #1d6ff2}
+/* the Booked section: heading with links, a search + stage bar, the edit dialog */
+.bk-hd{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.bk-links{display:flex;gap:6px}
+.bk-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 10px}
+.bk-bar #bkQ{width:260px;max-width:100%;height:30px}
+.bk-seg{display:inline-flex;flex-wrap:wrap;border:1px solid #d9dee4;border-radius:4px;overflow:hidden}
+.bk-seg button{height:28px;padding:0 10px;border:0;border-right:1px solid #d9dee4;background:#fff;color:#556b82;font:600 12px inherit;cursor:pointer}
+.bk-seg button:last-child{border-right:0}.bk-seg button.on{outline:2px solid #0a6ed1;outline-offset:-2px;color:#0a4f96}
+.bk-seg button b{color:#1d2d3e;margin-left:3px}
+.bk-cnt{margin-left:auto;color:#556b82;font-size:12px}
+.bk-why{font-size:10.5px;color:#9a3412;max-width:150px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.bk-desc{font-size:10.5px;color:#6a7b8c;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bk-dlg{border:1px solid #d9dee4;border-radius:8px;padding:16px 18px;width:min(440px,94vw);box-shadow:0 18px 40px rgba(16,32,56,.25)}
+.bk-dlg::backdrop{background:rgba(16,32,56,.35)}
+.bk-dlg h3{margin:0 0 6px;font-size:15px}
+.bk-dlg .bk-what{font-size:12px;color:#38495f;margin-bottom:10px}
+.bk-dlg label{display:block;font-size:12px;color:#556b82;font-weight:600;margin-bottom:8px}
+.bk-dlg label .zin{display:block;width:100%;margin-top:3px;height:32px}
+.bk-dlg .bk-note{font-size:11.5px;color:#6a7b8c;margin:4px 0 12px}
+.bk-dlg .bk-btns{display:flex;justify-content:flex-end;gap:8px}
+#bkT tbody tr[hidden]{display:none}
+/* stage tint on the list rows (owner, 21 Nov 2026); the chosen row keeps its bar and gets a blue outline */
+.zskin .ze-row.stg{background:var(--tb) !important;box-shadow:inset 4px 0 0 var(--tl) !important}
+.zskin .ze-row.stg:hover{filter:brightness(.975)}
+.zskin .ze-row.stg[data-cur="1"]{box-shadow:inset 4px 0 0 var(--tl),inset 0 0 0 2px #0a6ed1 !important}
 .ze-t{font-size:13px;font-weight:800;letter-spacing:-.01em;margin-bottom:1px}
 .ze-s{font-size:11px;color:#6b7a90;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .ze-s i{font-style:normal;color:#b6c0cf}
@@ -559,14 +716,37 @@ table.zp-t tbody tr:hover{background:#fafcff}
   <?php endif; ?>
 
   <div class="zp-card">
-    <h2>Booked on <?= e(date('D j M Y', strtotime($date))) ?></h2>
+    <?php $BK = $today ? ze_group_today($today) : []; ?>
+    <div class="bk-hd">
+      <h2>Booked on <?= e(date('D j M Y', strtotime($date))) ?></h2>
+      <div class="bk-links">
+        <a class="zp-b sm" href="production_reports.php?r=entries&amp;from=<?= e($date) ?>&amp;to=<?= e($date) ?>">Full report</a>
+        <?php if (is_admin()): ?><a class="zp-b sm" href="production_amend.php">Corrections</a><?php endif; ?>
+      </div>
+    </div>
     <?php if (!$today): ?>
       <div class="empty">Nothing booked for this date yet.</div>
-    <?php else: ?>
+    <?php else:
+      $stCnt = []; $nCanc = 0;
+      foreach ($BK as $t) { if ($t['status'] !== 'active') { $nCanc++; continue; } $stCnt[(string)$t['stage']] = ($stCnt[(string)$t['stage']] ?? 0) + 1; } ?>
+      <?php /* FIND AND EXPORT IN THE BROWSER: the rows are already on the page, so
+               search, stage filter and CSV cost the server nothing. */ ?>
+      <div class="bk-bar">
+        <input class="zin" id="bkQ" placeholder="Search worker, order, product, operation…" autocomplete="off" oninput="bkFilter()">
+        <span class="bk-seg" id="bkSeg">
+          <button type="button" class="on" data-s="">All <b><?= count($BK) ?></b></button>
+          <?php foreach ($stCnt as $sn => $c): ?>
+            <button type="button" data-s="<?= e($sn) ?>" style="<?= e(ze_stage_tint($sn)) ?>"><?= e($sn) ?> <b><?= $c ?></b></button>
+          <?php endforeach; ?>
+          <?php if ($nCanc): ?><button type="button" data-s="__canc">Cancelled <b><?= $nCanc ?></b></button><?php endif; ?>
+        </span>
+        <span id="bkCnt" class="bk-cnt"></span>
+        <button type="button" class="zp-b sm" onclick="bkCsv()">Download CSV</button>
+      </div>
       <div style="overflow-x:auto">
-      <table class="zp-t">
+      <table class="zp-t" id="bkT">
         <thead><tr>
-          <th style="width:36px">#</th><th>Worker</th><th>Product</th><th>Part &amp; operation</th>
+          <th style="width:36px">#</th><th>Worker</th><th>Order &amp; product</th><th>Part &amp; operation</th>
           <th style="width:110px">Stage</th><th class="num" style="width:80px">Qty</th>
           <?php /* BOOKING A QUANTITY AND SEEING THE WAGE ARE TWO DIFFERENT PERMISSIONS.
                    This table printed both columns to anybody who could open the page,
@@ -575,18 +755,21 @@ table.zp-t tbody tr:hover{background:#fafcff}
           <?php if ($showMoney): ?>
             <th class="num" style="width:80px">Rate</th><th class="num" style="width:100px">Amount</th>
           <?php endif; ?>
-          <th style="width:120px"></th>
+          <th style="width:130px"></th>
         </tr></thead>
         <tbody>
-        <?php foreach (ze_group_today($today) as $i => $t): $canc = $t['status'] !== 'active'; ?>
-          <tr<?= $canc ? ' style="opacity:.55"' : '' ?>>
-            <td class="code"><?= $i + 1 ?></td>
+        <?php foreach ($BK as $i => $t): $canc = $t['status'] !== 'active';
+              $szs = array_values(array_filter($t['items'], fn($x) => $x !== '')); ?>
+          <tr style="<?= e(ze_stage_tint((string)$t['stage'])) ?><?= $canc ? ';opacity:.55' : '' ?>"
+              data-i="<?= $i ?>" data-s="<?= $canc ? '__canc' : e((string)$t['stage']) ?>">
+            <td class="code"><?= $i + 1 ?><div style="font-size:9.5px;color:#8a97ab" title="Booked by <?= e($t['uname'] ?? '') ?>"><?= e(date('H:i', strtotime((string)$t['created_at']))) ?></div></td>
             <td><?= e($t['worker_name'] ?? '(removed worker)') ?>
                 <div style="font-size:10px"><span class="code" style="font-size:10px"><?= e($t['worker_code'] ?? '') ?></span><?= ze_pay_pill($PAYT[(int)($t['worker_id'] ?? 0)] ?? null) ?></div></td>
             <td><?= e($t['product_name'] ?? '(removed product)') ?>
-                <?php if ($t['pi_no']): ?><div class="code" style="font-size:10px"><?= e($t['pi_no']) ?></div><?php endif; ?></td>
+                <div class="code" style="font-size:10px"><?= e(trim(($t['pi_no'] ?? '') . ($t['customer'] !== '' ? ' · ' . $t['customer'] : ''), ' ·')) ?></div>
+                <?php if (($t['descr'] ?? '') !== ''): ?><div class="bk-desc" title="<?= e($t['descr']) ?>"><?= e($t['descr']) ?></div><?php endif; ?></td>
             <td><?= e($t['part_name'] ?? '—') ?>
-                <div class="code" style="font-size:10px"><?= e($t['operation_name'] ?? '(removed operation)') ?></div></td>
+                <div class="code" style="font-size:10px"><?= e(implode(', ', $t['ops'])) ?></div></td>
             <td><?php
               /* the colour follows POSITION, not a word: the stage that makes the
                  pieces is marked apart from the ones limited by it, whatever you
@@ -594,16 +777,17 @@ table.zp-t tbody tr:hover{background:#fafcff}
               echo ze_stage_pill((string)$t['stage']);
               if ($canc) echo ' <span class="pill canc">cancelled</span>';
             ?></td>
-            <td class="num"><?= rtrim(rtrim(number_format((float)$t['qty'], 2), '0'), '.') ?><?php if ($t['n'] > 1): ?><div class="code" style="font-size:10px" title="Shared across the sizes, first size first"><?= (int)$t['n'] ?> sizes</div><?php endif; ?></td>
+            <td class="num"><?= rtrim(rtrim(number_format((float)$t['qty'], 2), '0'), '.') ?><?php if ($szs): ?><div class="code" style="font-size:10px;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;margin-left:auto" title="<?= e(implode(', ', $szs)) ?>"><?= count($szs) > 1 ? count($szs) . ' sizes' : e($szs[0]) ?></div><?php endif; ?></td>
             <?php if ($showMoney): ?>
               <td class="num"><?= number_format((float)$t['rate_applied'], 2) ?></td>
               <td class="num"><?= number_format((float)$t['amount'], 2) ?></td>
             <?php endif; ?>
             <td>
               <?php if (!$canc): ?>
+                <button type="button" class="zp-b sm" onclick="bkEdit(<?= $i ?>)">Edit</button>
                 <button type="button" class="zp-b sm red" onclick="zeCancel('<?= e(implode(',', $t['ids'])) ?>')">Cancel</button>
               <?php elseif (trim((string)$t['cancel_reason']) !== ''): ?>
-                <span class="code" style="font-size:10px" title="<?= e($t['cancel_reason']) ?>">why?</span>
+                <div class="bk-why" title="<?= e($t['cancel_reason']) ?>"><?= e($t['cancel_reason']) ?></div>
               <?php endif; ?>
             </td>
           </tr>
@@ -627,6 +811,91 @@ table.zp-t tbody tr:hover{background:#fafcff}
       </div>
     <?php endif; ?>
   </div>
+
+  <?php if ($today): ?>
+  <dialog id="bkDlg" class="bk-dlg">
+    <form method="post" id="editForm">
+      <?= csrf_field() ?><input type="hidden" name="action" value="edit_entry">
+      <input type="hidden" name="entry_date" value="<?= e($date) ?>">
+      <input type="hidden" name="entry_id" value="">
+      <h3>Edit booked work</h3>
+      <div id="bkWhat" class="bk-what"></div>
+      <label>Quantity<input class="zin num" name="new_qty" inputmode="decimal" required></label>
+      <label>Worker<select class="zin" name="new_worker" id="bkWorker"></select></label>
+      <label>Why is it changed?<input class="zin" name="reason" value="Wrong quantity" required maxlength="150"></label>
+      <div class="bk-note">The old line is not deleted: it stays on the list, marked, with this reason. The new quantity is checked against what is left, like any booking.</div>
+      <div class="bk-btns"><button type="button" class="zp-b" onclick="document.getElementById('bkDlg').close()">Close</button>
+        <button class="zp-b ok">Save the change</button></div>
+    </form>
+  </dialog>
+  <script id="bkJs">
+  /* the booked rows as data, for Edit and for the CSV — the same rows as the table */
+  var BOOKED = <?= json_encode(array_map(fn($t) => [
+      'ids' => implode(',', $t['ids']), 'wid' => (int)($t['worker_id'] ?? 0), 'w' => (string)($t['worker_name'] ?? ''), 'code' => (string)($t['worker_code'] ?? ''),
+      'pt' => ['salary' => 'Fixed salary', 'daily' => 'Daily wages', 'contract' => 'Contractor'][$PAYT[(int)($t['worker_id'] ?? 0)] ?? ''] ?? '',
+      'pi' => (string)($t['pi_no'] ?? ''), 'cust' => (string)($t['customer'] ?? ''), 'prod' => (string)($t['product_name'] ?? ''),
+      'desc' => (string)($t['descr'] ?? ''), 'part' => (string)($t['part_name'] ?? ''), 'ops' => implode(', ', $t['ops']),
+      'sizes' => implode(', ', array_values(array_filter($t['items'], fn($x) => $x !== ''))), 'st' => (string)$t['stage'],
+      'status' => $t['status'] === 'active' ? 'Active' : 'Cancelled', 'qty' => round((float)$t['qty'], 2),
+      'rate' => $showMoney ? (float)$t['rate_applied'] : null, 'amt' => $showMoney ? round((float)$t['amount'], 2) : null,
+      'at' => date('H:i', strtotime((string)$t['created_at'])), 'by' => (string)($t['uname'] ?? ''), 'why' => (string)($t['cancel_reason'] ?? ''),
+  ], $BK), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+  var BKDATE = <?= json_encode($date) ?>, BKMONEY = <?= $showMoney ? 'true' : 'false' ?>;
+  var BKWORKERS = <?= json_encode(array_map(fn($w) => [(int)$w['id'], $w['worker_code'] . ' · ' . $w['worker_name']], $PICK), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+  (function(){
+    var seg = '';
+    function low(r){ return [r.w, r.code, r.pi, r.cust, r.prod, r.desc, r.part, r.ops, r.sizes, r.st, r.by].join(' ').toLowerCase(); }
+    window.bkFilter = function(){
+      var t = document.getElementById('bkQ').value.trim().toLowerCase().split(/\s+/).filter(Boolean), n = 0;
+      [].forEach.call(document.querySelectorAll('#bkT tbody tr'), function(tr){
+        var r = BOOKED[+tr.dataset.i], h = low(r);
+        var ok = (!seg || tr.dataset.s === seg) && t.every(function(w){ return h.indexOf(w) >= 0; });
+        tr.hidden = !ok; if (ok) n++;
+      });
+      document.getElementById('bkCnt').textContent = n + ' of ' + BOOKED.length;
+    };
+    document.getElementById('bkSeg').addEventListener('click', function(e){
+      var b = e.target.closest('button'); if (!b) return;
+      seg = b.dataset.s;
+      [].forEach.call(this.querySelectorAll('button'), function(x){ x.classList.toggle('on', x === b); });
+      bkFilter();
+    });
+    /* CSV OF WHAT IS ON SCREEN — built here, nothing asked of the server */
+    window.bkCsv = function(){
+      var head = ['Date','Booked at','By','Worker','Code','Pay type','Order','Customer','Product','Description','Part','Operations','Sizes','Stage','Status','Qty'];
+      if (BKMONEY) head.push('Rate','Amount');
+      head.push('Cancel reason');
+      var lines = [head];
+      [].forEach.call(document.querySelectorAll('#bkT tbody tr'), function(tr){
+        if (tr.hidden) return;
+        var r = BOOKED[+tr.dataset.i];
+        var row = [BKDATE, r.at, r.by, r.w, r.code, r.pt, r.pi, r.cust, r.prod, r.desc, r.part, r.ops, r.sizes, r.st, r.status, r.qty];
+        if (BKMONEY) row.push(r.rate, r.amt);
+        row.push(r.why);
+        lines.push(row);
+      });
+      /* a cell that starts with = + - @ is written as text, so a spreadsheet never runs it */
+      var csv = lines.map(function(l){ return l.map(function(v){
+        v = v == null ? '' : String(v);
+        if (/^[=+\-@]/.test(v) && isNaN(+v)) v = "'" + v;
+        return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\r\n');
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], {type:'text/csv;charset=utf-8'}));
+      a.download = 'production_' + BKDATE + '.csv'; document.body.appendChild(a); a.click(); a.remove();
+    };
+    window.bkEdit = function(i){
+      var r = BOOKED[i], f = document.getElementById('editForm'), sel = document.getElementById('bkWorker');
+      f.entry_id.value = r.ids; f.new_qty.value = r.qty; f.reason.value = 'Wrong quantity';
+      document.getElementById('bkWhat').textContent = r.w + ' · ' + r.pi + ' · ' + r.prod + ' · ' + r.part + ' → ' + r.ops + ' · ' + r.st;
+      var opts = BKWORKERS.slice(); if (!opts.some(function(o){ return o[0] === r.wid; })) opts.unshift([r.wid, r.code + ' · ' + r.w]);
+      sel.innerHTML = opts.map(function(o){ return '<option value="' + o[0] + '"' + (o[0] === r.wid ? ' selected' : '') + '></option>'; }).join('');
+      [].forEach.call(sel.options, function(op, k){ op.textContent = opts[k][1]; });
+      document.getElementById('bkDlg').showModal(); f.new_qty.select();
+    };
+    bkFilter();
+  })();
+  </script>
+  <?php endif; ?>
 
   <form method="post" id="cancelForm" style="display:none">
     <?= csrf_field() ?><input type="hidden" name="action" value="cancel_entry">
@@ -745,6 +1014,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
     return 'background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2];
   }
   /* the page skin sets chip colours with !important, so the stage colour says it too */
+  /* the row tint: a very light shade of the stage colour, a bar on the left */
+  function stTint(st){
+    var m = /background:(#[0-9a-f]{6});color:(#[0-9a-f]{6})/.exec(stStyle(st));
+    return m ? '--tb:' + m[1] + ';--tl:' + m[2] : '';
+  }
   function stChip(st){ return st ? '<span class="ze-chip" style="' + stStyle(st).split(';').join(' !important;') + ' !important;font-weight:600">' + esc(st) + '</span>' : ''; }
   /* one size, or "3 sizes" with the list on hover */
   function szText(w){ return w.nsz > 1 ? w.nsz + ' sizes' : (w.size || ''); }
@@ -758,7 +1032,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
     return { v:w.k, click:click, ev:ev,
              title: w.pn + ' → ' + w.on, strong: w.pi,
              bits: [w.prod, w.desc].filter(Boolean),
-             chips:[szText(w)].filter(Boolean), szt: w.nsz > 1 ? w.sizes : '', st: w.st,
+             chips:[szText(w), w.nop > 1 ? w.nop + ' operations' : ''].filter(Boolean), szt: w.nsz > 1 ? w.sizes : '', st: w.st,
              rate: w.rate, left: w.left };
   }
   /* DOES THIS PERSON WORK THIS STAGE?
@@ -792,7 +1066,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
   }
 
   function zeRowHtml(o, t, isCur){
-    return '<button type="button" class="ze-row" data-cur="' + (isCur ? 1 : 0) + '"'
+    return '<button type="button" class="ze-row' + (o.st ? ' stg" style="' + stTint(o.st) : '') + '" data-cur="' + (isCur ? 1 : 0) + '"'
       /* the value is on the element as well as in the handler: the body-level
          panel reads it back on mousedown and on Enter, without having to parse
          an attribute or fake an event */
@@ -881,6 +1155,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
         + ' &middot; ' + esc(w.prod) + (w.desc ? ' &middot; <span style="color:#556b82">' + esc(w.desc) + '</span>' : '') + '</div><div class="ze-chips">'
         + (w.nsz > 1 ? '<span class="ze-chip" title="Shared across the sizes, first size first">' + w.nsz + ' sizes: ' + esc(w.sizes) + '</span>'
                      : (w.size ? '<span class="ze-chip">Size ' + esc(w.size) + '</span>' : ''))
+        + (w.nop > 1 ? '<span class="ze-chip" title="Shared over the operations, first operation first">' + w.nop + ' operations</span>' : '')
         + stChip(w.st)
         + (MONEY ? '<span class="ze-chip">' + n2(w.rate) + ' / pc</span>' : '')
         + '<span class="ze-chip" style="color:#0d9488;border-color:#0d9488">' + qn(w.left) + ' left</span>'
@@ -1258,21 +1533,21 @@ table.zp-t tbody tr:hover{background:#fafcff}
          one line per size, exactly as before, so zp_book checks and prices
          every one; on screen it stays one line (grp). */
       var kind = work.kind || 'part', grp = ++grpSeq, rem = Math.round(v*100)/100;
-      var mem = work.mem && work.mem.length ? work.mem : [[work.item, work.left]];
-      var base = { op:work.op, kind:kind, g:work.k, grp:grp, worker:worker.id, rate:work.rate,
+      var mem = work.mem && work.mem.length ? work.mem : [[work.item, work.op, work.left]];
+      var base = { kind:kind, g:work.k, grp:grp, worker:worker.id, rate:work.rate,
                    what:work.pn + ' → ' + work.on, who:worker.name, pt:worker.pt, pi:work.pi, st:work.st,
                    prod:work.prod, sz:szText(work) };
       for (var m = 0; m < mem.length && rem > 0.0001; m++) {
-        var free = Math.round((mem[m][1] - stagedItem(mem[m][0], work.op, kind))*100)/100;
+        var free = Math.round((mem[m][2] - stagedItem(mem[m][0], mem[m][1], kind))*100)/100;
         if (free <= 0) continue;
         var take = Math.min(free, rem);
-        sheet.push(Object.assign({}, base, { item:mem[m][0], qty:take }));
+        sheet.push(Object.assign({}, base, { item:mem[m][0], op:mem[m][1], qty:take }));
         rem = Math.round((rem - take)*100)/100;
       }
       /* cannot happen — totals() refuses a line past what is left — but a
          remainder is never dropped silently: it goes on the last line and the
          server refuses it with its own message */
-      if (rem > 0.0001) sheet.push(Object.assign({}, base, { item:mem[mem.length-1][0], qty:rem }));
+      if (rem > 0.0001) sheet.push(Object.assign({}, base, { item:mem[mem.length-1][0], op:mem[mem.length-1][1], qty:rem }));
     });
     zeReset();
     paintSheet();
@@ -1294,7 +1569,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       h += '<div class="ze-sl"><div><b>' + esc(x.who) + '</b> ' + payPill(x.pt) + ' &middot; ' + esc(x.what)
          + ' ' + stChip(x.st)
          + ' <span style="color:#8a97ab">(' + esc(x.pi) + (x.prod ? ' &middot; ' + esc(x.prod) : '') + ')</span>'
-         + (g.n > 1 ? ' <span style="color:#8a97ab;font-size:11px">shared over ' + g.n + ' sizes</span>' : '') + '</div>'
+         + (g.n > 1 ? ' <span style="color:#8a97ab;font-size:11px">shared over ' + g.n + ' lines</span>' : '') + '</div>'
          + '<div style="display:flex;gap:11px;align-items:center">'
          + '<span style="font-family:ui-monospace,monospace"><b>' + qn(g.qty) + '</b> pcs'
          + (MONEY ? ' &middot; ' + n2(g.qty * x.rate) : '') + '</span>'
