@@ -761,6 +761,27 @@ function zdash_palette(string $html): string {
 
 /* KPI row */
 .dash-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:20px}
+/* EQUAL, SOFT-3D CARDS (owner, 21 Nov 2026): every card the same height, a
+   coloured band and icon each, a layered shadow and a small lift on hover.
+   Longer notes (Total Cost) open in a panel OVER the card, so no card grows.
+   "html body" outranks the shared skin's flat-card rule. */
+html body .dash-kpis > .dash-card.kc{position:relative;min-height:124px;height:100%;padding:12px 14px 12px !important;border-radius:10px !important;
+  border:1px solid #e1e7ef !important;border-top:0 !important;background:linear-gradient(180deg,#ffffff 0%,#fbfcfe 100%) !important;
+  box-shadow:0 1px 2px rgba(16,32,56,.06),0 4px 12px rgba(16,32,56,.07),inset 0 1px 0 #fff !important;overflow:visible;transition:transform .18s ease,box-shadow .18s ease !important}
+html body .dash-kpis > .dash-card.kc::before{content:'';position:absolute;left:0;right:0;top:0;height:4px;border-radius:10px 10px 0 0;background:var(--kc,#0f2742)}
+html body .dash-kpis > .dash-card.kc:hover{transform:translateY(-2px) !important;box-shadow:0 2px 4px rgba(16,32,56,.08),0 10px 22px rgba(16,32,56,.12) !important}
+.dash-kpis .kc .kh{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:2px}
+.dash-kpis .kc .kh span{color:#5a6b82;font-size:12px;font-weight:600}
+.dash-kpis .kc .ki{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:var(--kcs,#eef2f7);flex:none;box-shadow:inset 0 -1px 0 rgba(0,0,0,.05)}
+.dash-kpis .kc .ki svg{width:15px;height:15px;fill:none;stroke:var(--kc,#0f2742);stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.dash-kpis .kc .dash-num{margin-top:6px !important;text-align:left}
+.dash-kpis .kc .kpi-delta{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.35}
+.dash-kpis .kc details.kw{position:relative;margin-top:4px}
+.dash-kpis .kc details.kw summary{list-style:none;cursor:pointer;font-size:11px;font-weight:700;color:#b45309;background:#fff6e8;border:1px solid #f3d6a8;border-radius:5px;padding:2px 7px;display:inline-block}
+.dash-kpis .kc details.kw summary::-webkit-details-marker{display:none}
+.dash-kpis .kc details.kw .kwp{position:absolute;z-index:20;left:-6px;top:calc(100% + 6px);width:280px;background:#fff;border:1px solid #f0d3a8;border-radius:8px;padding:9px 11px;
+  box-shadow:0 12px 28px rgba(16,32,56,.18);font-size:11.5px;color:#7a4a05;line-height:1.5}
+.dash-kpis .kc details.kw .kwp div+div{margin-top:5px;padding-top:5px;border-top:1px solid #f7e7cc}
 @media (max-width:1080px){.dash-kpis{grid-template-columns:repeat(3,1fr)}}
 @media (max-width:640px){.dash-kpis{grid-template-columns:repeat(2,1fr)}}
 .dash-num{font-size:21px;font-weight:700;margin-top:8px}
@@ -956,25 +977,30 @@ function zdash_palette(string $html): string {
 <?php endif; ?>
 
 <!-- KPI CARDS -->
+<script>document.addEventListener('click',function(e){document.querySelectorAll('.dash-kpis details.kw[open]').forEach(function(d){if(!d.contains(e.target))d.open=false;});});</script>
 <div class="dash-kpis">
-  <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .5s ease both">
-    <span style="color:#5a6b82;font-size:12.5px">Total Sales</span>
+  <div class="dash-card kc" style="--kc:#0a6ed1;--kcs:#e8f1fc;<?= $cardCss ?>;animation:zrise .5s ease both">
+    <div class="kh"><span>Total Sales</span><i class="ki"><svg viewBox="0 0 24 24"><path d="M4 17l5-5 4 3 7-8"/><path d="M15 7h5v5"/></svg></i></div>
     <div class="dash-num num" data-count-to="<?= (int)round($curTotals['sales']) ?>">0</div>
     <?php $d = dash_delta_pct($curTotals['sales'], $prevTotals['sales']); ?>
     <div class="kpi-delta <?= e($d['dir']) ?>"><?= $d['dir']==='up'?'▲':($d['dir']==='down'?'▼':'•') ?> <?= e($d['label']) ?></div>
     <div class="kpi-delta" style="color:#8a97ab;margin-top:2px"><?= count($dashCheck) ?> invoice<?= count($dashCheck) === 1 ? '' : 's' ?> · every currency in PKR</div>
   </div>
-  <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .55s ease both">
-    <span style="color:#5a6b82;font-size:12.5px">Total Cost</span>
+  <div class="dash-card kc" style="--kc:#d97706;--kcs:#fdf1e1;<?= $cardCss ?>;animation:zrise .55s ease both">
+    <div class="kh"><span>Total Cost</span><i class="ki"><svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.2-4.5 3 2 2.6 4.5 3 4.5 1.3 4.5 3.3-2 3-4.5 3-4.5-1.1-4.5-3"/></svg></i></div>
     <div class="dash-num num" data-count-to="<?= (int)round($curTotals['cost']) ?>">0</div>
     <?php $d = dash_delta_pct($curTotals['cost'], $prevTotals['cost']); ?>
     <div class="kpi-delta <?= e($d['dir']) ?>"><?= $d['dir']==='up'?'▲':($d['dir']==='down'?'▼':'•') ?> <?= e($d['label']) ?></div>
-    <?php if ($curTotals['breakeven_cost'] > 1): ?><div class="kpi-delta" style="color:#d97706;margin-top:2px">⚠ incl. <?= number_format($curTotals['breakeven_cost'],0) ?> assumed break-even (not yet costed)</div><?php endif; ?>
-    <?php if ($draftCost['items'] > 0): ?><div class="kpi-delta" style="color:#d97706;margin-top:2px">⚠ <?= (int)$draftCost['items'] ?> costing<?= $draftCost['items']===1?'':'s' ?> still draft (not locked) — <?= number_format($draftCost['sales'],0) ?> of sales; profit on these can still change</div><?php endif; ?>
-    <?php if ($missingCostCount > 0): ?><div class="kpi-delta" style="color:#d97706;margin-top:2px"><?= $missingCostProductCount ?> product<?= $missingCostProductCount===1?'':'s' ?> overdue for costing</div><?php endif; ?>
+    <?php $costNotes = [];
+      if ($curTotals['breakeven_cost'] > 1) $costNotes[] = 'Includes ' . number_format($curTotals['breakeven_cost'], 0) . ' assumed break-even (not yet costed).';
+      if ($draftCost['items'] > 0) $costNotes[] = (int)$draftCost['items'] . ' costing' . ($draftCost['items'] === 1 ? '' : 's') . ' still draft (not locked) — ' . number_format($draftCost['sales'], 0) . ' of sales; profit on these can still change.';
+      if ($missingCostCount > 0) $costNotes[] = $missingCostProductCount . ' product' . ($missingCostProductCount === 1 ? '' : 's') . ' overdue for costing — see the list below.';
+      if ($costNotes): ?>
+    <details class="kw"><summary>⚠ <?= count($costNotes) ?> to check · details</summary><div class="kwp"><?php foreach ($costNotes as $cn): ?><div>⚠ <?= e($cn) ?></div><?php endforeach; ?></div></details>
+    <?php endif; ?>
   </div>
-  <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .6s ease both">
-    <span style="color:#5a6b82;font-size:12.5px">Gross Profit</span>
+  <div class="dash-card kc" style="--kc:<?= $grossProfit>=0?'#107e3e':'#c0293f' ?>;--kcs:#e6f4ec;<?= $cardCss ?>;animation:zrise .6s ease both">
+    <div class="kh"><span>Gross Profit</span><i class="ki"><svg viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M7 16v-4M12 16V8M17 16v-7"/></svg></i></div>
     <?php if ($curTotals['cost'] > 0): ?>
     <div class="dash-num num" style="color:<?= $grossProfit>=0?'#16a34a':'#c0293f' ?>" data-count-to="<?= (int)round($grossProfit) ?>">0</div>
     <?php $d = dash_delta_pct($grossProfit, $prevGrossProfit); ?>
@@ -984,18 +1010,18 @@ function zdash_palette(string $html): string {
     <div class="kpi-delta flat">No cost data yet — can't work out profit</div>
     <?php endif; ?>
   </div>
-  <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .65s ease both">
-    <span style="color:#5a6b82;font-size:12.5px">Avg. Profit %</span>
+  <div class="dash-card kc" style="--kc:#6b4fbb;--kcs:#f0ecfa;<?= $cardCss ?>;animation:zrise .65s ease both">
+    <div class="kh"><span>Avg. Profit %</span><i class="ki"><svg viewBox="0 0 24 24"><path d="M19 5L5 19"/><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="17" r="2.5"/></svg></i></div>
     <div class="dash-num"><?= $avgMarginPct !== null ? $avgMarginPct.'%' : '—' ?></div>
     <div class="kpi-delta flat"><?= $curTotals['breakeven_cost'] > 1 ? 'Includes not-yet-costed sales, assumed break-even' : 'All sales in this period are costed' ?></div>
   </div>
-  <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .7s ease both">
-    <span style="color:#5a6b82;font-size:12.5px">Active Shipments</span>
+  <div class="dash-card kc" style="--kc:#0e7490;--kcs:#e3f4f7;<?= $cardCss ?>;animation:zrise .7s ease both">
+    <div class="kh"><span>Active Shipments</span><i class="ki"><svg viewBox="0 0 24 24"><path d="M3 16l2 4h14l2-4"/><path d="M5 16V9h14v7"/><path d="M12 9V4"/></svg></i></div>
     <div class="dash-num num" data-count-to="<?= (int)$activeShipments ?>">0</div>
     <div class="kpi-delta flat">Draft or submitted, right now</div>
   </div>
-  <div class="dash-card" style="<?= $cardCss ?>;animation:zrise .75s ease both">
-    <span style="color:#5a6b82;font-size:12.5px">Active Customers</span>
+  <div class="dash-card kc" style="--kc:#be185d;--kcs:#fbe9f1;<?= $cardCss ?>;animation:zrise .75s ease both">
+    <div class="kh"><span>Active Customers</span><i class="ki"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 0 1 0 6M18 14c2 .7 3 2.6 3 6"/></svg></i></div>
     <div class="dash-num num" data-count-to="<?= (int)$activeCustomers ?>">0</div>
     <?php $d = dash_delta_pct($activeCustomers, $prevActiveCustomers); ?>
     <div class="kpi-delta <?= e($d['dir']) ?>"><?= $d['dir']==='up'?'▲':($d['dir']==='down'?'▼':'•') ?> <?= e($d['label']) ?></div>
@@ -1025,6 +1051,8 @@ function zdash_palette(string $html): string {
 ?>
 <style>
 .dash-pc{display:grid;grid-template-columns:minmax(150px,.85fr) minmax(0,1.4fr);gap:14px;align-items:stretch}
+html body .dash-card.dash-pc{border-radius:10px !important;border:1px solid #e1e7ef !important;background:linear-gradient(180deg,#ffffff 0%,#fbfcfe 100%) !important;
+  box-shadow:0 1px 2px rgba(16,32,56,.06),0 4px 12px rgba(16,32,56,.07) !important}
 .dash-pc .r{border-left:1px solid #e6ebf1;padding-left:14px;display:flex;flex-direction:column;gap:3px;min-width:0}
 .dash-pc .p{display:flex;align-items:center;gap:7px;font-size:12px;color:#33415c;padding:2px 0;border-bottom:1px solid #f1f4f7;min-width:0}
 .dash-pc .p:last-of-type{border-bottom:0}
