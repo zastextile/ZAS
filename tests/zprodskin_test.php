@@ -28,7 +28,10 @@ function grab(string $src, string $needle): string {
     }
     exit(1);
 }
-$lifted = grab($pe, 'function zeWorkOpt(')
+$lifted = grab($pe, 'function stStyle(')
+        . grab($pe, 'function stChip(')
+        . grab($pe, 'function szText(')
+        . grab($pe, 'function zeWorkOpt(')
         . grab($pe, 'function zeWorkerOpt(')
         . grab($pe, 'function zeRowHtml(')
         . grab($pe, 'function zePaint(')

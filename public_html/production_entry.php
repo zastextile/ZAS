@@ -84,16 +84,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $r = zp_book($date, $rows, $userId);
         if ($r['ok']) {
-            $_SESSION['zp_msg'] = $r['saved'] . ' line' . ($r['saved'] === 1 ? '' : 's') . ' booked'
+            /* how many bookings were TYPED — one booking shared over three sizes
+               is saved as three lines; the count is only for this message */
+            $nb = max(1, min((int)$r['saved'], (int)($_POST['n_book'] ?? $r['saved'])));
+            $_SESSION['zp_msg'] = $nb . ' booking' . ($nb === 1 ? '' : 's') . ' saved'
+                . ($nb < (int)$r['saved'] ? ' (' . (int)$r['saved'] . ' size lines)' : '')
                 . ($showMoney ? ' — PKR ' . number_format($r['amount'], 2) . ' in wages.' : '.');
             redirect('production_entry.php?d=' . urlencode($date));
         }
         $errors = $r['errors'];
 
     } elseif ($a === 'cancel_entry') {
-        $r = zp_cancel_entry((int)($_POST['entry_id'] ?? 0), (string)($_POST['reason'] ?? ''), $userId);
-        if ($r['ok']) $_SESSION['zp_msg'] = 'Entry cancelled. It stays on the list, marked, so the correction is visible.';
-        else          $_SESSION['zp_err'] = $r['error'];
+        /* a summarised row carries every size line it stands for: "12,13,14" */
+        $ids = array_values(array_filter(array_map('intval', explode(',', (string)($_POST['entry_id'] ?? '')))));
+        $okN = 0; $errs = [];
+        foreach ($ids as $eid) { $r = zp_cancel_entry($eid, (string)($_POST['reason'] ?? ''), $userId); if ($r['ok']) $okN++; else $errs[] = $r['error']; }
+        if ($okN) $_SESSION['zp_msg'] = 'Entry cancelled' . ($okN > 1 ? ' (' . $okN . ' size lines)' : '') . '. It stays on the list, marked, so the correction is visible.';
+        if ($errs) $_SESSION['zp_err'] = implode(' ', array_unique($errs));
         redirect('production_entry.php?d=' . urlencode($date));
     }
 }
@@ -125,7 +132,7 @@ $SIZE_PROBLEMS = [];
 
    The index is built from the SAME functions the save uses, so the list can
    never offer something the server will refuse. */
-$WORK = zp_work_index();
+$WORK = ze_merge_work(zp_work_index());
 $HABIT = zp_worker_habit();
 
 /* EACH WORKER CARRIES THE STAGES THEY ARE ALLOTTED, and the stage NAMES go
@@ -170,6 +177,92 @@ try {
         $PAYT[(int)$r['id']] = (string)$r['pay_type'];
     }
 } catch (Throwable $e) { $PAYT = []; }
+/* STAGE COLOURS, FIXED (owner, 21 Nov 2026): Cutting amber, Stitching blue,
+   Packing green; any other stage its own colour, the same every day. */
+function ze_stage_style(string $st): string {
+    $l = mb_strtolower($st);
+    if (str_contains($l, 'cut'))    return 'background:#fff4e2;color:#9a5710;border:1px solid #f1cf97';
+    if (str_contains($l, 'stitch') || str_contains($l, 'sew') || str_contains($l, 'singer') || str_contains($l, 'overlock')) return 'background:#e8f1fc;color:#0a4f96;border:1px solid #b9d3f1';
+    if (str_contains($l, 'pack'))   return 'background:#e8f6ec;color:#1f6b35;border:1px solid #bfe3ca';
+    $pal = [['#f1ecfb','#5a3fa8','#d6cbf2'], ['#e3f5f7','#0e6170','#b3e0e6'], ['#fbe9f1','#9d174d','#f2c4d8'], ['#eef2f6','#33465f','#cfd8e3'], ['#fdeee8','#9a3412','#f6cdb9']];
+    $c = $pal[abs(crc32($l)) % count($pal)];
+    return 'background:' . $c[0] . ';color:' . $c[1] . ';border:1px solid ' . $c[2];
+}
+/* the page skin sets its own chip colours with !important; the stage colour must win */
+function ze_stage_css(string $st): string { return str_replace(';', ' !important;', ze_stage_style($st)) . ' !important'; }
+function ze_stage_pill(string $st): string {
+    return $st === '' ? '' : '<span class="pill" style="' . ze_stage_css($st) . ';font-weight:600">' . e($st) . '</span>';
+}
+
+/* THE SUMMARISED LIST (owner, 21 Nov 2026): "sum qty where the proforma is the
+   same and part, stage and rate / pc match — forget sizes". One row per
+   proforma + part + operation + stage + rate; its LEFT is every size added up.
+   The operation stays in the key, or two different jobs at the same rate
+   would merge. A different rate stays its own row. Each row keeps its
+   members (order line + what is left there), oldest line first, so a booking
+   is shared across the sizes FIRST COME FIRST: the server still checks and
+   prices every size line exactly as before. */
+function ze_merge_work(array $rows): array {
+    $desc = [];
+    $ids = array_values(array_unique(array_map(fn($r) => (int)$r['item'], $rows)));
+    if ($ids) {
+        try {
+            $st = db()->prepare('SELECT id, description FROM proforma_items WHERE id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')');
+            $st->execute($ids);
+            foreach ($st->fetchAll() as $d) $desc[(int)$d['id']] = trim((string)($d['description'] ?? ''));
+        } catch (Throwable $e) {}
+    }
+    $out = []; $at = [];
+    foreach ($rows as $r) {
+        $key = $r['pifull'] . '|' . ($r['kind'] ?? 'part') . '|' . (int)$r['part'] . '|' . (int)$r['op'] . '|' . (int)$r['sid'] . '|' . number_format((float)$r['rate'], 2, '.', '');
+        $d = $desc[(int)$r['item']] ?? '';
+        if (!isset($at[$key])) {
+            $g = $r;
+            $g['k'] = 'g' . substr(md5($key), 0, 12);
+            $g['mem'] = []; $g['left'] = 0.0; $g['sizes'] = []; $g['desc'] = []; $g['dk'] = []; $g['done'] = 1;
+            $at[$key] = count($out); $out[] = $g;
+        }
+        $g =& $out[$at[$key]];
+        $g['mem'][] = [(int)$r['item'], round((float)$r['left'], 2)];
+        $g['left'] = round($g['left'] + (float)$r['left'], 2);
+        if (!$r['done']) $g['done'] = 0;
+        if (($r['size'] ?? '') !== '') $g['sizes'][] = (string)$r['size'];   // one per line, so "3 sizes" counts the lines
+        /* the same words typed twice with different capitals or spaces are one description */
+        $dk = mb_strtolower(preg_replace('/\s+/', ' ', $d));
+        if ($d !== '' && !isset($g['dk'][$dk])) { $g['dk'][$dk] = 1; $g['desc'][] = $d; }
+        if (!str_contains($g['hay'], mb_strtolower((string)$r['size']))) $g['hay'] .= ' ' . mb_strtolower((string)$r['size']);
+        unset($g);
+    }
+    foreach ($out as &$g) {
+        foreach ($g['mem'] as $m) if ($m[1] > 0.0001) { $g['item'] = $m[0]; break; }   // the first line that still has work
+        $g['nsz'] = count($g['sizes']);
+        $g['size'] = $g['nsz'] === 1 ? $g['sizes'][0] : '';
+        $g['sizes'] = implode(', ', $g['sizes']);
+        $g['desc'] = mb_substr(implode(' / ', $g['desc']), 0, 90);
+        unset($g['dk']);
+        $g['hay'] .= ' ' . mb_strtolower($g['desc']);
+    }
+    unset($g);
+    return $out;
+}
+
+/* THE BOOKED TABLE, SUMMARISED THE SAME WAY: one row per worker + order +
+   part + operation + rate + state; a merged booking saved as several size
+   lines shows as one, and Cancel cancels them together. */
+function ze_group_today(array $today): array {
+    $out = []; $at = [];
+    foreach ($today as $t) {
+        $key = implode('|', [(int)($t['worker_id'] ?? 0), (string)($t['pi_no'] ?? ''), (string)($t['product_name'] ?? ''), (int)($t['part_id'] ?? 0), (int)($t['op_id'] ?? 0),
+                             (string)$t['stage'], number_format((float)$t['rate_applied'], 2, '.', ''), (string)$t['status']]);
+        if (!isset($at[$key])) { $g0 = $t; $g0['ids'] = []; $g0['qty'] = 0.0; $g0['amount'] = 0.0; $g0['n'] = 0; $at[$key] = count($out); $out[] = $g0; }
+        $g =& $out[$at[$key]];
+        $g['ids'][] = (int)$t['id']; $g['n']++;
+        $g['qty'] += (float)$t['qty']; $g['amount'] += (float)$t['amount'];
+        unset($g);
+    }
+    return $out;
+}
+
 function ze_pay_pill(?string $t): string {
     $w = ['salary' => 'Fixed salary', 'daily' => 'Daily wages', 'contract' => 'Contractor'][$t ?? ''] ?? '';
     return $w === '' ? '' : '<span class="ze-pt pt-' . e($t) . '">' . $w . '</span>';
@@ -485,7 +578,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
           <th style="width:120px"></th>
         </tr></thead>
         <tbody>
-        <?php foreach ($today as $i => $t): $canc = $t['status'] !== 'active'; ?>
+        <?php foreach (ze_group_today($today) as $i => $t): $canc = $t['status'] !== 'active'; ?>
           <tr<?= $canc ? ' style="opacity:.55"' : '' ?>>
             <td class="code"><?= $i + 1 ?></td>
             <td><?= e($t['worker_name'] ?? '(removed worker)') ?>
@@ -498,18 +591,17 @@ table.zp-t tbody tr:hover{background:#fafcff}
               /* the colour follows POSITION, not a word: the stage that makes the
                  pieces is marked apart from the ones limited by it, whatever you
                  have chosen to call them */
-              $cls = zp_is_cutting((string)$t['stage']) ? 'cut' : 'st';
-              echo '<span class="pill ' . $cls . '">' . e($t['stage']) . '</span>';
+              echo ze_stage_pill((string)$t['stage']);
               if ($canc) echo ' <span class="pill canc">cancelled</span>';
             ?></td>
-            <td class="num"><?= rtrim(rtrim(number_format((float)$t['qty'], 2), '0'), '.') ?></td>
+            <td class="num"><?= rtrim(rtrim(number_format((float)$t['qty'], 2), '0'), '.') ?><?php if ($t['n'] > 1): ?><div class="code" style="font-size:10px" title="Shared across the sizes, first size first"><?= (int)$t['n'] ?> sizes</div><?php endif; ?></td>
             <?php if ($showMoney): ?>
               <td class="num"><?= number_format((float)$t['rate_applied'], 2) ?></td>
               <td class="num"><?= number_format((float)$t['amount'], 2) ?></td>
             <?php endif; ?>
             <td>
               <?php if (!$canc): ?>
-                <button type="button" class="zp-b sm red" onclick="zeCancel(<?= (int)$t['id'] ?>)">Cancel</button>
+                <button type="button" class="zp-b sm red" onclick="zeCancel('<?= e(implode(',', $t['ids'])) ?>')">Cancel</button>
               <?php elseif (trim((string)$t['cancel_reason']) !== ''): ?>
                 <span class="code" style="font-size:10px" title="<?= e($t['cancel_reason']) ?>">why?</span>
               <?php endif; ?>
@@ -640,6 +732,23 @@ table.zp-t tbody tr:hover{background:#fafcff}
      ============================================================ */
 
   /* a unit of work, described once — everything a person needs to decide */
+  /* STAGE COLOURS — the same rule as ze_stage_style() on the server, so a
+     stage reads the same in the list, on the sheet and in the booked table. */
+  function stStyle(st){
+    var STPAL = [['#f1ecfb','#5a3fa8','#d6cbf2'],['#e3f5f7','#0e6170','#b3e0e6'],['#fbe9f1','#9d174d','#f2c4d8'],['#eef2f6','#33465f','#cfd8e3'],['#fdeee8','#9a3412','#f6cdb9']];
+    var l = String(st||'').toLowerCase();
+    if (l.indexOf('cut') >= 0) return 'background:#fff4e2;color:#9a5710;border-color:#f1cf97';
+    if (/stitch|sew|singer|overlock/.test(l)) return 'background:#e8f1fc;color:#0a4f96;border-color:#b9d3f1';
+    if (l.indexOf('pack') >= 0) return 'background:#e8f6ec;color:#1f6b35;border-color:#bfe3ca';
+    var h = 0; for (var i=0;i<l.length;i++) h = (h*31 + l.charCodeAt(i)) >>> 0;
+    var c = STPAL[h % STPAL.length];
+    return 'background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2];
+  }
+  /* the page skin sets chip colours with !important, so the stage colour says it too */
+  function stChip(st){ return st ? '<span class="ze-chip" style="' + stStyle(st).split(';').join(' !important;') + ' !important;font-weight:600">' + esc(st) + '</span>' : ''; }
+  /* one size, or "3 sizes" with the list on hover */
+  function szText(w){ return w.nsz > 1 ? w.nsz + ' sizes' : (w.size || ''); }
+
   function zeWorkOpt(w, click, ev){
     /* THE ORDER NUMBER AND THE PRODUCT, and nothing else on that line.
        The customer name used to sit here too. On a floor list it earns
@@ -648,8 +757,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
        end of a narrow row. Asked for directly. */
     return { v:w.k, click:click, ev:ev,
              title: w.pn + ' → ' + w.on, strong: w.pi,
-             bits: [w.prod].filter(Boolean),
-             chips:[w.size, w.st].filter(Boolean),
+             bits: [w.prod, w.desc].filter(Boolean),
+             chips:[szText(w)].filter(Boolean), szt: w.nsz > 1 ? w.sizes : '', st: w.st,
              rate: w.rate, left: w.left };
   }
   /* DOES THIS PERSON WORK THIS STAGE?
@@ -697,7 +806,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
       + '<div><div class="ze-t">' + hl(o.title, t) + '</div><div class="ze-s">'
       +   (o.strong ? '<b style="color:#38495f">' + hl(o.strong, t) + '</b><i>&middot;</i>' : '')
       +   o.bits.map(function(b){ return hl(b, t); }).join('<i>&middot;</i>')
-      +   o.chips.map(function(c){ return '<span class="ze-chip">' + hl(c, t) + '</span>'; }).join('')
+      +   o.chips.map(function(c){ return '<span class="ze-chip"' + (o.szt ? ' title="' + esc(o.szt) + '"' : '') + '>' + hl(c, t) + '</span>'; }).join('')
+      +   (o.st ? stChip(o.st) : '')
       +   (o.pay ? payPill(o.pay) : '')
       +   (o.rate && MONEY ? '<span style="font-family:ui-monospace,monospace">' + n2(o.rate) + '/pc</span>' : '')
       +   (o.usual ? '<span class="ze-usual">usually</span>' : '')
@@ -768,9 +878,10 @@ table.zp-t tbody tr:hover{background:#fafcff}
     $('zeHead').innerHTML = (tab === 'A')
       ? '<div class="ze-head"><div><h3>' + esc(w.pn) + ' → ' + esc(w.on) + '</h3>'
         + '<div style="font-size:12px;color:#38495f"><b>' + esc(w.pi) + '</b> &middot; ' + esc(w.cust)
-        + ' &middot; ' + esc(w.prod) + '</div><div class="ze-chips">'
-        + (w.size ? '<span class="ze-chip">Size ' + esc(w.size) + '</span>' : '')
-        + '<span class="ze-chip">' + esc(w.st) + '</span>'
+        + ' &middot; ' + esc(w.prod) + (w.desc ? ' &middot; <span style="color:#556b82">' + esc(w.desc) + '</span>' : '') + '</div><div class="ze-chips">'
+        + (w.nsz > 1 ? '<span class="ze-chip" title="Shared across the sizes, first size first">' + w.nsz + ' sizes: ' + esc(w.sizes) + '</span>'
+                     : (w.size ? '<span class="ze-chip">Size ' + esc(w.size) + '</span>' : ''))
+        + stChip(w.st)
         + (MONEY ? '<span class="ze-chip">' + n2(w.rate) + ' / pc</span>' : '')
         + '<span class="ze-chip" style="color:#0d9488;border-color:#0d9488">' + qn(w.left) + ' left</span>'
         + '</div></div><button type="button" class="zp-b sm" onclick="zeReset()">Change</button></div>'
@@ -1053,9 +1164,16 @@ table.zp-t tbody tr:hover{background:#fafcff}
      must not slip past a 420 ceiling. */
   function stagedOn(key){
     var n = 0;
-    sheet.forEach(function(x){ if (x.item + ':' + x.op === key) n += x.qty; });
+    sheet.forEach(function(x){ if (x.g === key) n += x.qty; });
     return n;
   }
+  /* what is already staged on ONE size line of one operation */
+  function stagedItem(item, op, kind){
+    var n = 0;
+    sheet.forEach(function(x){ if (x.item === item && x.op === op && x.kind === kind) n += x.qty; });
+    return n;
+  }
+  var grpSeq = 0;
   function totals(){
     var q = 0, amt = 0, n = 0, over = false;
     rows.forEach(function(r){ r.over = false; });
@@ -1077,7 +1195,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
     }
     var sa = 0;
     sheet.forEach(function(x){ sa += x.qty * x.rate; });
-    $('rowCount').textContent = sheet.length + n;
+    var ng = {}; sheet.forEach(function(x){ ng[x.grp] = 1; });
+    $('rowCount').textContent = Object.keys(ng).length + n;
     var tot = $('sheetTotal'); if (tot) tot.textContent = n2(sa + amt);
 
     var cells = document.querySelectorAll('#erows input.q');
@@ -1132,9 +1251,28 @@ table.zp-t tbody tr:hover{background:#fafcff}
       /* kind rides on the staged row, not looked up again at save time — the
          work list can be rebuilt between staging and saving, and a row that
          re-derived its own kind then could book against the wrong table. */
-      sheet.push({ item:work.item, op:work.op, kind:work.kind || 'part',
-                   worker:worker.id, qty:v, rate:work.rate,
-                   what:work.pn + ' → ' + work.on, who:worker.name, pt:worker.pt, pi:work.pi });
+      /* FIRST SIZE FIRST (owner, 21 Nov 2026: "use fifo or any size
+         automatically but data entry daily must be easy"). One typed quantity
+         is shared across the size lines of the merged row, oldest line first,
+         each taking only what is still open there. It goes to the server as
+         one line per size, exactly as before, so zp_book checks and prices
+         every one; on screen it stays one line (grp). */
+      var kind = work.kind || 'part', grp = ++grpSeq, rem = Math.round(v*100)/100;
+      var mem = work.mem && work.mem.length ? work.mem : [[work.item, work.left]];
+      var base = { op:work.op, kind:kind, g:work.k, grp:grp, worker:worker.id, rate:work.rate,
+                   what:work.pn + ' → ' + work.on, who:worker.name, pt:worker.pt, pi:work.pi, st:work.st,
+                   prod:work.prod, sz:szText(work) };
+      for (var m = 0; m < mem.length && rem > 0.0001; m++) {
+        var free = Math.round((mem[m][1] - stagedItem(mem[m][0], work.op, kind))*100)/100;
+        if (free <= 0) continue;
+        var take = Math.min(free, rem);
+        sheet.push(Object.assign({}, base, { item:mem[m][0], qty:take }));
+        rem = Math.round((rem - take)*100)/100;
+      }
+      /* cannot happen — totals() refuses a line past what is left — but a
+         remainder is never dropped silently: it goes on the last line and the
+         server refuses it with its own message */
+      if (rem > 0.0001) sheet.push(Object.assign({}, base, { item:mem[mem.length-1][0], qty:rem }));
     });
     zeReset();
     paintSheet();
@@ -1143,20 +1281,29 @@ table.zp-t tbody tr:hover{background:#fafcff}
   function paintSheet(){
     var el = $('zeSheet');
     if (!sheet.length) { el.innerHTML = ''; totals(); return; }
-    var h = '<div class="ze-stash"><h4>Waiting to be saved — ' + sheet.length + ' line'
-          + (sheet.length === 1 ? '' : 's') + '</h4>';
-    sheet.forEach(function(x,i){
+    /* one line per booking as typed, however many sizes it was shared over */
+    var gs = [], at = {};
+    sheet.forEach(function(x){
+      if (at[x.grp] == null) { at[x.grp] = gs.length; gs.push({ x:x, qty:0, n:0 }); }
+      var g = gs[at[x.grp]]; g.qty += x.qty; g.n++;
+    });
+    var h = '<div class="ze-stash"><h4>Waiting to be saved — ' + gs.length + ' line'
+          + (gs.length === 1 ? '' : 's') + '</h4>';
+    gs.forEach(function(g){
+      var x = g.x;
       h += '<div class="ze-sl"><div><b>' + esc(x.who) + '</b> ' + payPill(x.pt) + ' &middot; ' + esc(x.what)
-         + ' <span style="color:#8a97ab">(' + esc(x.pi) + ')</span></div>'
+         + ' ' + stChip(x.st)
+         + ' <span style="color:#8a97ab">(' + esc(x.pi) + (x.prod ? ' &middot; ' + esc(x.prod) : '') + ')</span>'
+         + (g.n > 1 ? ' <span style="color:#8a97ab;font-size:11px">shared over ' + g.n + ' sizes</span>' : '') + '</div>'
          + '<div style="display:flex;gap:11px;align-items:center">'
-         + '<span style="font-family:ui-monospace,monospace"><b>' + qn(x.qty) + '</b> pcs'
-         + (MONEY ? ' &middot; ' + n2(x.qty * x.rate) : '') + '</span>'
-         + '<button type="button" class="x" onclick="zeUnstash(' + i + ')">&times;</button></div></div>';
+         + '<span style="font-family:ui-monospace,monospace"><b>' + qn(g.qty) + '</b> pcs'
+         + (MONEY ? ' &middot; ' + n2(g.qty * x.rate) : '') + '</span>'
+         + '<button type="button" class="x" onclick="zeUnstash(' + x.grp + ')">&times;</button></div></div>';
     });
     el.innerHTML = h + '</div>';
     totals();
   }
-  window.zeUnstash = function(i){ sheet.splice(i,1); paintSheet(); };
+  window.zeUnstash = function(grp){ sheet = sheet.filter(function(x){ return x.grp !== grp; }); paintSheet(); };
 
   /* ---- SAVE: the staged sheet PLUS whatever is typed but not yet staged ----
      Forgetting the rows still on screen is the obvious way to lose somebody's
@@ -1172,6 +1319,9 @@ table.zp-t tbody tr:hover{background:#fafcff}
     }
     var f = ev.target;
     [].slice.call(f.querySelectorAll('.zePost')).forEach(function(e){ e.remove(); });
+    var nb = {}; sheet.forEach(function(x){ nb[x.grp] = 1; });
+    var hb = document.createElement('input'); hb.type = 'hidden'; hb.className = 'zePost'; hb.name = 'n_book';
+    hb.value = Object.keys(nb).length; f.appendChild(hb);
     sheet.forEach(function(x){
       [['r_item',x.item],['r_op',x.op],['r_kind',x.kind||'part'],['r_worker',x.worker],
        ['r_qty',x.qty],['r_note','']]

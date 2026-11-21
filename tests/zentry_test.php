@@ -194,7 +194,8 @@ ok(str_contains($pe, 'if (i === rows.length - 1) zeAddRow();'), 'Enter on a quan
 echo "9. No stage name decides anything on this page\n";
 ok(!preg_match("/\\\$t\\['stage'\\] === '(Cutting|Manual Cutting|Stitching)'/", $pe),
    'the stage pill colour is not chosen by a hardcoded word');
-ok(str_contains($pe, "zp_is_cutting((string)\$t['stage'])"), '  it follows position instead');
+ok(str_contains($pe, "ze_stage_pill((string)\$t['stage'])") && str_contains($pe, 'function ze_stage_style('),
+   '  it is the fixed stage colour (owner, 21 Nov 2026: Cutting amber, Stitching blue, Packing green) — display only');
 
 echo "10. Money is still a separate permission from booking\n";
 ok(str_contains($pe, '$showMoney = can_see_rates();'), 'rates are behind their own permission');
