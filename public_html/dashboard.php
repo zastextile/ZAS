@@ -621,6 +621,21 @@ if ($canSeeAnalytics) {
     foreach ($topParties as &$tp) { arsort($tp); } unset($tp);
 }
 
+/* A short amount for a party line, three figures, the Pakistani way
+   (owner, 21 Nov 2026): 15,311,520 → "1.53 Cr", 2,190,000 → "21.9 Lac".
+   The full figure is in the tooltip, and the card's total is spelt out in Urdu. */
+function dash_short_pkr(float $v): string {
+    $a = abs($v);
+    foreach ([[1000000000, 'Arab'], [10000000, 'Cr'], [100000, 'Lac'], [1000, 'K']] as [$unit, $word]) {
+        if ($a >= $unit) { $x = $a / $unit; return ($v < 0 ? '-' : '') . number_format($x, $x < 10 ? 2 : ($x < 100 ? 1 : 0)) . ' ' . $word; }
+    }
+    return number_format($v, 0);
+}
+/* a party name cut to fit one short line */
+function dash_short_name(string $n, int $max = 16): string {
+    return mb_strlen($n) > $max ? rtrim(mb_substr($n, 0, $max - 1)) . '…' : $n;
+}
+
 /* A rupee total the way it is said in Pakistan, in Urdu:
    339,027,276 → "33 کروڑ 90 لاکھ 27 ہزار 276 روپے". */
 function dash_urdu_rupees(float $v): string {
@@ -1016,7 +1031,7 @@ function zdash_palette(string $html): string {
 .dash-pc .p svg{flex:none;width:14px;height:14px;fill:none;stroke:#8a97ab;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .dash-pc .p span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dash-pc .p b{font-weight:600;color:#152033;white-space:nowrap;font-variant-numeric:tabular-nums}
-.dash-pc .ur{margin-top:auto;direction:rtl;text-align:right;font-family:'Noto Naskh Arabic','Jameel Noori Nastaleeq','Segoe UI',Tahoma,sans-serif;font-size:13px;border-radius:4px;padding:4px 9px;line-height:1.5}
+.dash-pc .ur{margin-top:auto;direction:rtl;text-align:right;font-family:'Noto Naskh Arabic','Jameel Noori Nastaleeq','Segoe UI',Tahoma,sans-serif;font-size:12px;border-radius:4px;padding:3px 8px;line-height:1.5;word-spacing:-1px}
 .dash-pc .none{font-size:12px;color:#8a97ab}
 @media(max-width:700px){.dash-pc{grid-template-columns:1fr}.dash-pc .r{border-left:0;padding-left:0;border-top:1px solid #e6ebf1;padding-top:8px}}
 </style>
@@ -1033,7 +1048,7 @@ function zdash_palette(string $html): string {
     </div>
     <div class="r">
       <?php if ($tp): foreach ($tp as $nm => $v): ?>
-        <div class="p" title="<?= e($nm) ?> — PKR <?= number_format($v, 0) ?>"><svg viewBox="0 0 24 24"><?= $ic ?></svg><span><?= e($nm) ?></span><b>PKR <?= number_format($v, 0) ?></b></div>
+        <div class="p" title="<?= e($nm) ?> — PKR <?= number_format($v, 0) ?>"><svg viewBox="0 0 24 24"><?= $ic ?></svg><span><?= e(dash_short_name((string)$nm)) ?></span><b>Rs <?= e(dash_short_pkr((float)$v)) ?></b></div>
       <?php endforeach; else: ?><div class="none">No party named in this period.</div><?php endif; ?>
       <div class="ur" style="background:<?= $tc[0] ?>;color:<?= $tc[1] ?>" title="<?= e(number_format($it['tot'], 0)) ?> rupees">کل رقم: <?= e(dash_urdu_rupees($it['tot'])) ?></div>
     </div>
