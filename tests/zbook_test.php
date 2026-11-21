@@ -80,27 +80,25 @@ t('the same order in Single needs only 500 pillow covers',
 t('the size is matched without caring about capitals',
   zp_pieces_needed(array_merge($line, ['size' => 'DOUBLE']), 6) === 1000.0);
 
-head('A SIZE THAT MATCHES NOTHING IS REFUSED — IT IS NOT GUESSED AT');
-/* THIS RULE WAS WRONG AND IS NOW REVERSED.
- *
- * It used to assert that an unresolvable size falls back to ONE per set,
- * defended as "better than zero". That was the wrong pair of options. The real
- * choice was between GUESSING and SAYING SO, and guessing always guesses LOW:
- * a Double that genuinely takes TWO pillow cases got planned as one, the order
- * read finished at half done, and half the wages were never bookable — with
- * nothing on any screen saying so. Refusing is the only honest answer. */
+head('NO SIZE NO LONGER STOPS PRODUCTION — IT IS PLANNED GENEROUSLY');
+/* RULE CHANGED BY THE OWNER, 21 Nov 2026: "remove the restriction of size …
+ * start production the simple way". A line with no (or an unknown) size is no
+ * longer refused. It is planned at the MOST pieces of that part any size of
+ * the product takes — never the old 1-per-set guess, which always guessed LOW
+ * and made an order read finished at half done. Here the pillow cover takes 1
+ * in Single and 2 in Double, so an unsized line plans 2 per set. */
 $odd = array_merge($line, ['size' => 'King (special)']);
-t('an unrecognised size is refused, not planned low',
-  zp_pieces_needed($odd, 6) === ZP_NO_SIZE, zp_pieces_needed($odd, 6));
+t('an unrecognised size is planned at the most per set (2 pillow covers), not refused',
+  zp_pieces_needed($odd, 6) === 1000.0, zp_pieces_needed($odd, 6));
 t('  and a blank size too',
-  zp_pieces_needed(array_merge($line, ['size' => '']), 6) === ZP_NO_SIZE);
-t('  it is never quietly 1 per set', zp_pieces_needed($odd, 6) !== 500.0);
-t('nothing at all can be booked against a line that cannot be planned',
-  zp_remaining($odd, 6, 77, 'Laser Cut', ['op'=>[], 'stage'=>[]]) === 0.0,
+  zp_pieces_needed(array_merge($line, ['size' => '']), 6) === 1000.0);
+t('  it is never the old low guess of 1 per set', zp_pieces_needed($odd, 6) !== 500.0);
+t('work CAN be booked against it',
+  zp_remaining($odd, 6, 77, 'Laser Cut', ['op'=>[], 'stage'=>[]]) === 1000.0,
   zp_remaining($odd, 6, 77, 'Laser Cut', ['op'=>[], 'stage'=>[]]));
-t('the reason is written down', str_contains($src, 'guessing is worse here'));
-t('  and it names what it costs',
-  str_contains(preg_replace('/\s+/', ' ', $src), 'wages are never bookable'));
+t('a product with no sizes at all plans 1 per set',
+  zp_pieces_needed(['item_id' => 7, 'product_id' => 99, 'ordered_qty' => 300.0, 'size' => ''], 6) === 300.0);
+t('the reason is written down', str_contains($src, 'NO SIZE NO LONGER STOPS PRODUCTION'));
 
 head('THE SIZE IS TAKEN FROM THE LINE\'S OWN ID FIRST');
 /* matching on typed text is how the old bug worked, so it is the SECOND

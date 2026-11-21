@@ -255,8 +255,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
        the stored proforma exactly as it was rather than half-updated. The
        browser blocks this long before it gets here — see pfCheckSizes() — so
        what reaches this point is an old tab, a CSV import or a crafted post. */
+    /* A SIZE IS NO LONGER COMPULSORY (owner, 21 Nov 2026). The lines save
+       anyway; the ones without a size are only counted for the message, and
+       production plans them generously until a size is linked. */
     $missing = pf_missing_sizes($names, $pids, $szids, $szs);
-    if ($missing) { $_SESSION['error'] = pf_size_error($missing); redirect('proforma.php?id='.$pfid); }
 
     $existingIds = array_map('intval', array_column(db()->query("SELECT id FROM proforma_items WHERE proforma_id=".$pfid)->fetchAll(), 'id'));
     if (is_file(__DIR__ . '/includes/linelinks.php')) require_once __DIR__ . '/includes/linelinks.php';
@@ -292,7 +294,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
     // Proforma mode is always current — no manual "Generate Embedding" step.
     try { proforma_embed_one($pfid); } catch (Throwable $e) {}
     try { audit_log(0,'Proforma','edit',$_POST['pi_no'] ?? '','updated','Proforma edited'); } catch(Throwable $e){}
-    $_SESSION['flash']='Proforma invoice saved.'; redirect('proforma.php?id='.$pfid);
+    $_SESSION['flash']='Proforma invoice saved.' . ($missing ? ' ' . count($missing) . ' line' . (count($missing) === 1 ? ' has' : 's have') . ' no size yet — production can start; link the size when you know it for exact pieces per set.' : ''); redirect('proforma.php?id='.$pfid);
 }
 
 /* ---------- convert selected proforma invoices into ONE shipment ----------
@@ -580,13 +582,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='import_cs
     $effPid = [];
     foreach ($csvRows as $r)
         $effPid[] = $r['pid'] ?: (($r['id'] > 0 && isset($existingLink[$r['id']])) ? $existingLink[$r['id']] : 0);
+    /* a CSV row without a size imports too (21 Nov 2026) — see the save */
     $missing = pf_missing_sizes(array_column($csvRows,'name'), $effPid,
                                 array_fill(0, count($csvRows), 0), array_column($csvRows,'size'));
-    if ($missing) {
-        $_SESSION['error'] = 'Nothing was imported. ' . pf_size_error($missing)
-            . ' (Line numbers are rows of the CSV, not counting its header.)';
-        redirect('proforma.php?id='.$pfid);
-    }
 
     $updated=0; $added=0;
     foreach ($csvRows as $r) {
@@ -687,26 +685,25 @@ if ($id) {
           <label title="Order Acceptance / Production / Quality Claim clauses at the bottom of the printed PDF; switch off to leave them out for this proforma"><input type="checkbox" name="show_pfooter" <?= ($pf['show_pfooter'] ?? 1)?'checked':'' ?>> Terms footer on print <small>— standard clauses at the bottom of the PDF</small></label>
         </div>
         <?php if(!empty($pf['production_enabled'])): ?>
-        <div style="margin-top:12px;padding:10px 14px;border-radius:10px;background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.2);font-size:12px;color:#16a34a;font-weight:600">Production status: <?= e(ucwords(str_replace('_',' ', $pf['production_status'] ?? 'not_started'))) ?></div>
-        <div style="margin-top:12px;padding:14px 16px;border-radius:12px;background:#f6f8fc;border:1px solid #e3e9f2">
-          <div class="zsubh" style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#68737d;margin-bottom:6px">Assigned Production Staff <span style="font-weight:400;text-transform:none">— only these logins can log entries for this order</span></div>
-          <?php if ($productionStaffList): ?>
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            <?php foreach ($productionStaffList as $ps): $on = in_array((int)$ps['id'], $assignedStaffIds, true); ?>
-            <label style="display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:20px;border:1.5px solid <?= $on?'#0ea8c9':'#cbd5e3' ?>;background:<?= $on?'rgba(14,168,201,.08)':'#ffffff' ?>;color:<?= $on?'#0ea8c9':'#33415c' ?>;font-size:12.5px;font-weight:600;cursor:pointer">
-              <input type="checkbox" name="assigned_staff[]" value="<?= (int)$ps['id'] ?>" <?= $on?'checked':'' ?> style="width:14px;height:14px;accent-color:#0ea8c9"> <?= e($ps['name']) ?>
+        <?php /* PRODUCTION ON ONE LINE (21 Nov 2026): the status and who may book
+                 work on this order, side by side, instead of two big boxes. The
+                 same checkboxes, the same name, so saving is unchanged. */ ?>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px">
+          <span style="color:#556b82">Production</span>
+          <span class="zf-pill p-ok" style="display:inline-block;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:3px;border:1px solid #c6e6cf;background:#eef8f0;color:#256f3a"><?= e(ucwords(str_replace('_',' ', $pf['production_status'] ?? 'not_started'))) ?></span>
+          <span style="color:#556b82;margin-left:8px" title="Only these logins can log entries for this order; an order with nobody ticked does not appear in any Production Staff login's search">Staff who can book it</span>
+          <?php if ($productionStaffList): foreach ($productionStaffList as $ps): $on = in_array((int)$ps['id'], $assignedStaffIds, true); ?>
+            <label style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:4px;border:1px solid <?= $on?'#b9d3f1':'#d9dee4' ?>;background:<?= $on?'#eaf2fc':'#fff' ?>;color:<?= $on?'#0a6ed1':'#1d2d3e' ?>;font-weight:500;cursor:pointer;text-transform:none;letter-spacing:0">
+              <input type="checkbox" name="assigned_staff[]" value="<?= (int)$ps['id'] ?>" <?= $on?'checked':'' ?> style="width:14px;height:14px;accent-color:#0a6ed1;margin:0"> <?= e($ps['name']) ?>
             </label>
-            <?php endforeach; ?>
-          </div>
-          <?php else: ?>
-          <p style="color:#8a97ab;font-size:12px;margin:0">No Production Staff accounts yet — create one in <a href="users.php" style="color:#0ea8c9;font-weight:600">Users</a> first.</p>
+          <?php endforeach; else: ?>
+            <span style="color:#8396a8">no Production Staff logins yet — <a href="users.php" style="color:#0a6ed1;font-weight:600">add one in Users</a></span>
           <?php endif; ?>
-          <p style="font-size:11px;color:#8a97ab;margin:10px 0 0">Unassigned orders don't appear in any Production Staff login's search at all.</p>
         </div>
         <?php endif; ?>
       </div>
       <div style="margin-bottom:10px">
-        <h2 style="font-size:13.5px;font-weight:600;margin:0 0 8px">Products (customer-facing)</h2>
+        <h2 style="font-size:13.5px;font-weight:600;margin:0 0 8px">Order lines</h2>
         <?php /* ONE PANEL. The toolbar, the rows and the totals share a single
                  frame: a card around a bordered grid is one border too many, and
                  the controls belong to the rows they act on. */ ?>
@@ -717,18 +714,21 @@ if ($id) {
             <input id="pfQ" placeholder="Filter lines…" autocomplete="off">
           </div>
           <span class="zsep"></span>
-          <?php if ($items): ?>
-          <a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>;padding:7px 12px;font-size:12px" href="proforma.php?export_items=<?= (int)$id ?>">Export Current Items</a>
-          <?php endif; ?>
-          <a class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>;padding:7px 12px;font-size:12px" href="proforma.php?csv_template=1">Download Blank Template</a>
-          <label class="zfo-file" title="Choose the .csv file to import"><input form="pfImport" type="file" name="csv" accept=".csv" required onchange="this.parentNode.lastChild.textContent=this.files[0]?this.files[0].name:'Choose CSV file…'"><span>Choose CSV file…</span></label>
-          <button form="pfImport" type="submit" class="<?= $btnC ?>" style="<?= $btn ?>;padding:7px 14px;font-size:12px">Import</button>
+          <?php /* EXCEL IN ONE MENU (21 Nov 2026): export, the blank template and
+                   import used to be four buttons and a sentence across the top
+                   of the lines; now one button, the same three actions inside. */ ?>
+          <link rel="stylesheet" href="assets/css/zf.css?v=4">
+          <span class="zf"><details class="zf-menu pfx"><summary class="zf-btn sm">Excel</summary><div class="zf-pop" style="top:calc(100% + 4px);bottom:auto;left:0;right:auto;min-width:300px">
+            <?php if ($items): ?><a href="proforma.php?export_items=<?= (int)$id ?>">Export these lines to Excel</a><?php endif; ?>
+            <a href="proforma.php?csv_template=1">Download a blank template</a>
+            <div class="sep"></div>
+            <div style="padding:6px 10px 8px;font-size:12px;color:#556b82">Import: edit in Excel, then bring it back — matching lines update, new ones are added. Header and terms are never touched.</div>
+            <div style="display:flex;gap:6px;padding:0 10px 8px;align-items:center"><label class="zfo-file" title="Choose the .csv file to import"><input form="pfImport" type="file" name="csv" accept=".csv" required onchange="this.parentNode.lastChild.textContent=this.files[0]?this.files[0].name:'Choose CSV file…'"><span>Choose CSV file…</span></label><button form="pfImport" type="submit" class="zf-btn sm pri" style="width:auto;display:inline-flex;color:#fff">Import</button></div>
+          </div></details></span>
+          <span class="zcnt" style="margin-left:8px">or paste a block from Excel straight into the lines</span>
           <span class="zsp"></span>
           <span class="zcnt" id="pfCnt"></span>
         </div>
-        <p style="font-size:11.5px;color:#68737d;margin:0;padding:6px 9px;border-bottom:1px solid #dde2eb">
-          Export the rows, edit in Excel, re-import — matching rows update in place, new rows get added.
-          Header &amp; terms are never touched. Or just paste a block straight into the grid.</p>
         <div id="pasteWarn" style="display:none;font-size:12px;margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.3);color:#9a5710"></div>
         <div class="zgwrap"><table style="width:100%;min-width:900px" id="pfItems">
           <thead><tr>
@@ -801,16 +801,9 @@ if ($id) {
           <button type="button" class="<?= $btnsC ?>" style="<?= $btn.';'.$btns ?>" onclick="pfAddRow()">+ Add row</button>
           <span id="pfBadge" class="zcnt">saved</span>
           <span class="zsp"></span>
-          <span class="zcnt" id="pasteHint">Paste order: Product · Description · Size · Qty · Unit · Price</span>
+          <span class="zcnt" id="pasteHint" title="Tab across · Enter down · ← → next cell at the edge of the text · Del clear · Home/End row ends · Ctrl+D fill down · Ctrl+V paste a block · Ctrl+S save">Paste order: Product · Description · Size · Qty · Unit · Price &nbsp;·&nbsp; <u style="text-decoration-style:dotted;cursor:help">Keyboard shortcuts</u></span>
         </div>
         </div><?php /* closes .zgpanel */ ?>
-        <div class="zhint">
-          <span><kbd>Tab</kbd> across</span><span><kbd>Enter</kbd> down</span>
-          <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> next cell at the edge of the text</span>
-          <span><kbd>Del</kbd> clear</span><span><kbd>Home</kbd>/<kbd>End</kbd> row ends</span>
-          <span><kbd>Ctrl</kbd>+<kbd>D</kbd> fill down</span><span><kbd>Ctrl</kbd>+<kbd>V</kbd> paste a block</span>
-          <span><kbd>Ctrl</kbd>+<kbd>S</kbd> save</span>
-        </div>
       </div>
       <div class="<?= $cardC ?>" style="<?= $card ?>">
         <?php /* TERMS AND BANK, COMPACT (owner, Step 5): the four terms on one row;
@@ -970,11 +963,8 @@ if ($id) {
 /* ---- a line that still needs a size ----
    The mark is on the ROW, not just the cell, because on a wide grid a red
    border on one narrow box scrolled off to the right is easy to miss. */
-#pfItems tr.needsz > td{background:var(--bad-soft,#fdeef1)}
-#pfItems tr.needsz [data-c="size"]{
-  border-color:var(--bad,#c92d4b) !important;
-  box-shadow:inset 0 0 0 1px var(--bad,#c92d4b) !important;
-  background:var(--panel,#fff) !important}
+/* since 21 Nov 2026 only a reminder: an orange edge on the size box, no red row */
+#pfItems tr.needsz [data-c="size"]{border-color:#e9a23b !important;background:#fffaf2 !important}
 .pfszwarn{border:1px solid var(--bad,#c92d4b);background:var(--bad-soft,#fdeef1);
   color:var(--bad,#c92d4b);border-radius:6px;padding:9px 12px;font-size:12.5px;
   line-height:1.5;margin:0 0 9px}
@@ -1110,6 +1100,12 @@ if ($id) {
         return bad;
       };
       window.pfSizeGuard = function(e){
+        /* NEVER BLOCKS ANY MORE (owner, 21 Nov 2026): the lines without a size
+           are only marked, and the save goes ahead. */
+        pfCheckSizes();
+        return true;
+      };
+      window.pfSizeGuardOld = function(e){
         var bad = pfCheckSizes();
         if (!bad.length) return true;
         e.preventDefault();
@@ -1362,6 +1358,7 @@ if ($id) {
     </script>
     </div><?php /* closes .zskin */ ?>
     <?php
+    echo "<script>document.addEventListener('click',function(e){document.querySelectorAll('details.zf-menu[open]').forEach(function(d){if(!d.contains(e.target))d.open=false;});});</script>";
     $pCan = false; if (is_file(__DIR__ . '/includes/inventory.php')) { require_once __DIR__ . '/includes/inventory.php'; $pCan = function_exists('inv_perm') && inv_perm('master'); }
     echo pty_picker(['name' => 'input[name="customer_name"]', 'party_id' => 'input[name="party_id"]', 'address' => 'textarea[name="customer_address"]',
                      'currency' => 'select[name="currency"]', 'payment_terms' => 'input[name="payment_terms"]', 'incoterm' => 'input[name="delivery_terms"]'],

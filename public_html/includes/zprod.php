@@ -1433,12 +1433,29 @@ const ZP_NO_SIZE = -1.0;
 function zp_pieces_needed(array $line, int $partId): float {
     $pid    = (int)$line['product_id'];
     $sizeId = zp_line_size_id($line);
-    if ($sizeId <= 0) return ZP_NO_SIZE;
-    return (float)$line['ordered_qty'] * zp_qty_for(zp_qty_map($pid), $partId, $sizeId);
+    $map    = zp_qty_map($pid);
+    if ($sizeId > 0) return (float)$line['ordered_qty'] * zp_qty_for($map, $partId, $sizeId);
+    /* NO SIZE NO LONGER STOPS PRODUCTION (owner, 21 Nov 2026: "remove the
+       restriction of size … start production the simple way"). A line with no
+       size is planned at the MOST pieces of this part any of the product's
+       sizes takes — so it can never read "finished" at half done (the reason
+       the old 1-per-set fallback was dropped) and nobody is refused work.
+       Linking the size on the proforma makes it exact. ZP_NO_SIZE stays
+       defined for older code but is no longer returned. */
+    $most = 0.0;
+    foreach (zp_sizes($pid) as $sz) $most = max($most, zp_qty_for($map, $partId, (int)$sz['id']));
+    return (float)$line['ordered_qty'] * ($most > 0 ? $most : 1.0);
 }
 
-/* Why a line cannot be planned, in words somebody can act on. */
+/* Why a line cannot be planned, in words somebody can act on.
+   Since 21 Nov 2026 a missing size no longer stops a line (see
+   zp_pieces_needed), so this says nothing and nothing is hidden or blocked;
+   zp_size_note() below is the quiet reminder instead. */
 function zp_size_problem(array $line): string {
+    return '';
+}
+/* The quiet reminder: this line has no size, so it is planned generously. */
+function zp_size_note(array $line): string {
     if (zp_line_size_id($line) > 0) return '';
     $size = trim((string)($line['size'] ?? ''));
     $have = array_column(zp_sizes((int)$line['product_id']), 'size_label');

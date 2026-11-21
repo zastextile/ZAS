@@ -145,7 +145,7 @@ const BASE = process.argv[2]; const SHOTS = process.argv[3] || '';
     const row = await p.evaluate(() => { const tr = document.querySelector('#invoiceRows tr.item-row'); return { pid: tr.querySelector('.pid').value, pt: tr.querySelector('.ptid') && tr.querySelector('.ptid').value, name: tr.querySelector('[data-c="name"]').value,
       rate: tr.querySelector('[data-c="rate"]') ? tr.querySelector('[data-c="rate"]').value : '', chip: tr.querySelector('.linkchip').textContent, note: (tr.querySelector('.zll-last') || {}).textContent || '' }; });
     check('  picking it links the line to the part (no product), and the chip says Part', row.pid === '0' && row.pt === '1' && /Part: Pillow Cover/.test(row.chip), JSON.stringify(row));
-    check('  the price box keeps its own figure (it was not empty)', row.rate === '3', JSON.stringify(row));
+    check('  the price box keeps its own figure (it was not empty)', parseFloat(row.rate) === 3, JSON.stringify(row));   /* shown as 3.00 since 21 Nov 2026 */
     await p.evaluate(() => { const r = document.querySelector('#invoiceRows tr.item-row [data-c="rate"]'); r.value = ''; });
     const f2 = p.locator('#invoiceRows tr.item-row').first().locator('[data-c="name"]');
     await f2.click(); await f2.fill(''); await f2.type('Thermal');

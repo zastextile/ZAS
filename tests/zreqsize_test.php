@@ -98,8 +98,13 @@ $savePos = strpos($pf, '$missing = pf_missing_sizes($names, $pids, $szids, $szs)
 $writePos = strpos($pf, '$upd=db()->prepare("UPDATE proforma_items SET product_name=?,product_id=?,');
 ok($savePos !== false && $writePos !== false && $savePos < $writePos,
    'and the check really is above the writer');
-ok(str_contains($pf, "if (\$missing) { \$_SESSION['error'] = pf_size_error(\$missing); redirect('proforma.php?id='.\$pfid); }"),
-   'a refusal redirects without touching a row');
+/* OWNER, 21 Nov 2026: "remove the restriction of size". The check still
+   counts the lines without a size, but only for the message — it no longer
+   refuses the save. */
+ok(!str_contains($pf, "if (\$missing) { \$_SESSION['error'] = pf_size_error(\$missing); redirect("),
+   'a missing size no longer refuses the save');
+ok(str_contains($pf, "' line' . (count(\$missing) === 1 ? ' has' : 's have') . ' no size yet — production can start"),
+   '  it is said gently in the saved message instead');
 
 echo "6. THE CSV IMPORT CANNOT WALK ROUND THE RULE\n";
 ok(str_contains($flat, 'THE WHOLE FILE IS READ BEFORE ANYTHING IS WRITTEN'),
@@ -112,9 +117,7 @@ $collect = strpos($pf, '$csvRows[]=[');
 $impWrite = strpos($pf, 'foreach ($csvRows as $r) {');
 ok($collect !== false && $impWrite !== false && $collect < $impWrite,
    'it collects first and writes after, so an import lands completely or not at all');
-ok(str_contains($pf, "'Nothing was imported. '"), 'and says nothing went in');
-ok(str_contains($pf, 'Line numbers are rows of the CSV'),
-   '  and that the line numbers mean CSV rows, not screen rows');
+ok(!str_contains($pf, "'Nothing was imported. '"), 'a CSV row without a size imports too (21 Nov 2026)');
 
 echo "6b. A CSV row that KEEPS its existing link is checked on that link\n";
 /* the UPDATE uses COALESCE, so a CSV name that does not resolve keeps the
@@ -225,15 +228,10 @@ else {
        . ' — ' . json_encode($r['bad']));
     ok(($r['bad'][0]['n'] ?? 0) === 2, '  and it is line 2, got ' . json_encode($r['bad'][0]['n'] ?? null));
     ok($r['marked'] === [2], 'only that row is marked red, got ' . json_encode($r['marked']));
-    ok($r['blocked'] === true && $r['submitted'] === false,
-       'THE SAVE IS BLOCKED, so the typing survives — defaultPrevented was '
-       . json_encode($r['blocked']));
-    ok(str_contains($r['warn'], '1 line still needs a size'), 'the banner counts them, got: '
-       . substr($r['warn'], 0, 60));
-    ok(str_contains($r['warn'], 'Single, Double, King'), '  and lists what that product allows');
-    ok(str_contains($r['warn'], 'cannot be booked'), '  and says why it matters');
-    ok(str_contains($r['focused'], 'size'), 'the cursor is put IN the offending cell, got '
-       . json_encode($r['focused']));
+    /* the size is no longer compulsory: the line is marked, the save goes ahead */
+    ok($r['blocked'] === false && $r['submitted'] === true,
+       'THE SAVE GOES AHEAD with a size missing — defaultPrevented was ' . json_encode($r['blocked']));
+    ok($r['warn'] === '', '  and no red banner is put up, got: ' . substr($r['warn'], 0, 60));
 
     echo "8. Fix it and it goes straight through\n";
     ok($r['blockedAfterFix'] === false && $r['submittedAfterFix'] === true,
@@ -243,7 +241,7 @@ else {
 }
 @unlink(__DIR__ . '/.rs.html'); @unlink(__DIR__ . '/.rs.js');
 
-echo "9. The guard only blocks — it never edits what is posted\n";
+echo "9. The guard never edits what is posted\n";
 $g = grab($pf, 'window.pfSizeGuard = function(e)');
 ok(!preg_match('/\.value\s*=/', $g), 'pfSizeGuard writes no value');
 ok(str_contains($pf, 'onsubmit="return pfSizeGuard(event)"'), 'it is bound to the save form');
@@ -255,9 +253,7 @@ ok(str_contains($flat, 'It only ever blocks; it never changes what is posted'),
 echo "10. The mark clears as you type, not only on the next failed save\n";
 ok(str_contains($pf, "trOwn.classList.toggle('needsz'"), 'pfSize refreshes its own row');
 ok(str_contains($flat, 'without waiting for another failed save'), '  and why');
-ok(str_contains($pf, '#pfItems tr.needsz > td'), 'the whole ROW is marked, not just the cell');
-ok(str_contains($flat, 'a red border on one narrow box scrolled off to the right is easy to miss'),
-   '  and why the row rather than the cell');
+ok(str_contains($pf, '#pfItems tr.needsz [data-c="size"]{border-color:#e9a23b'), 'the size box gets a soft orange edge — a reminder, not an error');
 
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);
