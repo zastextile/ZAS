@@ -330,8 +330,18 @@ const body = p => p.textContent('#fin-body');
     await p.selectOption('select[aria-label="Department"]', 'Packing');
     check('  the department filter narrows the list', (await p.locator('.prow').count()) === 1 && /Danish Daily/.test(await body(p)));
     await p.selectOption('select[aria-label="Department"]', '');
+    // ONLY THE TICKED (owner, 21 Nov 2026): the table opens with the people ticked, not the whole list
+    await p.click('button:has-text("Untick all")');
+    await p.click('button:has-text("Amend ticked at once (table)")');
+    check('Amend ticked: with nobody ticked it asks you to tick first, and opens nothing', (await p.locator('#fin-shade table.agrid').count()) === 0 && /Tick the people to amend first/.test(await p.textContent('.fin-toast')));
+    await p.locator('.prow', { hasText: 'Dawood Daily' }).locator('input[type=checkbox]').check();
+    await p.click('button:has-text("Amend ticked at once (table)")');
+    await p.waitForSelector('#fin-shade table.agrid');
+    check('  tick one person and the table holds that one person only', (await p.locator('#fin-shade table.agrid tbody tr:not(.tot)').count()) === 1 && /Dawood Daily/.test(await p.textContent('#fin-shade table.agrid')));
+    await p.locator('#fin-shade button:has-text("Close")').first().click();
+    await p.click('button:has-text("Tick all shown")');
     // amend many at once, in a table: days ± at the day rate, then Close leaves everything as it was
-    await p.click('button:has-text("Amend many at once (table)")');
+    await p.click('button:has-text("Amend ticked at once (table)")');
     await p.waitForSelector('#fin-shade table.agrid');
     const ag = p.locator('#fin-shade table.agrid');
     check('Amend many at once (daily wages): one row a person, with Days ±, Bonus, Other earning, Deduction and a reason',
@@ -853,7 +863,7 @@ const body = p => p.textContent('#fin-body');
     await sp.fill('input[type=month]', pm.toISOString().slice(0, 7)); await sp.dispatchEvent('input[type=month]', 'change');
     await sp.waitForSelector('.prow');
     const before = (await sp.locator('.prow').allTextContents()).length;
-    await sp.click('button:has-text("Amend many at once (table)")');
+    await sp.click('button:has-text("Amend ticked at once (table)")');
     await sp.waitForSelector('#fin-shade table.agrid');
     const sg = sp.locator('#fin-shade table.agrid');
     check('Amend many at once (fixed salaries): Bonus, Other earning, Deduction — no days column', !/Days/.test((await sg.locator('thead th').allTextContents()).join(' ')) && (await sg.locator('tbody tr:not(.tot)').count()) === before);

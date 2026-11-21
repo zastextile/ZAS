@@ -922,9 +922,18 @@ page_header('People Finance');
       btn('Tick all shown', function(){ shown().forEach(function(r){ P.on[r.employee_id] = true; }); draw(); }, 'sm'),
       btn('Untick all', function(){ P.on = {}; draw(); }, 'sm'),
       btn('Add a line to everyone ticked', bulk, 'sm'),
-      P.kind === 'contract' ? btn('± Production adjustment (many)', function(){ prodAdjust(); }, 'sm')
-        : btn('Amend many at once (table)', function(){
-            var t = shown(); if (!t.length) return toast('Nobody to amend.', true);
+      /* ONLY THE TICKED PEOPLE (owner, 21 Nov 2026): "when I select and ask for
+         amend … it again shows the whole list". Both tables now open with the
+         people ticked here, inside the department / search shown — not
+         everybody on the list. */
+      P.kind === 'contract' ? btn('± Production adjustment (ticked)', function(){
+            var t = shown().filter(function(r){ return P.on[r.employee_id]; });
+            if (!t.length) return toast('Tick the contractors to adjust first.', true);
+            prodAdjust(t.map(function(r){ return +r.employee_id; }));
+          }, 'sm')
+        : btn('Amend ticked at once (table)', function(){
+            var t = shown().filter(function(r){ return P.on[r.employee_id]; });
+            if (!t.length) return toast('Tick the people to amend first — or press "Tick all shown".', true);
             amendGrid({ kind: P.kind, items: t, models: P.models, onApply: function(ids){ ids.forEach(function(id){ P.on[id] = true; }); draw(); if (ids.length) toast(ids.length + (ids.length === 1 ? ' person' : ' people') + ' amended — check, then Send for approval.'); } });
           }, 'sm')]);
     show([el('div', { class: 'cardx stack' }, [el('div', { class: 'row', style: 'justify-content:space-between' }, [seg, el('span', { class: 'pill', text: period(P.kind, P.from, P.to) })]), dates]),
@@ -1970,8 +1979,12 @@ page_header('People Finance');
         if (mine !== loadSeq) return;
         holder.textContent = '';
         if (!x.ok) return holder.appendChild(fail(x));
-        if (only) x.contractors = x.contractors.filter(function(c){ return +c.employee_id === +only.employee_id; });
-        if (!x.contractors.length) return holder.appendChild(el('div', { class: 'empty', text: only
+        /* one person (their ledger), or the ticked few (Prepare pay) */
+        if (Array.isArray(only)) x.contractors = x.contractors.filter(function(c){ return only.indexOf(+c.employee_id) >= 0; });
+        else if (only) x.contractors = x.contractors.filter(function(c){ return +c.employee_id === +only.employee_id; });
+        if (!x.contractors.length) return holder.appendChild(el('div', { class: 'empty', text: Array.isArray(only)
+          ? 'None of the ' + only.length + ' ticked contractor' + (only.length === 1 ? ' has' : 's have') + ' production booked between these dates.'
+          : only
           ? only.full_name + ' has no production booked between these dates, or is not a contractor linked to Production (Employees › Paid as "Contractor", with the production worker code).'
           : 'No contractor linked to Production here. In Employees, set the person to "Contractor" with their production worker code.' }));
         var tb = el('tbody');
@@ -2022,7 +2035,7 @@ page_header('People Finance');
     var save = btn('Save adjustments', function(){ send(false); }, 'pri'), saveNow = S.caps.admin ? btn('Save and approve now', function(){ send(true); }, 'pri go') : null;
     [from, to, dept].forEach(function(i){ i.addEventListener('change', load); });
     var box = modal([
-      el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Production adjustment — ' + (only ? only.full_name + ' (' + only.code + ')' : 'contractors') }), btn('Close', closeModal, 'sm')]),
+      el('div', { class: 'row', style: 'justify-content:space-between' }, [el('h2', { text: 'Production adjustment — ' + (Array.isArray(only) ? only.length + ' ticked contractor' + (only.length === 1 ? '' : 's') : only ? only.full_name + ' (' + only.code + ')' : 'contractors') }), btn('Close', closeModal, 'sm')]),
       el('p', { class: 'muted small', style: 'margin:0', text: 'Change the pieces or the rate of what Production booked, for one contractor or many, or give a fixed amount. What Production booked is never changed: each difference becomes its own line in the contractor\'s ledger, with the reason and your name.' }),
       el('div', { class: 'formgrid', style: 'grid-template-columns:150px 150px 1fr 2fr' }, [field('Production from', from), field('to', to), field('Department', dept), field('Reason (one for every line; a line can have its own)', reason)]),
       el('div', { class: 'cardx row', style: 'justify-content:space-between;padding:8px 12px' }, [
