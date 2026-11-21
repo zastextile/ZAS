@@ -274,7 +274,18 @@ $ds = Fin::createSheet('daily', '2026-02-27', '2026-03-05', [
 ok($ds['ok'] && $ds['people'] === 2 && $ds['total_paisa'] === 480000 + 140000, 'THE HOD PREPARES both in one sheet, each with its own amendment → 6,200');
 ok(count(Fin::sheets($H, $hod)['sheets']) === 1 && $code(Fin::sheet($sid, $H, $hod)) === 'NOT_FOUND', 'the HOD sees their own sheet, and not the salary sheets');
 ok($code(Fin::approve($ds['sheet_id'], $H, $hod)) === 'FORBIDDEN' && Fin::approve($ds['sheet_id'], $U, $aud)['ok'], 'the HOD cannot approve it; Audit does');
-ok(Fin::pay($ds['sheet_id'], '2026-03-05', '', $C, $acc)['ok'] && Fin::balance($emp['D001']) === 0 && Fin::balance($emp['D002']) === 0, 'Accounts pays: both settled');
+/* PAID ONE BY ONE (owner, 21 Nov 2026): one person, all or part; the rest stays due on the sheet */
+$sh = $ds['sheet_id'];
+ok($code(Fin::payOne($sh, $emp['D001'], 200000, '2026-03-05', 'cash', '', $R, $hr)) === 'FORBIDDEN', 'PAY ONE: HR cannot pay');
+$p1 = Fin::payOne($sh, $emp['D001'], 200000, '2026-03-05', 'cash', 'cash short today', $C, $acc);
+ok($p1['ok'] && $p1['still_due_paisa'] === 280000 && !$p1['sheet_paid'], '  Accounts pays D001 2,000 of 4,800 — 2,800 still due, the sheet stays open');
+ok(Fin::balance($emp['D001']) === 280000, '  his ledger owes him exactly the 2,800 left');
+ok($code(Fin::payOne($sh, $emp['D001'], 300000, '2026-03-05', 'cash', '', $C, $acc)) === 'VALIDATION', '  never more than is still due (3,000 > 2,800)');
+$sv = Fin::sheet($sh, $A, $admin); $d1 = array_values(array_filter($sv['items'], fn($i) => (int) $i['employee_id'] === $emp['D001']))[0];
+ok($d1['paid_paisa'] === 200000 && $d1['due_paisa'] === 280000 && $sv['paid_paisa'] === 200000 && $sv['due_paisa'] === 620000 - 200000, '  the sheet shows paid 2,000 · due 2,800 for him, and 4,200 left in all');
+ok($code(Fin::removeFromSheet($sh, $emp['D001'], 'mistake', $A, $admin)) === 'ALREADY_DECIDED', '  someone already partly paid cannot be taken off the sheet');
+$pa = Fin::pay($sh, '2026-03-05', '', $C, $acc);
+ok($pa['ok'] && $pa['total_paisa'] === 620000 - 200000 && Fin::balance($emp['D001']) === 0 && Fin::balance($emp['D002']) === 0, 'Accounts then pays everyone THE REST (4,200, not 6,200): both settled, nobody paid twice');
 ok($row(Fin::preview('daily', '2026-03-05', '2026-03-05', $C), $emp['D001']) === null, 'that week cannot be prepared again for them');
 $hp = Fin::people($H)['people'];
 ok(count($hp) === 4 && array_values(array_filter($hp, fn($r) => $r['code'] === 'S001'))[0]['basic_paisa'] === null, 'the HOD\'s list: Stitching only, and the salaried person\'s pay is blank');

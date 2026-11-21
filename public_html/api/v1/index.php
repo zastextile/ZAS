@@ -1298,6 +1298,13 @@ try {
             send_csv('pay-sheet-' . $sh['sheet']['ref'] . '.csv', ['Code', 'Name', 'Department', 'Earned', 'Owed from before', 'Deducted', 'To pay', 'Bank or cash', 'Amendments'], $rows);
             break;
 
+        case $method === 'POST' && preg_match('#^/finance/sheets/(\d+)/pay-one$#', $route, $m) === 1:
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            admin_answer(Fin::payOne((int) $m[1], (int) Http::input('employee_id', 0), fin_paisa(Http::input('amount_paisa')),
+                (string) Http::input('pay_date', ''), (string) Http::input('method', ''), (string) Http::input('reason', ''), $caps, (int) $u['id']));
+            break;
+
         case $method === 'POST' && preg_match('#^/finance/sheets/(\d+)/(amend|approve|return|pay|cancel|remove)$#', $route, $m) === 1:
             Http::requireCsrf();
             [$u, $caps] = fin_caps();

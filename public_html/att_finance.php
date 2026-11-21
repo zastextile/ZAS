@@ -1047,7 +1047,7 @@ page_header('People Finance');
       var head = el('div', { class: 'cardx stack' }, [
         el('div', { class: 'row', style: 'justify-content:space-between' }, [
           el('div', {}, [el('h2', { text: KIND[s.kind] + ' · ' + period(s.kind, s.period_from, s.period_to) }), el('div', { class: 'muted small', text: s.ref + ' · ' + r.items.length + (r.items.length === 1 ? ' person' : ' people') })]),
-          el('span', { class: 'pill ' + s.status, text: STATUS[s.status] })]),
+          el('span', { class: 'pill ' + s.status, text: s.status === 'approved' && r.paid_paisa > 0 ? 'Part paid — Rs ' + rs(r.due_paisa) + ' still to pay' : STATUS[s.status] })]),
         el('div', { class: 'track3' }, [
           el('div', { class: 'done' }, [el('b', { text: '1 · Prepared' }), nice(s.prepared_at)]),
           el('div', { class: s.approved_at ? 'done' : '' }, [el('b', { text: '2 · Approved' }), s.approved_at ? nice(s.approved_at) : (s.status === 'waiting' ? 'waiting' : '—')]),
@@ -1058,7 +1058,9 @@ page_header('People Finance');
         s.status === 'waiting' && r.own && c.approve && !c.admin ? el('div', { class: 'why', text: 'You prepared this sheet, so someone else must approve it.' }) : null,
         isEntry && !payEntry
           ? el('div', { class: 'kv' }, [el('span', { text: 'Entry date' }), el('b', { text: nice(s.period_to) }), el('span', { text: r.total_paisa < 0 ? 'Taken off what is owed' : 'Added to what is owed' }), el('b', { style: 'font-size:18px', text: 'Rs ' + rs(Math.abs(r.total_paisa)) })])
-          : el('div', { class: 'kv' }, [el('span', { text: 'By bank' }), el('b', { text: rs(r.bank_paisa) }), el('span', { text: 'In cash' }), el('b', { text: rs(r.cash_paisa) }), el('span', { text: 'Total to pay' }), el('b', { style: 'font-size:18px', text: 'Rs ' + rs(r.total_paisa) })])]);
+          : el('div', { class: 'kv' }, [el('span', { text: 'By bank' }), el('b', { text: rs(r.bank_paisa) }), el('span', { text: 'In cash' }), el('b', { text: rs(r.cash_paisa) }), el('span', { text: 'Total to pay' }), el('b', { style: 'font-size:18px', text: 'Rs ' + rs(r.total_paisa) })]
+              /* paid one by one: what is handed over so far, and what is left */
+              .concat(r.paid_paisa > 0 && s.status !== 'paid' ? [el('span', { text: 'Paid so far' }), el('b', { style: 'color:var(--ok,#107e3e)', text: rs(r.paid_paisa) }), el('span', { text: 'Still to pay' }), el('b', { style: 'font-size:18px;color:var(--bad,#b42318)', text: 'Rs ' + rs(r.due_paisa) })] : []))]);
       var listBox = el('div', { class: 'plist' }), bar = el('div', { class: 'sumbar', hidden: true });
       function drawList(){
         listBox.textContent = '';
@@ -1067,9 +1069,12 @@ page_header('People Finance');
           var sum = el('div', { class: 'sum' }), netB = el('b'), netS = el('s'), pill = el('span', { class: 'pill amend', hidden: true });
           var row = el('div', { class: 'prow nocb' + (open[id] ? ' open' : '') }, [el('div', { class: 'av', text: initials(i.full_name) }),
             el('div', { class: 'nm' }, [el('b', { text: i.full_name }), el('span', { text: i.code + ' · ' + i.department_name + ' · ' + (m.method === 'bank' ? 'bank' : 'cash') + ' · ' }), pill]), sum,
-            el('div', { class: 'net' }, [netB, netS]),
-            el('div', { class: 'act row', style: 'flex-wrap:nowrap;gap:4px' }, [btn(open[id] ? 'Close' : (editing ? 'Amend' : 'Lines'), function(){ open[id] = !open[id]; drawList(); }, 'sm'),
-              mayRemove && !editing ? btn('Remove', function(){
+            el('div', { class: 'net' }, [netB, netS, !editing && i.paid_paisa > 0 ? el('div', { class: 'small', style: 'white-space:nowrap;color:' + (i.due_paisa ? 'var(--bad,#b42318)' : 'var(--ok,#107e3e)'), text: i.due_paisa ? 'paid ' + rs(i.paid_paisa) + ' · due ' + rs(i.due_paisa) : 'paid in full' }) : null]),
+            el('div', { class: 'act row', style: 'flex-wrap:nowrap;gap:4px' }, [
+              /* PAY THIS PERSON (owner, 21 Nov 2026): all that is due, or part of it */
+              !editing && s.status === 'approved' && c.pay && i.due_paisa > 0 ? btn('Pay', function(){ payOne(i); }, 'sm pri') : null,
+              btn(open[id] ? 'Close' : (editing ? 'Amend' : 'Lines'), function(){ open[id] = !open[id]; drawList(); }, 'sm'),
+              mayRemove && !editing && !(i.paid_paisa > 0) ? btn('Remove', function(){
                 ask('Take ' + i.full_name + ' off this ' + (isEntry ? 'entry' : 'sheet'), s.status === 'waiting' ? 'Only this person leaves; everybody else stays exactly as entered.' + (r.items.length === 1 ? ' They are the last one, so the ' + (isEntry ? 'entry' : 'sheet') + ' will be closed.' : '')
                     : 'Their lines are struck through in the ledger with your reason, and any advance recovered here is put back. Everybody else stays.',
                   [{ k: 'reason', label: 'Why', wide: true }], 'Remove', function(v){
@@ -1088,6 +1093,23 @@ page_header('People Finance');
           if (open[id]) row.appendChild(editing ? editor(i.lines, m, refresh) : readLines(i.lines));
           refresh(); listBox.appendChild(row);
         });
+      }
+      function payOne(i){
+        var inputs = ask('Pay ' + i.full_name, 'Rs ' + rs(i.due_paisa) + ' is due on this sheet' + (i.paid_paisa > 0 ? ' (Rs ' + rs(i.paid_paisa) + ' already paid)' : '') + '. Pay all of it, or less if the cash is short — the rest stays due here.',
+          [{ k: 'amt', label: 'Amount paid now', money: true, value: plain(i.due_paisa) }, { k: 'pay_date', label: 'Paid on', type: 'date', value: S.today },
+           { k: 'method', label: 'Paid by', type: 'select', options: [['cash', 'Cash'], ['bank', 'Bank']], value: i.method === 'bank' ? 'bank' : 'cash' },
+           { k: 'reason', label: 'Note (optional)', wide: true, placeholder: 'e.g. cash short today, rest on Saturday' }], 'Pay', function(v){
+            var p = toPaisa(v.amt);
+            if (p === null || p <= 0) return { ok: false, error: 'Give the amount paid.' };
+            if (p > i.due_paisa) return { ok: false, error: 'Only Rs ' + rs(i.due_paisa) + ' is due on this sheet.' };
+            return call('POST', '/finance/sheets/' + s.id + '/pay-one', { employee_id: i.employee_id, amount_paisa: p, pay_date: v.pay_date, method: v.method, reason: v.reason }).then(function(x){
+              if (!x.ok) return x;
+              closeModal(); refreshCounts();
+              toast(i.full_name + ' paid Rs ' + rs(p) + (x.still_due_paisa ? ' · Rs ' + rs(x.still_due_paisa) + ' still due' : '') + (x.sheet_paid ? ' — the whole sheet is now paid.' : '.'));
+              sheet(s.id); return x; });
+          });
+        if (inputs.pay_date) inputs.pay_date.max = S.today;
+        if (inputs.method) inputs.method.value = i.method === 'bank' ? 'bank' : 'cash';
       }
       function dirty(){ return r.items.filter(function(i){ var m = models[i.employee_id]; return Object.keys(m.ch).length || m.added.length || Object.keys(m.removed).length || m.method !== i.method; }); }
       function sums(){
@@ -1122,8 +1144,10 @@ page_header('People Finance');
         if (maySendBack) acts.appendChild(btn('Send back', function(){
           ask('Send this sheet back', 'It is closed, and the people on it can be prepared again.', [{ k: 'reason', label: 'Why', wide: true }], 'Send back', function(v){ return act('return', v, 'Sent back.'); });
         }, 'danger'));
-        if (s.status === 'approved' && c.pay) acts.appendChild(btn('Record payment', function(){
-          var inputs = ask('Record the payment', 'Rs ' + rs(r.total_paisa) + ' — ' + rs(r.bank_paisa) + ' by bank, ' + rs(r.cash_paisa) + ' in cash.',
+        if (s.status === 'approved' && c.pay) acts.appendChild(btn(r.paid_paisa > 0 ? 'Pay everyone the rest' : 'Record payment (all)', function(){
+          var inputs = ask(r.paid_paisa > 0 ? 'Pay everyone the rest' : 'Record the payment', r.paid_paisa > 0
+              ? 'Rs ' + rs(r.due_paisa) + ' is still to pay (Rs ' + rs(r.paid_paisa) + ' already paid one by one). This pays everybody what is left and closes the sheet.'
+              : 'Rs ' + rs(r.total_paisa) + ' — ' + rs(r.bank_paisa) + ' by bank, ' + rs(r.cash_paisa) + ' in cash. To pay people one at a time instead, use Pay on each row.',
             [{ k: 'pay_date', label: 'Paid on', type: 'date', value: S.today }, { k: 'reason', label: 'Reason (only if not ' + DAYS[S.payDay] + ')', wide: true, placeholder: 'e.g. Eid holiday on ' + DAYS[S.payDay] }], 'Paid', function(v){ return act('pay', v, 'Payment recorded.'); });
           inputs.pay_date.max = S.today;
         }, 'pri'));

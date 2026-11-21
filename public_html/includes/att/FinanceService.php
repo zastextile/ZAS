@@ -1283,14 +1283,20 @@ final class FinanceService
                 'calc_paisa' => (int) $l['calc_paisa'], 'amount_paisa' => (int) $l['amount_paisa'], 'reason' => $l['reason'],
                 'editable' => !in_array($l['kind'], self::FIXED, true)];
         }
-        $bank = 0; $cash = 0;
+        $bank = 0; $cash = 0; $paidAll = 0;
+        $paidOn = self::paidOnSheet($id);
         foreach ($items as &$i) {
             $i['calc_paisa'] = (int) $i['calc_paisa']; $i['amount_paisa'] = (int) $i['amount_paisa'];
             $i['lines'] = $lines[(int) $i['item_id']] ?? [];
+            /* PAID ONE BY ONE (owner, 21 Nov 2026): what this person has been handed on this sheet so far */
+            $i['paid_paisa'] = $paidOn[(int) $i['employee_id']] ?? 0;
+            $i['due_paisa'] = max(0, $i['amount_paisa'] - $i['paid_paisa']);
+            $paidAll += $i['paid_paisa'];
             if ($i['method'] === 'bank') { $bank += $i['amount_paisa']; } else { $cash += $i['amount_paisa']; }
         }
         unset($i);
         return ['ok' => true, 'sheet' => $s, 'items' => $items, 'bank_paisa' => $bank, 'cash_paisa' => $cash, 'total_paisa' => $bank + $cash,
+                'paid_paisa' => $paidAll, 'due_paisa' => max(0, $bank + $cash - $paidAll),
                 'own' => (int) $s['prepared_by'] === $userId, 'pay_weekday' => Policy::int('fin_pay_weekday', 4)];
     }
 
@@ -1506,17 +1512,88 @@ final class FinanceService
                 return self::no('ALREADY_DECIDED', $s['status'] === 'paid' ? 'This sheet is already paid.' : 'This sheet has not been approved yet.');
             }
             $total = 0;
+            /* whatever was already handed over one by one is not paid twice */
+            $paidOn = self::paidOnSheet($id);
             foreach (Db::all('SELECT employee_id, amount_paisa, method FROM att_fin_sheet_items WHERE sheet_id = ?', [$id]) as $i) {
-                if ((int) $i['amount_paisa'] <= 0) {
+                $left = (int) $i['amount_paisa'] - ($paidOn[(int) $i['employee_id']] ?? 0);
+                if ($left <= 0) {
                     continue;
                 }
                 Db::run("INSERT INTO att_fin_ledger (employee_id, entry_date, kind, label, amount_paisa, method, sheet_id, source, created_by) VALUES (?, ?, 'payment', ?, ?, ?, ?, 'sheet', ?)",
-                    [(int) $i['employee_id'], $date, 'Wages paid · ' . $s['ref'], (int) $i['amount_paisa'], $i['method'], $id, $actorId]);
-                $total += (int) $i['amount_paisa'];
+                    [(int) $i['employee_id'], $date, 'Wages paid · ' . $s['ref'] . (isset($paidOn[(int) $i['employee_id']]) ? ' · the rest' : ''), $left, $i['method'], $id, $actorId]);
+                $total += $left;
             }
             Db::run("UPDATE att_fin_sheets SET status = 'paid', paid_by = ?, paid_at = ?, pay_date = ?, off_day_reason = ? WHERE id = ?", [$actorId, Time::sql(), $date, mb_substr(trim($reason), 0, 255) ?: null, $id]);
             Audit::record('fin.sheet_pay', 'att_fin_sheet', $id, ['status' => 'approved'], ['status' => 'paid', 'pay_date' => $date, 'total_paisa' => $total], $actorId, trim($reason) ?: null);
             return ['ok' => true, 'sheet_id' => $id, 'status' => 'paid', 'total_paisa' => $total];
+        });
+    }
+
+    /** What each person has been handed on one sheet, from the ledger itself (cancelled lines left out). */
+    public static function paidOnSheet(int $sheetId): array
+    {
+        $out = [];
+        foreach (Db::all("SELECT employee_id, SUM(amount_paisa) AS p FROM att_fin_ledger WHERE sheet_id = ? AND kind = 'payment' AND cancelled_at IS NULL GROUP BY employee_id", [$sheetId]) as $r) {
+            $out[(int) $r['employee_id']] = (int) $r['p'];
+        }
+        return $out;
+    }
+
+    /**
+     * PAY ONE PERSON ON AN APPROVED SHEET (owner, 21 Nov 2026): "sometimes we
+     * pay one by one instead of the full sheet … the cashier sometimes pays a
+     * smaller amount when cash is not there". All of what is still due, or
+     * part of it; the rest stays due on the sheet. When nobody is left owed,
+     * the sheet is marked paid by itself. Never more than is still due.
+     */
+    public static function payOne(int $id, int $employeeId, int $amountPaisa, string $date, string $method, string $note, array $caps, int $actorId): array
+    {
+        if (!$caps['pay']) {
+            return self::no('FORBIDDEN', 'Only Accounts or Admin can record a payment.');
+        }
+        if (!self::isDate($date) || $date > self::today()) {
+            return self::no('VALIDATION', 'Give the payment date. It cannot be in the future.');
+        }
+        if ($amountPaisa <= 0) {
+            return self::no('VALIDATION', 'Give the amount paid.');
+        }
+        return Db::tx(static function () use ($id, $employeeId, $amountPaisa, $date, $method, $note, $actorId) {
+            $s = Db::one('SELECT * FROM att_fin_sheets WHERE id = ? FOR UPDATE', [$id]);
+            if ($s === null) {
+                return self::no('NOT_FOUND', 'No such pay sheet.');
+            }
+            if ($s['status'] !== 'approved') {
+                return self::no('ALREADY_DECIDED', $s['status'] === 'paid' ? 'This sheet is already paid in full.' : 'This sheet has not been approved yet.');
+            }
+            $item = Db::one('SELECT i.amount_paisa, i.method, e.full_name FROM att_fin_sheet_items i JOIN att_employees e ON e.id = i.employee_id WHERE i.sheet_id = ? AND i.employee_id = ?', [$id, $employeeId]);
+            if ($item === null) {
+                return self::no('NOT_FOUND', 'That person is not on this sheet.');
+            }
+            $paid = self::paidOnSheet($id);
+            $due = (int) $item['amount_paisa'] - ($paid[$employeeId] ?? 0);
+            if ($due <= 0) {
+                return self::no('ALREADY_DECIDED', $item['full_name'] . ' has already been paid in full on this sheet.');
+            }
+            if ($amountPaisa > $due) {
+                return self::no('VALIDATION', 'Only Rs ' . self::rupees($due) . ' is still due to ' . $item['full_name'] . ' on this sheet.');
+            }
+            $how = in_array($method, ['bank', 'cash'], true) ? $method : (string) $item['method'];
+            $part = $amountPaisa < $due;
+            Db::run("INSERT INTO att_fin_ledger (employee_id, entry_date, kind, label, amount_paisa, method, sheet_id, source, created_by) VALUES (?, ?, 'payment', ?, ?, ?, ?, 'sheet', ?)",
+                [$employeeId, $date, mb_substr('Wages paid · ' . $s['ref'] . ($part ? ' · part, Rs ' . self::rupees($due - $amountPaisa) . ' still due' : '') . (trim($note) !== '' ? ' · ' . trim($note) : ''), 0, 200),
+                 $amountPaisa, $how, $id, $actorId]);
+            /* the last one paid closes the sheet */
+            $paid[$employeeId] = ($paid[$employeeId] ?? 0) + $amountPaisa;
+            $left = 0;
+            foreach (Db::all('SELECT employee_id, amount_paisa FROM att_fin_sheet_items WHERE sheet_id = ?', [$id]) as $i) {
+                $left += max(0, (int) $i['amount_paisa'] - ($paid[(int) $i['employee_id']] ?? 0));
+            }
+            if ($left === 0) {
+                Db::run("UPDATE att_fin_sheets SET status = 'paid', paid_by = ?, paid_at = ?, pay_date = ? WHERE id = ?", [$actorId, Time::sql(), $date, $id]);
+            }
+            Audit::record('fin.sheet_pay_one', 'att_fin_sheet', $id, ['employee_id' => $employeeId, 'due_paisa' => $due],
+                ['paid_paisa' => $amountPaisa, 'method' => $how, 'pay_date' => $date, 'still_due_paisa' => $due - $amountPaisa, 'sheet_left_paisa' => $left], $actorId, trim($note) ?: null);
+            return ['ok' => true, 'sheet_id' => $id, 'paid_paisa' => $amountPaisa, 'still_due_paisa' => $due - $amountPaisa, 'sheet_left_paisa' => $left, 'sheet_paid' => $left === 0];
         });
     }
 
@@ -1766,6 +1843,10 @@ final class FinanceService
                 return self::no('NOT_FOUND', 'That person is not on this sheet.');
             }
             $lines = Db::all('SELECT line_key, kind, side, label, amount_paisa, reason, advance_id FROM att_fin_item_lines WHERE item_id = ? ORDER BY sort, id', [(int) $item['id']]);
+            $handed = self::paidOnSheet($id)[$employeeId] ?? 0;
+            if ($handed > 0) {
+                return self::no('ALREADY_DECIDED', $item['full_name'] . ' has already been paid Rs ' . self::rupees($handed) . ' on this sheet, so they cannot be taken off. An administrator can cancel the whole sheet.');
+            }
             if ($live) {
                 foreach (Db::all('SELECT advance_id, SUM(amount_paisa) AS paisa FROM att_fin_ledger WHERE sheet_id = ? AND employee_id = ? AND advance_id IS NOT NULL AND cancelled_at IS NULL GROUP BY advance_id', [$id, $employeeId]) as $r) {
                     Db::run("UPDATE att_fin_advances SET recovered_paisa = GREATEST(0, recovered_paisa - ?), status = IF(status = 'closed', 'active', status) WHERE id = ?", [(int) $r['paisa'], (int) $r['advance_id']]);
