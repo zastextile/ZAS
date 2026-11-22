@@ -161,13 +161,14 @@ table.zp-t tbody tr:hover{background:#fafcff}
 
   <div class="split">
     <div class="zp-card">
-      <h2>Orders, furthest behind first</h2>
+      <h2>Furthest behind</h2>
       <p class="sub">Percentage is measured on the <b>last stage</b> each line goes through (normally Packing),
          counting pieces that have been through <b>every</b> operation of it. Click a line for the whole order.
          <a href="production_orders.php">All orders &rarr;</a></p>
       <?php if (!$orders): ?>
         <div class="empty">No order is switched on for production yet.</div>
-      <?php else: foreach ($orders as $o): ?>
+      <?php else: /* the five furthest behind; the whole picture is on Order Status (owner, 22 Nov 2026) */
+        foreach (array_slice($orders, 0, 5) as $o): ?>
         <a class="prow" href="production_orders.php?order=<?= (int)$o['proforma_id'] ?>" style="display:block;color:inherit;text-decoration:none">
           <div class="ptop">
             <div>
@@ -182,7 +183,9 @@ table.zp-t tbody tr:hover{background:#fafcff}
             <div class="behind">Waiting on <?= e(implode(', ', array_slice($o['behind'], 0, 3))) ?><?= count($o['behind']) > 3 ? ' and ' . (count($o['behind']) - 3) . ' more' : '' ?></div>
           <?php endif; ?>
         </a>
-      <?php endforeach; endif; ?>
+      <?php endforeach; ?>
+        <a class="zp-b" href="production_orders.php" style="margin-top:10px">All orders on Order Status &rarr;<?= count($orders) > 5 ? ' (' . (count($orders) - 5) . ' more lines)' : '' ?></a>
+      <?php endif; ?>
     </div>
 
     <div>

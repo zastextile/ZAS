@@ -90,7 +90,7 @@ try {
 } catch (Throwable $e) {}
 
 /* -- 3. backdated entries -------------------------------------------- */
-/* Future dates are already blocked by production_save.php. Past dates are
+/* Future dates are already blocked when work is booked (zp_book). Past dates are
    not limited, so a claim can land in a closed wage period. */
 $limit = (int)inv_setting('backdate_days', '7');
 if ($limit > 0) {

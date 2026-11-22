@@ -342,8 +342,8 @@ ok(str_contains($pe, "' of ' + qn(picked.left) + ' left'"), '  counting up to wh
 ok(str_contains($pe, '.ze-cap.bad'), '  which turns red when it is passed');
 ok(str_contains($pe, 'function warn(over, q)'), 'and the red block still explains a refusal');
 
-echo "11. Eleven production pages are in, and each can be taken back out\n";
-$pages = ['production_entry.php','product_master.php','production_ops_bulk.php',
+echo "11. Ten production pages are in, and each can be taken back out\n";
+$pages = ['production_entry.php','product_master.php',
           'production_stages.php','production_order_rates.php','production_reports.php',
           'production_dashboard.php','production_amend.php','production_workers.php',
           'production_my_work.php','part_library.php'];

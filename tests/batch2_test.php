@@ -25,7 +25,9 @@ function t(string $n, bool $c, $got = null): void {
 function head(string $n): void { echo "\n$n\n"; }
 function f(string $p): string { global $BASE; return file_get_contents($BASE . $p); }
 
-$bulk = f('production_ops_bulk.php');
+/* production_ops_bulk.php was deleted (owner, 22 Nov 2026): unlinked, on the old tables;
+   Part Library and Product Master manage operations. Its checks below hold trivially. */
+$bulk = is_file($BASE . 'production_ops_bulk.php') ? f('production_ops_bulk.php') : '';
 $pc   = f('product_costing.php');
 $fc   = f('final_costing.php');
 $pcJs = f('assets/js/costing.js');
@@ -35,6 +37,7 @@ $menu = f('includes/menu.php');
 $css  = f('assets/css/app.css');
 
 /* ===================================================================== */
+if ($bulk !== '') { /* the old operations page — only while the old page exists (deleted 22 Nov 2026) */
 head('THE DUPLICATE GRID IS GONE');
 t('the Fast Entry Grid is no longer on the page', !str_contains($bulk, 'Fast Entry Grid'));
 t('  nor its table, rows or save button',
@@ -67,7 +70,7 @@ t('nothing posts to them any more',
 t('the operations bulk-save is no longer called from the page',
   !str_contains($bulk, 'production_bulk_save_operations($entries'));
 t('the page explains where operations went instead of just dropping them',
-  str_contains($bulk, 'Looking for operations and rates?'));
+  ($bulk === '' || str_contains($bulk, 'Looking for operations and rates?')));
 t('  naming the actual fault', str_contains($bulk, 'no Size column'));
 t('  and pointing at both routes that do work',
   str_contains($bulk, 'href="part_library.php"') && str_contains($bulk, 'href="product_master.php"'));
@@ -95,6 +98,7 @@ t('the menu entry is renamed too', str_contains($menu, "'label' => 'Set Quantiti
 t('  with the reason recorded', str_contains($menu, 'no Size column'));
 
 /* ===================================================================== */
+} /* end: the old operations page */
 head('THE MOVED JAVASCRIPT — NOTHING WAS LEFT BEHIND');
 /* every function the page still calls must exist, in the page or the file */
 function fnNames(string $src): array {
@@ -213,7 +217,7 @@ t('batch 1\'s form layer is still there and still opt-in',
   str_contains($css, '.zform .zrow{') && str_contains($css, 'it is OPT-IN'));
 
 head('EVERY TOUCHED PAGE STILL PARSES');
-foreach (['production_ops_bulk.php','product_costing.php','final_costing.php',
+foreach (['product_costing.php','final_costing.php',
           'product_master.php','includes/menu.php'] as $p) {
     $out = []; $rc = 0;
     exec('php -l ' . escapeshellarg($BASE . $p) . ' 2>&1', $out, $rc);
@@ -264,6 +268,7 @@ t('the reason is written where the next person will change it',
   str_contains(preg_replace('/\s+/', ' ', $lay), 'THE STYLESHEET MUST BE CACHE-BUSTED'));
 t('  including the instruction to raise it', str_contains($lay, 'RAISE THIS NUMBER'));
 
+if ($bulk !== '') { /* CSV cache + live counts of the old operations page — only while the old page exists (deleted 22 Nov 2026) */
 head('A CSV EXPORT CAN NEVER BE SERVED FROM CACHE');
 t('no-store is sent', str_contains($bulk, "Cache-Control: no-store, no-cache, must-revalidate, max-age=0"));
 t('  with the two older headers proxies still obey',
@@ -291,5 +296,7 @@ t('every count is guarded, so a missing table cannot blank the page',
 t('the page says a disagreeing file is a stale DOWNLOAD, not a stale query',
   str_contains($bulk, 'it is an old') && str_contains($bulk, 'reload and press the button again'));
 
+} /* end: CSV cache + live counts of the old operations page */
+if ($bulk === '') echo "\n(the old production_ops_bulk.php was deleted on 22 Nov 2026 — its checks are skipped; set_quantities_csv.php does that job)\n";
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

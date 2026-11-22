@@ -243,7 +243,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
     // blank here doesn't erase the shared default, so filling in only
     // Bank 1 on this save never clears an already-saved Bank 2 default.
     company_bank_defaults_merge($bankPosted);
-    production_set_assignments($pfid, post_array('assigned_staff'), current_user()['id']);
+    /* "Staff who can book it" was removed (owner, 22 Nov 2026): the rebuilt
+       Daily Production Entry never read it, so the ticks promised a rule that
+       did not exist. The production switch alone decides. Old ticks are left
+       in the database, untouched. */
     /* Row IDs are now kept stable across a normal Save (update-in-place /
        insert-new / delete-removed) instead of the old delete-all-then-
        recreate, which reassigned a fresh auto-increment ID to every row on
@@ -655,8 +658,6 @@ if ($id) {
     $pfMaster = [];
     try { $pfMaster = db()->query("SELECT id, name, default_unit FROM products WHERE is_active=1 ORDER BY name LIMIT 800")->fetchAll(); }
     catch (Throwable $e) {}
-    $productionStaffList = db()->query("SELECT id, name FROM users WHERE role='production_staff' AND is_active=1 ORDER BY name")->fetchAll();
-    $assignedStaffIds = array_column(production_assigned_staff($id), 'id');
     page_header('Proforma Invoice'); flash();
     /* THE PAGE OPTS IN TO THE SKIN HERE, and this one class is the whole of it.
        zskin.css is scoped under .zskin, so removing this attribute puts the
@@ -704,9 +705,8 @@ if ($id) {
           <label title="Order Acceptance / Production / Quality Claim clauses at the bottom of the printed PDF; switch off to leave them out for this proforma"><input type="checkbox" name="show_pfooter" <?= ($pf['show_pfooter'] ?? 1)?'checked':'' ?>> Terms footer on print <small>— standard clauses at the bottom of the PDF</small></label>
         </div>
         <?php if(!empty($pf['production_enabled'])): ?>
-        <?php /* PRODUCTION ON ONE LINE (21 Nov 2026): the status and who may book
-                 work on this order, side by side, instead of two big boxes. The
-                 same checkboxes, the same name, so saving is unchanged. */ ?>
+        <?php /* PRODUCTION ON ONE LINE: the live status and a link to the order's
+                 own status page. */ ?>
         <div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px">
           <span style="color:#556b82">Production</span>
           <?php /* the LIVE status from booked work, the same as Order Status (the
@@ -715,14 +715,6 @@ if ($id) {
             $pfLs = ['new' => 'Not started', 'run' => 'In progress', 'stalled' => 'Stalled — nothing for 7 days', 'done' => 'Done', 'nolink' => 'Lines not linked to products'][$pfLive['status'] ?? 'new']; ?>
           <span class="zf-pill p-ok" style="display:inline-block;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:3px;border:1px solid #c6e6cf;background:#eef8f0;color:#256f3a"><?= e($pfLs) ?><?= $pfLive && in_array($pfLive['status'], ['run', 'stalled'], true) ? ' · ' . e((string)$pfLive['pct']) . '%' : '' ?></span>
           <a href="production_orders.php?order=<?= (int)$pf['id'] ?>" style="color:#0a6ed1;font-weight:600;text-decoration:none">Order status →</a>
-          <span style="color:#556b82;margin-left:8px" title="Only these logins can log entries for this order; an order with nobody ticked does not appear in any Production Staff login's search">Staff who can book it</span>
-          <?php if ($productionStaffList): foreach ($productionStaffList as $ps): $on = in_array((int)$ps['id'], $assignedStaffIds, true); ?>
-            <label style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:4px;border:1px solid <?= $on?'#b9d3f1':'#d9dee4' ?>;background:<?= $on?'#eaf2fc':'#fff' ?>;color:<?= $on?'#0a6ed1':'#1d2d3e' ?>;font-weight:500;cursor:pointer;text-transform:none;letter-spacing:0">
-              <input type="checkbox" name="assigned_staff[]" value="<?= (int)$ps['id'] ?>" <?= $on?'checked':'' ?> style="width:14px;height:14px;accent-color:#0a6ed1;margin:0"> <?= e($ps['name']) ?>
-            </label>
-          <?php endforeach; else: ?>
-            <span style="color:#8396a8">no Production Staff logins yet — <a href="users.php" style="color:#0a6ed1;font-weight:600">add one in Users</a></span>
-          <?php endif; ?>
         </div>
         <?php endif; ?>
       </div>
