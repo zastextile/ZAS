@@ -1265,8 +1265,8 @@ function zp_product_todo(int $productId): array {
     $todo = [];
     $sizes = zp_sizes($productId);
     $parts = zp_product_parts($productId);
-    if (!$sizes) $todo[] = 'No sizes yet — add them on the Basic Info tab, then come back.';
-    if (!$parts) $todo[] = 'No parts yet — press "Add Parts from Library" to choose what this product is made of.';
+    if (!$sizes) $todo[] = 'No sizes yet — type them under Sizes and press Save.';
+    if (!$parts) $todo[] = 'No parts yet — choose one in "Add a part from the library" under Parts & rates.';
     foreach ($parts as $p) {
         $ops = zp_part_ops((int)$p['id'], true);
         if (!$ops) {

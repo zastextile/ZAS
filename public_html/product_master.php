@@ -1,35 +1,40 @@
 <?php
 /*
-  MASTER PRODUCTS — rebuilt from scratch, to the layout you sent.
-  ==============================================================
+  MASTER PRODUCTS — the Fiori look (owner, 22 Nov 2026: "compact, fit nicely,
+  professional, same like SAP Fiori and Oracle Fusion, more easy functioning").
+  =============================================================================
 
-  THE LIST          # · Product Name · Status · Used In · Actions
-  THE EDITOR        ONE PAGE. No tabs.
+  THE LIST      One Fiori list (zflist.js), the same engine as Order Status and
+                the Proforma list. Every product is printed once; the search,
+                the KPI cards, the drop-downs, sorting and the Excel file all
+                run in the browser, so typing in the search box asks nothing of
+                the server. The making cost per set is worked out here from
+                seven whole-table reads — never one query per product.
 
-  NO TABS, ASKED FOR PLAINLY, AND IT IS THE RIGHT CALL.
-  Tabs on a data-entry screen hide state. You fill in one tab, move to the next,
-  and the work on the first is still unsaved with nothing on screen saying so —
-  and that is the single most expensive thing a form can do to somebody. Here
-  everything about a product is on one page and ONE Save writes all of it: the
-  name, the sizes, the parts and every quantity. There is nothing else to
-  remember to press.
+  THE EDITOR    An object page. ONE PAGE, NO TABS, ONE FORM, ONE SAVE.
+                Tabs on a data-entry screen hide state: you fill in one tab,
+                move on, and the work on the first is still unsaved with nothing
+                on screen saying so. Here a sticky bar jumps between the sections
+                (General · Sizes · Parts & rates · Set work) and a sticky footer
+                holds the one Save, with "Unsaved changes" shown the moment
+                anything differs from what the server sent.
+
+                Sizes are CHIPS: type, Enter. A saved size taken off is struck
+                through, not deleted on the spot — click it again to keep it.
+                Nothing is removed until Save.
+
+                Parts & rates is ONE GRID. A part row carries its quantity per
+                size; ▸ opens its operations underneath, each with a rate per
+                size (blank = the part's standard rate). The making cost of one
+                set — part work plus set work — is shown once, in the grid's
+                footer, and repeated in the header tiles.
 
   THE RULE THAT GOVERNS THIS WHOLE FILE: A PRODUCT IS NEVER SILENTLY LOST.
-
   Your product names are pointed at by costing, proformas, invoices and
-  shipments. Deleting one does not just remove a row — it orphans every
-  document that refers to it, and there is no way back from inside the app.
-  So Delete is only offered when nothing anywhere uses the product, and the
-  button is DISABLED rather than hidden, with the reason on the row, so it is
-  obvious why. When something does use it, Deactivate is the answer: it leaves
-  every document intact and simply stops the product appearing in new lists.
-
-  SIZES ARE TYPED IN ONE PLACE AND USED EVERYWHERE ELSE.
-  A size is a real thing with quantities and wages hanging off it. If it could
-  be typed in the middle of the quantity grid, a typo would create a NEW size
-  rather than correct one, and the quantities would quietly attach to the wrong
-  place. So there is one list of sizes, in section 2, and section 3 simply gets
-  one column per size.
+  shipments. Delete is only offered when nothing anywhere uses the product, and
+  it is DISABLED rather than hidden, with the reason on it. When something does
+  use it, switching it off (Inactive) is the answer: every document keeps
+  working and the product simply stops appearing in new lists.
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
@@ -366,1210 +371,1055 @@ if (!empty($_SESSION['zp_err'])) { $err = $_SESSION['zp_err']; unset($_SESSION['
 /* ------------------------------------------------------------------
    DATA
    ------------------------------------------------------------------ */
+require_once __DIR__ . '/includes/zp_correct.php';     // the stage colours Daily Entry uses
+
 $product   = $editId ? zp_product($editId) : null;
 if ($editId && !$product) { $editId = 0; }
 $isNew     = isset($_GET['edit']) && $editId === 0;
-
 $usageMap  = zp_usage_map();
-$sizes     = $editId ? zp_sizes($editId) : [];
-$prodParts = $editId ? zp_product_parts($editId) : [];
-$qtyMap    = $editId ? zp_qty_map($editId) : [];
-$todo      = $editId ? zp_product_todo($editId) : [];
-$libParts  = zp_parts(true);
-$costMap   = zp_part_cost_map();
 
-/* parts not yet on this product — what "Add Parts from Library" can offer */
-$onProduct = array_map(fn($p) => (int)$p['id'], $prodParts);
-$canAdd    = array_values(array_filter($libParts, fn($p) => !in_array((int)$p['id'], $onProduct, true)));
+/* a number as typed: 2 not 2.00, 2.5 not 2.50 */
+function pm_n($v): string { return rtrim(rtrim(number_format((float)$v, 2, '.', ''), '0'), '.'); }
 
-$products = [];
-if (!$editId && !$isNew) {
-    $sql = "SELECT id, name, category, default_unit, is_active FROM products";
-    $params = [];
-    if ($search !== '') { $sql .= " WHERE name LIKE ? OR category LIKE ?"; $params = ["%$search%", "%$search%"]; }
-    $sql .= " ORDER BY name LIMIT 400";
-    try { $st = db()->prepare($sql); $st->execute($params); $products = $st->fetchAll(); } catch (Throwable $e) {}
+/* THE LIST, FROM SEVEN WHOLE-TABLE READS.
+   The making cost of one set needs sizes, parts, operations, quantities and
+   both kinds of size rate. Asking per product would be seven queries times
+   three hundred products on every visit; reading each table once and adding up
+   in PHP is the same answer for a fraction of the work. A table that cannot be
+   read simply contributes nothing — the cost then reads low, never wrong-high,
+   and the Ready check reads "needs setup", which is the safe direction. */
+function pm_list_rows(array $usageMap): array {
+    $q = function (string $sql): array { try { return db()->query($sql)->fetchAll(); } catch (Throwable $e) { return []; } };
+    $sizes = $parts = $ops = $qty = $orate = $sops = $srate = [];
+    foreach ($q("SELECT id, product_id, size_label FROM product_sizes ORDER BY sort_order, id") as $r)
+        $sizes[(int)$r['product_id']][] = [(int)$r['id'], (string)$r['size_label']];
+    foreach ($q("SELECT pp.product_id, p.id, p.part_name FROM zp_product_parts pp JOIN zp_parts p ON p.id = pp.part_id ORDER BY pp.sort_order, pp.id") as $r)
+        $parts[(int)$r['product_id']][] = [(int)$r['id'], (string)$r['part_name']];
+    foreach ($q("SELECT id, part_id, stage, rate FROM zp_part_ops WHERE is_active=1") as $r)
+        $ops[(int)$r['part_id']][] = [(int)$r['id'], (float)$r['rate'], (string)$r['stage']];
+    foreach ($q("SELECT product_id, part_id, size_id, qty FROM zp_part_qty") as $r)
+        $qty[(int)$r['product_id']][(int)$r['part_id']][(int)$r['size_id']] = (float)$r['qty'];
+    foreach ($q("SELECT product_id, part_op_id, size_id, rate FROM zp_op_rate") as $r)
+        $orate[(int)$r['product_id']][(int)$r['part_op_id']][(int)$r['size_id']] = (float)$r['rate'];
+    foreach ($q("SELECT id, product_id, rate FROM zp_set_ops WHERE is_active=1") as $r)
+        $sops[(int)$r['product_id']][] = [(int)$r['id'], (float)$r['rate']];
+    foreach ($q("SELECT product_id, set_op_id, size_id, rate FROM zp_set_op_rate") as $r)
+        $srate[(int)$r['product_id']][(int)$r['set_op_id']][(int)$r['size_id']] = (float)$r['rate'];
+
+    $rows = [];
+    $unknown = zp_usage_unknown($usageMap);
+    foreach ($q("SELECT id, name, category, default_unit, description, is_active FROM products ORDER BY name") as $p) {
+        $pid = (int)$p['id'];
+        $sz  = $sizes[$pid] ?? [];
+        $pt  = $parts[$pid] ?? [];
+        /* the same arithmetic as the editor's footer: part work at each size
+           (a missing quantity is 1, a blank size rate is the standard) plus
+           the set work */
+        $costs = [];
+        foreach ($sz ?: [[0, '']] as [$sid]) {
+            $t = 0.0;
+            foreach ($pt as [$cid]) {
+                $one = 0.0;
+                foreach ($ops[$cid] ?? [] as [$oid, $rate]) $one += $orate[$pid][$oid][$sid] ?? $rate;
+                $t += $one * ($qty[$pid][$cid][$sid] ?? 1.0);
+            }
+            foreach ($sops[$pid] ?? [] as [$soid, $rate]) $t += $srate[$pid][$soid][$sid] ?? $rate;
+            $costs[] = round($t, 2);
+        }
+        $why = [];
+        if (!$sz) $why[] = 'no sizes';
+        if (!$pt) $why[] = 'no parts';
+        foreach ($pt as [$cid, $pn]) {
+            $po = $ops[$cid] ?? [];
+            if (!$po) { $why[] = $pn . ' has no operations'; continue; }
+            $cut = false;
+            foreach ($po as $o) if (zp_is_cutting($o[2])) { $cut = true; break; }
+            if (!$cut) $why[] = $pn . ' has no cutting line';
+        }
+        $used = $usageMap[$pid] ?? [];
+        $rows[] = [
+            'id'   => $pid,
+            'name' => (string)$p['name'],
+            'cat'  => trim((string)$p['category']),
+            'unit' => (string)$p['default_unit'],
+            'desc' => (string)$p['description'],
+            'act'  => (int)$p['is_active'],
+            'nsz'  => count($sz),
+            'szl'  => implode(', ', array_column($sz, 1)),
+            'npt'  => count($pt),
+            'ptl'  => implode(', ', array_column($pt, 1)),
+            'cmin' => $pt || !empty($sops[$pid]) ? min($costs) : 0,
+            'cmax' => $pt || !empty($sops[$pid]) ? max($costs) : 0,
+            'ok'   => $why ? 0 : 1,
+            'why'  => implode('; ', $why),
+            'used' => $used,
+            'del'  => ($used || $unknown) ? 0 : 1,
+            'delw' => $used ? 'Used in ' . implode(', ', $used) . ' — deleting it would orphan those documents. Switch it to Inactive instead.'
+                    : ($unknown ? 'Some checks could not be run (' . implode(', ', $unknown) . '). A check that cannot run is never treated as safe.' : ''),
+        ];
+    }
+    return $rows;
 }
 
-page_header('Master Products');
+if ($editId || $isNew) {
+    $sizes     = $editId ? zp_sizes($editId) : [];
+    $prodParts = $editId ? zp_product_parts($editId) : [];
+    $qtyMap    = $editId ? zp_qty_map($editId) : [];
+    $todo      = $editId ? zp_product_todo($editId) : [];
+    $libParts  = zp_parts(true);
+    $costMap   = zp_part_cost_map();
+    $szRates   = $editId ? zp_op_rate_map($editId) : [];
+    $setOps    = $editId ? zp_set_ops($editId, true) : [];
+    $setRates  = $editId ? zp_set_rate_map($editId) : [];
+    $stageAll  = zp_stage_all(true);
+    /* parts not yet on this product — what the Add part box can offer */
+    $onProduct = array_map(fn($p) => (int)$p['id'], $prodParts);
+    $canAdd    = array_values(array_filter($libParts, fn($p) => !in_array((int)$p['id'], $onProduct, true)));
+    $partOps   = [];
+    foreach ($prodParts as $p) $partOps[(int)$p['id']] = zp_part_ops((int)$p['id'], true);
+    $cats = [];
+    try { $cats = db()->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category<>'' ORDER BY category")->fetchAll(PDO::FETCH_COLUMN); } catch (Throwable $e) {}
+    $used   = $editId ? ($usageMap[$editId] ?? []) : [];
+    $canDel = $editId && !zp_is_used($usageMap, $editId);
+    /* ONE EMPTY SET-WORK ROW WHEN THERE ARE NONE. "+ Add a job" clones the last
+       row so it always carries this product's real size columns. A blank row
+       saves as nothing, because a blank operation name is skipped. */
+    $setRows = $setOps ?: [['id' => 0, 'stage_id' => 0, 'operation_name' => '', 'rate' => 0]];
+    $units = ['Pcs', 'Sets', 'Pair', 'Mtr', 'Kg', 'Other'];
+    $curUnit = (string)($product['default_unit'] ?? 'Pcs');
+    /* A UNIT THAT IS NOT IN THE LIST IS KEPT, not quietly turned into "Pcs"
+       on the next Save. */
+    if ($curUnit !== '' && !in_array($curUnit, $units, true)) array_unshift($units, $curUnit);
+} else {
+    $rows = pm_list_rows($usageMap);
+}
+
+page_header($editId ? $product['name'] : ($isNew ? 'New Product' : 'Master Products'));
 ?>
+<link rel="stylesheet" href="assets/css/zf.css?v=4">
+<script src="assets/js/zflist.js?v=3"></script>
 <style>
-.zp-wrap{max-width:1560px}
-.zp-b{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:9px;border:1px solid #d9e0ea;
-      background:#fff;color:#33465f;font-size:12.5px;font-weight:700;cursor:pointer;text-decoration:none;line-height:1.15}
-.zp-b:hover{border-color:#0ea8c9;color:#0b7f99}
-.zp-b.pri{background:#1d76e2;border-color:#1d76e2;color:#fff}
-.zp-b.pri:hover{background:#1667c9;color:#fff}
-.zp-b.ok{background:#16a34a;border-color:#16a34a;color:#fff}
-.zp-b.ok:hover{background:#12823b;color:#fff}
-.zp-b.red{background:#e0435d;border-color:#e0435d;color:#fff}
-.zp-b.red:hover{background:#c9384f;color:#fff}
-.zp-b.sm{padding:4px 10px;font-size:11.5px}
-.zp-b[disabled],.zp-b.dis{opacity:.5;cursor:not-allowed;border-color:#e3e8ef;color:#98a5b8;background:#f7f9fc}
-.zp-b[disabled]:hover,.zp-b.dis:hover{border-color:#e3e8ef;color:#98a5b8}
-
-.zp-card{background:#fff;border:1px solid #e6ebf2;border-radius:13px;padding:16px 17px;margin-bottom:16px;
-         box-shadow:0 1px 2px rgba(20,35,60,.04)}
-.zp-card h2{margin:0 0 3px;font-size:15.5px;color:#152033}
-.zp-head{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
-.zp-head h1{margin:0;font-size:20px;color:#152033}
-.zp-head p{margin:2px 0 0;font-size:12.5px;color:#8a97ab}
-
-.listsplit{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;align-items:start}
-@media(min-width:1240px){.listsplit{grid-template-columns:minmax(0,1fr) 330px}}
-
-table.zp-t{width:100%;border-collapse:collapse;font-size:12.5px}
-table.zp-t th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#8a97ab;
-              font-weight:800;padding:8px;border-bottom:1px solid #e6ebf2;white-space:nowrap}
-table.zp-t td{padding:7px 8px;border-bottom:1px solid #f1f4f9;vertical-align:middle}
-table.zp-t tbody tr:hover{background:#fafcff}
-.num{text-align:right;font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace}
-.code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:#5a6b82}
-.pill{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:20px;font-size:10.5px;font-weight:800}
-.pill.on{background:rgba(22,163,74,.13);color:#15803d}
-.pill.off{background:#eef1f6;color:#8a97ab}
-
-.zin{width:100%;padding:7px 9px;border:1px solid #d9e0ea;border-radius:8px;font-size:12.5px;
-     font-family:inherit;color:#152033;background:#fff;box-sizing:border-box}
-.zin:focus{outline:none;border-color:#0ea8c9;box-shadow:0 0 0 3px rgba(14,168,201,.14)}
-.zin[readonly]{background:#f6f8fc;color:#7d8ca1}
-.lab{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#8a97ab;font-weight:800;margin-bottom:4px}
-.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:13px}
-
-.note{padding:11px 13px;border-radius:10px;font-size:12.5px;line-height:1.55}
-.note.info{background:#eef6ff;border:1px solid #cfe3fb;color:#28527d}
-.note.good{background:#effaf3;border:1px solid #c9ecd7;color:#1c6b40}
-.note.warn{background:#fff6e8;border:1px solid #f3ddb8;color:#8a5a10}
-.note.pink{background:#fdeef1;border:1px solid #f6cdd5;color:#9c2740}
-.note ul{margin:6px 0 0;padding-left:18px}
-.note li{margin:3px 0}
-
-.flash{padding:11px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:15px}
-.flash.ok{background:#effaf3;border:1px solid #c9ecd7;color:#1c6b40}
-.flash.bad{background:#fdeef1;border:1px solid #f6cdd5;color:#9c2740}
-
-.sizebox{border:2px solid #1d76e2;border-radius:11px;padding:13px 15px;background:#fff}
-.sizebox h3{margin:0 0 10px;font-size:13px;color:#152033}
-.sizegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px 14px}
-.sizegrid label{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#33465f;cursor:pointer}
-.sizegrid input{accent-color:#1d76e2;width:15px;height:15px}
-
-.empty{padding:26px;text-align:center;color:#8a97ab;font-size:12.5px;line-height:1.6}
-.sizerow{display:flex;gap:8px;align-items:center;margin-bottom:7px}
-.sizerow .zin{max-width:230px}
-.totline{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px;
-         padding:9px 12px;background:#f7f9fc;border:1px solid #e6ebf2;border-radius:10px;font-size:12.5px}
-.totline b{font-size:15px;color:#152033;font-variant-numeric:tabular-nums}
-
-/* ---------- section 4: operations, and rates that differ by size ---------- */
-.cardhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
-.cardhead .hint{margin:0 0 9px;font-size:12px;color:#8a97ab;line-height:1.5;max-width:62ch}
-/* EVERY COLOUR HERE TAKES THE SKIN'S TOKEN WHEN THE PAGE IS SKINNED, and
-   falls back to this page's own palette when it is not. Hard-coding #1d6ff2
-   put a DIFFERENT blue under this switch from the accent on everything else
-   — the small kind of drift that makes a screen read as half-converted. */
-.seg{display:flex;border:1px solid var(--bd,#d9e0ea);border-radius:5px;overflow:hidden;
-  background:var(--sub,#f7f9fc);flex:none}
-.seg button{border:0;background:transparent;font:500 12px inherit;color:var(--fg-3,#6b7a90);
-  padding:0 13px;height:28px;cursor:pointer;border-right:1px solid var(--bd,#d9e0ea);
-  white-space:nowrap;transition:var(--t,.17s)}
-.seg button:last-child{border-right:0}
-.seg button[aria-pressed="true"]{background:#fff;color:#152033;font-weight:700;
-  box-shadow:inset 0 -2px 0 var(--acc,#1d6ff2)}
-.gridwrap{border:1px solid var(--bd,#e6ebf2);border-radius:6px;overflow:auto;max-height:70vh}
-#opgrid tr.grp>td{background:var(--acc-soft,#eef6ff);font-weight:600;font-size:12px;
-  color:var(--fg,#152033);border-bottom:1px solid var(--acc-bd,#cfe3fb)}
-#opgrid tr.grp .code{color:var(--acc,#1d6ff2)}
-#opgrid tr.grp a{color:var(--acc,#1d6ff2);font-size:11px;text-decoration:none;font-weight:500;margin-left:6px}
-#opgrid tr.grp a:hover{text-decoration:underline}
-#opgrid tr.grp .grpqty{float:right;font-weight:400;color:#8a97ab;font-size:11px}
-#opgrid td.stdcol,#opgrid th.stdcol{background:var(--sub,#f7f9fc)}
-#opgrid td.nops{color:#8a5a10;background:#fff6e8;font-size:12px}
-#opgrid td.szcell{position:relative;padding:0}
-#opgrid td.szcell input{width:100%;height:calc(var(--rowh,30px) - 2px);
-  border:1px solid transparent;border-radius:0;background:transparent;
-  padding:0 19px 0 6px;text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace;
-  font-variant-numeric:tabular-nums;font-size:12.5px;color:#9aa8ba;outline:0;box-sizing:border-box;transition:.17s}
-#opgrid td.szcell input:hover{border-color:var(--bd,#d9e0ea)}
-#opgrid td.szcell input:focus{border-color:var(--acc,#1d6ff2);background:var(--panel,#fff);
-  box-shadow:inset 0 0 0 1px var(--acc,#1d6ff2);color:var(--fg,#152033)}
-/* AN OVERRIDE MUST NOT LOOK LIKE AN INHERITED NUMBER. Same column, two states —
-   if they looked alike you could not tell what you had actually set. */
-#opgrid td.szcell.ovr{background:var(--ok-soft,#e6f5ee)}
-#opgrid td.szcell.ovr input{color:var(--ok,#0a875a);font-weight:600}
-#opgrid td.szcell.ovr::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--ok,#0a875a)}
-#opgrid td.szcell .x{position:absolute;right:2px;top:50%;transform:translateY(-50%);width:15px;height:15px;
-  border:0;background:transparent;color:#9aa8ba;font-size:12px;line-height:1;cursor:pointer;border-radius:3px;
-  display:none;align-items:center;justify-content:center;padding:0}
-#opgrid td.szcell.ovr .x{display:inline-flex}
-#opgrid td.szcell .x:hover{background:var(--bad-soft,#fdeef1);color:var(--bad,#cf3350)}
-#opgrid tfoot tr.setcost td{background:var(--sel,#eef4fb);font-weight:600;border-top:1px solid var(--bd,#d9e0ea)}
-.leg{display:flex;gap:15px;flex-wrap:wrap;margin-top:9px;font-size:11.5px;color:#8a97ab;align-items:center}
-.leg kbd{font-family:ui-monospace,monospace;font-size:10px;background:#f4f7fb;border:1px solid #e2e9f1;
-  border-bottom-width:2px;border-radius:3px;padding:0 4px;color:#38495f}
-.leg .sw{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:-1px;margin-right:5px}
-.leg .sw.i{background:var(--panel,#fff);border:1px solid var(--bd,#d9e0ea)}
-.leg .sw.o{background:var(--ok-soft,#e6f5ee);border-left:2px solid var(--ok,#0a875a)}
-.leg .ovrcount{margin-left:auto;font-family:ui-monospace,monospace;color:#9aa8ba}
-/* "same rate for all sizes" hides the size columns; it does not unload them,
-   so nothing typed is lost by flipping the switch */
-#opgrid.hidesizes .szcol{display:none}
+.zf.pm{max-width:1560px;min-width:0}
+.zf.pm .zf-t th,.zf.pm .pm-g th{text-transform:none !important;letter-spacing:0 !important;font-size:12px !important}
+.zf.pm table{min-width:0}
+.zf.pm .pm-msg{padding:8px 12px;border-radius:4px;margin:0 0 10px;font-size:12.5px;border:1px solid}
+.zf.pm .pm-msg.ok{background:#eef8f0;border-color:#c6e6cf;color:#256f3a}
+.zf.pm .pm-msg.bad{background:#fdf0ef;border-color:#f3c6c2;color:#b42318}
+.zf.pm .pm-msg.warn{background:#fff7ec;border-color:#f0d3a8;color:#9a5710}
+.zf.pm .pm-msg ul{margin:3px 0 0;padding-left:18px}
+.zf.pm .pm-note{color:var(--mut);font-size:12px;margin:6px 2px 0}
+/* ---- object header ---- */
+.zf.pm .pm-obj{background:#fff;border:1px solid var(--line);border-radius:6px 6px 0 0;padding:9px 14px 11px}
+.zf.pm .pm-crumb{font-size:12px;color:var(--mut)}
+.zf.pm .pm-crumb a{color:var(--pri);text-decoration:none}
+.zf.pm .pm-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-top:2px}
+.zf.pm .pm-top h1{font-size:19px;font-weight:600;margin:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.zf.pm .pm-acts{display:flex;gap:6px;flex-wrap:wrap}
+.zf.pm .pm-tiles{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.zf.pm .pm-tile{border:1px solid var(--line);border-left:4px solid var(--pri);border-radius:4px;padding:5px 12px;min-width:128px}
+.zf.pm .pm-tile span{display:block;font-size:11.5px;font-weight:600;color:var(--mut)}
+.zf.pm .pm-tile b{display:block;font-size:18px;font-weight:600;color:var(--pri);font-variant-numeric:tabular-nums}
+.zf.pm .pm-tile small{display:block;font-size:11px;color:var(--mut);white-space:nowrap}
+.zf.pm .pm-tile.g{border-left-color:#8396a8}.zf.pm .pm-tile.g b{color:var(--ink)}
+/* ---- the jump bar ---- */
+.zf.pm .pm-nav{position:sticky;top:0;z-index:30;background:#fff;border:1px solid var(--line);border-top:0;
+  border-radius:0 0 6px 6px;display:flex;gap:2px;padding:0 8px;margin-bottom:10px;overflow-x:auto;box-shadow:0 2px 6px rgba(16,32,56,.04)}
+.zf.pm .pm-nav a{padding:8px 12px 7px;font-weight:600;font-size:12.5px;color:var(--mut);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}
+.zf.pm .pm-nav a:hover{color:var(--pri)}
+.zf.pm .pm-nav a.on{color:var(--pri);border-bottom-color:var(--pri)}
+.zf.pm .pm-nav a b{font-weight:600;color:var(--ink);margin-left:3px}
+/* ---- sections ---- */
+.zf.pm .pm-sec{background:#fff;border:1px solid var(--line);border-radius:6px;margin-bottom:10px;scroll-margin-top:46px}
+.zf.pm .pm-sh{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.zf.pm .pm-sh h3{margin:0;font-size:14px;font-weight:600}
+.zf.pm .pm-sh .s2{color:var(--mut);font-size:12px}
+.zf.pm .pm-sb{padding:10px 12px}
+.zf.pm .pm-empty{padding:18px 12px;color:var(--mut);text-align:center}
+/* general fields */
+.zf.pm .pm-f{display:grid;grid-template-columns:minmax(220px,2.2fr) minmax(140px,1fr) 110px 130px auto;gap:9px 12px;align-items:end}
+.zf.pm .pm-f .w{grid-column:1/-1}
+.zf.pm .pm-f label{display:block;min-width:0}
+.zf.pm .pm-f label>span{display:block;font-size:12px;font-weight:600;color:var(--mut);margin-bottom:3px}
+.zf.pm .pm-f .zf-in{width:100%;max-width:none;height:30px}
+.zf.pm .pm-f .zf-in.n{text-align:right;font-variant-numeric:tabular-nums}
+.zf.pm .sw,.zf.pm .pm-f label.sw{display:inline-flex;align-items:center;gap:8px;height:30px;cursor:pointer;font-weight:600;color:var(--ink);user-select:none}
+.zf.pm .sw input{position:absolute;opacity:0;width:1px;height:1px}
+.zf.pm .sw i{width:34px;height:18px;border-radius:9px;background:#c5ced8;position:relative;transition:.15s;flex:none}
+.zf.pm .sw i::after{content:"";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.zf.pm .sw input:checked+i{background:#107e3e}
+.zf.pm .sw input:checked+i::after{left:18px}
+.zf.pm .sw input:focus-visible+i{box-shadow:0 0 0 2px rgba(10,110,209,.35)}
+/* size chips */
+.zf.pm .chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;border:1px solid var(--line);border-radius:4px;padding:4px 6px;min-height:34px;background:#fff;cursor:text}
+.zf.pm .chips:focus-within{border-color:var(--pri);box-shadow:0 0 0 2px rgba(10,110,209,.15)}
+.zf.pm .chip{display:inline-flex;align-items:center;gap:2px;height:24px;padding:0 3px 0 10px;border-radius:12px;background:#eaf2fc;border:1px solid #c3dbf5;color:#0a4f96;font-weight:600;font-size:12px;white-space:nowrap}
+.zf.pm .chip.new{background:#eef8f0;border-color:#c6e6cf;color:#256f3a}
+.zf.pm .chip.gone{background:#fdf0ef;border-color:#f3c6c2;color:#b42318}
+.zf.pm .chip.gone .t{text-decoration:line-through}
+.zf.pm .chip button{border:0;background:none;width:19px;height:19px;border-radius:50%;cursor:pointer;color:inherit;font-size:13px;line-height:1;padding:0}
+.zf.pm .chip button:hover{background:rgba(0,0,0,.08)}
+.zf.pm .chip small{font-weight:500;opacity:.75;margin-left:4px}
+.zf.pm .chipin{border:0;outline:0;flex:1;min-width:180px;height:24px;font:inherit;font-size:12.5px;background:transparent;color:var(--ink)}
+.zf.pm .chipin.bad{color:#b42318}
+/* the parts & rates grid */
+.zf.pm .pm-tw{overflow:auto;max-height:calc(100vh - 210px)}
+.zf.pm table.pm-g{width:100%;border-collapse:collapse}
+.zf.pm .pm-g th{position:sticky;top:0;z-index:2;background:#f7f9fb;font-weight:600;color:var(--mut);padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.zf.pm .pm-g th.n,.zf.pm .pm-g td.n{text-align:right}
+.zf.pm .pm-g td{padding:2px 8px;border-bottom:1px solid var(--soft);vertical-align:middle;height:30px}
+.zf.pm .pm-g td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+.zf.pm .pm-g th.sz,.zf.pm .pm-g td.sz{width:96px;min-width:84px}
+.zf.pm .pm-g tr.pr>td{background:#f9fafb;border-top:1px solid var(--line)}
+.zf.pm .pm-g tr.pr .pn{font-weight:600;color:var(--ink)}
+.zf.pm .pm-g tr.pr .pc{color:var(--pri);font-weight:600;text-decoration:none;font-size:11.5px;margin-right:6px}
+.zf.pm .pm-g tr.pr .s2{color:var(--mut);font-size:11.5px;margin-left:6px}
+.zf.pm .pm-g tr.op td.on{padding-left:34px;color:var(--ink)}
+.zf.pm .pm-g tr.op.nops td{color:#9a5710;background:#fff7ec;padding-left:34px}
+.zf.pm .pm-g .mut{color:var(--mut);font-size:11.5px}
+.zf.pm .stg{display:inline-block;font-size:11px;font-weight:600;padding:0 7px;border-radius:3px;line-height:18px;white-space:nowrap}
+.zf.pm .tgb{border:0;background:none;width:22px;height:22px;cursor:pointer;color:var(--mut);border-radius:3px;font-size:11px;transition:transform .15s;padding:0}
+.zf.pm .tgb:hover{background:#eaf2fc;color:var(--pri)}
+.zf.pm .tgb[aria-expanded="true"]{transform:rotate(90deg);color:var(--pri)}
+.zf.pm .pm-g input.cell{width:100%;height:26px;border:1px solid transparent;border-radius:3px;background:transparent;text-align:right;font:inherit;font-size:12.5px;
+  font-variant-numeric:tabular-nums;padding:0 20px 0 6px;color:var(--ink);box-sizing:border-box}
+.zf.pm .pm-g input.cell:hover{border-color:var(--line)}
+.zf.pm .pm-g input.cell:focus{outline:0;border-color:var(--pri);background:#fff;box-shadow:0 0 0 2px rgba(10,110,209,.15)}
+.zf.pm .pm-g td.q input.cell{border-color:var(--line);background:#fff;font-weight:600;padding-right:6px}
+.zf.pm .pm-g td.szcell{position:relative}
+.zf.pm .pm-g td.szcell input::placeholder{color:#9aa8b6}
+.zf.pm .pm-g td.szcell.ovr{background:#eef8f0}
+.zf.pm .pm-g td.szcell.ovr input{color:#256f3a;font-weight:600}
+.zf.pm .pm-g td.szcell .x{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:15px;height:15px;border:0;background:transparent;
+  color:#9aa8b6;font-size:12px;line-height:1;cursor:pointer;border-radius:3px;display:none;padding:0}
+.zf.pm .pm-g td.szcell.ovr .x{display:inline-block}
+.zf.pm .pm-g td.szcell .x:hover{background:#fdf0ef;color:#b42318}
+.zf.pm .pm-g .rm{border:0;background:none;color:#9aa8b6;width:24px;height:24px;border-radius:3px;cursor:pointer;font-size:15px;line-height:1;padding:0}
+.zf.pm .pm-g .rm:hover{background:#fdf0ef;color:#b42318}
+.zf.pm .pm-g tr.add td{background:#fff;border-top:1px solid var(--line);padding:6px 8px}
+.zf.pm .pm-g tr.add select{width:auto;max-width:360px}
+.zf.pm .pm-g tr.add .addw{display:inline-flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:nowrap}
+.zf.pm .zf-in.q{width:260px}
+.zf.pm .pm-g tfoot td{background:#f7f9fb;border-top:1px solid var(--line);font-weight:600;height:28px}
+.zf.pm .pm-g tfoot tr.tot td{color:var(--pri);font-size:13.5px;border-top:2px solid var(--line)}
+.zf.pm .pm-g tfoot a{color:var(--pri);text-decoration:none;font-weight:500;font-size:11.5px;margin-left:4px}
+.zf.pm .pm-g select.cell{width:100%;height:26px;border:1px solid var(--line);border-radius:3px;background:#fff;font:inherit;font-size:12.5px;padding:0 4px}
+.zf.pm .pm-g input.cell.t{text-align:left;border-color:var(--line);background:#fff;padding-right:6px}
+.zf.pm .pm-g input.cell.r{border-color:var(--line);background:#fff;padding-right:6px}
+.zf.pm .pm-g tr.gone td{opacity:.45}
+.zf.pm .leg{display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:7px 12px;border-top:1px solid var(--line);font-size:11.5px;color:var(--mut)}
+.zf.pm .leg kbd{font-family:ui-monospace,monospace;font-size:10px;background:#f4f7fb;border:1px solid #e2e9f1;border-bottom-width:2px;border-radius:3px;padding:0 4px;color:#38495f}
+.zf.pm .leg i{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:-1px;margin-right:4px;border:1px solid var(--line)}
+.zf.pm .leg i.o{background:#eef8f0;border-color:#c6e6cf}
+.zf.pm .leg .r{margin-left:auto}
+/* the one Save */
+.zf.pm .pm-foot{position:sticky;bottom:0;z-index:30;background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px 12px;
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap;box-shadow:0 -4px 14px rgba(16,32,56,.07)}
+.zf.pm .pm-foot .zf-btn{height:32px}
+.zf.pm .pm-dirty{font-size:12px;font-weight:600;color:var(--mut)}
+.zf.pm .pm-dirty.on{color:#9a5710}
+.zf.pm .pm-foot .r{margin-left:auto;font-size:11.5px;color:var(--mut)}
+.zf.pm .pm-dflt{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+/* the draft bar */
+.zf.pm #pmDraftBar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.zf.pm #pmDraftBar[hidden]{display:none !important}
+/* the list */
+.zf.pm .zf-t td .use{color:var(--mut);font-size:12px}
+.zf.pm .zf-t td.acts{white-space:nowrap;text-align:right}
+@media(max-width:900px){.zf.pm .pm-f{grid-template-columns:1fr 1fr}.zf.pm .pm-f .nm{grid-column:1/-1}}
+@media(max-width:760px){.zf.pm table.pm-g{min-width:620px}.zf.pm .pm-tile{flex:1 1 140px}.zf.pm .pm-foot .r{display:none}}
 </style>
-<?php /* THE SKIN, OPTED IN. Every rule in assets/css/zskin.css is scoped
-         under .zskin, so this one attribute is the whole of the restyle and
-         removing it puts the page back exactly as it was. The page keeps its
-         own .zp-card / .zp-t / .zp-b names; the skin maps onto them. */ ?>
+<?php /* THE SKIN, OPTED IN. Every rule in assets/css/zskin.css is scoped under
+         .zskin, so the app's chrome matches the other production pages; the
+         page's own look is the .zf one shared with Order Status. */ ?>
 <div class="zskin">
+<div class="zf pm">
 
-<div class="zp-wrap">
+<?php if ($msg): ?><div class="pm-msg ok"><?= e($msg) ?></div><?php endif; ?>
+<?php if ($err): ?><div class="pm-msg bad"><?= e($err) ?></div><?php endif; ?>
 
-<?php if ($msg): ?><div class="flash ok"><?= e($msg) ?></div><?php endif; ?>
-<?php if ($err): ?><div class="flash bad"><?= e($err) ?></div><?php endif; ?>
+<?php if (!$editId && !$isNew): /* ===================== THE LIST ===================== */ ?>
 
-<?php if (!$editId && !$isNew): /* ============ THE LIST ============ */ ?>
-
-  <div class="zp-head">
+  <div class="zf-hd">
     <div>
       <h1>Master Products</h1>
-      <p>Manage your main products</p>
+      <div class="zf-sub">What each product is made of, its sizes, and what one set costs to make.</div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <form method="get" style="display:flex;gap:6px">
-        <input class="zin" name="q" value="<?= e($search) ?>" placeholder="Search product…" style="width:220px">
-        <button class="zp-b">Search</button>
-        <?php if ($search !== ''): ?><a class="zp-b" href="product_master.php">Clear</a><?php endif; ?>
-      </form>
-      <a class="zp-b" href="part_library.php">Part Library</a>
-      <a class="zp-b" href="products_csv.php">Products CSV</a>
-      <?php if (is_admin()): /* THE CATCH-UP. Everything saved between the
-           rebuild and today has no mirror, so its Workmanship still costs zero.
-           Saving each product would fix it one at a time; this does all of them
-           in one go. Safe to press twice — it rewrites, it never doubles. */ ?>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <a class="zf-btn" href="part_library.php">Part Library</a>
+      <a class="zf-btn" href="products_csv.php">Products CSV</a>
+      <?php if (is_admin()): /* THE CATCH-UP. Sends every product's sizes and
+           wage rates over to Costing in one go. Safe to press twice — it
+           rewrites, it never doubles. */ ?>
       <form method="post" style="display:inline"
             onsubmit="return confirm('Send every product\'s sizes and wage rates over to Costing?\n\nNothing is deleted. Any old operation rate that would double-count is switched off, not removed.')">
         <?= csrf_field() ?><input type="hidden" name="action" value="sync_costing">
-        <button class="zp-b" title="Fix Workmanship reading zero on old costings">Update Costing</button>
+        <button class="zf-btn" title="Fix Workmanship reading zero on old costings">Update Costing</button>
       </form>
       <?php endif; ?>
-      <a class="zp-b pri" href="product_master.php?edit=0">+ Add New Product</a>
-      <?php /* WHICH COPY OF THIS FILE IS ACTUALLY RUNNING.
-               Three rounds were lost to not being able to tell "the upload did
-               not land" from "the browser is showing a stored copy" — they need
-               opposite fixes. This is read from disk on the server, so a cached
-               page shows the OLD date and a fresh one shows the new. Compare it
-               with the date on the zip. */ ?>
-      <span class="code" style="font-size:10px;color:#a7b2c4;white-space:nowrap;align-self:center"
-            title="Modified date of this file on the server. Older than the zip you uploaded means it never landed; newer but the page still looks old means the browser is showing a stored copy — reload with Ctrl+Shift+R.">
-        build <?= e(date('d M H:i', (int)@filemtime(__FILE__))) ?></span>
-
+      <a class="zf-btn pri" href="product_master.php?edit=0">+ New product</a>
+      <span style="font-size:10px;color:#a7b2c4;white-space:nowrap;font-family:ui-monospace,monospace"
+            title="Modified date of this file on the server. Older than the zip you uploaded means it never landed.">build <?= e(date('d M H:i', (int)@filemtime(__FILE__))) ?></span>
     </div>
   </div>
 
-  <div class="listsplit">
-    <div class="zp-card" style="margin-bottom:0">
-      <?php if (!$products): ?>
-        <div class="empty">
-          <?= $search !== '' ? 'No product matches “' . e($search) . '”.' : 'No products yet.' ?><br><br>
-          <?php if ($search === ''): ?>
-            You can bring your whole list in at once from
-            <a href="products_csv.php">Products CSV</a>, or press <b>+ Add New Product</b>.
+  <div id="pmList"></div>
+  <div class="pm-note">
+    <b>Delete</b> is only possible when nothing uses the product. If it is used in production, a proforma, an invoice
+    or a shipment, switch it to <b>Inactive</b> instead — it leaves new lists and every existing document keeps working.
+  </div>
+
+  <form method="post" id="pmAct" hidden>
+    <?= csrf_field() ?><input type="hidden" name="action" value=""><input type="hidden" name="product_id" value="0">
+  </form>
+
+  <script>
+  (function(){
+    var ROWS = <?= json_encode($rows, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE) ?>;
+    var esc = ZF.esc, n2 = ZF.n2;
+    function cost(r){ return r.cmax ? (r.cmin === r.cmax ? n2(r.cmin) : n2(r.cmin) + ' – ' + n2(r.cmax)) : '—'; }
+    window.pmAct = function(act, id, name){
+      if (act === 'delete_product' && !confirm('Delete ' + name + '?\n\nNothing is using it, so this really deletes it. It cannot be undone.')) return;
+      var f = document.getElementById('pmAct');
+      f.elements.action.value = act; f.elements.product_id.value = id; f.submit();
+    };
+    <?php if ($search !== ''): ?>try { if (!location.hash) location.hash = 'q=' + encodeURIComponent(<?= json_encode($search) ?>); } catch (e) {}<?php endif; ?>
+    ZFList({
+      root: 'pmList', rows: ROWS, sort: 'name', dir: 1, csvName: 'master-products',
+      searchHint: 'Search product, category, size, part…',
+      hay: function(r){ return [r.name, r.cat, r.unit, r.desc, r.szl, r.ptl, (r.used || []).join(' ')].join(' '); },
+      href: function(r){ return 'product_master.php?edit=' + r.id; },
+      kpis: [
+        { id: 'all',  label: 'Products', cls: 'k-blue',  value: function(a){ return [a.length, a.filter(function(r){ return r.act; }).length + ' active']; }, test: function(){ return true; } },
+        { id: 'ok',   label: 'Ready to produce', cls: 'k-green', value: function(a){ var n = a.filter(function(r){ return r.act && r.ok; }).length; return [n, 'active, with parts, operations and cutting']; }, test: function(r){ return r.act && r.ok; } },
+        { id: 'need', label: 'Needs setup', cls: 'k-amber', value: function(a){ var n = a.filter(function(r){ return r.act && !r.ok; }).length; return [n, 'active, but something is missing']; }, test: function(r){ return r.act && !r.ok; } },
+        { id: 'off',  label: 'Inactive', cls: 'k-grey', value: function(a){ var n = a.filter(function(r){ return !r.act; }).length; return [n, 'not offered in new lists']; }, test: function(r){ return !r.act; } },
+        { id: 'free', label: 'Not used anywhere', cls: 'k-grey', value: function(a){ var n = a.filter(function(r){ return r.del; }).length; return [n, 'can be deleted']; }, test: function(r){ return r.del; } }
+      ],
+      selects: [{ k: 'cat', label: 'Category' }, { k: 'unit', label: 'Unit' }],
+      cols: [
+        { k: 'name', label: 'Product', sort: function(r){ return r.name.toLowerCase(); }, html: function(r){
+            return '<a class="lk" href="product_master.php?edit=' + r.id + '">' + esc(r.name) + '</a>'
+              + (r.cat || r.desc ? '<div class="s2">' + esc([r.cat, r.desc].filter(Boolean).join(' · ')) + '</div>' : ''); } },
+        { k: 'unit', label: 'Unit', w: '64px', sort: function(r){ return r.unit; }, html: function(r){ return esc(r.unit); } },
+        { k: 'nsz', label: 'Sizes', sort: function(r){ return r.nsz; }, html: function(r){
+            return r.nsz ? '<span class="nw" title="' + esc(r.szl) + '">' + esc(r.szl) + '</span>' : '<span class="s2">—</span>'; } },
+        { k: 'npt', label: 'Parts', sort: function(r){ return r.npt; }, html: function(r){
+            return r.npt ? '<span class="nw" title="' + esc(r.ptl) + '">' + esc(r.ptl) + '</span>' : '<span class="s2">—</span>'; } },
+        { k: 'cmax', label: 'Making cost / set', num: true, sort: function(r){ return r.cmax; }, html: function(r){ return cost(r); } },
+        { k: 'ok', label: 'Setup', sort: function(r){ return r.ok; }, html: function(r){
+            return r.ok ? '<span class="zf-pill p-ok">Ready</span>'
+                        : '<span class="zf-pill p-sub" title="' + esc(r.why) + '">Needs setup</span><div class="s2 nw" title="' + esc(r.why) + '">' + esc(r.why) + '</div>'; } },
+        { k: 'act', label: 'Status', sort: function(r){ return r.act; }, html: function(r){
+            return r.act ? '<span class="zf-pill p-ok">Active</span>' : '<span class="zf-pill p-grey">Inactive</span>'; } },
+        { k: 'used', label: 'Used in', sort: function(r){ return (r.used || []).length; }, html: function(r){
+            return (r.used || []).length ? '<span class="use">' + esc(r.used.join(', ')) + '</span>' : '<span class="s2">—</span>'; } },
+        { k: 'x', label: '', html: function(r){
+            return '<span class="acts"><a class="zf-btn sm" href="product_master.php?edit=' + r.id + '">Edit</a> '
+              + '<button type="button" class="zf-btn sm" title="Copy with its sizes, parts and quantities. The copy starts Inactive." onclick="pmAct(\'duplicate_product\',' + r.id + ')">Copy</button> '
+              + (r.del ? '<button type="button" class="zf-btn sm danger" onclick="pmAct(\'delete_product\',' + r.id + ',' + esc(JSON.stringify(r.name)) + ')">Delete</button>'
+                       : '<button type="button" class="zf-btn sm off" disabled title="' + esc(r.delw) + '">Delete</button>')
+              + '</span>'; } }
+      ],
+      csv: [['Product', function(r){ return r.name; }], ['Category', function(r){ return r.cat; }], ['Unit', function(r){ return r.unit; }],
+            ['Sizes', function(r){ return r.szl; }], ['Parts', function(r){ return r.ptl; }],
+            ['Making cost / set (min)', function(r){ return r.cmin.toFixed(2); }], ['Making cost / set (max)', function(r){ return r.cmax.toFixed(2); }],
+            ['Setup', function(r){ return r.ok ? 'Ready' : 'Needs setup: ' + r.why; }], ['Status', function(r){ return r.act ? 'Active' : 'Inactive'; }],
+            ['Used in', function(r){ return (r.used || []).join(', '); }]],
+      empty: 'No products yet. Bring your list in from Products CSV, or press + New product.'
+    });
+  })();
+  </script>
+
+<?php else: /* ===================== THE EDITOR — ONE PAGE, ONE FORM ===================== */
+  $nS = count($sizes);
+  $cols = 5 + $nS;                         // toggle · name · stage · std · sizes… · remove
+?>
+
+  <div class="pm-obj">
+    <div class="pm-crumb"><a href="product_master.php">Master Products</a> &rsaquo; <?= $editId ? e($product['name']) : 'New product' ?></div>
+    <div class="pm-top">
+      <div>
+        <h1><?= $editId ? e($product['name']) : 'New product' ?>
+          <?php if ($editId): ?>
+            <?= (int)$product['is_active'] ? '<span class="zf-pill p-ok">Active</span>' : '<span class="zf-pill p-grey">Inactive</span>' ?>
+            <?= $todo ? '<span class="zf-pill p-sub">Needs setup</span>' : '<span class="zf-pill p-ok">Ready to produce</span>' ?>
+          <?php endif; ?>
+        </h1>
+        <div class="zf-sub">
+          <?php if ($editId): ?>
+            <?= e(implode(' · ', array_filter([trim((string)$product['category']), $curUnit]))) ?>
+            &middot; <?= $nS ?> size<?= $nS === 1 ? '' : 's' ?> &middot; <?= count($prodParts) ?> part<?= count($prodParts) === 1 ? '' : 's' ?>
+            &middot; Used in: <?= $used ? e(implode(', ', $used)) : 'nothing yet' ?>
+          <?php else: ?>
+            Give it a name and its sizes, press Create, then add its parts.
           <?php endif; ?>
         </div>
-      <?php else: ?>
-      <div style="overflow-x:auto">
-      <table class="zp-t">
-        <thead><tr>
-          <th style="width:40px">#</th><th>Product Name</th>
-          <th style="width:92px">Status</th><th style="width:170px">Used In</th>
-          <th style="width:232px">Actions</th>
-        </tr></thead>
-        <tbody>
-        <?php foreach ($products as $i => $p): $pid = (int)$p['id']; $used = zp_is_used($usageMap, $pid); ?>
-          <tr>
-            <td class="code"><?= $i + 1 ?></td>
-            <td>
-              <a href="product_master.php?edit=<?= $pid ?>"
-                 style="color:#152033;font-weight:700;text-decoration:none"><?= e($p['name']) ?></a>
-              <?php if (trim((string)$p['category']) !== ''): ?>
-                <div class="code" style="font-size:10.5px"><?= e($p['category']) ?></div><?php endif; ?>
-            </td>
-            <td><?= $p['is_active']
-                  ? '<span class="pill on">&#10003; Active</span>'
-                  : '<span class="pill off">Inactive</span>' ?></td>
-            <td style="font-size:12px;color:#5a6b82"><?= e(zp_usage_label($usageMap, $pid)) ?></td>
-            <td style="white-space:nowrap">
-              <a class="zp-b sm" href="product_master.php?edit=<?= $pid ?>">Edit</a>
-              <form method="post" style="display:inline">
-                <?= csrf_field() ?><input type="hidden" name="action" value="duplicate_product">
-                <input type="hidden" name="product_id" value="<?= $pid ?>">
-                <button class="zp-b sm" title="Copy this product with its sizes, parts and quantities">Duplicate</button>
-              </form>
-              <?php if ($used): ?>
-                <?php /* DISABLED, NOT HIDDEN. A missing button leaves you
-                         wondering; a greyed one with the reason on it tells
-                         you exactly what to do instead. */ ?>
-                <button class="zp-b sm dis" disabled
-                        title="<?= !empty($usageMap[$pid])
-                          ? 'Used in ' . e(implode(', ', $usageMap[$pid])) . ' — deleting it would orphan those documents. Untick Active instead to take it out of new lists.'
-                          : 'These checks could not be run: ' . e(implode(', ', zp_usage_unknown($usageMap))) . '. A check that cannot run is never treated as safe.' ?>">Delete</button>
-              <?php else: ?>
-                <form method="post" style="display:inline"
-                      onsubmit="return confirm('Delete <?= e(addslashes($p['name'])) ?>?\n\nNothing is using it, so this really deletes it. It cannot be undone.')">
-                  <?= csrf_field() ?><input type="hidden" name="action" value="delete_product">
-                  <input type="hidden" name="product_id" value="<?= $pid ?>">
-                  <button class="zp-b sm red">Delete</button>
-                </form>
-              <?php endif; ?>
-            </td>
-          </tr>
+      </div>
+      <div class="pm-acts">
+        <a class="zf-btn" href="part_library.php">Part Library</a>
+        <?php if ($editId): ?>
+          <button type="submit" class="zf-btn" form="pmDup" title="Copy with its sizes, parts and quantities. The copy starts Inactive.">Duplicate</button>
+          <?php if ($canDel): ?>
+            <button type="submit" class="zf-btn danger" form="pmDel"
+                    onclick="return confirm('Delete this product?\n\nNothing is using it, so this really deletes it. It cannot be undone.')">Delete</button>
+          <?php else: /* DISABLED, NOT HIDDEN — with the reason on it */ ?>
+            <button type="button" class="zf-btn off" disabled
+                    title="<?= $used ? 'Used in ' . e(implode(', ', $used)) . ' — deleting it would orphan those documents. Switch it to Inactive instead.'
+                                     : 'Some checks could not be run (' . e(implode(', ', zp_usage_unknown($usageMap))) . '). A check that cannot run is never treated as safe.' ?>">Delete</button>
+          <?php endif; ?>
+        <?php endif; ?>
+      </div>
+    </div>
+
+    <?php if ($editId && $todo): ?>
+      <div class="pm-msg warn" style="margin:9px 0 0"><b>Before this product can be produced:</b>
+        <ul><?php foreach ($todo as $t): ?><li><?= e($t) ?></li><?php endforeach; ?></ul></div>
+    <?php endif; ?>
+
+    <?php if ($editId && $nS && ($prodParts || $setOps)): ?>
+      <div class="pm-tiles" title="Making cost of one set = part work at that size + set work. Wages only: no fabric, no mark-up.">
+        <?php foreach ($sizes as $s): ?>
+          <div class="pm-tile" data-tile="<?= (int)$s['id'] ?>">
+            <span><?= e($s['size_label']) ?> &middot; making cost / set</span>
+            <b>0.00</b><small>parts 0.00 &middot; set work 0.00</small>
+          </div>
         <?php endforeach; ?>
-        </tbody>
-      </table>
       </div>
-      <?php endif; ?>
-    </div>
-
-    <div class="note info" style="align-self:start">
-      <b style="font-size:13px">ℹ Delete / Deactivate rules</b>
-      <ul>
-        <li>If a product is used in any <b>production or invoice</b>, <b>Delete is disabled</b>.</li>
-        <li>You can <b>Deactivate</b> instead — it stops appearing in new lists, and every existing document still works.</li>
-        <li>Once nothing uses it any more, <b>Delete becomes available</b> by itself.</li>
-        <li>This keeps your lists clean and makes the mistake impossible rather than merely discouraged.</li>
-      </ul>
-    </div>
+    <?php endif; ?>
   </div>
 
-<?php else: /* ============ THE EDITOR — ONE PAGE, NO TABS ============ */ ?>
+  <nav class="pm-nav" id="pmNav">
+    <a href="#pmGen" class="on">General</a>
+    <a href="#pmSizes">Sizes<b><?= $nS ?></b></a>
+    <?php if ($editId): ?>
+      <a href="#pmParts">Parts &amp; rates<b><?= count($prodParts) ?></b></a>
+      <a href="#pmSet">Set work<b><?= count($setOps) ?></b></a>
+    <?php endif; ?>
+  </nav>
 
-  <div class="zp-head">
-    <div style="display:flex;align-items:center;gap:12px">
-      <a class="zp-b" href="product_master.php" title="Back to all products">&larr;</a>
-      <div>
-        <h1><?= $editId ? e($product['name']) : 'Add New Product' ?></h1>
-        <p><?= $editId ? count($sizes) . ' size' . (count($sizes) === 1 ? '' : 's') . ' &middot; '
-                        . count($prodParts) . ' part' . (count($prodParts) === 1 ? '' : 's')
-                      : 'Name it, give it its sizes, then add its parts.' ?></p>
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <a class="zp-b" href="part_library.php">Part Library</a>
-      <a class="zp-b" href="product_master.php">Cancel</a>
-    </div>
-  </div>
-
-  <?php if ($editId && $todo): ?>
-    <div class="note warn" style="margin-bottom:16px">
-      <b>Before this product can be produced</b>
-      <ul><?php foreach ($todo as $t): ?><li><?= e($t) ?></li><?php endforeach; ?></ul>
-    </div>
-  <?php elseif ($editId): ?>
-    <div class="note good" style="margin-bottom:16px"><b>Ready.</b> Every part has its operations and a cutting line.</div>
-  <?php endif; ?>
-
-  <?php /* ONE FORM AROUND EVERYTHING.
-           Name, sizes, parts and quantities are all written by a single Save.
-           There is no way to fill something in and lose it by never pressing the
-           Save that belonged to it — which is the expensive thing tabs did. */ ?>
-  <?php /* THE DRAFT BAR — hidden until there is genuinely something to offer.
-           It uses the `hidden` attribute rather than an inline display:none, so
-           that when it IS shown its own flex layout is the one that applies. An
-           inline display that has to be overwritten is how a bar appears with
-           its buttons stacked in the wrong place. */ ?>
-  <div id="pmDraftBar" hidden
-       style="padding:11px 14px;border-radius:10px;margin-bottom:14px;background:#fff6e8;
-              border:1px solid #f3ddb8;color:#8a5a10;font-size:12.5px;display:flex;
-              align-items:center;gap:11px;flex-wrap:wrap">
+  <?php /* THE DRAFT BAR — hidden until there is genuinely something to offer. */ ?>
+  <div id="pmDraftBar" class="pm-msg warn" hidden>
     <span><b>Unsaved work found.</b> <span id="pmDraftWhen"></span>
       It is only in this browser &mdash; nothing was sent to the server.</span>
-    <span style="margin-left:auto;display:flex;gap:7px">
-      <button type="button" class="zp-b ok" id="pmDraftYes" style="padding:5px 12px;font-size:12px">Put it back</button>
-      <button type="button" class="zp-b" id="pmDraftNo" style="padding:5px 12px;font-size:12px">Discard</button>
+    <span style="margin-left:auto;display:flex;gap:6px">
+      <button type="button" class="zf-btn sm ok" id="pmDraftYes">Put it back</button>
+      <button type="button" class="zf-btn sm" id="pmDraftNo">Discard</button>
     </span>
   </div>
 
-  <form method="post" id="pmForm">
+  <?php /* ONE FORM AROUND EVERYTHING. Name, sizes, parts, quantities, size rates
+           and set work are all written by the single Save. Duplicate and
+           Delete are their own small forms further down — HTML does not allow a
+           form inside a form. */ ?>
+  <form method="post" id="pmForm" autocomplete="off">
     <?= csrf_field() ?>
     <input type="hidden" name="action" value="save_all">
     <input type="hidden" name="product_id" value="<?= (int)$editId ?>">
-    <input type="hidden" name="remove_part" value="0">
+    <?php /* ENTER IN A TEXT BOX SAVES, and nothing else. The browser presses the
+             FIRST submit button in the form on Enter — without this one that
+             was "+ Add part" or a part's remove button. */ ?>
+    <button type="submit" name="do" value="save" class="pm-dflt" tabindex="-1" aria-hidden="true">Save</button>
 
-    <!-- ============ 1. the product itself ============ -->
-    <div class="zp-card">
-      <h2>1 &nbsp;The product</h2>
-      <div class="fgrid" style="margin-top:13px">
-        <div style="grid-column:1/-1">
-          <span class="lab">Product Name</span>
-          <input class="zin" name="name" required maxlength="200" autocomplete="off"
-                 value="<?= e($product['name'] ?? '') ?>" placeholder="Bed Sheet Set">
-        </div>
-        <div>
-          <span class="lab">Category</span>
-          <input class="zin" name="category" maxlength="120" autocomplete="off"
-                 value="<?= e($product['category'] ?? '') ?>" placeholder="Bedding">
-        </div>
-        <div>
-          <span class="lab">Default Unit</span>
-          <select class="zin" name="default_unit">
-            <?php foreach (['Pcs', 'Sets', 'Pair', 'Mtr', 'Kg', 'Other'] as $u): ?>
-              <option <?= ($product['default_unit'] ?? 'Pcs') === $u ? 'selected' : '' ?>><?= $u ?></option>
-            <?php endforeach; ?>
-          </select>
-        </div>
-        <div>
-          <span class="lab">40ft HC Capacity</span>
-          <input class="zin num" name="fcl_40hc_qty" inputmode="decimal" autocomplete="off"
-                 value="<?= $product && $product['fcl_40hc_qty'] !== null
-                           ? e(rtrim(rtrim(number_format((float)$product['fcl_40hc_qty'], 2, '.', ''), '0'), '.')) : '' ?>"
-                 placeholder="32000" title="Pieces that load into one 40ft HC container.">
-        </div>
-        <div style="display:flex;align-items:flex-end">
-          <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:#5a6b82;cursor:pointer;padding-bottom:7px">
-            <input type="checkbox" name="is_active" value="1"
-                   <?= ($editId ? (int)$product['is_active'] : 1) ? 'checked' : '' ?>> Active
-          </label>
-        </div>
-        <div style="grid-column:1/-1">
-          <span class="lab">Description <span style="text-transform:none;font-weight:500">(optional)</span></span>
-          <input class="zin" name="description" maxlength="255" autocomplete="off"
-                 value="<?= e($product['description'] ?? '') ?>">
-        </div>
+    <!-- ============ General ============ -->
+    <section class="pm-sec" id="pmGen">
+      <div class="pm-sh"><h3>General</h3></div>
+      <div class="pm-sb pm-f">
+        <label class="nm"><span>Product name *</span>
+          <input class="zf-in" name="name" required maxlength="200" value="<?= e($product['name'] ?? '') ?>" placeholder="e.g. Duvet Set Dyed"></label>
+        <label><span>Category</span>
+          <input class="zf-in" name="category" maxlength="120" list="pmCats" value="<?= e($product['category'] ?? '') ?>" placeholder="Bedding"></label>
+        <datalist id="pmCats"><?php foreach ($cats as $c): ?><option value="<?= e($c) ?>"><?php endforeach; ?></datalist>
+        <label><span>Unit</span>
+          <select class="zf-in" name="default_unit">
+            <?php foreach ($units as $u): ?><option <?= $curUnit === $u ? 'selected' : '' ?>><?= e($u) ?></option><?php endforeach; ?>
+          </select></label>
+        <label title="Pieces that load into one 40ft HC container."><span>40ft HC capacity</span>
+          <input class="zf-in n" name="fcl_40hc_qty" inputmode="decimal"
+                 value="<?= $product && $product['fcl_40hc_qty'] !== null ? e(pm_n($product['fcl_40hc_qty'])) : '' ?>" placeholder="32000"></label>
+        <label class="sw" title="Inactive products stay on every document but are not offered in new lists.">
+          <input type="checkbox" name="is_active" value="1" <?= ($editId ? (int)$product['is_active'] : 1) ? 'checked' : '' ?>><i></i> Active</label>
+        <label class="w"><span>Description</span>
+          <input class="zf-in" name="description" maxlength="255" value="<?= e($product['description'] ?? '') ?>" placeholder="Optional"></label>
       </div>
-    </div>
+    </section>
 
-    <!-- ============ 2. sizes ============ -->
-    <div class="zp-card">
-      <h2>2 &nbsp;Its sizes</h2>
-      <p style="margin:3px 0 12px;font-size:12.5px;color:#8a97ab;line-height:1.5">
-        Each size becomes a quantity column in the table below. Single, Double, King &mdash; or 90x190, 135x190.</p>
-
-      <div id="sizeRows">
-        <?php foreach ($sizes as $s): ?>
-          <div class="sizerow">
-            <input class="zin" name="size_label[]" value="<?= e($s['size_label']) ?>" maxlength="60" autocomplete="off">
-            <button type="button" class="zp-b sm red" onclick="this.closest('.sizerow').remove()">&times;</button>
-          </div>
-        <?php endforeach; ?>
+    <!-- ============ Sizes ============ -->
+    <section class="pm-sec" id="pmSizes">
+      <div class="pm-sh"><h3>Sizes</h3>
+        <span class="s2">Type a size and press Enter. Each size is a column in Parts &amp; rates. Paste "Single, Double, King" to add several.</span></div>
+      <div class="pm-sb">
+        <div class="chips" id="sizeChips" onclick="if(event.target===this)document.getElementById('sizeIn').focus()">
+          <?php foreach ($sizes as $s): ?>
+            <span class="chip" data-saved="1"><input type="hidden" name="size_label[]" value="<?= e($s['size_label']) ?>"><span class="t"><?= e($s['size_label']) ?></span><button type="button" title="Remove this size">&times;</button></span>
+          <?php endforeach; ?>
+          <input class="chipin" id="sizeIn" maxlength="60" placeholder="<?= $sizes ? 'Add a size…' : 'e.g. Single — then Enter' ?>">
+        </div>
+        <div class="pm-note" id="sizeNote" hidden></div>
       </div>
-      <div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:4px">
-        <button type="button" class="zp-b" onclick="zpAddSize()">+ Add a size</button>
-        <span style="font-size:11.5px;color:#8a97ab">Press Enter to add another.</span>
+    </section>
+
+    <!-- ============ Parts & rates — ONE GRID ============ -->
+    <?php if ($editId): ?>
+    <section class="pm-sec" id="pmParts">
+      <div class="pm-sh"><h3>Parts &amp; rates</h3>
+        <?php if ($nS && $prodParts): ?>
+          <span style="display:flex;gap:6px;align-items:center">
+            <span class="s2">Part rows: how many go in one set. &#9656; opens its operations and rates by size.</span>
+            <button type="button" class="zf-btn sm" id="pmOpenAll">Open all</button>
+          </span>
+        <?php endif; ?>
       </div>
-
-      <?php if ($sizes): ?>
-      <div class="note info" style="margin-top:13px">
-        A size that already has quantities against it is <b>kept even if you clear its box</b>, and the save says
-        which. Removing it would take those quantities with it, silently.
-      </div>
-      <?php endif; ?>
-    </div>
-
-    <!-- ============ 3. parts and per-size quantities ============ -->
-    <div class="zp-card">
-      <h2>3 &nbsp;What it is made of</h2>
-
-      <?php if (!$editId): ?>
-        <div class="empty">Save the product first &mdash; then you can add its parts here.</div>
-
-      <?php elseif (!$sizes): ?>
-        <div class="empty">Add at least one size above and press <b>Save</b>, then the parts table appears.</div>
-
+      <?php if (!$nS): ?>
+        <div class="pm-empty">Add at least one size above and press <b>Save</b> &mdash; then the parts grid appears.</div>
       <?php else: ?>
-
-        <?php if (!$libParts): ?>
-          <div class="empty">
-            Your Part Library is empty.<br><br>
-            A part is a piece you make &mdash; a Bed Sheet, a Pillow Cover. Define it once, with its
-            operations and rates, and use it on as many products as you like.<br><br>
-            <a class="zp-b pri" href="part_library.php">Define a part in the Part Library</a>
-          </div>
-        <?php else: ?>
-          <div style="display:flex;gap:9px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
-            <?php if ($canAdd): ?>
-              <div style="min-width:250px">
-                <span class="lab">Add a part from the library</span>
-                <select class="zin" name="add_part_id">
-                  <option value="">Choose a part&hellip;</option>
+      <div class="pm-tw">
+      <table class="pm-g" id="pmGrid">
+        <thead><tr>
+          <th style="width:28px"></th><th>Part &middot; operation</th><th style="width:96px">Stage</th>
+          <th class="n" style="width:84px" title="The part's own rate, from the Part Library">Std rate</th>
+          <?php foreach ($sizes as $s): ?><th class="n sz"><?= e($s['size_label']) ?></th><?php endforeach; ?>
+          <th style="width:32px"></th>
+        </tr></thead>
+        <tbody>
+        <?php foreach ($prodParts as $p): $cid = (int)$p['id']; $pops = $partOps[$cid]; ?>
+          <tr class="pr" data-part="<?= $cid ?>">
+            <td><button type="button" class="tgb" aria-expanded="false" title="Show the operations">&#9654;</button></td>
+            <td><a class="pc" href="part_library.php?part=<?= $cid ?>#partform" title="Edit in Part Library — operations and standard rates"><?= e(zp_part_code($cid)) ?></a><span class="pn"><?= e($p['part_name']) ?></span><span class="s2"><?= count($pops) ?> op<?= count($pops) === 1 ? '' : 's' ?><?= trim((string)$p['style']) !== '' ? ' · ' . e($p['style']) : '' ?></span></td>
+            <td class="mut">qty / set</td>
+            <td class="n mut" title="Standard cost of one piece"><?= number_format((float)($costMap[$cid] ?? 0), 2) ?> /pc</td>
+            <?php foreach ($sizes as $s): $sid = (int)$s['id']; ?>
+              <td class="sz q"><input class="cell qz" inputmode="decimal" data-part="<?= $cid ?>" data-size="<?= $sid ?>"
+                     name="qty[<?= $cid ?>][<?= $sid ?>]" value="<?= e(pm_n(zp_qty_for($qtyMap, $cid, $sid))) ?>"
+                     title="<?= e($p['part_name']) ?> per <?= e($s['size_label']) ?> set"></td>
+            <?php endforeach; ?>
+            <td><button type="submit" class="rm" name="remove_part" value="<?= $cid ?>" formnovalidate title="Take this part off this product"
+                        onclick="return confirm('Take <?= e(addslashes($p['part_name'])) ?> off this product?\n\nThe part stays in the library, and wages already booked are untouched.')">&times;</button></td>
+          </tr>
+          <?php if (!$pops): ?>
+            <tr class="op nops" data-part="<?= $cid ?>" hidden><td colspan="<?= $cols ?>">No operations yet, so this part costs nothing and cannot be produced.
+              <a href="part_library.php?part=<?= $cid ?>#partform">Add its Cutting line in the Part Library &rarr;</a></td></tr>
+          <?php else: foreach ($pops as $o): $oid = (int)$o['id']; ?>
+            <tr class="op" data-part="<?= $cid ?>" hidden>
+              <td></td>
+              <td class="on"><?= e($o['operation_name']) ?></td>
+              <td><span class="stg" style="<?= e(ze_stage_css((string)$o['stage'])) ?>"><?= e($o['stage']) ?></span></td>
+              <td class="n"><?= number_format((float)$o['rate'], 2) ?></td>
+              <?php foreach ($sizes as $s): $sid = (int)$s['id']; $has = isset($szRates[$oid][$sid]); ?>
+                <td class="sz szcell<?= $has ? ' ovr' : '' ?>">
+                  <input class="cell ratein" inputmode="decimal" name="oprate[<?= $oid ?>][<?= $sid ?>]"
+                         data-std="<?= e(number_format((float)$o['rate'], 2, '.', '')) ?>"
+                         value="<?= $has ? e(number_format((float)$szRates[$oid][$sid], 2, '.', '')) : '' ?>"
+                         placeholder="<?= e(number_format((float)$o['rate'], 2, '.', '')) ?>"
+                         title="<?= $has ? 'Set for ' . e($s['size_label']) . ' only. Blank it to go back to the standard.'
+                                         : 'Standard rate. Type to set one for ' . e($s['size_label']) . ' only.' ?>">
+                  <button type="button" class="x" tabindex="-1" title="Back to the standard rate">&times;</button>
+                </td>
+              <?php endforeach; ?>
+              <td></td>
+            </tr>
+          <?php endforeach; endif; ?>
+        <?php endforeach; ?>
+          <tr class="add"><td></td><td colspan="<?= $cols - 1 ?>">
+            <?php if (!$libParts): ?>
+              <span class="mut">Your Part Library is empty. <a href="part_library.php">Define a part first</a> &mdash; a piece you make, with its operations and rates.</span>
+            <?php elseif ($canAdd): ?>
+              <span class="addw">
+                <select class="zf-in" name="add_part_id" id="pmAddSel">
+                  <option value="">Add a part from the library&hellip;</option>
                   <?php foreach ($canAdd as $p): $cid = (int)$p['id']; ?>
-                    <option value="<?= $cid ?>">
-                      <?= e(zp_part_code($cid)) ?> &mdash; <?= e($p['part_name']) ?>
-                      (<?= number_format((float)($costMap[$cid] ?? 0), 2) ?> / <?= e($p['uom']) ?>)</option>
+                    <option value="<?= $cid ?>"><?= e(zp_part_code($cid)) ?> &mdash; <?= e($p['part_name']) ?> (<?= number_format((float)($costMap[$cid] ?? 0), 2) ?> / <?= e($p['uom']) ?>)</option>
                   <?php endforeach; ?>
                 </select>
-              </div>
-              <button class="zp-b pri" name="do" value="add_part">+ Add this part</button>
+                <button class="zf-btn sm pri" name="do" value="add_part" id="pmAddBtn" disabled>+ Add part</button>
+                <a class="zf-btn sm" href="part_library.php">New part in library</a>
+              </span>
             <?php else: ?>
-              <span style="font-size:12.5px;color:#5a6b82">Every part in the library is already on this product.</span>
+              <span class="mut">Every part in the library is already on this product. <a href="part_library.php">Add a new part to the library</a></span>
             <?php endif; ?>
-            <a class="zp-b" href="part_library.php">Add another part to the library</a>
-          </div>
+          </td></tr>
+        </tbody>
+        <?php if ($prodParts || $setOps): ?>
+        <tfoot>
+          <tr><td></td><td colspan="3">Part work / set</td>
+            <?php foreach ($sizes as $s): ?><td class="n sz" data-pw="<?= (int)$s['id'] ?>">0.00</td><?php endforeach; ?><td></td></tr>
+          <tr><td></td><td colspan="3">Set work / set <a href="#pmSet">edit &darr;</a></td>
+            <?php foreach ($sizes as $s): ?><td class="n sz" data-sw="<?= (int)$s['id'] ?>">0.00</td><?php endforeach; ?><td></td></tr>
+          <tr class="tot"><td></td><td colspan="3">Making cost of one set</td>
+            <?php foreach ($sizes as $s): ?><td class="n sz" data-tot="<?= (int)$s['id'] ?>">0.00</td><?php endforeach; ?><td></td></tr>
+        </tfoot>
         <?php endif; ?>
-
-        <?php if ($prodParts): ?>
-        <div style="overflow-x:auto">
-        <table class="zp-t" id="qtyGrid" style="min-width:<?= 380 + count($sizes) * 96 ?>px">
-          <thead><tr>
-            <th style="width:74px">Part ID</th><th style="min-width:150px">Part Name</th>
-            <?php foreach ($sizes as $s): ?>
-              <th class="num" style="width:92px"><?= e($s['size_label']) ?><br>
-                <span style="font-weight:600;text-transform:none;letter-spacing:0">Qty</span></th>
-            <?php endforeach; ?>
-            <th class="num" style="width:96px">Cost / Pc</th>
-            <th style="width:64px">Action</th>
-          </tr></thead>
-          <tbody>
-          <?php foreach ($prodParts as $p): $cid = (int)$p['id']; ?>
-            <tr>
-              <td class="code"><b><?= e(zp_part_code($cid)) ?></b></td>
-              <td>
-                <a href="part_library.php?part=<?= $cid ?>#partform"
-                   style="color:#152033;font-weight:700;text-decoration:none"
-                   title="Open this part to change its operations or rates"><?= e($p['part_name']) ?></a>
-                <?php if (trim((string)$p['style']) !== ''): ?>
-                  <div class="code" style="font-size:10.5px"><?= e($p['style']) ?></div><?php endif; ?>
-              </td>
-              <?php foreach ($sizes as $s): $sid = (int)$s['id']; ?>
-                <td><input class="zin num qz" inputmode="decimal" autocomplete="off"
-                           data-part="<?= $cid ?>" data-size="<?= $sid ?>"
-                           name="qty[<?= $cid ?>][<?= $sid ?>]"
-                           value="<?= e(rtrim(rtrim(number_format(zp_qty_for($qtyMap, $cid, $sid), 2, '.', ''), '0'), '.')) ?>"></td>
-              <?php endforeach; ?>
-              <td class="num"><?= number_format((float)($costMap[$cid] ?? 0), 2) ?></td>
-              <td>
-                <?php /* a plain submit button carrying which part to drop — no
-                         nested form, and nothing to go wrong on Enter */ ?>
-                <button type="submit" class="zp-b sm red" name="do" value="save"
-                        title="Take this part off this product"
-                        onclick="document.querySelector('input[name=remove_part]').value='<?= $cid ?>';
-                                 return confirm('Take <?= e(addslashes($p['part_name'])) ?> off this product?\n\nThe part stays in the library, and any wages already booked are untouched.');">&times;</button>
-              </td>
-            </tr>
-          <?php endforeach; ?>
-          </tbody>
-          <tfoot>
-            <tr style="background:#f7f9fc">
-              <td colspan="2" style="font-weight:800;font-size:12px;color:#152033">Cost of one set</td>
-              <?php foreach ($sizes as $s): ?>
-                <td class="num" style="font-weight:800" data-settot="<?= (int)$s['id'] ?>">0.00</td>
-              <?php endforeach; ?>
-              <td colspan="2"></td>
-            </tr>
-          </tfoot>
-        </table>
-        </div>
-
-        <div class="note pink" style="margin-top:13px">
-          <b>Change quantities per size right here.</b>
-          Double pillow cover = <b>2</b>. Bed sheet = <b>1</b>, which is the default, so you only type what differs.
-          The totals row updates as you type &mdash; that is what one set costs to make at each size.
-        </div>
-        <?php endif; ?>
+      </table>
+      </div>
+      <div class="leg">
+        <span><i></i>blank = the part's standard rate</span>
+        <span><i class="o"></i>green = a rate for that size only</span>
+        <span><kbd>Enter</kbd> down &middot; <kbd>Esc</kbd> back to standard &middot; <kbd>Ctrl</kbd>+<kbd>D</kbd> copy the cell above &middot; paste a block from Excel</span>
+        <span class="r" id="ovrCount"></span>
+      </div>
       <?php endif; ?>
-    </div>
+    </section>
 
-    <!-- ============ 3b. set work — the jobs done to the whole set ============ -->
-    <?php if ($editId): ?>
-    <?php
-    /* WORK ON THE SET, NOT ON ANY ONE PART.
-       Folding, matching, poly bag, hangtag, carton, tape. Until this existed
-       an operation could only belong to a part, so that pay was either never
-       booked or stuck onto some part it was never done to — and Costing
-       priced a set on part work alone, which understated every quote by the
-       whole of its packing labour.
-
-       Same grid shape as the part operations above it, same per-size rate
-       columns, same rule that a blank size cell means "the rate on the left".
-       It is INSIDE the form, so the one Save writes it with everything else. */
-    $setOps   = zp_set_ops($editId, true);
-    $setRates = zp_set_rate_map($editId);
-    $stageAll = zp_stage_all(true);
-    $setCols  = 3 + ($sizes ? count($sizes) : 0) + 1;
-    /* ONE EMPTY ROW WHEN THERE ARE NONE. "+ Add a job" clones the last row so
-       it always carries this product's real size columns — with no rows there
-       is nothing to clone and the first job could never be typed. A blank row
-       saves as nothing, because a blank operation name is skipped. */
-    $setRows  = $setOps ?: [['id' => 0, 'stage_id' => 0, 'operation_name' => '', 'rate' => 0]];
-    ?>
-    <div class="zp-card">
-      <h2>3b &nbsp;Set work &mdash; done to the whole set</h2>
-      <p style="margin:3px 0 13px;font-size:12.5px;color:#8a97ab;line-height:1.5">
-        Folding, matching, bagging, cartoning. It belongs to the <b>product</b>, not to any part &mdash; and
-        unlike a part, it is this product's own, so changing it changes nothing else.
-        An order can take its own copy and change it for one buyer.</p>
-
+    <!-- ============ Set work — done to the whole set ============ -->
+    <section class="pm-sec" id="pmSet">
+      <div class="pm-sh"><h3>Set work</h3>
+        <span class="s2">Folding, matching, bagging, cartoning &mdash; done to the whole set, not to one part. This product's own; an order can take its own copy.</span></div>
       <?php if (!$stageAll): ?>
-        <div class="note info">No stages are set up yet. Add them on
-          <a href="production_stages.php">Production Stages</a> &mdash; "Set Assembly" and "Packing" are the
-          usual two &mdash; and they will appear in the box here.</div>
+        <div class="pm-empty">No stages are set up yet. Add them on <a href="production_stages.php">Production Stages</a>.</div>
       <?php else: ?>
-      <div style="overflow-x:auto">
-      <table class="zp-t" id="setTbl">
+      <div class="pm-tw">
+      <table class="pm-g" id="setTbl">
         <thead><tr>
-          <th style="width:32px">#</th>
-          <th style="min-width:140px">Stage</th>
-          <th style="min-width:190px">Operation</th>
-          <th class="num" style="width:86px">Rate</th>
-          <?php foreach ($sizes as $s): ?><th class="num" style="width:78px"><?= e($s['size_label']) ?></th><?php endforeach; ?>
+          <th style="width:28px">#</th><th style="width:150px">Stage</th><th style="min-width:160px">Operation</th>
+          <th class="n" style="width:84px">Rate</th>
+          <?php foreach ($sizes as $s): ?><th class="n sz"><?= e($s['size_label']) ?></th><?php endforeach; ?>
           <th style="width:32px"></th>
         </tr></thead>
         <tbody>
         <?php foreach ($setRows as $ix => $o): $oid = (int)$o['id']; ?>
           <tr>
-            <td class="code"><?= $ix + 1 ?></td>
+            <td class="mut"><?= $ix + 1 ?></td>
             <td><input type="hidden" name="setop[<?= $ix ?>][id]" value="<?= $oid ?>">
-              <select class="zin" name="setop[<?= $ix ?>][stage_id]">
-                <option value="0">— none —</option>
+              <select class="cell" name="setop[<?= $ix ?>][stage_id]">
+                <option value="0">&mdash; none &mdash;</option>
                 <?php foreach ($stageAll as $st): ?>
                   <option value="<?= (int)$st['id'] ?>" <?= (int)($o['stage_id'] ?? 0) === (int)$st['id'] ? 'selected' : '' ?>><?= e($st['name']) ?></option>
                 <?php endforeach; ?>
               </select></td>
-            <td><input class="zin" name="setop[<?= $ix ?>][operation_name]" maxlength="120"
-                       value="<?= e((string)$o['operation_name']) ?>"></td>
-            <td><input class="zin num setr" name="setop[<?= $ix ?>][rate]" inputmode="decimal"
-                       value="<?= e(rtrim(rtrim(number_format((float)$o['rate'], 2, '.', ''), '0'), '.')) ?>"></td>
-            <?php foreach ($sizes as $s): $sid = (int)$s['id'];
-              $ov = $setRates[$oid][$sid] ?? null; ?>
-              <?php /* BLANK MEANS "THE RATE ON THE LEFT", and it has to stay
-                       blank rather than be filled in with that rate — a filled
-                       cell is an override, and an override that copied the
-                       standard would stop following it the next time the
-                       standard moved. */ ?>
-              <td><input class="zin num sets" name="setrate[<?= $ix ?>][<?= $sid ?>]" inputmode="decimal"
-                         placeholder="—" data-size="<?= $sid ?>"
-                         value="<?= $ov === null ? '' : e(rtrim(rtrim(number_format((float)$ov, 2, '.', ''), '0'), '.')) ?>"></td>
+            <td><input class="cell t" name="setop[<?= $ix ?>][operation_name]" maxlength="120" value="<?= e((string)$o['operation_name']) ?>" placeholder="e.g. Fold &amp; poly bag"></td>
+            <td class="n"><input class="cell r setr" name="setop[<?= $ix ?>][rate]" inputmode="decimal" value="<?= e(pm_n($o['rate'])) ?>"></td>
+            <?php foreach ($sizes as $s): $sid = (int)$s['id']; $ov = $setRates[$oid][$sid] ?? null; ?>
+              <?php /* BLANK MEANS "THE RATE ON THE LEFT" — a filled cell is an
+                       override, and one that copied the standard would stop
+                       following it the next time the standard moved. */ ?>
+              <td class="sz"><input class="cell sets" name="setrate[<?= $ix ?>][<?= $sid ?>]" inputmode="decimal"
+                         placeholder="&mdash;" data-size="<?= $sid ?>" value="<?= $ov === null ? '' : e(pm_n($ov)) ?>"></td>
             <?php endforeach; ?>
-            <td><button type="button" class="zp-b sm red" tabindex="-1" onclick="zpSetDrop(this)">&times;</button></td>
+            <td><button type="button" class="rm" tabindex="-1" title="Remove this job on Save" onclick="zpSetDrop(this)">&times;</button></td>
           </tr>
         <?php endforeach; ?>
         </tbody>
         <tfoot><tr>
-          <td colspan="3" style="text-align:right;font-weight:800">Set work per set</td>
-          <td class="num" id="setTot" style="font-weight:800">0.00</td>
-          <?php foreach ($sizes as $s): ?><td class="num setTotS" data-size="<?= (int)$s['id'] ?>" style="font-weight:800">0.00</td><?php endforeach; ?>
+          <td></td><td colspan="2">Set work per set &nbsp;<button type="button" class="zf-btn sm" onclick="zpSetAdd()">+ Add a job</button></td>
+          <td class="n" id="setTot">0.00</td>
+          <?php foreach ($sizes as $s): ?><td class="n sz setTotS" data-size="<?= (int)$s['id'] ?>">0.00</td><?php endforeach; ?>
           <td></td>
         </tr></tfoot>
       </table>
       </div>
-      <div style="display:flex;gap:9px;margin-top:11px;flex-wrap:wrap;align-items:center">
-        <button type="button" class="zp-b" onclick="zpSetAdd()">+ Add a job</button>
-        <span style="font-size:11.5px;color:#8a97ab">
-          A blank size cell means the rate on the left. Emptying a row's operation name removes it on Save &mdash;
-          it is switched off, never deleted, so wages already booked against it keep their name.</span>
-      </div>
-      <?php if (!$setOps): ?>
-        <div class="note info" style="margin-top:12px">
-          <b>Nothing here yet, and that is why Costing is reading low.</b>
-          A set is being priced on cutting and stitching alone. Add the folding, bagging and cartoning
-          and the workmanship on the costing sheet becomes the real one.
-        </div>
+      <div class="leg"><span>A blank size cell means the rate on the left. A removed job is switched off on Save, never deleted, so wages already booked keep their name.</span></div>
       <?php endif; ?>
-      <?php endif; ?>
-    </div>
+    </section>
+    <?php else: ?>
+    <section class="pm-sec"><div class="pm-empty">Press <b>Create product</b> &mdash; then you can add its parts and set work here.</div></section>
     <?php endif; ?>
 
-    <!-- ============ one Save, for all of it ============ -->
-    <div class="zp-card" style="position:sticky;bottom:0;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <button class="zp-b ok" name="do" value="save" style="padding:9px 20px;font-size:13.5px">Save</button>
-      <a class="zp-b" href="product_master.php">Cancel</a>
-      <span style="font-size:11.5px;color:#8a97ab">
-        One Save writes the name, the sizes and every quantity &mdash; there is nothing else to remember to press.</span>
+    <!-- ============ the one Save, for all of it ============ -->
+    <div class="pm-foot">
+      <button class="zf-btn ok" name="do" value="save"><?= $editId ? 'Save' : 'Create product' ?></button>
+      <a class="zf-btn" href="product_master.php">Cancel</a>
+      <span class="pm-dirty" id="pmDirty">No changes</span>
+      <span class="r"><kbd style="font-size:10px">Ctrl</kbd>+<kbd style="font-size:10px">S</kbd> saves &middot; one Save writes the name, sizes, quantities, size rates and set work</span>
     </div>
   </form>
 
-  <!-- ============ 4. operations and cost — a view, not a form ============ -->
-  <?php if ($editId && $prodParts): ?>
-  <div class="zp-card">
-    <h2>4 &nbsp;Operations &amp; cost</h2>
-    <p style="margin:3px 0 13px;font-size:12.5px;color:#8a97ab;line-height:1.5">
-      Operations and rates belong to the <b>part</b>, not to the product &mdash; that is the point of the library.
-      Change a rate once and every product using that part changes with it.</p>
-
-    <?php
-    /* ONE GRID FOR THE WHOLE PRODUCT, NOT ONE TABLE PER PART.
-       Separate tables cannot share size columns, and the whole point of this
-       view is reading DOWN a size. The parts become grouping rows inside it.
-
-       The Standard column is read-only on purpose: it belongs to the part,
-       which is a shared library row, so changing it here would move every other
-       product using that part. That edit lives in the Part Library, one click
-       away on each group row. The size columns are this product's alone. */
-    $szRates  = zp_op_rate_map($editId);
-    $anySize  = !empty($sizes);
-    $ovrTotal = 0;
-    foreach ($szRates as $bySize) $ovrTotal += count($bySize);
-    $cols = 4 + ($anySize ? count($sizes) : 0);
-    ?>
-    <div class="cardhead">
-      <p class="hint">Blank means the size uses the Standard rate, and nothing is stored.
-        Type over a cell to set a rate for that size alone.</p>
-      <?php if ($anySize): ?>
-        <div class="seg" role="group">
-          <button type="button" id="mA" aria-pressed="true"  onclick="pmRateMode(0)">Same rate for all sizes</button>
-          <button type="button" id="mB" aria-pressed="false" onclick="pmRateMode(1)">Rates by size</button>
-        </div>
-      <?php endif; ?>
-    </div>
-
-    <div class="gridwrap">
-    <table class="zp-t" id="opgrid">
-      <thead><tr>
-        <th style="width:32px">#</th><th style="width:118px">Stage</th><th>Operation</th>
-        <th class="num stdcol" style="width:100px">Standard</th>
-        <?php if ($anySize): foreach ($sizes as $s): ?>
-          <th class="num szcol" style="width:108px"><?= e($s['size_label']) ?></th>
-        <?php endforeach; endif; ?>
-      </tr></thead>
-      <tbody>
-      <?php $n = 0; foreach ($prodParts as $p): $cid = (int)$p['id']; $pops = zp_part_ops($cid, true); ?>
-        <tr class="grp"><td colspan="<?= $cols ?>">
-          <span class="code"><?= e(zp_part_code($cid)) ?></span> &nbsp;<?= e($p['part_name']) ?>
-          <a href="part_library.php?part=<?= $cid ?>#partform">Edit in Part Library &rarr;</a>
-          <?php if ($anySize): ?>
-            <span class="grpqty"><?php
-              $qm = zp_qty_map($editId);
-              $bits = [];
-              foreach ($sizes as $s) $bits[] = e($s['size_label']) . ' &times;'
-                  . rtrim(rtrim(number_format(zp_qty_for($qm, $cid, (int)$s['id']), 2), '0'), '.');
-              echo implode(' &nbsp; ', $bits);
-            ?></span>
-          <?php endif; ?>
-        </td></tr>
-        <?php if (!$pops): ?>
-          <tr><td colspan="<?= $cols ?>" class="nops">No operations yet, so this part costs nothing and
-            cannot be produced. Open it in the Part Library and add its Cutting line.</td></tr>
-        <?php else: foreach ($pops as $o): $oid = (int)$o['id']; $n++; ?>
-          <tr>
-            <td class="code"><?= $n ?></td>
-            <td><?= e($o['stage']) ?></td>
-            <td><?= e($o['operation_name']) ?></td>
-            <td class="num stdcol"><?= number_format((float)$o['rate'], 2) ?></td>
-            <?php if ($anySize): foreach ($sizes as $s):
-              $sid = (int)$s['id'];
-              $has = isset($szRates[$oid][$sid]);
-              ?>
-              <td class="szcol szcell<?= $has ? ' ovr' : '' ?>">
-                <input class="ratein" inputmode="decimal" autocomplete="off"
-                       name="oprate[<?= $oid ?>][<?= $sid ?>]"
-                       data-std="<?= e(number_format((float)$o['rate'], 2, '.', '')) ?>"
-                       value="<?= $has ? e(number_format((float)$szRates[$oid][$sid], 2, '.', '')) : '' ?>"
-                       placeholder="<?= e(number_format((float)$o['rate'], 2, '.', '')) ?>"
-                       title="<?= $has
-                         ? 'Set for ' . e($s['size_label']) . ' only. Blank it to go back to the standard.'
-                         : 'Using the standard rate. Type to set one for ' . e($s['size_label']) . ' only.' ?>"
-                       oninput="pmRateType(this)" onkeydown="pmRateKey(event,this)">
-                <button type="button" class="x" tabindex="-1" title="Back to the standard rate"
-                        onclick="pmRateClear(this)">&times;</button>
-              </td>
-            <?php endforeach; endif; ?>
-          </tr>
-        <?php endforeach; endif; ?>
-      <?php endforeach; ?>
-      </tbody>
-      <?php if ($anySize): ?>
-      <tfoot><tr class="setcost">
-        <td colspan="4">What one set costs to make</td>
-        <?php foreach ($sizes as $s): ?>
-          <td class="num szcol" data-setcost="<?= (int)$s['id'] ?>"><?= number_format(zp_set_cost($editId, (int)$s['id']), 2) ?></td>
-        <?php endforeach; ?>
-      </tr></tfoot>
-      <?php endif; ?>
-    </table>
-    </div>
-
-    <?php if ($anySize): ?>
-      <div class="leg">
-        <span><i class="sw i"></i>grey = using the standard rate</span>
-        <span><i class="sw o"></i>green = set for that size only</span>
-        <span>Blank a cell, or press <kbd>Esc</kbd>, to go back to the standard</span>
-        <span><kbd>Ctrl</kbd>+<kbd>D</kbd> copies the cell above &middot; paste a block from Excel</span>
-        <span class="ovrcount" id="ovrCount"><?= $ovrTotal ?> size rate<?= $ovrTotal === 1 ? '' : 's' ?> set</span>
-      </div>
-      <?php /* A SET COST YOU CANNOT ADD UP FROM THE RATES ON SCREEN IS A LIE BY
-               OMISSION. In the "same rate for all sizes" view every visible rate
-               is the standard one, so a size whose total includes an override has
-               no explanation anywhere unless the page says so. */ ?>
-      <div class="note warn hidesz" id="ovrHint" <?= $ovrTotal ? '' : 'hidden' ?> style="margin-top:9px">
-        <b><?= $ovrTotal ?></b> size rate<?= $ovrTotal === 1 ? ' is' : 's are' ?> included in the set costs above.
-        <a href="#" onclick="pmRateMode(1);return false">Show them</a>.
-      </div>
-    <?php endif; ?>
-
-    <?php if ($sizes): ?>
-      <div style="margin-top:14px">
-        <b style="font-size:12.5px;color:#152033">What one set costs to make</b>
-        <?php foreach ($sizes as $s): $sid = (int)$s['id']; ?>
-          <div class="totline">
-            <span><b style="font-size:13px"><?= e($s['size_label']) ?></b></span>
-            <span><b><?= number_format(zp_set_cost($editId, $sid), 2) ?></b></span>
-          </div>
-        <?php endforeach; ?>
-        <div class="note info" style="margin-top:12px">
-          This is the <b>making</b> cost &mdash; the wages to cut and stitch it. Not a selling price, and it
-          carries no finishing cost and no mark-up.
-        </div>
-      </div>
-    <?php endif; ?>
-  </div>
+  <?php if ($editId): ?>
+    <form method="post" id="pmDup" hidden><?= csrf_field() ?><input type="hidden" name="action" value="duplicate_product"><input type="hidden" name="product_id" value="<?= (int)$editId ?>"></form>
+    <form method="post" id="pmDel" hidden><?= csrf_field() ?><input type="hidden" name="action" value="delete_product"><input type="hidden" name="product_id" value="<?= (int)$editId ?>"></form>
   <?php endif; ?>
 
-<?php endif; ?>
-</div>
-
 <script>
-/* ---- sizes: add a row, and let Enter do it ---- */
-/* ---- set work: add a row, drop a row, keep the totals honest ----
-   The row is cloned from the last one rather than built from a template
-   string, so it carries whatever size columns this product actually has and
-   cannot drift out of step with the header. */
+/* ==================================================================
+   SIZES AS CHIPS
+   A saved size taken off is STRUCK THROUGH, not removed: its hidden input is
+   disabled so it is not sent, and clicking it again brings it back. Nothing
+   leaves the database until Save — and the Save message then says what the
+   removal took with it.
+   ================================================================== */
 (function(){
-  var tbl = document.getElementById('setTbl');
-  if(!tbl) return;
-  var body = tbl.tBodies[0];
-
-  function num(v){ v = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(v) ? 0 : v; }
-
-  /* The names carry a row index. After adding or dropping a row those
-     indexes have to be closed up, or PHP receives setop[0], setop[2] and
-     the per-size rates — which are matched back BY POSITION — land on the
-     wrong job. */
-  function renumber(){
-    [].forEach.call(body.rows, function(tr, i){
-      var c = tr.cells[0]; if(c) c.textContent = i + 1;
-      [].forEach.call(tr.querySelectorAll('[name]'), function(el){
-        el.name = el.name
-          .replace(/^setop\[\d+\]/, 'setop[' + i + ']')
-          .replace(/^setrate\[\d+\]/, 'setrate[' + i + ']');
-      });
-    });
+  var box = document.getElementById('sizeChips'), inp = document.getElementById('sizeIn');
+  if (!box || !inp) return;
+  var note = document.getElementById('sizeNote');
+  function labels(){ return [].map.call(box.querySelectorAll('.chip'), function(c){ return c.querySelector('.t').textContent.trim().toLowerCase(); }); }
+  function say(){
+    var gone = box.querySelectorAll('.chip.gone').length, nw = box.querySelectorAll('.chip.new').length, t = [];
+    if (nw) t.push(nw + ' new size' + (nw === 1 ? '' : 's') + ' — the grid gets ' + (nw === 1 ? 'its column' : 'their columns') + ' after Save.');
+    if (gone) t.push(gone + ' size' + (gone === 1 ? '' : 's') + ' will be removed on Save, with ' + (gone === 1 ? 'its' : 'their') + ' quantities and size rates. An order line on a removed size cannot be booked until a size is linked again. Click a struck size to keep it.');
+    note.textContent = t.join(' '); note.hidden = !t.length;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
   }
-
-  function tot(){
-    var std = 0, per = {};
-    [].forEach.call(body.rows, function(tr){
-      var r = num((tr.querySelector('.setr') || {}).value);
-      std += r;
-      [].forEach.call(tr.querySelectorAll('.sets'), function(c){
-        var sid = c.dataset.size, v = String(c.value || '').trim();
-        /* A BLANK CELL COSTS THE STANDARD, not nothing. That is what the
-           blank means everywhere else on this page, and a total that read it
-           as zero would quietly under-price every size nobody overrode. */
-        per[sid] = (per[sid] || 0) + (v === '' ? r : num(v));
-      });
-    });
-    var t = document.getElementById('setTot');
-    if(t) t.textContent = std.toFixed(2);
-    [].forEach.call(document.querySelectorAll('.setTotS'), function(td){
-      td.textContent = (per[td.dataset.size] || 0).toFixed(2);
-    });
-  }
-
-  window.zpSetAdd = function(){
-    var last = body.rows[body.rows.length - 1], tr;
-    if(last){
-      tr = last.cloneNode(true);
-      [].forEach.call(tr.querySelectorAll('input'), function(el){
-        /* The id must NOT come with the clone, or saving would overwrite the
-           row it was copied from instead of adding a new one. */
-        el.value = '';
-      });
-      var sel = tr.querySelector('select'); if(sel) sel.selectedIndex = 0;
-    } else {
-      return;   // nothing to clone from; the page renders at least one row when there are any
-    }
-    body.appendChild(tr);
-    renumber(); tot();
-    var f = tr.querySelector('input[name*="[operation_name]"]'); if(f) f.focus();
+  window.zpAddSize = function(v){
+    v = String(v == null ? '' : v).trim().slice(0, 60);
+    if (!v) return null;
+    if (labels().indexOf(v.toLowerCase()) >= 0) { inp.classList.add('bad'); setTimeout(function(){ inp.classList.remove('bad'); }, 900); return null; }
+    var c = document.createElement('span');
+    c.className = 'chip new';
+    c.innerHTML = '<input type="hidden" name="size_label[]"><span class="t"></span><small>new</small><button type="button" title="Remove">&times;</button>';
+    c.querySelector('input').value = v; c.querySelector('.t').textContent = v;
+    box.insertBefore(c, inp);
+    say();
+    return c;
   };
-
-  window.zpSetDrop = function(btn){
-    var tr = btn.closest('tr'); if(!tr) return;
-    /* THE ROW IS EMPTIED, NOT REMOVED, when it is one the database knows —
-       an empty operation name is what tells the save to switch it off, and a
-       row simply deleted from the page would never be sent at all and the
-       save would switch it off anyway. Emptying it keeps the two honest and
-       lets the operator see what they just did before pressing Save. */
-    var id = tr.querySelector('input[name*="[id]"]');
-    if(id && +id.value > 0){
-      [].forEach.call(tr.querySelectorAll('input'), function(el){
-        if(el.name.indexOf('[id]') < 0) el.value = '';
-      });
-      tr.style.opacity = '.45';
-      tr.querySelector('input[name*="[operation_name]"]').placeholder = 'removed on Save';
-    } else {
-      tr.remove();
+  box.addEventListener('click', function(e){
+    var b = e.target.closest('.chip button'), c = e.target.closest('.chip');
+    if (!c) return;
+    if (c.classList.contains('gone')) { c.classList.remove('gone'); c.querySelector('input').disabled = false; say(); return; }
+    if (!b) return;
+    if (c.dataset.saved) { c.classList.add('gone'); c.querySelector('input').disabled = true; c.title = 'Click to keep this size'; }
+    else c.remove();
+    say();
+  });
+  /* ENTER ADDS THE SIZE — it must NOT submit the form, or typing four sizes
+     would save and reload after the first. A comma does the same, and a pasted
+     list is split. Backspace in an empty box takes off the last NEW chip. */
+  inp.addEventListener('keydown', function(e){
+    if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab' && inp.value.trim()) {
+      e.preventDefault();
+      if (zpAddSize(inp.value)) inp.value = '';
+    } else if (e.key === 'Backspace' && !inp.value) {
+      var n = box.querySelectorAll('.chip.new'); if (n.length) { n[n.length - 1].remove(); say(); }
     }
-    renumber(); tot();
-  };
-
-  tbl.addEventListener('input', tot);
-  tot();
-})();
-
-window.zpAddSize = function(){
-  var wrap = document.getElementById('sizeRows');
-  if (!wrap) return;
-  var d = document.createElement('div');
-  d.className = 'sizerow';
-  d.innerHTML = '<input class="zin" name="size_label[]" maxlength="60" autocomplete="off" placeholder="Single">'
-              + '<button type="button" class="zp-b sm red" onclick="this.closest(\'.sizerow\').remove()">&times;</button>';
-  wrap.appendChild(d);
-  d.querySelector('input').focus();
-  return d;
-};
-
-/* ENTER IN A SIZE BOX ADDS THE NEXT SIZE — it must NOT submit the form.
-   The whole page is one form now, so the browser's default (submit on Enter)
-   would save and reload halfway through typing a list of sizes. Typing four
-   sizes should be four words and four Enters. */
-(function(){
-  var wrap = document.getElementById('sizeRows');
-  if (!wrap) return;
-  wrap.addEventListener('keydown', function(ev){
-    if (ev.key !== 'Enter' || ev.target.name !== 'size_label[]') return;
-    ev.preventDefault();
-    var row = ev.target.closest('.sizerow'), next = row && row.nextElementSibling;
-    if (next && next.querySelector('input')) { next.querySelector('input').focus(); next.querySelector('input').select(); }
-    else window.zpAddSize();
   });
-})();
-
-/* ---- Sizes & Parts: the set cost under each size column, live ----
-   The number you are typing is the number you are asking about, so it has to
-   move as you type. Recomputed from the grid itself, never from a stored
-   total, so it cannot drift out of step with what is on screen. ---- */
-(function(){
-  var grid = document.getElementById('qtyGrid');
-  if (!grid) return;
-  var COST = <?= json_encode((object)array_map('floatval', $costMap)) ?>;
-
-  function recalc(){
-    var totals = {};
-    [].slice.call(grid.querySelectorAll('.qz')).forEach(function(inp){
-      var part = inp.getAttribute('data-part'), size = inp.getAttribute('data-size');
-      var q = parseFloat(String(inp.value).replace(/,/g, ''));
-      if (isNaN(q)) q = 0;
-      var c = parseFloat(COST[part]);
-      if (isNaN(c)) c = 0;
-      totals[size] = (totals[size] || 0) + q * c;
-    });
-    [].slice.call(grid.querySelectorAll('[data-settot]')).forEach(function(td){
-      var s = td.getAttribute('data-settot');
-      td.textContent = (totals[s] || 0).toFixed(2);
-    });
-  }
-  grid.addEventListener('input', function(ev){
-    if (ev.target.classList && ev.target.classList.contains('qz')) recalc();
+  inp.addEventListener('paste', function(e){
+    var t = (e.clipboardData || window.clipboardData).getData('text') || '';
+    if (!/[,\t\n;]/.test(t)) return;
+    e.preventDefault();
+    t.split(/[,\t\n;]+/).forEach(function(v){ zpAddSize(v); });
   });
-
-  /* arrow keys move around the grid like a spreadsheet, because that is what
-     it looks like and therefore what the hands expect */
-  grid.addEventListener('keydown', function(ev){
-    var el = ev.target;
-    if (!el.classList || !el.classList.contains('qz')) return;
-    var cell = el.closest('td'), row = el.closest('tr');
-    var idx = [].indexOf.call(row.children, cell);
-    var go = null;
-    if (ev.key === 'ArrowDown' || ev.key === 'Enter') go = row.nextElementSibling;
-    else if (ev.key === 'ArrowUp') go = row.previousElementSibling;
-    else return;
-    if (!go || !go.children[idx]) return;
-    var t = go.children[idx].querySelector('.qz');
-    if (!t) return;
-    ev.preventDefault();
-    t.focus(); t.select();
-  });
-
-  /* exposed so the draft restore can refresh the totals after it fills the
-     grid back in — otherwise the boxes would show the restored numbers while
-     the "cost of one set" row underneath still showed the old ones, which is
-     exactly the kind of quiet disagreement this page is meant not to have */
-  window.zpRecalcQty = recalc;
-
-  recalc();
+  /* a size typed but not yet Entered is still added on Save */
+  var form = document.getElementById('pmForm');
+  if (form) form.addEventListener('submit', function(){ if (inp.value.trim()) { zpAddSize(inp.value); inp.value = ''; } });
 })();
 
 /* ==================================================================
-   THE DRAFT SAFETY NET
-   ==================================================================
-
-   WHAT THIS DOES NOT DO, because it matters more than what it does:
-
-     * It NEVER sends anything to the server. Not once, not in the
-       background. The only thing that writes to your database is you
-       pressing Save, exactly as before.
-     * It NEVER touches a proforma, an invoice, a shipment or a costing.
-       This page writes to products, product_sizes, zp_product_parts and
-       zp_part_qty and to nothing else at all — the draft cannot reach
-       further than the page itself can.
-     * It NEVER restores anything on its own. It offers, and you press
-       "Put it back". Silently refilling a form you did not ask it to
-       refill is how you end up saving last week's numbers.
-
-   WHAT IT DOES: keeps a copy of what is typed in THIS browser, under a
-   key that carries the product id so two products cannot mix. If a save
-   is refused, or the session drops, or the tab is closed, the copy is
-   still there and is offered back.
-
-   Every single storage call is wrapped. A private window, blocked site
-   data or a full quota all make localStorage throw, and none of those is
-   a reason for the page to stop working.
+   PARTS & RATES — one grid, live totals
+   Footer and header tiles are recomputed from what is on screen, never from a
+   stored total: part work = Σ over parts of qty-per-set × Σ of its operation
+   rates at that size (a blank size cell is the standard rate), plus set work.
+   The same arithmetic zp_set_cost() and the list page do on the server.
    ================================================================== */
 (function(){
-  var form = document.getElementById('pmForm');
-  var bar  = document.getElementById('pmDraftBar');
-  if (!form || !bar) return;
+  var grid = document.getElementById('pmGrid');
+  var setT = document.getElementById('setTbl');
+  function num(v){ v = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(v) ? 0 : v; }
+  var SIZES = <?= json_encode(array_map(fn($s) => (int)$s['id'], $sizes ?? [])) ?>;
 
-  var PRODUCT_ID = <?= (int)$editId ?>;
-  var KEY = 'zp_pm_draft_' + PRODUCT_ID;
-
-  /* A SUCCESSFUL SAVE CLEARS THE COPY. The server redirects with a success
-     message after every write, so a message on screen means the last action
-     reached the database and the copy has done its job. A REFUSED save
-     re-renders with an error and no redirect — the copy is deliberately left
-     alone, which is the whole point of having it. */
-  var SAVED = <?= $msg !== '' ? 'true' : 'false' ?>;
-
-  function read(){
-    var d = { name:'', category:'', unit:'', cap:'', desc:'', active:false, sizes:[], qty:{} };
-    var f = function(n){ var e = form.querySelector('[name="' + n + '"]'); return e ? e.value : ''; };
-    d.name     = f('name');
-    d.category = f('category');
-    d.unit     = f('default_unit');
-    d.cap      = f('fcl_40hc_qty');
-    d.desc     = f('description');
-    var a = form.querySelector('[name="is_active"]');
-    d.active = !!(a && a.checked);
-    [].slice.call(form.querySelectorAll('[name="size_label[]"]')).forEach(function(i){ d.sizes.push(i.value); });
-    [].slice.call(form.querySelectorAll('.qz')).forEach(function(i){ d.qty[i.name] = i.value; });
-    return d;
+  function setWork(){
+    var std = 0, per = {};
+    if (!setT) return { std: 0, per: per };
+    [].forEach.call(setT.tBodies[0].rows, function(tr){
+      var r = num((tr.querySelector('.setr') || {}).value);
+      std += r;
+      [].forEach.call(tr.querySelectorAll('.sets'), function(c){
+        var v = String(c.value || '').trim();
+        /* A BLANK CELL COSTS THE STANDARD, not nothing */
+        per[c.dataset.size] = (per[c.dataset.size] || 0) + (v === '' ? r : num(v));
+      });
+    });
+    var t = document.getElementById('setTot'); if (t) t.textContent = std.toFixed(2);
+    [].forEach.call(document.querySelectorAll('.setTotS'), function(td){ td.textContent = (per[td.dataset.size] || 0).toFixed(2); });
+    return { std: std, per: per };
   }
 
-  var SERVER = JSON.stringify(read());     // what the page arrived showing
+  function partWork(){
+    var tot = {};
+    SIZES.forEach(function(s){ tot[s] = 0; });
+    if (!grid) return tot;
+    var qty = {};
+    [].forEach.call(grid.querySelectorAll('input.qz'), function(q){ (qty[q.dataset.part] = qty[q.dataset.part] || {})[q.dataset.size] = num(q.value); });
+    [].forEach.call(grid.querySelectorAll('tr.op'), function(tr){
+      var part = tr.dataset.part;
+      [].forEach.call(tr.querySelectorAll('input.ratein'), function(el, i){
+        var sid = SIZES[i], v = el.value.trim();
+        var rate = v !== '' && !isNaN(parseFloat(v)) ? parseFloat(v) : num(el.dataset.std);
+        tot[sid] += rate * ((qty[part] || {})[sid] || 0);
+      });
+    });
+    return tot;
+  }
 
+  window.pmTotals = function(){
+    var sw = setWork(), pw = partWork();
+    SIZES.forEach(function(sid){
+      var p = Math.round(pw[sid] * 100) / 100, s = Math.round((sw.per[sid] || 0) * 100) / 100, t = p + s;
+      var a = document.querySelector('[data-pw="' + sid + '"]'); if (a) a.textContent = p.toFixed(2);
+      var b = document.querySelector('[data-sw="' + sid + '"]'); if (b) b.textContent = s.toFixed(2);
+      var c = document.querySelector('[data-tot="' + sid + '"]'); if (c) c.textContent = t.toFixed(2);
+      var tile = document.querySelector('[data-tile="' + sid + '"]');
+      if (tile) { tile.querySelector('b').textContent = t.toFixed(2); tile.querySelector('small').textContent = 'parts ' + p.toFixed(2) + ' · set work ' + s.toFixed(2); }
+    });
+    if (grid) {
+      var n = grid.querySelectorAll('td.szcell.ovr').length, oc = document.getElementById('ovrCount');
+      if (oc) oc.textContent = n + ' size rate' + (n === 1 ? '' : 's') + ' set';
+    }
+  };
+
+  if (grid) {
+    /* ---- ▸ opens a part's operations ---- */
+    function openPart(tr, on){
+      var b = tr.querySelector('.tgb'); b.setAttribute('aria-expanded', on ? 'true' : 'false');
+      var n = tr.nextElementSibling;
+      while (n && n.classList.contains('op')) { n.hidden = !on; n = n.nextElementSibling; }
+    }
+    var KEY = 'zp_pm_open_<?= (int)$editId ?>', opened = {};
+    try { opened = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { opened = {}; }
+    [].forEach.call(grid.querySelectorAll('tr.pr'), function(tr){
+      /* a part with a size rate set always opens, so a number in the footer is never unexplained */
+      var hasOvr = false, n = tr.nextElementSibling;
+      while (n && n.classList.contains('op')) { if (n.querySelector('td.szcell.ovr')) hasOvr = true; n = n.nextElementSibling; }
+      openPart(tr, hasOvr || !!opened[tr.dataset.part]);
+    });
+    grid.addEventListener('click', function(e){
+      var b = e.target.closest('.tgb');
+      if (b) {
+        var tr = b.closest('tr'), on = b.getAttribute('aria-expanded') !== 'true';
+        openPart(tr, on); opened[tr.dataset.part] = on ? 1 : 0;
+        try { localStorage.setItem(KEY, JSON.stringify(opened)); } catch (e2) {}
+        return;
+      }
+      var x = e.target.closest('td.szcell .x');
+      if (x) { var el = x.closest('td').querySelector('input'); el.value = ''; mark(el); pmTotals(); el.focus(); }
+    });
+    var all = document.getElementById('pmOpenAll');
+    if (all) all.addEventListener('click', function(){
+      var rows = grid.querySelectorAll('tr.pr'), any = [].some.call(rows, function(r){ return r.querySelector('.tgb').getAttribute('aria-expanded') !== 'true'; });
+      [].forEach.call(rows, function(r){ openPart(r, any); opened[r.dataset.part] = any ? 1 : 0; });
+      all.textContent = any ? 'Close all' : 'Open all';
+      try { localStorage.setItem(KEY, JSON.stringify(opened)); } catch (e2) {}
+    });
+
+    /* ---- the add-part button only lights up once a part is chosen ---- */
+    var sel = document.getElementById('pmAddSel'), ab = document.getElementById('pmAddBtn');
+    if (sel && ab) sel.addEventListener('change', function(){ ab.disabled = !sel.value; });
+
+    /* ---- a size rate that differs from the standard is marked green ----
+       Typing the standard back in is NOT an override — matching the server,
+       so the mark never promises something the save will not store. */
+    function mark(el){
+      var td = el.closest('td'), std = parseFloat(el.dataset.std), v = el.value.trim(), f = parseFloat(v);
+      td.classList.toggle('ovr', v !== '' && !isNaN(f) && Math.abs(f - std) >= 0.0001);
+    }
+    grid.addEventListener('input', function(e){
+      var el = e.target;
+      if (el.classList.contains('ratein') || el.classList.contains('qz')) {
+        var v = el.value.replace(/[^0-9.]/g, ''); if (el.value !== v) el.value = v;
+        if (el.classList.contains('ratein')) mark(el);
+        pmTotals();
+      }
+    });
+
+    /* ---- spreadsheet keys ----
+       Enter / ↓ go down the same column to the next VISIBLE box of the same
+       kind (quantity to quantity, rate to rate); Esc puts a rate back to the
+       standard; Ctrl+D copies the cell above and moves on, so holding it fills
+       a column. BACKSPACE IS DELIBERATELY NOT BOUND — everywhere it rubs out
+       one character, and stealing it would surprise everyone. */
+    function column(el){
+      var cls = el.classList.contains('qz') ? 'qz' : 'ratein', idx = [].indexOf.call(el.closest('tr').children, el.closest('td'));
+      return [].filter.call(grid.querySelectorAll('input.' + cls), function(x){
+        return !x.closest('tr').hidden && [].indexOf.call(x.closest('tr').children, x.closest('td')) === idx; });
+    }
+    grid.addEventListener('keydown', function(e){
+      var el = e.target;
+      if (!el.classList || !(el.classList.contains('qz') || el.classList.contains('ratein'))) return;
+      var col = column(el), i = col.indexOf(el);
+      function go(t){ if (t) { e.preventDefault(); t.focus(); t.select(); } }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        if (i > 0) { el.value = col[i - 1].value; if (el.classList.contains('ratein')) mark(el); pmTotals(); go(col[i + 1]); }
+        return;
+      }
+      if (e.key === 'Escape' && el.classList.contains('ratein')) { e.preventDefault(); el.value = ''; mark(el); pmTotals(); return; }
+      if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); go(col[i + 1]); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); go(col[i - 1]); return; }
+      var row = [].slice.call(el.closest('tr').querySelectorAll('input.cell'));
+      var j = row.indexOf(el);
+      if (e.key === 'ArrowLeft'  && el.selectionStart === 0) go(row[j - 1]);
+      if (e.key === 'ArrowRight' && el.selectionStart === el.value.length) go(row[j + 1]);
+    });
+
+    /* ---- PASTE A BLOCK STRAIGHT OUT OF EXCEL ----
+       Tabs across, newlines down, starting at the cell you are in. Rows are the
+       visible boxes of the same kind; anything past the last one is dropped
+       rather than landing on another operation. */
+    grid.addEventListener('paste', function(e){
+      var el = e.target;
+      if (!el.classList || !(el.classList.contains('ratein') || el.classList.contains('qz'))) return;
+      var txt = (e.clipboardData || window.clipboardData).getData('text') || '';
+      if (txt.indexOf('\t') < 0 && txt.indexOf('\n') < 0) return;
+      e.preventDefault();
+      var cls = el.classList.contains('qz') ? 'qz' : 'ratein';
+      var rows = [], seen = [];
+      [].forEach.call(grid.querySelectorAll('input.' + cls), function(x){
+        var tr = x.closest('tr'); if (tr.hidden) return;
+        var k = seen.indexOf(tr); if (k < 0) { seen.push(tr); rows.push([]); k = rows.length - 1; }
+        rows[k].push(x);
+      });
+      var r0 = seen.indexOf(el.closest('tr')), c0 = rows[r0].indexOf(el);
+      txt.replace(/\r/g, '').replace(/\n+$/, '').split('\n').forEach(function(line, dr){
+        line.split('\t').forEach(function(cell, dc){
+          var t = rows[r0 + dr] && rows[r0 + dr][c0 + dc];
+          if (!t) return;
+          t.value = String(cell).trim().replace(/[^0-9.]/g, '');
+          if (cls === 'ratein') mark(t);
+        });
+      });
+      pmTotals();
+    });
+  }
+
+  /* ---- set work: add a row, drop a row ----
+     The row is cloned from the last one, so it carries whatever size columns
+     this product actually has. The names carry a row index which is closed up
+     after every add or drop — the per-size rates are matched back BY POSITION
+     on the server, so a gap would land them on the wrong job. */
+  if (setT) {
+    var body = setT.tBodies[0];
+    function renumber(){
+      [].forEach.call(body.rows, function(tr, i){
+        var c = tr.cells[0]; if (c) c.textContent = i + 1;
+        [].forEach.call(tr.querySelectorAll('[name]'), function(el){
+          el.name = el.name.replace(/^setop\[\d+\]/, 'setop[' + i + ']').replace(/^setrate\[\d+\]/, 'setrate[' + i + ']');
+        });
+      });
+    }
+    window.zpSetAdd = function(){
+      var last = body.rows[body.rows.length - 1]; if (!last) return;
+      var tr = last.cloneNode(true);
+      /* the id must NOT come with the clone, or saving would overwrite the row it was copied from */
+      [].forEach.call(tr.querySelectorAll('input'), function(el){ el.value = ''; el.placeholder = el.classList.contains('sets') ? '—' : el.placeholder; });
+      var s = tr.querySelector('select'); if (s) s.selectedIndex = 0;
+      tr.classList.remove('gone');
+      body.appendChild(tr); renumber(); pmTotals();
+      var f = tr.querySelector('input[name*="[operation_name]"]'); if (f) { f.placeholder = 'e.g. Fold & poly bag'; f.focus(); }
+      body.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    window.zpSetDrop = function(btn){
+      var tr = btn.closest('tr'); if (!tr) return;
+      /* A SAVED ROW IS EMPTIED, NOT REMOVED — an empty name is what tells the
+         save to switch it off, and you can see what you did before Save. */
+      var id = tr.querySelector('input[name*="[id]"]');
+      if (id && +id.value > 0) {
+        [].forEach.call(tr.querySelectorAll('input'), function(el){ if (el.name.indexOf('[id]') < 0) el.value = ''; });
+        tr.classList.add('gone');
+        tr.querySelector('input[name*="[operation_name]"]').placeholder = 'removed on Save';
+      } else if (body.rows.length > 1) tr.remove();
+      else [].forEach.call(tr.querySelectorAll('input'), function(el){ if (el.name.indexOf('[id]') < 0) el.value = ''; });
+      renumber(); pmTotals();
+      body.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    setT.addEventListener('input', pmTotals);
+  }
+  pmTotals();
+})();
+
+/* ==================================================================
+   UNSAVED CHANGES — the footer says so, leaving warns, Ctrl+S saves.
+   And THE DRAFT SAFETY NET: a copy of what is typed is kept in THIS browser
+   only, under a key carrying the product id. It NEVER sends anything to the
+   server and NEVER restores by itself — it offers, and you press Put it back.
+   Every storage call is wrapped: a private window or blocked site data makes
+   localStorage throw, and that is no reason for the page to stop working.
+   ================================================================== */
+(function(){
+  var form = document.getElementById('pmForm'), bar = document.getElementById('pmDraftBar');
+  if (!form) return;
+  var KEY = 'zp_pm_draft_<?= (int)$editId ?>';
+  var SAVED = <?= $msg !== '' ? 'true' : 'false' ?>;
+  var dirty = document.getElementById('pmDirty'), leaving = false;
+
+  function read(){
+    var d = { sizes: [], f: {} };
+    [].forEach.call(document.querySelectorAll('#sizeChips .chip'), function(c){
+      if (!c.classList.contains('gone')) d.sizes.push(c.querySelector('.t').textContent);
+    });
+    [].forEach.call(form.elements, function(el){
+      if (!el.name || el.type === 'hidden' || el.type === 'submit' || el.type === 'button' || el.name === 'size_label[]' || el.id === 'sizeIn' || el.name === 'add_part_id') return;
+      d.f[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '') : el.value;
+    });
+    return d;
+  }
+  var SERVER = JSON.stringify(read());
   function store(v){ try { localStorage.setItem(KEY, v); } catch (e) {} }
   function fetchDraft(){ try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function drop(){ try { localStorage.removeItem(KEY); } catch (e) {} }
-
   if (SAVED) drop();
 
-  /* written as you type, at most once a second — a keystroke does not need
-     its own write, and a busy grid should not thrash the disk */
+  function isDirty(){ return JSON.stringify(read()) !== SERVER; }
   var pending = null;
-  function schedule(){
+  function changed(){
+    var d = isDirty();
+    if (dirty) { dirty.textContent = d ? '● Unsaved changes' : 'No changes'; dirty.classList.toggle('on', d); }
     if (pending) return;
     pending = setTimeout(function(){
       pending = null;
-      try { store(JSON.stringify({ at: Date.now(), d: read() })); } catch (e) {}
+      if (isDirty()) store(JSON.stringify({ at: Date.now(), d: read() })); else drop();
     }, 800);
   }
-  form.addEventListener('input', schedule);
-  form.addEventListener('change', schedule);
+  document.addEventListener('input', function(e){ if (form.contains(e.target)) changed(); });
+  document.addEventListener('change', function(e){ if (form.contains(e.target)) changed(); });
 
-  function apply(d){
-    var set = function(n, v){ var e = form.querySelector('[name="' + n + '"]'); if (e) e.value = v; };
-    set('name', d.name); set('category', d.category); set('default_unit', d.unit);
-    set('fcl_40hc_qty', d.cap); set('description', d.desc);
-    var a = form.querySelector('[name="is_active"]'); if (a) a.checked = !!d.active;
-
-    /* sizes are a variable-length list, so rebuild it to match the draft */
-    var wrap = document.getElementById('sizeRows');
-    if (wrap && Object.prototype.toString.call(d.sizes) === '[object Array]') {
-      wrap.innerHTML = '';
-      d.sizes.forEach(function(v){
-        var row = window.zpAddSize();
-        if (row) row.querySelector('input').value = v;
-      });
-    }
-    /* QUANTITIES ARE MATCHED BY NAME, and a box that no longer exists is
-       skipped rather than created. The draft describes the page as it was;
-       parts may have been added or removed since, and inventing an input for
-       one that is gone would post a quantity against nothing. */
-    Object.keys(d.qty || {}).forEach(function(n){
-      var e = form.querySelector('[name="' + n.replace(/"/g, '\\"') + '"]');
-      if (e) e.value = d.qty[n];
-    });
-    if (window.zpRecalcQty) window.zpRecalcQty();
-    var first = form.querySelector('[name="name"]');
-    if (first) first.focus();
-  }
-
-  /* ---- offer it, if there is anything worth offering ---- */
-  (function(){
-    var raw = fetchDraft();
-    if (!raw) return;
-    var saved;
-    try { saved = JSON.parse(raw); } catch (e) { drop(); return; }
-    if (!saved || !saved.d) { drop(); return; }
-
-    /* IT IS ONLY OFFERED WHEN IT DIFFERS FROM WHAT THE SERVER SENT.
-       A copy identical to the page is not unsaved work, and a bar that cries
-       wolf on every visit is a bar people stop reading. */
-    if (JSON.stringify(saved.d) === SERVER) { drop(); return; }
-
-    var when = document.getElementById('pmDraftWhen');
-    if (when && saved.at) {
-      var mins = Math.max(0, Math.round((Date.now() - saved.at) / 60000));
-      when.textContent = mins < 1 ? 'From a moment ago.'
-                       : mins < 60 ? 'From ' + mins + ' minute' + (mins === 1 ? '' : 's') + ' ago.'
-                       : 'From ' + Math.round(mins / 60) + ' hour' + (Math.round(mins / 60) === 1 ? '' : 's') + ' ago.';
-    }
-    bar.hidden = false;
-
-    document.getElementById('pmDraftYes').onclick = function(){
-      apply(saved.d);
-      bar.hidden = true;
-    };
-    document.getElementById('pmDraftNo').onclick = function(){
-      drop();
-      bar.hidden = true;
-    };
-  })();
-})();
-
-/* ============================================================
-   SECTION 4 — RATES THAT DIFFER BY SIZE
-   ------------------------------------------------------------
-   The server is the authority: zp_op_rate_save() decides what is stored, and
-   it applies the same "typing the standard is not an override" rule as the
-   markings below. Nothing here can save a rate the server would refuse.
-   ============================================================ */
-(function () {
-  var grid = document.getElementById('opgrid');
-  if (!grid) return;
-
-  /* per-set quantities, so the footer can be recomputed without a round trip */
-  var SETQTY = <?= json_encode(array_map(fn($s) => (int)$s['id'], $sizes ?? [])) ?>;
-
-  function cells() { return [].slice.call(grid.querySelectorAll('td.szcell input')); }
-
-  window.pmRateMode = function (m) {
-    /* HIDDEN, NOT REMOVED. The inputs stay in the form, so flipping the switch
-       never throws away something half-typed — and a hidden input still posts,
-       which is what keeps a cleared cell distinguishable from an untouched one. */
-    grid.classList.toggle('hidesizes', m === 0);
-    var a = document.getElementById('mA'), b = document.getElementById('mB');
-    if (a) a.setAttribute('aria-pressed', m === 0);
-    if (b) b.setAttribute('aria-pressed', m === 1);
-    var h = document.getElementById('ovrHint');
-    if (h) h.hidden = (m === 1) || !countOvr();
-  };
-
-  function countOvr() { return grid.querySelectorAll('td.szcell.ovr').length; }
-
-  function mark(el) {
-    var td = el.closest('td'), std = parseFloat(el.dataset.std), v = el.value.trim();
-    var f = parseFloat(v);
-    /* typing the standard back in is NOT an override — matching the server, so
-       the green mark never promises something the save will not store */
-    var isOvr = v !== '' && !isNaN(f) && Math.abs(f - std) >= 0.0001;
-    td.classList.toggle('ovr', isOvr);
-  }
-
-  function refreshTotals() {
-    /* the footer is recomputed from the rows on screen: rate x qty-per-set,
-       summed per size — the same arithmetic zp_set_cost() does server-side */
-    var rows = [].slice.call(grid.querySelectorAll('tbody tr'));
-    var qty = {}, totals = {};
-    SETQTY.forEach(function (sid) { totals[sid] = 0; });
-    var curQty = null;
-    rows.forEach(function (tr) {
-      if (tr.classList.contains('grp')) {
-        curQty = {};
-        var txt = (tr.querySelector('.grpqty') || {}).textContent || '';
-        /* "Single ×1  Double ×2" — read back what the server printed */
-        var re = /×\s*([0-9.]+)/g, m, i = 0;
-        while ((m = re.exec(txt)) !== null) { curQty[SETQTY[i++]] = parseFloat(m[1]) || 0; }
-        return;
-      }
-      var ins = tr.querySelectorAll('td.szcell input');
-      if (!ins.length || !curQty) return;
-      [].forEach.call(ins, function (el, i) {
-        var sid = SETQTY[i];
-        var std = parseFloat(el.dataset.std) || 0;
-        var v = parseFloat(el.value.trim());
-        var rate = (el.value.trim() !== '' && !isNaN(v)) ? v : std;
-        totals[sid] += rate * (curQty[sid] || 0);
-      });
-    });
-    SETQTY.forEach(function (sid) {
-      var td = grid.querySelector('tfoot td[data-setcost="' + sid + '"]');
-      if (td) td.textContent = (Math.round(totals[sid] * 100) / 100).toFixed(2);
-    });
-    var c = countOvr(), n = document.getElementById('ovrCount');
-    if (n) n.textContent = c + ' size rate' + (c === 1 ? '' : 's') + ' set';
-    var h = document.getElementById('ovrHint');
-    if (h && !grid.classList.contains('hidesizes')) h.hidden = true;
-  }
-
-  window.pmRateType = function (el) {
-    var v = el.value.replace(/[^0-9.]/g, '');
-    if (el.value !== v) el.value = v;
-    mark(el); refreshTotals();
-  };
-  window.pmRateClear = function (btn) {
-    var el = btn.closest('td').querySelector('input');
-    el.value = ''; mark(el); refreshTotals(); el.focus();
-  };
-  /* spreadsheet keys, the same ones every other grid in the app uses */
-  window.pmRateKey = function (e, el) {
-    var all = cells(), i = all.indexOf(el), per = SETQTY.length || 1;
-    function go(j) { if (all[j]) { e.preventDefault(); all[j].focus(); all[j].select(); } }
-
-    /* CTRL+D — COPY THE CELL ABOVE, the one key that makes a column of rates
-       quick. Set the King rate on the first operation, then hold it down. */
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+  form.addEventListener('submit', function(){ leaving = true; });
+  window.addEventListener('beforeunload', function(e){ if (!leaving && isDirty()) { e.preventDefault(); e.returnValue = ''; } });
+  document.addEventListener('keydown', function(e){
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
-      var up = all[i - per];
-      if (!up) return;
-      el.value = up.value; mark(el); refreshTotals();
-      go(i + per);                       // and move on, so it repeats
-      return;
+      var b = form.querySelector('.pm-foot button[name="do"][value="save"]');
+      if (form.reportValidity()) { leaving = true; if (form.requestSubmit) form.requestSubmit(b); else b.click(); }
     }
-    /* Home / End, edge-aware like the rest of the app: they move the caret
-       first, and only jump to the end of the ROW once it is already there */
-    if (e.key === 'Home' && el.selectionStart === 0) {
-      e.preventDefault(); go(i - (i % per)); return; }
-    if (e.key === 'End' && el.selectionStart === el.value.length) {
-      e.preventDefault(); go(i - (i % per) + per - 1); return; }
-
-    if (e.key === 'Escape') { e.preventDefault(); el.value = ''; mark(el); refreshTotals(); return; }
-    if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); go(i + per); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); go(i - per); return; }
-    /* edge-only: mid-number the arrows still move the caret, as they should.
-       BACKSPACE IS DELIBERATELY NOT BOUND — everywhere on earth it rubs out one
-       character, and stealing it to clear a whole cell surprises people who
-       have used a computer before. */
-    if (e.key === 'ArrowLeft'  && el.selectionStart === 0) { go(i - 1); return; }
-    if (e.key === 'ArrowRight' && el.selectionStart === el.value.length) { go(i + 1); return; }
-  };
-
-  /* PASTE A BLOCK STRAIGHT OUT OF EXCEL.
-     Tabs across, newlines down, starting at whichever cell you are in. It
-     cannot create rows — the operations are what they are — so anything past
-     the last one is dropped rather than silently landing somewhere else. */
-  grid.addEventListener('paste', function (e) {
-    var el = e.target;
-    if (!el.classList || !el.classList.contains('ratein')) return;
-    var txt = (e.clipboardData || window.clipboardData).getData('text') || '';
-    if (txt.indexOf('\t') < 0 && txt.indexOf('\n') < 0) return;   // one value: let the browser do it
-    e.preventDefault();
-    var all = cells(), start = all.indexOf(el), per = SETQTY.length || 1;
-    var col = start % per, row0 = (start - col) / per;
-    txt.replace(/\r/g, '').replace(/\n+$/, '').split('\n').forEach(function (line, dr) {
-      line.split('\t').forEach(function (cell, dc) {
-        if (col + dc >= per) return;                  // past the last size column
-        var t = all[(row0 + dr) * per + col + dc];
-        if (!t) return;                               // past the last operation
-        t.value = String(cell).trim().replace(/[^0-9.]/g, '');
-        mark(t);
-      });
-    });
-    refreshTotals();
   });
 
-  pmRateMode(countOvr() ? 1 : 0);   // arrive on the matrix only if there is something to see
-  refreshTotals();
+  function apply(d){
+    /* sizes: a saved size the draft did not have is struck; one it had that is
+       not on the page is added as new */
+    var want = (d.sizes || []).map(function(s){ return String(s).toLowerCase(); });
+    [].forEach.call(document.querySelectorAll('#sizeChips .chip'), function(c){
+      var on = want.indexOf(c.querySelector('.t').textContent.toLowerCase()) >= 0;
+      if (c.dataset.saved) { c.classList.toggle('gone', !on); c.querySelector('input').disabled = !on; }
+      else if (!on) c.remove();
+    });
+    var have = [].map.call(document.querySelectorAll('#sizeChips .chip'), function(c){ return c.querySelector('.t').textContent.toLowerCase(); });
+    (d.sizes || []).forEach(function(s){ if (have.indexOf(String(s).toLowerCase()) < 0 && window.zpAddSize) zpAddSize(s); });
+    /* everything else is matched BY NAME, and a box that no longer exists is
+       skipped rather than created — a part may have been removed since */
+    Object.keys(d.f || {}).forEach(function(n){
+      var el = form.elements.namedItem(n);
+      if (!el || el.length > 1 && !el.tagName) return;
+      if (el.type === 'checkbox') el.checked = !!d.f[n]; else el.value = d.f[n];
+      if (el.classList && el.classList.contains('ratein')) el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    if (window.pmTotals) pmTotals();
+    changed();
+  }
+
+  if (bar) (function(){
+    var raw = fetchDraft(); if (!raw) return;
+    var saved; try { saved = JSON.parse(raw); } catch (e) { drop(); return; }
+    /* only offered when it DIFFERS from what the server sent — a bar that
+       cries wolf on every visit is a bar people stop reading */
+    if (!saved || !saved.d || !saved.d.f || JSON.stringify(saved.d) === SERVER) { drop(); return; }
+    var when = document.getElementById('pmDraftWhen'), mins = Math.max(0, Math.round((Date.now() - (saved.at || 0)) / 60000));
+    if (when) when.textContent = mins < 1 ? 'From a moment ago.' : mins < 60 ? 'From ' + mins + ' min ago.' : 'From ' + Math.round(mins / 60) + ' h ago.';
+    bar.hidden = false;
+    document.getElementById('pmDraftYes').onclick = function(){ apply(saved.d); bar.hidden = true; };
+    document.getElementById('pmDraftNo').onclick = function(){ drop(); bar.hidden = true; };
+  })();
+
+  /* ---- the jump bar follows the scroll ---- */
+  var nav = document.getElementById('pmNav');
+  if (nav && 'IntersectionObserver' in window) {
+    var links = [].slice.call(nav.querySelectorAll('a'));
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(en){
+        if (!en.isIntersecting) return;
+        links.forEach(function(a){ a.classList.toggle('on', a.getAttribute('href') === '#' + en.target.id); });
+      });
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    links.forEach(function(a){ var s = document.querySelector(a.getAttribute('href')); if (s) io.observe(s); });
+  }
 })();
 </script>
+
+<?php endif; ?>
+</div>
 </div><?php /* closes .zskin */ ?>
 <?php page_footer(); ?>

@@ -147,10 +147,14 @@ ok(str_contains(preg_replace('/\s+/', ' ', $pm), 'Sent for EVERY cell, blank one
    'a blank must reach the server, or clearing a cell would do nothing');
 
 echo "\n";
-/* ---------- now RUN the grid's own JavaScript in a browser ---------- */
+/* ---------- now RUN the grid's own JavaScript in a browser ----------
+   Product Master's Parts & rates grid (owner, 22 Nov 2026: one grid — a part
+   row carries its quantity per size, ▸ opens its operations with a rate per
+   size). The script is lifted out of the page as shipped and run against the
+   markup the PHP prints. */
 $js = '';
-if (preg_match('/SECTION 4 — RATES THAT DIFFER BY SIZE.*?\n\}\)\(\);/s', $pm, $m)) {
-    $js = '(function () {' . substr($m[0], strpos($m[0], "var grid"));
+if (preg_match('/PARTS & RATES — one grid.*?\n  pmTotals\(\);\n\}\)\(\);/s', $pm, $m)) {
+    $js = substr($m[0], strpos($m[0], '(function(){'));
 }
 ok($js !== '', 'the grid script could be lifted');
 
@@ -159,41 +163,40 @@ $rows = '';
 $ops = [[101,'Cutting','Manual Cutting','3.00'],[102,'Stitching','Overlock','5.00'],
         [103,'Cutting','Manual Cutting','2.00'],[104,'Stitching','Singer','4.00'],
         [105,'Cutting','Manual Cutting','4.00'],[106,'Stitching','Overlock','6.00']];
-$parts = [['Flat Sheet',[1,1,1],[0,1]], ['Pillow Case',[1,2,2],[2,3]], ['Duvet Cover',[1,1,1],[4,5]]];
+$parts = [[1,'Flat Sheet',[1,1,1],[0,1]], [2,'Pillow Case',[1,2,2],[2,3]], [3,'Duvet Cover',[1,1,1],[4,5]]];
 $SZ = [[11,'Single'],[12,'Double'],[13,'King']];
 $pre = [102 => [13 => '7.00']];        // the King overlock override
-$n = 0;
 foreach ($parts as $p) {
-    $q = [];
-    foreach ($SZ as $i => $s) $q[] = $s[1] . ' &times;' . $p[1][$i];
-    $rows .= '<tr class="grp"><td colspan="7">' . $p[0]
-           . '<span class="grpqty">' . implode(' &nbsp; ', $q) . '</span></td></tr>';
-    foreach ($p[2] as $oi) {
-        $o = $ops[$oi]; $n++;
-        $rows .= '<tr><td>' . $n . '</td><td>' . $o[1] . '</td><td>' . $o[2] . '</td>'
-               . '<td class="num stdcol">' . $o[3] . '</td>';
+    $rows .= '<tr class="pr" data-part="' . $p[0] . '"><td><button type="button" class="tgb" aria-expanded="false">&#9654;</button></td>'
+           . '<td>' . $p[1] . '</td><td>qty / set</td><td></td>';
+    foreach ($SZ as $i => $s)
+        $rows .= '<td class="sz q"><input class="cell qz" data-part="' . $p[0] . '" data-size="' . $s[0] . '" name="qty[' . $p[0] . '][' . $s[0] . ']" value="' . $p[2][$i] . '"></td>';
+    $rows .= '<td></td></tr>';
+    foreach ($p[3] as $oi) {
+        $o = $ops[$oi];
+        $rows .= '<tr class="op" data-part="' . $p[0] . '" hidden><td></td><td>' . $o[2] . '</td><td>' . $o[1] . '</td><td class="n">' . $o[3] . '</td>';
         foreach ($SZ as $s) {
             $v = $pre[$o[0]][$s[0]] ?? '';
-            $rows .= '<td class="szcol szcell' . ($v !== '' ? ' ovr' : '') . '">'
-                  . '<input class="ratein" name="oprate[' . $o[0] . '][' . $s[0] . ']"'
-                  . ' data-std="' . $o[3] . '" value="' . $v . '" placeholder="' . $o[3] . '"'
-                  . ' oninput="pmRateType(this)" onkeydown="pmRateKey(event,this)">'
-                  . '<button type="button" class="x" onclick="pmRateClear(this)">&times;</button></td>';
+            $rows .= '<td class="sz szcell' . ($v !== '' ? ' ovr' : '') . '">'
+                  . '<input class="cell ratein" name="oprate[' . $o[0] . '][' . $s[0] . ']"'
+                  . ' data-std="' . $o[3] . '" value="' . $v . '" placeholder="' . $o[3] . '">'
+                  . '<button type="button" class="x">&times;</button></td>';
         }
-        $rows .= '</tr>';
+        $rows .= '<td></td></tr>';
     }
 }
 $foot = '';
-foreach ($SZ as $s) $foot .= '<td class="num szcol" data-setcost="' . $s[0] . '">0.00</td>';
-
-$page = '<!doctype html><meta charset="utf-8"><style>#opgrid.hidesizes .szcol{display:none}'
-      . '#opgrid td.szcell.ovr{background:#e6f5ee}</style>'
-      . '<table id="opgrid"><tbody>' . $rows . '</tbody>'
-      . '<tfoot><tr class="setcost"><td colspan="4">set</td>' . $foot . '</tr></tfoot></table>'
-      . '<button id="mA" aria-pressed="true"></button><button id="mB" aria-pressed="false"></button>'
-      . '<span id="ovrCount"></span><div id="ovrHint" hidden></div>'
-      . '<script>' . str_replace('<?= json_encode(array_map(fn($s) => (int)$s[\'id\'], $sizes ?? [])) ?>',
-                                 '[11,12,13]', $js) . '</script>';
+foreach (['pw', 'sw', 'tot'] as $k) {
+    $foot .= '<tr><td></td><td colspan="3">' . $k . '</td>';
+    foreach ($SZ as $s) $foot .= '<td data-' . $k . '="' . $s[0] . '">0.00</td>';
+    $foot .= '<td></td></tr>';
+}
+$page = '<!doctype html><meta charset="utf-8">'
+      . '<button type="button" id="pmOpenAll">Open all</button>'
+      . '<table id="pmGrid"><tbody>' . $rows . '</tbody><tfoot>' . $foot . '</tfoot></table>'
+      . '<span id="ovrCount"></span>'
+      . '<script>' . str_replace(['<?= json_encode(array_map(fn($s) => (int)$s[\'id\'], $sizes ?? [])) ?>', '<?= (int)$editId ?>'],
+                                 ['[11,12,13]', '0'], $js) . '</script>';
 file_put_contents(__DIR__ . '/.zsr.html', $page);
 
 $harness = <<<'JS'
@@ -205,13 +208,16 @@ const {chromium} = require('playwright');
   await p.goto('file://' + process.argv[2]);
   await p.waitForTimeout(250);
   const g = () => p.evaluate(() => ({
-    totals: [...document.querySelectorAll('tfoot td[data-setcost]')].map(t => t.textContent),
+    totals: [...document.querySelectorAll('tfoot td[data-tot]')].map(t => t.textContent),
     ovr:    document.querySelectorAll('td.szcell.ovr').length,
-    count:  document.getElementById('ovrCount').textContent,
-    hidden: document.getElementById('opgrid').classList.contains('hidesizes')
+    count:  document.getElementById('ovrCount').textContent
   }));
   const out = {errors: errs};
   out.start = await g();
+  /* a part with a size rate opens by itself; the others stay shut */
+  out.opened = await p.evaluate(() => [...document.querySelectorAll('tr.pr .tgb')].map(b => b.getAttribute('aria-expanded')));
+  await p.click('#pmOpenAll');
+  out.allOpen = await p.evaluate(() => [...document.querySelectorAll('tr.op')].every(r => !r.hidden));
 
   /* typing the standard back in must NOT mark an override */
   await p.fill('input[name="oprate[101][12]"]', '3.00');
@@ -224,7 +230,6 @@ const {chromium} = require('playwright');
   out.typedReal = await g();
 
   /* the x button clears it */
-  await p.click('input[name="oprate[103][12]"]');
   await p.evaluate(() => document.querySelector('input[name="oprate[103][12]"]')
     .closest('td').querySelector('.x').click());
   await p.waitForTimeout(120);
@@ -242,20 +247,22 @@ const {chromium} = require('playwright');
   await p.keyboard.press('Enter');
   out.afterEnter = await p.evaluate(() => document.activeElement.name);
 
-  /* flipping to "same rate for all sizes" HIDES, it must not unload */
-  await p.evaluate(() => pmRateMode(0));
+  /* a quantity moves the total by that part's whole cost */
+  await p.fill('input[name="qty[2][11]"]', '2');
+  await p.waitForTimeout(100);
+  out.qty = await g();
+  await p.fill('input[name="qty[2][11]"]', '1');
+
+  /* closing a part HIDES its rows, it must not unload them */
+  await p.click('tr.pr[data-part="1"] .tgb');
   await p.waitForTimeout(120);
   out.off = await g();
-  out.stillInDom = await p.evaluate(() =>
-    document.querySelectorAll('input[name^="oprate"]').length);
-  out.valueKept = await p.evaluate(() =>
-    document.querySelector('input[name="oprate[102][13]"]').value);
+  out.hidden = await p.evaluate(() => document.querySelector('input[name="oprate[102][13]"]').closest('tr').hidden);
+  out.stillInDom = await p.evaluate(() => document.querySelectorAll('input[name^="oprate"]').length);
+  out.valueKept = await p.evaluate(() => document.querySelector('input[name="oprate[102][13]"]').value);
+  await p.click('tr.pr[data-part="1"] .tgb');
 
   /* ---- the fast keys, LAST, because they change every total on purpose ---- */
-  await p.evaluate(() => pmRateMode(1));
-  /* CTRL+D copies the cell ABOVE — so it needs a row above it. Starting on the
-     first operation there is nothing to copy, which is correct and is why this
-     starts on the second. */
   await p.fill('input[name="oprate[101][13]"]', '3.75');
   await p.click('input[name="oprate[102][13]"]');
   await p.keyboard.press('Control+d');
@@ -264,19 +271,15 @@ const {chromium} = require('playwright');
     copied: document.querySelector('input[name="oprate[102][13]"]').value,
     focus:  document.activeElement.name
   }));
-  /* on the very first row it must do nothing at all, not throw */
   await p.click('input[name="oprate[101][11]"]');
   await p.keyboard.press('Control+d');
   await p.waitForTimeout(80);
-  out.ctrlDTop = await p.evaluate(() =>
-    document.querySelector('input[name="oprate[101][11]"]').value);
+  out.ctrlDTop = await p.evaluate(() => document.querySelector('input[name="oprate[101][11]"]').value);
 
-  /* a block pasted out of Excel: two rows x two columns, landing at 103/Single */
   await p.click('input[name="oprate[103][11]"]');
   await p.evaluate(() => {
     const el = document.querySelector('input[name="oprate[103][11]"]');
-    const dt = new DataTransfer();
-    dt.setData('text', '1.10\t1.20\n1.30\t1.40');
+    const dt = new DataTransfer(); dt.setData('text', '1.10\t1.20\n1.30\t1.40');
     el.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true}));
   });
   await p.waitForTimeout(150);
@@ -287,20 +290,16 @@ const {chromium} = require('playwright');
     d: document.querySelector('input[name="oprate[104][12]"]').value,
     king: document.querySelector('input[name="oprate[103][13]"]').value
   }));
-  /* a block wider or taller than what is left must be TRIMMED, never wrapped
-     onto the next operation — that would put a rate somewhere nobody asked */
   await p.click('input[name="oprate[106][12]"]');
   await p.evaluate(() => {
     const el = document.querySelector('input[name="oprate[106][12]"]');
-    const dt = new DataTransfer();
-    dt.setData('text', '9.10\t9.20\t9.30\n9.40\t9.50\t9.60');
+    const dt = new DataTransfer(); dt.setData('text', '9.10\t9.20\t9.30\n9.40\t9.50\t9.60');
     el.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true}));
   });
   await p.waitForTimeout(150);
   out.overflow = await p.evaluate(() => ({
     hit:  document.querySelector('input[name="oprate[106][12]"]').value,
     next: document.querySelector('input[name="oprate[106][13]"]').value,
-    /* 106 is the LAST operation, so the second pasted line has nowhere to go */
     first: document.querySelector('input[name="oprate[101][11]"]').value
   }));
   console.log(JSON.stringify(out));
@@ -321,16 +320,17 @@ else {
     ok($r['start']['totals'] === ['24.00','30.00','32.00'],
        'the arithmetic is right from the start, got ' . json_encode($r['start']['totals']));
     ok($r['start']['ovr'] === 1, 'one override to begin with');
+    ok($r['opened'] === ['true','false','false'],
+       'the part carrying a size rate opens by itself, the rest stay shut, got ' . json_encode($r['opened']));
+    ok($r['allOpen'] === true, 'Open all opens every part');
 
     ok($r['typedStandard']['ovr'] === 1,
        'TYPING THE STANDARD MARKS NOTHING, got ' . $r['typedStandard']['ovr'] . ' overrides');
     ok($r['typedStandard']['totals'] === ['24.00','30.00','32.00'], '  and moves no total');
 
     ok($r['typedReal']['ovr'] === 2, 'a real change is marked, got ' . $r['typedReal']['ovr']);
-    /* Pillow Case cutting 2.00 -> 2.50 on Double, and a Double has TWO of them */
     ok($r['typedReal']['totals'][1] === '31.00',
-       '  and the total moves by rate x qty-per-set (2 pillow cases), got '
-       . $r['typedReal']['totals'][1]);
+       '  and the total moves by rate x qty-per-set (2 pillow cases), got ' . $r['typedReal']['totals'][1]);
     ok($r['typedReal']['totals'][0] === '24.00', '  while the other sizes stay put');
     ok(str_contains($r['typedReal']['count'], '2 size rates set'), '  and the counter agrees');
 
@@ -338,19 +338,16 @@ else {
     ok($r['afterClear']['totals'][1] === '30.00', '  and the total goes back');
     ok($r['afterEsc']['ovr'] === 1, 'Esc clears one too');
 
-    /* 101 -> 102 is the next OPERATION down in the same size column. The group
-       header rows carry no inputs, so they are simply not in the list — the
-       caret never lands on one, which is what you want. */
     ok($r['afterEnter'] === 'oprate[102][12]',
        'Enter moves DOWN the size column to the next operation, got ' . json_encode($r['afterEnter']));
+    ok($r['qty']['totals'][0] === '30.00',
+       'a second pillow case on Single adds its whole cost (2+4), got ' . json_encode($r['qty']['totals']));
 
-    echo "11. Switching back to one rate HIDES the columns, it does not lose them\n";
-    ok($r['off']['hidden'] === true, 'the size columns are hidden');
+    echo "11. Closing a part HIDES its rows, it does not lose them\n";
+    ok($r['hidden'] === true, 'the rows are hidden');
     ok($r['stillInDom'] === 18, 'every input is still in the form, got ' . $r['stillInDom']);
     ok($r['valueKept'] === '7.00', 'AND STILL CARRIES ITS VALUE, got ' . json_encode($r['valueKept']));
     ok($r['off']['totals'][2] === '32.00', 'the set cost still includes the size rate');
-}
-@unlink(__DIR__ . '/.zsr.html'); @unlink(__DIR__ . '/.zsr.js');
 
     echo "11b. Ctrl+D and an Excel block paste — this is the 'fast' part\n";
     ok($r['ctrlD']['copied'] === '3.75',
@@ -368,39 +365,32 @@ else {
     ok($r['overflow']['first'] === '',
        '  AND TRIMS THE REST — it never wraps a rate onto another operation, got '
        . json_encode($r['overflow']['first']));
+}
+@unlink(__DIR__ . '/.zsr.html'); @unlink(__DIR__ . '/.zsr.js');
 
 echo "11c. NOTHING IS DISTURBED — the default path is the old path\n";
-/* This is the promise that matters most: a product nobody has typed a size
-   rate for must behave, to the digit, as it did before any of this existed. */
-ok(str_contains($pm, 'pmRateMode(countOvr() ? 1 : 0);'),
-   'the grid opens on the PLAIN view unless there is something to see');
-ok(str_contains($pm, '<?php if ($anySize): ?>') || str_contains($pm, 'if ($anySize):'),
+ok(str_contains($pm, "openPart(tr, hasOvr || !!opened[tr.dataset.part]);"),
+   'a part opens by itself only when it carries a size rate, so no number in the footer is unexplained');
+ok(str_contains($pm, '<?php if (!$nS): ?>'),
    'a product with no sizes never renders a size column at all');
-ok(str_contains($pm, '$cols = 4 + ($anySize ? count($sizes) : 0);'),
-   '  and the group rows span the right width either way, so the table cannot shear');
+ok(str_contains($pm, '$cols = 5 + $nS;'),
+   '  and the message rows span the right width, so the table cannot shear');
 ok(str_contains($pm, 'if ($rr) {'),
    'a submit carrying no rate cells writes nothing');
-/* the Standard column is READ-ONLY, and that is not an oversight: a part is a
-   shared library row, so editing its rate here would move every other product
-   using that part — which is exactly what production_order_rates.php exists to
-   avoid doing by accident */
+/* the Standard column is READ-ONLY: a part is a shared library row, so editing
+   its rate here would move every other product using that part */
 ok(!str_contains($pm, 'name="opstd['), 'the Standard rate is not editable here');
 ok(str_contains($pm, 'Edit in Part Library'), '  and says where it IS edited');
 ok(substr_count($pm, 'zp_op_rate_save($pid') === 1, 'one writer, got '
    . substr_count($pm, 'zp_op_rate_save($pid'));
+$fa = strpos($pm, '<form method="post" id="pmForm"'); $fb = strpos($pm, '</form>', $fa);
+$ra = strpos($pm, 'name="oprate[<?= $oid ?>][<?= $sid ?>]"');
+ok($ra > $fa && $ra < $fb,
+   'THE RATE BOXES ARE INSIDE THE FORM — below it, as they were, nothing typed there ever reached Save');
 
-echo "11d. It is the SAME grid language as every other screen\n";
-/* measured, not asserted — .verify.js reads these back out of a browser.
-   Here we only check the page asks for the tokens rather than hard-coding a
-   near-miss colour, which is what makes a screen look half-converted. */
-ok(!preg_match('/box-shadow:inset 0 -2px 0 #1d6ff2/', $pm),
-   'the switch no longer paints its own blue');
-ok(str_contains($pm, 'box-shadow:inset 0 -2px 0 var(--acc,#1d6ff2)'),
-   '  it takes the skin accent, and keeps a fallback for an unskinned page');
-ok(str_contains($pm, 'height:calc(var(--rowh,30px) - 2px)'),
-   'the cell tracks the shared row height instead of repeating 28px');
-foreach (['--bd','--sub','--ok-soft','--acc-soft','--panel'] as $tok)
-    ok(str_contains($pm, 'var(' . $tok . ','), "section 4 uses $tok with a fallback");
+echo "11d. It is the SAME look as the other Fiori screens\n";
+ok(str_contains($pm, 'assets/css/zf.css'), 'it loads the shared list look');
+ok(str_contains($pm, '.zf.pm .pm-g td.szcell.ovr{'), 'an override is green, as the legend says');
 ok(str_contains($pm, "(e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')"),
    'Ctrl+D is bound, like the other grids');
 ok(str_contains($pm, "grid.addEventListener('paste'"), 'and an Excel block paste');

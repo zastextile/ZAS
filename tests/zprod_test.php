@@ -457,8 +457,8 @@ t('  and a module that is not installed contributes nothing instead of failing',
 
 head('The checklist tells you the NEXT ACTION, not just a fact');
 $todo = lift($src, 'zp_product_todo');
-t('no sizes names where to add them', str_contains($todo, 'add them on the Basic Info tab'));
-t('no parts names the button to press', str_contains($todo, 'Add Parts from Library'));
+t('no sizes names where to add them', str_contains($todo, 'type them under Sizes and press Save'));
+t('no parts names the box to use', str_contains($todo, 'Add a part from the library'));
 t('a part with no operations says where to go',
   str_contains($todo, 'open it in the Part Library and add its Cutting line first'));
 t('a part with no cutting line says what breaks',
@@ -568,24 +568,31 @@ t('the reason tabs were dropped is written down',
   str_contains($pm, 'Tabs on a data-entry screen hide state'));
 
 head('  ONE form, ONE Save, writing all of it');
-t('the whole editor is a single form', substr_count($pm, '<form method="post" id="pmForm">') === 1);
+t('the whole editor is a single form', substr_count($pm, '<form method="post" id="pmForm"') === 1);
 t('  posting one action', str_contains($pm, 'name="action" value="save_all"'));
 t('  which writes name, sizes, parts AND quantities',
   str_contains($pm, 'zp_save_sizes($pid') && str_contains($pm, 'zp_save_qty($pid, $q)')
   && str_contains($pm, 'UPDATE products SET name=?'));
-t('add-part is a button in that same form, not a nested one',
-  str_contains($pm, '<button class="zp-b pri" name="do" value="add_part">'));
-t('remove-part is too', str_contains($pm, "name=\"do\" value=\"save\"\n                        title=\"Take this part off this product\"")
-  || str_contains($pm, "input[name=remove_part]"));
+$fa = strpos($pm, '<form method="post" id="pmForm"'); $fb = strpos($pm, '</form>', $fa);
+$inForm = fn(string $needle) => ($x = strpos($pm, $needle)) !== false && $x > $fa && $x < $fb;
+t('add-part is a button in that same form, not a nested one', $inForm('name="do" value="add_part"'));
+t('remove-part is too, carrying which part on the button itself', $inForm('name="remove_part" value="<?= $cid ?>"'));
+t('THE SIZE RATES ARE INSIDE THE FORM — they used to sit below it and never saved', $inForm('name="oprate[<?= $oid ?>][<?= $sid ?>]"'));
+t('  and so are the quantities and the set work', $inForm('name="qty[<?= $cid ?>][<?= $sid ?>]"') && $inForm('name="setop['));
+t('Duplicate and Delete are forms of their own, AFTER the main one',
+  strpos($pm, 'id="pmDup"') > $fb && strpos($pm, 'id="pmDel"') > $fb);
 t('  because HTML forbids a form inside a form',
   str_contains($pm, 'HTML does not allow a form inside a form'));
+t('Enter in a text box presses Save, not the first button in the form',
+  strpos($pm, 'class="pm-dflt"') > $fa && strpos($pm, 'class="pm-dflt"') < strpos($pm, 'name="do" value="add_part"'));
 t('the Save bar sticks to the bottom so it is always reachable',
   str_contains($pm, 'position:sticky;bottom:0'));
+t('  and says when something is not saved yet', str_contains($pm, "'● Unsaved changes'"));
+t('  and leaving with unsaved changes asks first', str_contains($pm, "addEventListener('beforeunload'"));
 
-head('  the four sections are numbered, in the order you fill them');
-foreach (['1 &nbsp;The product', '2 &nbsp;Its sizes', '3 &nbsp;What it is made of',
-          '4 &nbsp;Operations &amp; cost'] as $h) {
-    t("  section \"$h\" is present", str_contains($pm, $h));
+head('  an object page: the sections in the order you fill them, with a jump bar');
+foreach (['id="pmGen"', 'id="pmSizes"', 'id="pmParts"', 'id="pmSet"', 'id="pmNav"'] as $h) {
+    t("  $h is present", str_contains($pm, $h));
 }
 
 head('  a size deleted in the same submit cannot strand a quantity');
@@ -595,15 +602,19 @@ t('  built AFTER the sizes were saved',
   strpos($pm, '$sz = zp_save_sizes($pid') < strpos($pm, 'foreach (zp_sizes($pid) as $s2) $live'));
 t('  and the danger is named', str_contains($pm, 'writing a quantity against a dead id'));
 
-head('  Enter in a size box adds a size — it must not submit the page');
-t('the default is prevented', str_contains($pm, "if (ev.key !== 'Enter' || ev.target.name !== 'size_label[]') return;"));
-t('  and it says why that matters now the page is one form',
-  str_contains($pm, 'would save and reload halfway through typing'));
+head('  sizes are chips: Enter adds one — it must not submit the page');
+t('the default is prevented', str_contains($pm, "if (e.key === 'Enter' || e.key === ','"));
+t('  and it says why that matters on a one-form page',
+  str_contains($pm, 'ENTER ADDS THE SIZE — it must NOT submit the form'));
+t('a saved size taken off is struck through, not removed, until Save',
+  str_contains($pm, "c.classList.add('gone'); c.querySelector('input').disabled = true;"));
 
 head('  Delete stays disabled while anything uses the product');
-t('the button is disabled rather than hidden', str_contains($pm, '<button class="zp-b sm dis" disabled'));
-t('the list asks zp_is_used(), so an unreadable table greys Delete too',
-  str_contains($pm, '$used = zp_is_used($usageMap, $pid);'));
+t('the button is disabled rather than hidden, on the list', str_contains($pm, 'class="zf-btn sm off" disabled'));
+t('  and on the product page', str_contains($pm, '<button type="button" class="zf-btn off" disabled'));
+t('the list asks about unreadable tables too, so they grey Delete',
+  str_contains($pm, "'del'  => (\$used || \$unknown) ? 0 : 1"));
+t('  and the product page asks zp_is_used()', str_contains($pm, '$canDel = $editId && !zp_is_used($usageMap, $editId);'));
 t('  and the server-side delete asks the same question',
   str_contains($pm, 'if (zp_is_used($usage, $pid)) {'));
 t('  saying which checks failed rather than inventing a reason',
@@ -616,8 +627,14 @@ t('  and only an unused one is really deleted',
   str_contains($pm, 'DELETE FROM products WHERE id=?'));
 t('that delete runs in a transaction with its children',
   strpos($pm, 'DELETE FROM zp_part_qty WHERE product_id=?') < strpos($pm, 'DELETE FROM products WHERE id=?'));
-t('the rules panel from the layout is on the list',
-  str_contains($pm, 'Delete / Deactivate rules'));
+t('the rule is written under the list',
+  str_contains($pm, 'is only possible when nothing uses the product'));
+
+head('  the list is one Fiori list, filtered in the browser');
+t('it uses the shared list engine', str_contains($pm, 'assets/js/zflist.js') && str_contains($pm, 'ZFList({'));
+t('  the making cost comes from whole-table reads, not a query per product',
+  str_contains($pm, 'function pm_list_rows(array $usageMap)') && !preg_match('/foreach \(\$q\("SELECT[^"]*WHERE (product_)?id=\?/', $pm));
+t('  and the old per-page search with a 400 cap is gone', !str_contains($pm, 'LIMIT 400'));
 
 head('  a duplicated product arrives switched OFF');
 t('the copy is inserted inactive', str_contains($pm, 'fcl_40hc_qty, is_active)
@@ -634,12 +651,14 @@ t('  with the size ids remapped, not reused',
 t('  all inside a transaction', str_contains($pm, 'db()->beginTransaction();'));
 
 head('  the set cost updates as you type');
-t('the totals row is recomputed from the grid itself',
-  str_contains($pm, 'function recalc()') && str_contains($pm, "grid.querySelectorAll('.qz')"));
+t('the totals are recomputed from the grid itself',
+  str_contains($pm, 'window.pmTotals = function()') && str_contains($pm, "grid.querySelectorAll('input.qz')"));
 t('  never from a stored total that could drift',
-  str_contains($pm, 'never from a stored'));
-t('arrow keys move down the column like a spreadsheet',
-  str_contains($pm, "ev.key === 'ArrowDown' || ev.key === 'Enter'"));
+  str_contains(preg_replace('/\s+/', ' ', $pm), 'never from a stored total'));
+t('Enter and arrow keys move down the column like a spreadsheet',
+  str_contains($pm, "if (e.key === 'Enter' || e.key === 'ArrowDown')"));
+t('a unit that is not in the list is kept, not turned into Pcs on Save',
+  str_contains($pm, 'if ($curUnit !== \'\' && !in_array($curUnit, $units, true)) array_unshift($units, $curUnit);'));
 
 echo "\n" . str_repeat('-', 58) . "\n";
 echo ($F === 0 ? "ALL PASS" : "FAILURES") . "   $P passed, $F failed\n";

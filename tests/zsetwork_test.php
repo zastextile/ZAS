@@ -195,7 +195,7 @@ ok(str_contains($zp, 'would let 200 folds look like 200 cushion covers'),
 ok(substr_count($pmap, "status='active'") === 1, 'cancelled rows are still excluded in ONE place');
 
 echo "10. The screens\n";
-ok(str_contains($pm, '3b &nbsp;Set work'), 'Product Master has the block');
+ok(str_contains($pm, 'id="pmSet"') && str_contains($pm, 'id="setTbl"'), 'Product Master has the block');
 ok(str_contains($pm, 'name="setop['), '  and it posts the jobs');
 ok(str_contains($pm, 'name="setrate['), '  and the per-size rates');
 /* INSIDE THE FORM, tested against the form's own boundaries. Comparing it
