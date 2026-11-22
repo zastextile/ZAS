@@ -49,6 +49,24 @@ ok($f3['stages'][0]['need'] == 300 && $f3['stages'][0]['done'] == 250, 'cutting 
 ok(!isset($f3['stages'][1]['need']) || $f3['stages'][1]['need'] == 200, 'stitching counts only the part that is stitched');
 ok($f3['behind'] === 'Sheet (Cutting)', 'the slowest part at the earliest open stage: ' . $f3['behind']);
 
+echo "4a. Work already booked protects its order line (22 Nov 2026)\n";
+eval(lift($src, 'zp_line_min_qty'));
+function db() { throw new RuntimeException('no db'); }
+/* pillow: 1 per set on a Single line, 2 on a Double — zp_pieces_needed() is the stub above (PER) */
+$GLOBALS['PER'] = [3 => 2];
+[$mn, $wy] = zp_line_min_qty(['product_id' => 6, 'ordered_qty' => 1500], ['ops' => [3 => [9 => 2000, 10 => 600]], 'set' => []]);
+ok($mn == 1000.0, '2,000 pillows cut at 2 per set: the line cannot go below 1,000 sets, got ' . $mn);
+ok(str_contains($wy, '2,000') && str_contains($wy, '2 per set'), 'and it says why: ' . $wy);
+$GLOBALS['PER'] = [3 => 1];
+[$mn] = zp_line_min_qty(['product_id' => 6, 'ordered_qty' => 1500], ['ops' => [3 => [9 => 2000]], 'set' => []]);
+ok($mn == 2000.0, '2,000 covers at 1 per set: at least 2,000 sets (the row 49 case), got ' . $mn);
+$pf = file_get_contents(__DIR__ . '/../public_html/proforma.php');
+ok(strpos($pf, '$gBad = zp_line_change_problems($pfid, $gRows);') < strpos($pf, 'UPDATE proforma_invoices SET pi_no=?'), 'the proforma save checks booked work BEFORE writing anything');
+ok(substr_count($pf, 'zp_line_change_problems($pfid, $gRows)') === 2, 'the CSV import is checked the same way');
+ok(str_contains($pf, "button[title=\"Remove this line\"]") && str_contains($pf, 'pfBookedProblems()'), 'the screen warns before Save, so nothing typed is lost');
+ok(str_contains($src, "cannot be removed") && str_contains($src, 'the product cannot change') && str_contains($src, 'the size cannot change'), 'a booked line cannot be removed or change product or size');
+ok(str_contains($src, "'over' => \$over"), 'Order Status flags any line booked beyond what it needs');
+
 echo "4. The pages\n";
 $pg = file_get_contents(__DIR__ . '/../public_html/production_orders.php');
 ok(!preg_match('/INSERT|UPDATE|DELETE/i', preg_replace('!/\*.*?\*/!s', '', $pg)), 'Order Status writes nothing');

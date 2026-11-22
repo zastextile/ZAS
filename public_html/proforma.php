@@ -216,6 +216,19 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
        errors, so it can neither slow a save nor break one. */
     require_once __DIR__ . '/includes/textindex.php';
     if ($pfid > 0) register_shutdown_function(function () use ($pfid) { txt_index_proforma($pfid); });
+    /* WORK ALREADY BOOKED ON A LINE IS PROTECTED (owner, 22 Nov 2026: 2,000
+       covers were cut on a DOUBLE line later saved as 1,500 sets). Checked
+       before ANYTHING is written, so a refusal leaves the proforma as it was. */
+    require_once __DIR__ . '/includes/zprod.php';
+    $gRows = [];
+    foreach ((array)($_POST['i_id'] ?? []) as $gi => $gid) {
+        $gPid = (int)($_POST['i_pid'][$gi] ?? 0);
+        $gRows[] = ['id' => (int)$gid, 'pid' => $gPid, 'size' => (string)($_POST['i_size'][$gi] ?? ''),
+                    'sid' => (int)(pf_size_id($gPid, $_POST['i_size_id'][$gi] ?? 0, (string)($_POST['i_size'][$gi] ?? '')) ?? 0),
+                    'qty' => pf_num($_POST['i_qty'][$gi] ?? 0), 'name' => (string)($_POST['i_name'][$gi] ?? '')];
+    }
+    $gBad = zp_line_change_problems($pfid, $gRows);
+    if ($gBad) { $_SESSION['error'] = 'Nothing was saved. ' . implode(' ', $gBad); redirect('proforma.php?id=' . $pfid); }
     $prodEnabled = isset($_POST['production_enabled']) ? 1 : 0;
     $showPfooter = isset($_POST['show_pfooter']) ? 1 : 0;
     // bank1_details/bank2_details (the old free-text box) are deliberately
@@ -608,6 +621,22 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='import_cs
     $missing = pf_missing_sizes(array_column($csvRows,'name'), $effPid,
                                 array_fill(0, count($csvRows), 0), array_column($csvRows,'size'));
 
+    /* the same protection for booked work as the screen — a CSV row may not
+       change a line under work already booked (lines left out of the file are
+       untouched, so they are passed through as they are) */
+    require_once __DIR__ . '/includes/zprod.php';
+    $gRows = []; $gSeen = [];
+    foreach ($csvRows as $gi => $r) if ($r['id'] > 0) {
+        $gSeen[$r['id']] = 1;
+        $gRows[] = ['id' => $r['id'], 'pid' => (int)$effPid[$gi], 'size' => $r['size'], 'qty' => $r['qty'], 'name' => $r['name'],
+                    'sid' => (int)(pf_size_id((int)$effPid[$gi], 0, $r['size']) ?? 0)];
+    }
+    $gs = db()->prepare('SELECT id, product_id, product_size_id, size, qty, product_name FROM proforma_items WHERE proforma_id=?'); $gs->execute([$pfid]);
+    foreach ($gs->fetchAll() as $o) if (!isset($gSeen[(int)$o['id']]))
+        $gRows[] = ['id' => (int)$o['id'], 'pid' => (int)$o['product_id'], 'sid' => (int)$o['product_size_id'], 'size' => (string)$o['size'], 'qty' => (float)$o['qty'], 'name' => (string)$o['product_name']];
+    $gBad = zp_line_change_problems($pfid, $gRows);
+    if ($gBad) { $_SESSION['error'] = 'Import stopped, nothing was written: ' . implode(' ', $gBad); redirect('proforma.php?id=' . $pfid); }
+
     $updated=0; $added=0;
     foreach ($csvRows as $r) {
         $amt = round($r['qty']*$r['price'],2);
@@ -653,6 +682,19 @@ if ($id) {
     $st=db()->prepare("SELECT * FROM proforma_invoices WHERE id=?"); $st->execute([$id]); $pf=$st->fetch();
     if(!$pf){ http_response_code(404); exit('Proforma not found.'); }
     $it=db()->prepare("SELECT * FROM proforma_items WHERE proforma_id=? ORDER BY sort_order,id"); $it->execute([$id]); $items=$it->fetchAll();
+    /* lines with work booked on them, for the browser guard below (the server checks again on save) */
+    $pfBooked = [];
+    try {
+        require_once __DIR__ . '/includes/zprod.php';
+        $bk = zp_booked_lines((int)$id);
+        foreach ($items as $r0) {
+            $b0 = $bk[(int)$r0['id']] ?? null; if (!$b0) continue;
+            $l0 = ['item_id' => (int)$r0['id'], 'product_id' => (int)($r0['product_id'] ?: $b0['pid']), 'product_size_id' => (int)$r0['product_size_id'], 'size' => (string)$r0['size'], 'ordered_qty' => (float)$r0['qty']];
+            [$mn, $wy] = zp_line_min_qty($l0, $b0);
+            $pfBooked[(int)$r0['id']] = ['n' => $b0['n'], 'min' => $mn, 'why' => $wy, 'pid' => $l0['product_id'], 'sid' => zp_line_size_id($l0),
+                                         'label' => trim($r0['product_name'] . ' ' . $r0['size'])];
+        }
+    } catch (Throwable $e) { $pfBooked = []; }
     /* The Product Master the line LOV offers. Loaded once and filtered in
        the browser, so picking an item costs no round trip. */
     $pfMaster = [];
@@ -1130,6 +1172,38 @@ if ($id) {
         }
         return bad;
       };
+      /* BOOKED WORK GUARD (22 Nov 2026) — a line with work booked on it cannot
+         be removed, change product or size, or go below what is booked. Said
+         here, before Save, so nothing typed is lost; the server checks again. */
+      var PF_BOOKED = <?= json_encode((object)$pfBooked, JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+      document.addEventListener('click', function(e){
+        var x = e.target.closest('button[title="Remove this line"]'); if (!x) return;
+        var idf = x.closest('tr').querySelector('input[name="i_id[]"]'), b = idf && PF_BOOKED[idf.value];
+        if (!b) return;
+        e.preventDefault(); e.stopPropagation();
+        alert('"' + b.label + '" has ' + b.n + ' booking' + (b.n === 1 ? '' : 's') + ' of production work on it, so it cannot be removed.\n\nCancel that work on Correct Entries first.');
+      }, true);
+      function pfBookedProblems(){
+        var out = [], seen = {};
+        document.querySelectorAll('#pfItems tbody tr').forEach(function(tr){
+          var idf = tr.querySelector('input[name="i_id[]"]'); if (!idf || !PF_BOOKED[idf.value]) return;
+          var b = PF_BOOKED[idf.value], q = parseFloat(tr.querySelector('input[data-c="qty"]').value) || 0;
+          var pid = +(tr.querySelector('input.pid') || {}).value || b.pid, sid = +(tr.querySelector('input.sid') || {}).value || 0;
+          seen[idf.value] = 1;
+          var bad = '';
+          if (pid !== b.pid) bad = 'the product cannot change';
+          else if (b.sid && sid && sid !== b.sid) bad = 'the size cannot change';
+          else if (q + 0.0001 < b.min) bad = b.why + ', so the quantity cannot go below ' + b.min.toLocaleString('en-US') + ' (you entered ' + q.toLocaleString('en-US') + ')';
+          if (bad) { out.push('"' + b.label + '": ' + bad + '.'); tr.style.outline = '2px solid #b42318'; } else tr.style.outline = '';
+        });
+        return out;
+      }
+      document.getElementById('pfSaveForm').addEventListener('submit', function(e){
+        var p = pfBookedProblems();
+        if (!p.length) return;
+        e.preventDefault(); e.stopImmediatePropagation();
+        alert('Not saved — production work is already booked on these lines:\n\n' + p.join('\n') + '\n\nReduce or cancel that work on Correct Entries first, then change the order.');
+      }, true);
       window.pfSizeGuard = function(e){
         /* NEVER BLOCKS ANY MORE (owner, 21 Nov 2026): the lines without a size
            are only marked, and the save goes ahead. */

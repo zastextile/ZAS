@@ -3768,7 +3768,7 @@ function zp_by_operation(string $from, string $to): array {
               booking limits use, so this report and the entry screen agree.
    'behind' names the slowest part at the earliest stage still open. */
 function zp_line_flow(array $l, array $prog): array {
-    $st = []; $worst = null; $noSize = false;
+    $st = []; $worst = null; $noSize = false; $over = [];
     $it = (int)$l['item_id'];
     foreach (zp_product_parts((int)$l['product_id']) as $p) {
         $pt = (int)$p['id'];
@@ -3776,6 +3776,11 @@ function zp_line_flow(array $l, array $prog): array {
         if ($need === ZP_NO_SIZE) { $noSize = true; continue; }
         if ($need <= 0) continue;
         foreach (zp_part_stage_ops($pt) as $pos => $sg) {
+            /* OVER-BOOKED: more booked on an operation than this line needs */
+            foreach ($sg['ops'] as $oid) {
+                $d = (float)($prog['op'][$it][$pt][$oid] ?? 0);
+                if ($d > $need + 0.0001) $over[$p['part_name'] . ' (' . $sg['name'] . ')'] = max($over[$p['part_name'] . ' (' . $sg['name'] . ')'] ?? 0, $d - $need);
+            }
             $thr = min(zp_stage_through($prog, $it, $pt, $sg['ops']), $need);
             $st[$pos] ??= ['name' => $sg['name'], 'need' => 0.0, 'done' => 0.0];
             $st[$pos]['need'] += $need; $st[$pos]['done'] += $thr;
@@ -3788,8 +3793,95 @@ function zp_line_flow(array $l, array $prog): array {
     }
     ksort($st);
     $last = $st ? $st[array_key_last($st)] : null;
-    return ['stages' => $st, 'behind' => $worst ? $worst[2] : '', 'no_size' => $noSize,
+    return ['stages' => $st, 'behind' => $worst ? $worst[2] : '', 'no_size' => $noSize, 'over' => $over,
             'pct' => ($last && $last['need'] > 0) ? round($last['done'] / $last['need'] * 100, 1) : 0.0];
+}
+
+/* ============================================================
+   A PROFORMA LINE THAT ALREADY HAS WORK BOOKED ON IT
+   ============================================================
+   (found 22 Nov 2026: 2,000 duvet covers cut on a DOUBLE line that the
+   proforma later said was 1,500 sets — the save changed the order under
+   work already booked, and nothing said so.)
+
+   The booking screen checks every booking against the order. What it cannot
+   see is the order changing AFTERWARDS. So a line with active work on it may
+   not be removed, may not change product or size, and may not drop below
+   what is already booked. Cancel or reduce the work first (Correct Entries),
+   then change the order.
+
+   zp_booked_lines(): per order line, what is booked — [item_id => ['n',
+   'pid', 'ops' => [part_id => [op_id => qty]], 'set' => [op_id => qty]]].
+   zp_line_min_qty(): the lowest order quantity the booked work allows.
+   zp_line_change_problems(): the refusals for one posted proforma. */
+function zp_booked_lines(int $pfid): array {
+    $out = [];
+    try {
+        $st = db()->prepare("SELECT proforma_item_id it, product_id pid, COALESCE(op_kind,'part') k, COALESCE(part_id,0) pt, op_id, SUM(qty) q, COUNT(*) n
+                             FROM zp_entries WHERE status='active' AND proforma_id=? GROUP BY proforma_item_id, product_id, k, pt, op_id");
+        $st->execute([$pfid]);
+        foreach ($st->fetchAll() as $r) {
+            $it = (int)$r['it'];
+            $out[$it] ??= ['n' => 0, 'pid' => (int)$r['pid'], 'ops' => [], 'set' => []];
+            $out[$it]['n'] += (int)$r['n'];
+            if ($r['k'] === 'part') $out[$it]['ops'][(int)$r['pt']][(int)$r['op_id']] = (float)$r['q'];
+            else                    $out[$it]['set'][(int)$r['op_id']] = (float)$r['q'];
+        }
+    } catch (Throwable $e) {}
+    return $out;
+}
+/* [min sets, what forces it] for one line as it would be: product, size, qty */
+function zp_line_min_qty(array $line, array $booked): array {
+    $min = 0.0; $why = '';
+    foreach ($booked['ops'] as $pt => $ops) {
+        $done = max($ops);
+        if ($done <= 0) continue;
+        $per = zp_pieces_needed(array_merge($line, ['ordered_qty' => 1]), (int)$pt);
+        if ($per <= 0) $per = 1.0;
+        $need = ceil(round($done / $per, 4));
+        if ($need > $min) {
+            $min = $need;
+            $nm = '';
+            try { $q = db()->prepare('SELECT part_name FROM zp_parts WHERE id=?'); $q->execute([(int)$pt]); $nm = (string)$q->fetchColumn(); } catch (Throwable $e) {}
+            $why = rtrim(rtrim(number_format($done, 2), '0'), '.') . ' ' . ($nm ?: 'pieces') . ' already booked'
+                 . ($per != 1.0 ? ' (' . rtrim(rtrim(number_format($per, 2), '0'), '.') . ' per set)' : '');
+        }
+    }
+    foreach ($booked['set'] as $q) if ($q > $min) { $min = ceil($q); $why = rtrim(rtrim(number_format($q, 2), '0'), '.') . ' sets already booked'; }
+    return [$min, $why];
+}
+/* $rows: the lines as posted — each ['id','pid','sid','size','qty','name'] */
+function zp_line_change_problems(int $pfid, array $rows): array {
+    $booked = zp_booked_lines($pfid);
+    if (!$booked) return [];
+    $old = [];
+    try {
+        $st = db()->prepare('SELECT id item_id, product_id, product_size_id, size, qty ordered_qty, product_name FROM proforma_items WHERE proforma_id=?');
+        $st->execute([$pfid]);
+        foreach ($st->fetchAll() as $r) $old[(int)$r['item_id']] = $r;
+    } catch (Throwable $e) { return []; }
+    $posted = [];
+    foreach ($rows as $r) if ((int)$r['id'] > 0) $posted[(int)$r['id']] = $r;
+    $qn = fn($v) => rtrim(rtrim(number_format((float)$v, 2), '0'), '.');
+    $out = [];
+    foreach ($booked as $it => $b) {
+        if (!isset($old[$it])) continue;                       // a line deleted long ago: nothing to protect here
+        $o = $old[$it];
+        $label = trim($o['product_name'] . ' ' . $o['size']);
+        $tail = ' — ' . $b['n'] . ' booking' . ($b['n'] === 1 ? '' : 's') . ' on it. Cancel or reduce that work on Correct Entries first.';
+        if (!isset($posted[$it])) { $out[] = '"' . $label . '" cannot be removed' . $tail; continue; }
+        $p = $posted[$it];
+        $oldLine = ['item_id' => $it, 'product_id' => (int)($o['product_id'] ?: $b['pid']), 'product_size_id' => (int)$o['product_size_id'], 'size' => (string)$o['size'], 'ordered_qty' => (float)$o['ordered_qty']];
+        $newPid = (int)$p['pid'] ?: $oldLine['product_id'];
+        if ($newPid !== $oldLine['product_id']) { $out[] = '"' . $label . '": the product cannot change' . $tail; continue; }
+        $newLine = array_merge($oldLine, ['product_size_id' => (int)$p['sid'], 'size' => (string)$p['size'], 'ordered_qty' => (float)$p['qty']]);
+        $oldSz = zp_line_size_id($oldLine); $newSz = zp_line_size_id($newLine);
+        if ($oldSz > 0 && $newSz !== $oldSz) { $out[] = '"' . $label . '": the size cannot change' . $tail; continue; }
+        [$min, $why] = zp_line_min_qty($newLine, $b);
+        if ((float)$p['qty'] + 0.0001 < $min)
+            $out[] = '"' . $label . '": ' . $why . ', so the quantity cannot go below ' . $qn($min) . ' (you entered ' . $qn($p['qty']) . '). Reduce the booked work on Correct Entries first.';
+    }
+    return $out;
 }
 
 /* EVERY ORDER IN PRODUCTION, OR ONE — the Order Status report. One pass over
@@ -3811,7 +3903,8 @@ function zp_order_status(?int $onlyPf = null): array {
             $o['stages'][$pos]['need'] += $sg['need']; $o['stages'][$pos]['done'] += $sg['done'];
         }
         $o['lines'][] = ['item' => (int)$l['item_id'], 'product' => (string)$l['product_name'], 'size' => (string)($l['size'] ?? ''),
-                         'ordered' => (float)$l['ordered_qty'], 'stages' => $f['stages'], 'behind' => $f['behind'], 'pct' => $f['pct']];
+                         'ordered' => (float)$l['ordered_qty'], 'stages' => $f['stages'], 'behind' => $f['behind'], 'pct' => $f['pct'], 'over' => $f['over']];
+        $o['over'] = ($o['over'] ?? 0) + count($f['over']);
         unset($o);
     }
     if ($out) {

@@ -98,6 +98,8 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
 .zf.os .cell{font-variant-numeric:tabular-nums;white-space:nowrap}
 .zf.os .cell small{color:var(--mut)}
 .zf.os .beh{color:#9a5710;font-size:11.5px}
+.zf.os .ovr{color:#b42318;font-size:11.5px;font-weight:600}
+.zf.os .zf-pill.p-ovr{color:#b42318;background:#fdf0ef;border-color:#f3c6c2;margin-left:4px}
 .zf.os .chart{display:flex;align-items:flex-end;gap:3px;height:110px;padding:10px 12px 0;overflow-x:auto}
 .zf.os .chart .c{flex:1 0 14px;max-width:34px;display:flex;flex-direction:column-reverse;height:100%}
 .zf.os .chart .c i{display:block;width:100%}
@@ -127,7 +129,7 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
         foreach ($o['stages'] as $pos => $sg) $sp[$pos] = $sg['need'] > 0 ? round($sg['done'] / $sg['need'] * 100, 1) : null;
         return ['id' => $o['id'], 'no' => $o['pi_no'], 'cust' => $o['customer'], 'lines' => count($o['lines']),
                 'ordered' => round($o['ordered'], 2), 'sp' => $sp, 'pct' => $o['pct'], 'w' => round($o['wages'], 2), 'pcs' => round($o['pcs'], 2),
-                'first' => $o['first'], 'last' => $o['last'], 'status' => $o['status'],
+                'first' => $o['first'], 'last' => $o['last'], 'status' => $o['status'], 'over' => (int)($o['over'] ?? 0),
                 'prods' => implode(', ', array_unique(array_map(fn($l) => $l['product'], $o['lines'])))];
     }, $all)), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
     function bar(p, c){
@@ -146,7 +148,7 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
     if (MONEY) cols.push({ k: 'w', label: 'Wages', num: 1, sort: function(r){ return r.w; }, html: function(r){ return r.w ? Z.n0(r.w) : '<span style="color:#9aa8b6">—</span>'; } });
     cols.push({ k: 'last', label: 'Last work', sort: function(r){ return r.last; }, html: function(r){ return r.last ? '<span style="white-space:nowrap">' + esc(Z.nice(r.last)) + '</span>' : '<span style="color:#9aa8b6">—</span>'; } });
     cols.push({ k: 'status', label: 'Status', sort: function(r){ return r.status; }, html: function(r){ var s = ST[r.status];
-      return '<span class="zf-pill ' + s[1] + '">' + s[0] + '</span>' + (r.status === 'nolink' ? '<div class="s2"><a href="line_links.php" onclick="event.stopPropagation()">Link its lines to products →</a></div>' : ''); } });
+      return '<span class="zf-pill ' + s[1] + '">' + s[0] + '</span>' + (r.over ? '<span class="zf-pill p-ovr" title="A line has more booked than it needs — open the order">Over-booked</span>' : '') + (r.status === 'nolink' ? '<div class="s2"><a href="line_links.php" onclick="event.stopPropagation()">Link its lines to products →</a></div>' : ''); } });
     var csv = [['Order', function(r){ return r.no; }], ['Customer', function(r){ return r.cust; }], ['Products', function(r){ return r.prods; }], ['Lines', function(r){ return r.lines; }], ['Ordered', function(r){ return r.ordered; }]];
     STAGES.forEach(function(s){ csv.push([s.n + ' %', function(r){ return r.sp[s.p] == null ? '' : r.sp[s.p]; }]); });
     csv.push(['Overall %', function(r){ return r.pct; }]);
@@ -234,7 +236,10 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
                 <div class="cell"><small><?= $q0($sg['done']) ?> / <?= $q0($sg['need']) ?></small></div>
               <?php endif; ?></td>
             <?php endforeach; ?>
-            <td><?= $l['behind'] !== '' ? '<span class="beh">' . e($l['behind']) . '</span>' : ($l['pct'] >= 99.95 ? '<span class="zf-pill p-ok">Done</span>' : '<span style="color:#9aa8b6">—</span>') ?></td>
+            <td><?= $l['behind'] !== '' ? '<span class="beh">' . e($l['behind']) . '</span>' : ($l['pct'] >= 99.95 ? '<span class="zf-pill p-ok">Done</span>' : '<span style="color:#9aa8b6">—</span>') ?>
+              <?php foreach ($l['over'] ?? [] as $what => $extra): ?>
+                <div class="ovr" title="More is booked on this line than it needs; the extra counts toward nothing. Correct it on Correct Entries.">Over-booked: <?= e($what) ?> +<?= $q0($extra) ?></div>
+              <?php endforeach; ?></td>
           </tr>
         <?php endforeach; ?>
         </tbody>
