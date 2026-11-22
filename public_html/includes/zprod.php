@@ -3571,7 +3571,7 @@ function zp_cancel_entry(int $id, string $reason, ?int $userId = null): array {
             foreach ($sg['ops'] as $oid) { $d = (float)($prog['op'][$it][$pt][$oid] ?? 0); if ($d > $most) { $most = $d; $what = $sg['name']; } }
         }
         if ($cut - (float)$e['qty'] < $most - 0.0001) {
-            return ['ok' => false, 'error' => "Cannot cancel this cutting entry — " . $qn($most) . " pieces have already been through {$what} against it, and only " . $qn($cut) . " were cut. Cancel or reduce the {$what} first."];
+            return ['ok' => false, 'error' => "Cannot cancel this cutting entry — " . $qn($most) . " pieces have already been through {$what}, and without it only " . $qn(max(0, $cut - (float)$e['qty'])) . " would be cut. Cancel or reduce the {$what} first."];
         }
     } elseif (($e['op_kind'] ?? 'part') === 'part') {
         /* THE SAME FOR A LATER STAGE: Stitching cannot drop below what has

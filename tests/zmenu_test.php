@@ -101,7 +101,7 @@ function page_opens(string $href): bool {
         'products_csv.php' => $admin || $col, 'set_quantities_csv.php' => $admin || $col, 'cost_audit.php' => $admin, 'costing_items_link.php' => $admin,
         'production_my_work.php' => $prodAll, 'production_dashboard.php' => $prodAll, 'production_orders.php' => $prodAll, 'production_entry.php' => $prodAll,
         'production_reports.php' => $prodAll, 'production_workers.php' => $admin || $col, 'production_assembly.php' => $admin || $col,
-        'production_pay.php' => $admin || $col, 'production_order_rates.php' => $admin || $col, 'production_amend.php' => $admin,
+        'production_pay.php' => $admin || $col, 'production_order_rates.php' => $admin || $col, 'production_amend.php' => $admin || $col,
         'inv_items.php' => $zu('invmast'), 'inv_parties.php' => $zu('invmast'), 'inv_gate.php' => $zu('gate'),
         'inv_store.php' => $zu('store') || $zu('stockrep'), 'inv_consume.php' => $zu('consume'), 'm_gate.php' => inv_perm('gate'),
         'inv_opening.php' => $zu('opening'), 'inv_stock.php' => $zu('stockrep'), 'inv_ledger.php' => $zu('stockrep'),

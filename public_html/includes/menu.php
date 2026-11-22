@@ -171,7 +171,8 @@ function zas_menu(): array {
                    product, so no other order moves. A colleague may read it;
                    only an admin may change a rate, which the page enforces. */
                 ['label' => 'Order Rate Amendments', 'href' => 'production_order_rates.php', 'show' => $admin || $colleague],
-                ['label' => 'Correct an Entry',      'href' => 'production_amend.php',     'show' => $admin],
+                /* edit or cancel booked work with a reason; colleagues too (owner, 22 Nov 2026) */
+                ['label' => 'Correct Entries',       'href' => 'production_amend.php',     'show' => $admin || $colleague],
                 /* For one moment only: sweeping away the rough dummy data
                    before the real data-entry team starts. Admin, and it makes
                    you type the word. */

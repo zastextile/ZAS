@@ -16,7 +16,10 @@ function grab(string $src, string $needle): string {
 }
 $pe = file_get_contents(__DIR__ . '/../public_html/production_entry.php');
 function db() { throw new RuntimeException('no database in this test'); }
-eval(grab($pe, 'function ze_merge_work(') . grab($pe, 'function ze_group_today('));
+/* the helpers moved to includes/zp_correct.php (22 Nov 2026), shared with Correct an Entry */
+$zc = file_get_contents(__DIR__ . '/../public_html/includes/zp_correct.php');
+eval(grab($zc, 'function ze_merge_work(') . grab($zc, 'function ze_group_today('));
+$pe .= $zc;   // the wiring checks below read both
 
 function w($item, $pi, $part, $op, $sid, $rate, $left, $size, $kind = 'part') {
     return ['k' => "$item:$op", 'item' => $item, 'op' => $op, 'kind' => $kind, 'part' => $part, 'pi' => $pi, 'pifull' => $pi,

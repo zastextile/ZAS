@@ -76,8 +76,11 @@ ok(str_contains($pe, "'item_id'   => \$_POST['r_item'][\$i]"), 'and reads the sa
 $peCode = preg_replace('!/\*.*?\*/!s', ' ', $pe);
 /* Two calls since 21 Nov 2026: the day's sheet, and Edit on a booked row —
    both through zp_book(), and nothing on the page writes an entry itself. */
-ok(substr_count($peCode, 'zp_book(') === 2 && !preg_match('/INSERT\s+INTO\s+zp_entries/i', $peCode),
-   'every booking goes through zp_book (the sheet and Edit), got ' . substr_count($peCode, 'zp_book('));
+/* the Edit lives in includes/zp_correct.php since 22 Nov 2026, shared with Correct an Entry */
+$zc = preg_replace('!/\*.*?\*/!s', ' ', file_get_contents(__DIR__ . '/../public_html/includes/zp_correct.php'));
+ok(substr_count($peCode, 'zp_book(') === 1 && substr_count($zc, 'zp_book(') === 1
+   && !preg_match('/INSERT\s+INTO\s+zp_entries/i', $peCode . $zc),
+   'every booking goes through zp_book (the sheet here, Edit in the shared helper), got ' . substr_count($peCode, 'zp_book(') . '+' . substr_count($zc, 'zp_book('));
 $book = lift($zp, 'zp_book');
 ok(str_contains($book, 'zp_remaining('), 'the server re-checks what is left');
 ok(!str_contains($book, "\$r['rate']"), 'and never takes a rate from the browser');
@@ -196,7 +199,7 @@ ok(str_contains($pe, 'if (i === rows.length - 1) zeAddRow();'), 'Enter on a quan
 echo "9. No stage name decides anything on this page\n";
 ok(!preg_match("/\\\$t\\['stage'\\] === '(Cutting|Manual Cutting|Stitching)'/", $pe),
    'the stage pill colour is not chosen by a hardcoded word');
-ok(str_contains($pe, "ze_stage_pill((string)\$t['stage'])") && str_contains($pe, 'function ze_stage_style('),
+ok(str_contains($pe, "ze_stage_pill((string)\$t['stage'])") && str_contains(file_get_contents(__DIR__ . '/../public_html/includes/zp_correct.php'), 'function ze_stage_style('),
    '  it is the fixed stage colour (owner, 21 Nov 2026: Cutting amber, Stitching blue, Packing green) — display only');
 
 echo "10. Money is still a separate permission from booking\n";

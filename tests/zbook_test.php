@@ -259,7 +259,7 @@ head('  and cancelling cutting cannot strand stitching');
    together (owner, 21 Nov 2026) — Overlock 600 + Hem 500 is 600 pieces, not 1,100 */
 t('the check exists', str_contains($canc, '$cut - (float)$e[\'qty\'] < $most - 0.0001'));
 t('  against the biggest single operation, not the sum', str_contains($canc, 'if ($d > $most)') && !str_contains($canc, "['stitched']"));
-t('  and it names the number in the way', str_contains($src, 'pieces have already been through {$what} against it'));
+t('  and it names the number in the way', str_contains($src, 'pieces have already been through {$what}, and without it only'));
 t('  telling you what to do instead', str_contains($src, 'Cancel or reduce the {$what} first'));
 t('a later stage cannot drop below what went on from it', str_contains($src, 'have already gone on to {$next[\'name\']} from it'));
 
