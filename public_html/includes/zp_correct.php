@@ -69,6 +69,68 @@ function ze_cancel_all(array $ids, string $reason, int $userId): array {
     return ['ok' => true, 'error' => ''];
 }
 
+/* ============================================================
+   SPLITTING ONE BOOKING ACROSS THE SIZES — BY ORDERED %
+   ============================================================
+   (owner, 22 Nov 2026: "use the qty % same as ordered %")
+   $mem: the merged row's members [order line, operation, left, need], in
+   operation order. Operations are filled first-operation-first (as before);
+   inside one operation the quantity is shared by each size's share of what
+   the order needs of that part: Single 1,080 / Double 2,700 / King 1,620
+   covers → 20% / 50% / 30%.
+   $open (cutting): no limit — the last operation takes whatever is beyond the
+   plan. Otherwise a size never gets more than it has left; what it cannot
+   take is shared among the others by the same %.
+   $taken: [ "line:op" => qty ] already on the sheet, not free again.
+   Returns [ [ "line:op" => qty ], what could not be placed ].
+   assets: the browser runs the same rules (zeAlloc in production_entry.php). */
+function ze_alloc(array $mem, float $qty, bool $open, array $taken = []): array {
+    $unit = abs($qty - round($qty)) < 0.00001 ? 1.0 : 0.01;
+    $rem = (int)round($qty / $unit);
+    $groups = [];
+    foreach ($mem as $m) $groups[(int)$m[1]][] = $m;
+    $out = []; $gi = 0; $ng = count($groups);
+    foreach ($groups as $ms) {
+        $gi++;
+        if ($rem <= 0) break;
+        $caps = []; $w = []; $plan = [];
+        foreach ($ms as $m) {
+            $k = $m[0] . ':' . $m[1];
+            $free = max(0.0, (float)$m[2] - (float)($taken[$k] ?? 0));
+            $caps[$k] = $open ? PHP_INT_MAX : (int)floor($free / $unit + 0.00001);
+            $w[$k] = max(0.0, (float)($m[3] ?? 0));
+            $plan[$k] = (int)floor($free / $unit + 0.00001);
+        }
+        /* how much this operation takes: open — its plan, the last one the rest */
+        $room = $open ? ($gi === $ng ? $rem : array_sum($plan)) : array_sum($caps);
+        $give = min($rem, $room);
+        $act = array_keys(array_filter($caps, fn($c) => $c > 0));
+        $left = $give;
+        while ($left > 0 && $act) {
+            $W = 0.0; foreach ($act as $k) $W += $w[$k];
+            $share = [];
+            foreach ($act as $k) $share[$k] = $W > 0 ? $left * $w[$k] / $W : $left / count($act);
+            $base = []; $sum = 0;
+            foreach ($share as $k => $x) { $base[$k] = (int)floor($x + 0.000001); $sum += $base[$k]; }
+            /* largest remainder: whole pieces, nothing lost to rounding */
+            $order = array_keys($share);
+            usort($order, fn($a, $b) => ($share[$b] - $base[$b]) <=> ($share[$a] - $base[$a]));
+            for ($i = 0; $sum < $left && $i < count($order); $i++) { $base[$order[$i]]++; $sum++; }
+            $next = [];
+            foreach ($base as $k => $n) {
+                $n = min($n, $caps[$k]);
+                if ($n > 0) { $out[$k] = ($out[$k] ?? 0) + $n; $caps[$k] -= $n; $left -= $n; }
+                if ($caps[$k] > 0) $next[] = $k;
+            }
+            if (count($next) === count($act) && $sum === 0) break;
+            $act = $next;
+        }
+        $rem -= ($give - $left);
+    }
+    foreach ($out as $k => $n) $out[$k] = round($n * $unit, 2);
+    return [$out, round($rem * $unit, 2)];
+}
+
 function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, string $why, int $userId, ?string $newDate = null, bool $exact = false): array {
     $why = trim($why);
     /* THE DAY CAN MOVE TOO (owner, 22 Nov 2026: Correct an Entry edits qty,
@@ -143,17 +205,12 @@ function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, st
                 foreach ($g['mem'] as $m) if ($m[0] === (int)$f['proforma_item_id'] && $m[1] === (int)$f['op_id']) { $grp = $g; break 2; }
             }
             if (!$grp) { ze_restore($ids); return ['ok' => false, 'error' => 'That job is no longer on the list (switched off or removed). Nothing was changed.']; }
-            /* the old lines are already freed, so what they take back is not free for the extra */
-            foreach ($grp['mem'] as $m) {
-                if ($rem <= 0.0001) break;
-                $k = $m[0] . ':' . $m[1];
-                $free = round($m[2] - ($keep[$k] ?? 0), 2);
-                if ($free <= 0) continue;
-                $take = min($free, $rem);
-                $keep[$k] = ($keep[$k] ?? 0) + $take;
-                $rem = round($rem - $take, 2);
-            }
-            if ($rem > 0.0001) { ze_restore($ids); return ['ok' => false, 'error' => 'Only ' . $qn($newQty - $rem) . ' can be booked on that row. Nothing was changed.']; }
+            /* the extra is split by the ORDERED % of each size, the same as a new
+               booking; the old lines are already freed, so what they take back
+               is not free for the extra. Cutting is open (no limit). */
+            [$add, $rest] = ze_alloc($grp['mem'], $rem, !empty($grp['open']), $keep);
+            foreach ($add as $k => $q) $keep[$k] = ($keep[$k] ?? 0) + $q;
+            if ($rest > 0.0001) { ze_restore($ids); return ['ok' => false, 'error' => 'Only ' . $qn($newQty - $rest) . ' can be booked on that row. Nothing was changed.']; }
         }
         foreach ($keep as $k => $q) {
             [$it, $op] = array_map('intval', explode(':', $k));
@@ -222,8 +279,8 @@ function ze_stage_pill(string $st): string {
    every operation of that stage added up, and its name lists the operations.
    A different rate or a different stage stays its own row.
    Each row keeps its members (order line, operation, what is left there),
-   first operation first and, inside it, oldest line first: a booking is
-   shared down that list (answer: "sum like sizes"). The pay is the same
+   first operation first; inside one operation a booking is shared by the
+   ORDERED % of each size (ze_alloc, since 22 Nov 2026). The pay is the same
    whichever member takes it, because the rate is the same; the server still
    checks and prices every member line exactly as before. */
 function ze_merge_work(array $rows): array {
@@ -250,7 +307,8 @@ function ze_merge_work(array $rows): array {
             $at[$key] = count($out); $out[] = $g;
         }
         $g =& $out[$at[$key]];
-        $g['mem'][] = [(int)$r['item'], (int)$r['op'], round((float)$r['left'], 2), $opPos[$kind . ':' . (int)$r['op']], $itPos[(int)$r['item']]];
+        $g['mem'][] = [(int)$r['item'], (int)$r['op'], round((float)$r['left'], 2), $opPos[$kind . ':' . (int)$r['op']], $itPos[(int)$r['item']], round((float)($r['need'] ?? 0), 2)];
+        $g['open'] = (int)($r['open'] ?? 0);
         $g['left'] = round($g['left'] + (float)$r['left'], 2);
         if (!$r['done']) $g['done'] = 0;
         $g['sz'][(int)$r['item']] = (string)($r['size'] ?? '');
@@ -264,7 +322,9 @@ function ze_merge_work(array $rows): array {
     foreach ($out as &$g) {
         /* first operation first, then oldest line first */
         usort($g['mem'], fn($a, $b) => [$a[3], $a[4]] <=> [$b[3], $b[4]]);
-        $g['mem'] = array_map(fn($m) => [$m[0], $m[1], $m[2]], $g['mem']);
+        /* [order line, operation, left, pieces this line needs] — the need is the
+           ORDERED SHARE a booking is split by (owner, 22 Nov 2026) */
+        $g['mem'] = array_map(fn($m) => [$m[0], $m[1], $m[2], $m[5]], $g['mem']);
         foreach ($g['mem'] as $m) if ($m[2] > 0.0001) { $g['item'] = $m[0]; $g['op'] = $m[1]; break; }  // the first that still has work
         $g['on'] = implode(', ', $g['ons']);
         $g['nop'] = count($g['ons']);

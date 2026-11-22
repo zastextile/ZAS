@@ -821,7 +821,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
              title: w.pn + ' → ' + w.on, strong: w.pi,
              bits: [w.prod, w.desc].filter(Boolean),
              chips:[szText(w), w.nop > 1 ? w.nop + ' operations' : ''].filter(Boolean), szt: w.nsz > 1 ? w.sizes : '', st: w.st,
-             rate: w.rate, left: w.left };
+             rate: w.rate, left: w.left, open: !!w.open };
   }
   /* DOES THIS PERSON WORK THIS STAGE?
      Stated once on the browser side, exactly as zp_worker_does_stage()
@@ -874,7 +874,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       +   (o.rate && MONEY ? '<span style="font-family:ui-monospace,monospace">' + n2(o.rate) + '/pc</span>' : '')
       +   (o.usual ? '<span class="ze-usual">usually</span>' : '')
       + '</div></div>'
-      + (o.left != null ? '<div class="ze-left">' + qn(o.left) + '<small>left</small></div>'
+      + (o.left != null ? '<div class="ze-left"' + (o.open && o.left <= 0 ? ' style="color:#9a5710"' : '') + '>' + qn(o.left) + '<small>' + (o.open ? (o.left > 0 ? 'to cut · open' : 'plan met · open') : 'left') + '</small></div>'
                         : '<div class="ze-left" style="color:#b6c0cf">&rarr;</div>')
       + '</button>';
   }
@@ -941,12 +941,13 @@ table.zp-t tbody tr:hover{background:#fafcff}
       ? '<div class="ze-head"><div><h3>' + esc(w.pn) + ' → ' + esc(w.on) + '</h3>'
         + '<div style="font-size:12px;color:#38495f"><b>' + esc(w.pi) + '</b> &middot; ' + esc(w.cust)
         + ' &middot; ' + esc(w.prod) + (w.desc ? ' &middot; <span style="color:#556b82">' + esc(w.desc) + '</span>' : '') + '</div><div class="ze-chips">'
-        + (w.nsz > 1 ? '<span class="ze-chip" title="Shared across the sizes, first size first">' + w.nsz + ' sizes: ' + esc(w.sizes) + '</span>'
+        + (w.nsz > 1 ? '<span class="ze-chip" title="Shared across the sizes by ordered %">' + w.nsz + ' sizes: ' + esc(w.sizes) + '</span>'
                      : (w.size ? '<span class="ze-chip">Size ' + esc(w.size) + '</span>' : ''))
         + (w.nop > 1 ? '<span class="ze-chip" title="Shared over the operations, first operation first">' + w.nop + ' operations</span>' : '')
         + stChip(w.st)
         + (MONEY ? '<span class="ze-chip">' + n2(w.rate) + ' / pc</span>' : '')
-        + '<span class="ze-chip" style="color:#0d9488;border-color:#0d9488">' + qn(w.left) + ' left</span>'
+        + (w.open ? '<span class="ze-chip" style="color:#9a5710;border-color:#e9a23b" title="Cutting is open: you may cut more than the order needs; the extra is shown as information">' + qn(w.left) + ' to cut · open</span>'
+                  : '<span class="ze-chip" style="color:#0d9488;border-color:#0d9488">' + qn(w.left) + ' left</span>')
         + '</div></div><button type="button" class="zp-b sm" onclick="zeReset()">Change</button></div>'
       : '<div class="ze-head"><div><h3>' + esc(w.name) + '</h3><div class="ze-chips">'
         + '<span class="ze-chip">' + esc(w.code) + '</span>'
@@ -1242,7 +1243,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
     rows.forEach(function(r){ r.over = false; });
     if (tab === 'A') {
       rows.forEach(function(r){ var v = parseFloat(r.q)||0; if (r.v && v>0) { n++; q += v; amt += v * rowRate(r); } });
-      if (picked && q + stagedOn(picked.k) > picked.left + 0.0001) {
+      if (picked && !picked.open && q + stagedOn(picked.k) > picked.left + 0.0001) {
         over = true;
         rows.forEach(function(r){ if ((parseFloat(r.q)||0) > 0) r.over = true; });
       }
@@ -1253,7 +1254,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
         if (r.v && v>0) { n++; q += v; amt += v * rowRate(r); per[r.v] = (per[r.v]||0) + v; }
       });
       rows.forEach(function(r){
-        if (r.v && per[r.v] + stagedOn(r.v) > rowLeft(r) + 0.0001) { r.over = true; over = true; }
+        if (r.v && !(other(r.v) || {}).open && per[r.v] + stagedOn(r.v) > rowLeft(r) + 0.0001) { r.over = true; over = true; }
       });
     }
     var sa = 0;
@@ -1274,7 +1275,9 @@ table.zp-t tbody tr:hover{background:#fafcff}
       if (tab === 'A' && picked) {
         var used = q + stagedOn(picked.k);
         cap.className = 'ze-cap' + (over ? ' bad' : '');
-        cap.textContent = qn(used) + ' of ' + qn(picked.left) + ' left' + (over ? ' — OVER' : '');
+        cap.textContent = picked.open
+          ? qn(used) + ' booked · plan ' + qn(picked.left) + (used > picked.left + 0.0001 ? ' · extra ' + qn(used - picked.left) + ' (cutting is open)' : '')
+          : qn(used) + ' of ' + qn(picked.left) + ' left' + (over ? ' — OVER' : '');
       } else {
         cap.className = 'ze-cap' + (over ? ' bad' : '');
         cap.textContent = over ? 'a line is booked past what is left' : '';
@@ -1301,6 +1304,43 @@ table.zp-t tbody tr:hover{background:#fafcff}
   }
 
   /* ---- staging: finish this block and start another, without saving yet ---- */
+  /* the browser copy of ze_alloc() in includes/zp_correct.php — keep the two the same */
+  function zeAlloc(mem, qty, open, taken){
+    var unit = Math.abs(qty - Math.round(qty)) < 0.00001 ? 1 : 0.01, rem = Math.round(qty / unit), out = {}, groups = [], gk = {};
+    mem.forEach(function(m){ if (gk[m[1]] == null) { gk[m[1]] = groups.length; groups.push([]); } groups[gk[m[1]]].push(m); });
+    groups.forEach(function(ms, gi){
+      if (rem <= 0) return;
+      var caps = {}, w = {}, plan = 0, room = 0;
+      ms.forEach(function(m){
+        var k = m[0] + ':' + m[1], free = Math.max(0, m[2] - (taken[k] || 0));
+        caps[k] = open ? Infinity : Math.floor(free / unit + 0.00001);
+        w[k] = Math.max(0, +m[3] || 0);
+        plan += Math.floor(free / unit + 0.00001);
+        if (!open) room += caps[k];
+      });
+      if (open) room = gi === groups.length - 1 ? rem : plan;
+      var give = Math.min(rem, room), left = give, act = Object.keys(caps).filter(function(k){ return caps[k] > 0; });
+      while (left > 0 && act.length) {
+        var W = 0; act.forEach(function(k){ W += w[k]; });
+        var share = {}, base = {}, sum = 0;
+        act.forEach(function(k){ share[k] = W > 0 ? left * w[k] / W : left / act.length; base[k] = Math.floor(share[k] + 0.000001); sum += base[k]; });
+        var order = act.slice().sort(function(a, b){ return (share[b] - base[b]) - (share[a] - base[a]); });
+        for (var i = 0; sum < left && i < order.length; i++) { base[order[i]]++; sum++; }
+        var next = [];
+        act.forEach(function(k){
+          var n = Math.min(base[k], caps[k]);
+          if (n > 0) { out[k] = (out[k] || 0) + n; caps[k] -= n; left -= n; }
+          if (caps[k] > 0) next.push(k);
+        });
+        if (next.length === act.length && sum === 0) break;
+        act = next;
+      }
+      rem -= (give - left);
+    });
+    Object.keys(out).forEach(function(k){ out[k] = Math.round(out[k] * unit * 100) / 100; });
+    return [out, Math.round(rem * unit * 100) / 100];
+  }
+
   window.zeStash = function(){
     var t = totals();
     if (t.over) return;
@@ -1314,28 +1354,28 @@ table.zp-t tbody tr:hover{background:#fafcff}
       /* kind rides on the staged row, not looked up again at save time — the
          work list can be rebuilt between staging and saving, and a row that
          re-derived its own kind then could book against the wrong table. */
-      /* FIRST SIZE FIRST (owner, 21 Nov 2026: "use fifo or any size
-         automatically but data entry daily must be easy"). One typed quantity
-         is shared across the size lines of the merged row, oldest line first,
-         each taking only what is still open there. It goes to the server as
-         one line per size, exactly as before, so zp_book checks and prices
-         every one; on screen it stays one line (grp). */
-      var kind = work.kind || 'part', grp = ++grpSeq, rem = Math.round(v*100)/100;
-      var mem = work.mem && work.mem.length ? work.mem : [[work.item, work.op, work.left]];
+      /* ONE TYPED QUANTITY, ONE LINE ON SCREEN (grp). It goes to the server as
+         one line per size, so zp_book checks and prices every one. Split by
+         ordered % since 22 Nov 2026 (it was first-size-first). */
+      var kind = work.kind || 'part', grp = ++grpSeq;
+      var mem = work.mem && work.mem.length ? work.mem : [[work.item, work.op, work.left, work.left]];
       var base = { kind:kind, g:work.k, grp:grp, worker:worker.id, rate:work.rate,
                    what:work.pn + ' → ' + work.on, who:worker.name, pt:worker.pt, pi:work.pi, st:work.st,
                    prod:work.prod, sz:szText(work) };
-      for (var m = 0; m < mem.length && rem > 0.0001; m++) {
-        var free = Math.round((mem[m][2] - stagedItem(mem[m][0], mem[m][1], kind))*100)/100;
-        if (free <= 0) continue;
-        var take = Math.min(free, rem);
-        sheet.push(Object.assign({}, base, { item:mem[m][0], op:mem[m][1], qty:take }));
-        rem = Math.round((rem - take)*100)/100;
-      }
+      /* BY ORDERED % (owner, 22 Nov 2026): the quantity is shared across the
+         sizes by each size's share of the order — the same rules as ze_alloc()
+         on the server. Cutting is open, so nothing is held back there. */
+      var taken = {};
+      mem.forEach(function(m){ taken[m[0] + ':' + m[1]] = stagedItem(m[0], m[1], kind); });
+      var res = zeAlloc(mem, v, !!work.open, taken);
+      Object.keys(res[0]).forEach(function(k){
+        var p = k.split(':');
+        if (res[0][k] > 0) sheet.push(Object.assign({}, base, { item:+p[0], op:+p[1], qty:res[0][k] }));
+      });
       /* cannot happen — totals() refuses a line past what is left — but a
          remainder is never dropped silently: it goes on the last line and the
          server refuses it with its own message */
-      if (rem > 0.0001) sheet.push(Object.assign({}, base, { item:mem[mem.length-1][0], op:mem[mem.length-1][1], qty:rem }));
+      if (res[1] > 0.0001) sheet.push(Object.assign({}, base, { item:mem[mem.length-1][0], op:mem[mem.length-1][1], qty:res[1] }));
     });
     zeReset();
     paintSheet();

@@ -32,7 +32,8 @@ $m = ze_merge_work([w(1,'PI-1',3,10,2,5.0,600,'Standard'), w(2,'PI-1',3,10,2,5.0
 ok(count($m) === 1, 'three sizes, one row');
 ok($m[0]['left'] == 1000, 'left is every size added up (1000)');
 ok($m[0]['nsz'] === 3 && $m[0]['size'] === '', 'it says 3 sizes');
-ok($m[0]['mem'] === [[1,10,600.0],[2,10,400.0],[3,10,0.0]], 'the size lines are kept, oldest first, for first-size-first');
+ok(array_map(fn($x) => array_slice($x, 0, 3), $m[0]['mem']) === [[1,10,600.0],[2,10,400.0],[3,10,0.0]], 'the size lines are kept, each with what it has left');
+ok(count($m[0]['mem'][0]) === 4, '  and with what it needs — the ordered share a booking is split by');
 ok($m[0]['item'] === 1 && !$m[0]['done'], 'it points at the first line with work left, and is open');
 ok(str_contains($m[0]['hay'], 'king'), 'a search by size still finds it');
 
@@ -55,7 +56,7 @@ $m = ze_merge_work([$a, $c, $b, $d]);
 ok(count($m) === 1, 'Overlock and Hem at 5.00 in Stitching: one row');
 ok($m[0]['on'] === 'Overlock, Hem' && $m[0]['nop'] === 2, 'the operations are listed with commas');
 ok($m[0]['left'] == 1800 && $m[0]['nsz'] === 2, 'left is every size and operation added up; still 2 sizes');
-ok($m[0]['mem'] === [[1,10,600.0],[2,10,300.0],[1,11,600.0],[2,11,300.0]], 'first operation first, then oldest line first');
+ok(array_map(fn($x) => array_slice($x, 0, 3), $m[0]['mem']) === [[1,10,600.0],[2,10,300.0],[1,11,600.0],[2,11,300.0]], 'first operation first, then the order\'s own line order');
 
 echo "3. The booked table, merged the same way\n";
 $e = fn($id, $wk, $q, $st = 'active', $rate = 5.0) => ['id' => $id, 'worker_id' => $wk, 'pi_no' => 'PI-1', 'product_name' => 'Pillow',
@@ -70,7 +71,20 @@ ok($g[2]['status'] === 'cancelled', 'a cancelled line is never added into a live
 
 echo "4. The page wiring\n";
 ok(str_contains($pe, '$WORK = ze_merge_work(zp_work_index());'), 'the list is merged once, when the page opens');
-ok(str_contains($pe, "mem[m][2] - stagedItem(mem[m][0], mem[m][1], kind)"), 'a booking is shared first size first, minus what is already staged');
+ok(str_contains($pe, "var res = zeAlloc(mem, v, !!work.open, taken);") && str_contains($pe, "taken[m[0] + ':' + m[1]] = stagedItem(m[0], m[1], kind)"), 'a booking is shared by ordered %, minus what is already staged');
+
+echo "4b. Split by ordered % (owner, 22 Nov 2026)\n";
+eval(grab($zc, 'function ze_alloc('));
+[$a] = ze_alloc([[1,9,1080,1080],[2,9,2700,2700],[3,9,1620,1620]], 1000, true);
+ok($a === ['1:9' => 200.0, '2:9' => 500.0, '3:9' => 300.0], '1,000 covers → Single 200 · Double 500 · King 300 (20/50/30%)');
+[$a] = ze_alloc([[1,10,100,1080],[2,10,2700,2700],[3,10,1620,1620]], 1000, false);
+ok($a['1:10'] == 100 && $a['2:10'] + $a['3:10'] == 900, 'a size with little room takes what it can; the rest goes to the others by the same %');
+[$a, $r] = ze_alloc([[1,9,0,600],[2,9,0,400]], 50, true);
+ok($a === ['1:9' => 30.0, '2:9' => 20.0] && $r == 0, 'cutting is open: beyond the plan it is still shared by %');
+[$a, $r] = ze_alloc([[1,10,10,600],[2,10,10,400]], 50, false);
+ok(array_sum($a) == 20 && $r == 30, 'a later stage never takes more than is left; the rest is handed back');
+[$a] = ze_alloc([[1,9,5,1],[2,9,5,1],[3,9,5,1]], 7, false);
+ok(array_sum($a) == 7 && max($a) - min($a) <= 1, 'whole pieces, nothing lost to rounding');
 
 echo "5. Edit and cancel are all or nothing\n";
 ok(str_contains($pe, "if (!\$r['ok']) { ze_restore(\$done);"), 'a cancel that one line refuses puts the others back');

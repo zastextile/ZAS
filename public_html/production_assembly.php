@@ -78,7 +78,7 @@ if (!empty($_SESSION['error']))  { $err = $_SESSION['error'];  unset($_SESSION['
 $products = zp_products(true);
 $sizes    = $pid > 0 ? zp_assembly_sizes($pid) : [];
 $plan     = ($pid > 0 && $size !== '') ? zp_assembly_plan($pid, $size, $sets, $want) : null;
-/* What else is on the floor at this size, this product's parts first. */
+/* What else is on the floor (any size), this product's parts first. */
 $onSheet  = [];
 if ($plan && $plan['ok']) foreach ($plan['parts'] as $pp) $onSheet[(int)$pp['part_id']] = true;
 $offer    = ($pid > 0 && $size !== '') ? zp_pool_offer($pid, $size, $onSheet) : [];
@@ -183,7 +183,7 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
   ?>
   <div class="zp-card">
     <h2>The parts this set is made of</h2>
-    <p class="sub">Per set comes from Product Master, at this size. Available is every finished piece at this size <b>across all orders</b>, less what earlier assemblies took.</p>
+    <p class="sub">Per set comes from Product Master, at this size. Available is every finished piece of the part, <b>any size it was booked on, across all orders</b> (parts are booked without a size — the real size is decided here), less what earlier assemblies took.</p>
 
     <div class="strip">
       <div class="tile"><div class="k">Pool can make</div><div class="v"><?= nq($can) ?></div>
@@ -206,7 +206,7 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
         <?php endif; ?>
         Assembling anyway would create finished stock out of parts that were never produced, so this is the one thing refused rather than warned about.</div>
     <?php elseif ($sets > 0): ?>
-      <div class="note">Parts are taken <b>oldest order first</b> across every PO at this size — leftovers from a finished order are used before new pieces, and each piece records which order it came from.</div>
+      <div class="note">Parts are taken from the <b>order you credit first</b>, then <b>oldest order first</b> across every PO — leftovers are used before new pieces, and each piece records which order it came from. Credit the sets to the order line: that is what makes the order's status exact per size.</div>
     <?php endif; ?>
 
     <?php if ($plan['offrecipe']): ?>
@@ -250,7 +250,7 @@ table.zp-t td.r,table.zp-t th.r{text-align:right;font-variant-numeric:tabular-nu
         <td class="r <?= $p['left'] >= $p['need'] && $p['left'] > 0 ? 'okv' : 'short' ?>"><?= nq($p['left']) ?></td>
         <td class="r"><?= $p['shortfall'] > 0 ? '<span class="short">' . nq($p['shortfall']) . '</span>' : '<span style="color:#b6c0cf">—</span>' ?></td>
         <td class="src">
-          <?php if (!$p['by']): ?><span class="short">nothing finished at this size</span>
+          <?php if (!$p['by']): ?><span class="short">nothing finished yet</span>
           <?php else: foreach ($p['by'] as $b): ?><b><?= e($b['pi']) ?></b> <?= nq($b['left']) ?> &nbsp;<?php endforeach; endif; ?>
         </td>
       </tr>

@@ -1528,9 +1528,23 @@ function zp_stage_through(array $prog, int $itemId, int $partId, array $opIds): 
    stage within what the stage before it has finished, cutting first. Used
    after an edit, which cancels and re-books, to check the RESULT rather than
    refusing the cancel half way through. */
+/* pieces of a part already taken into sets from one order line */
+function zp_sets_used(int $itemId, int $partId): float {
+    try {
+        $st = db()->prepare("SELECT COALESCE(SUM(ap.qty),0) FROM zp_assembly_parts ap JOIN zp_assembly a ON a.id = ap.assembly_id
+                             WHERE a.status='active' AND ap.from_item_id=? AND ap.part_id=?");
+        $st->execute([$itemId, $partId]);
+        return (float)$st->fetchColumn();
+    } catch (Throwable $e) { return 0.0; }
+}
 function zp_flow_problem(int $itemId, int $partId, ?array $prog = null): string {
     $prog ??= zp_progress_map();
     $qn = fn($v) => rtrim(rtrim(number_format($v, 2), '0'), '.');
+    $used = zp_sets_used($itemId, $partId);
+    if ($used > 0.0001) {
+        $fin = zp_stage_through($prog, $itemId, $partId, array_map(fn($o) => (int)$o['id'], zp_part_ops($partId, true)));
+        if ($fin < $used - 0.0001) return $qn($used) . ' of these pieces were already made into sets, but only ' . $qn($fin) . ' would be finished.';
+    }
     $cut = (float)($prog['stage'][$itemId][$partId]['cut'] ?? 0);
     $prev = null;
     foreach (zp_part_stage_ops($partId) as $i => $sg) {
@@ -1557,11 +1571,17 @@ function zp_remaining(array $line, int $partId, int $opId, string $stage, array 
        zp_size_problem() is what tells the person why. */
     if ($needed === ZP_NO_SIZE) return 0.0;
     $done   = (float)($prog['op'][$itemId][$partId][$opId] ?? 0);
+    /* CUTTING IS OPEN (owner, 22 Nov 2026: "allow qty open in cutting … not
+       fixed with the proforma, in reporting just show the info"). For cutting
+       this is only what is still PLANNED (needed − done); it is never a limit
+       — see zp_book(). Every later stage is limited by the stage before it,
+       not by the proforma: stitching up to what was cut, packing up to what
+       was stitched. */
     if (zp_is_cutting($stage)) {
         $ceiling = $needed;
     } else {
         $cut = (float)($prog['stage'][$itemId][$partId]['cut'] ?? 0);
-        $ceiling = min($needed, $cut);
+        $ceiling = $cut;
         /* A LATER STAGE WAITS FOR THE ONE BEFORE IT, not only for cutting:
            Packing cannot pass the pieces that have been through every
            Stitching operation (Overlock 900, Hem 600 → 600 can be packed). */
@@ -2573,12 +2593,11 @@ function zp_part_pool(): array {
     foreach (zp_open_lines() as $l) {
         $itemId = (int)$l['item_id'];
         $pid    = (int)$l['product_id'];
-        $sizeId = zp_line_size_id($l);
-        if ($sizeId <= 0) continue;                  // cannot be planned, so cannot be counted
-        $label = '';
-        foreach (zp_sizes($pid) as $sz) if ((int)$sz['id'] === $sizeId) { $label = trim((string)$sz['size_label']); break; }
-        if ($label === '') $label = trim((string)($l['size'] ?? ''));
-        if ($label === '') continue;
+        /* ANY SIZE OF THE PART (owner, 22 Nov 2026). Parts are booked without
+           a real size — the size split is only the ordered % estimate — so a
+           finished part is one pool per PART, whatever size it was booked on.
+           The real size is decided at Make Sets. */
+        $label = '*';
 
         foreach (zp_product_parts($pid) as $p) {
             $partId = (int)$p['id'];
@@ -2606,12 +2625,12 @@ function zp_part_pool(): array {
     /* WHAT EARLIER ASSEMBLIES ALREADY TOOK, charged back to the very order
        line it was taken from — so "still left on PI-2291" stays true. */
     try {
-        foreach (db()->query("SELECT ap.part_id, ap.size_label, ap.from_item_id, COALESCE(SUM(ap.qty),0) q
+        foreach (db()->query("SELECT ap.part_id, ap.from_item_id, COALESCE(SUM(ap.qty),0) q
                               FROM zp_assembly_parts ap
                               JOIN zp_assembly a ON a.id = ap.assembly_id
                               WHERE a.status='active'
-                              GROUP BY ap.part_id, ap.size_label, ap.from_item_id")->fetchAll() as $r) {
-            $pid = (int)$r['part_id']; $lbl = (string)$r['size_label']; $q = (float)$r['q'];
+                              GROUP BY ap.part_id, ap.from_item_id")->fetchAll() as $r) {
+            $pid = (int)$r['part_id']; $lbl = '*'; $q = (float)$r['q'];
             if (!isset($pool[$pid][$lbl])) continue;
             $pool[$pid][$lbl]['used'] += $q;
             foreach ($pool[$pid][$lbl]['by'] as &$b)
@@ -2717,7 +2736,7 @@ function zp_assembly_plan(int $productId, string $sizeLabel, float $sets, ?array
 
     foreach ($rows as $partId => $row) {
         $per    = $row['per'];
-        $e      = $pool[$partId][$sizeLabel] ?? ['made' => 0.0, 'used' => 0.0, 'left' => 0.0, 'by' => []];
+        $e      = $pool[$partId]['*'] ?? ['made' => 0.0, 'used' => 0.0, 'left' => 0.0, 'by' => []];   // any size of the part
         $need   = round($row['need'], 2);
         /* A PART THAT GOES IN TWICE HALVES WHAT ITS PILE IS WORTH. 840
            pillow cases at 2 per set is 420 sets, not 840. */
@@ -2769,7 +2788,7 @@ function zp_pool_offer(int $productId, string $sizeLabel, array $already = []): 
     foreach (zp_parts(false) as $p) {
         $id = (int)$p['id'];
         if (isset($already[$id])) continue;                 // already on the sheet
-        $e = $pool[$id][$sizeLabel] ?? null;
+        $e = $pool[$id]['*'] ?? null;                       // any size of the part
         if (!$e || $e['left'] <= 0.0001) continue;          // nothing to take
         $out[] = ['id' => $id, 'name' => (string)$p['part_name'],
                   'left' => $e['left'], 'mine' => isset($mine[$id]),
@@ -2826,9 +2845,14 @@ function zp_assembly_save(string $date, int $productId, string $sizeLabel, float
         $aid = (int)db()->lastInsertId();
 
         $ins = db()->prepare("INSERT INTO zp_assembly_parts (assembly_id, part_id, size_label, from_item_id, qty) VALUES (?,?,?,?,?)");
+        /* the order the sets are credited to gives its OWN parts first, then
+           the oldest leftovers of any order */
+        $ownPi = '';
+        if ($proformaItemId) { $q0 = db()->prepare('SELECT pf.pi_no FROM proforma_items pi JOIN proforma_invoices pf ON pf.id = pi.proforma_id WHERE pi.id=?'); $q0->execute([$proformaItemId]); $ownPi = (string)$q0->fetchColumn(); }
         foreach ($plan['parts'] as $p) {
             $want = round($p['need'], 2);
             if ($want <= 0) continue;
+            if ($ownPi !== '') usort($p['by'], fn($a, $b) => [($a['pi_full'] ?? '') !== $ownPi, $a['item_id']] <=> [($b['pi_full'] ?? '') !== $ownPi, $b['item_id']]);
             /* OLDEST ORDER FIRST, and it is written down which order each
                piece came from. Without that, "what is still left on
                PI-2291" could never be answered again. */
@@ -3476,12 +3500,11 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
         $taken = $batch[$key] ?? 0.0;
         $left  = zp_remaining($line, $partId, $opId, (string)$op['stage'], $prog) - $taken;
 
-        if ($qty > $left + 0.0001) {
+        /* cutting is open: what it shows as left is the plan, not a limit */
+        if (!zp_is_cutting((string)$op['stage']) && $qty > $left + 0.0001) {
             $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
             $feed = zp_is_cutting($op['stage']) ? null : zp_stage_feeder($partId, (string)$op['stage']);
-            $why = zp_is_cutting($op['stage'])
-                ? "that is all the order needs"
-                : ($feed
+            $why = ($feed
                    ? "{$op['stage']} cannot go past what has been through every {$feed['name']} operation"
                    : "only {$num} have been cut, and you cannot stitch more than was cut");
             $errors[] = "$label: only {$num} left for {$op['operation_name']} on \"{$op['part_name']}\" — {$why}.";
@@ -3573,7 +3596,22 @@ function zp_cancel_entry(int $id, string $reason, ?int $userId = null): array {
         if ($cut - (float)$e['qty'] < $most - 0.0001) {
             return ['ok' => false, 'error' => "Cannot cancel this cutting entry — " . $qn($most) . " pieces have already been through {$what}, and without it only " . $qn(max(0, $cut - (float)$e['qty'])) . " would be cut. Cancel or reduce the {$what} first."];
         }
-    } elseif (($e['op_kind'] ?? 'part') === 'part') {
+    }
+    /* SETS MADE STAND ON FINISHED PARTS (owner, 22 Nov 2026): a part already
+       taken into Make Sets from this line cannot be un-finished under it. */
+    if (($e['op_kind'] ?? 'part') === 'part' && $pt > 0) {
+        $used = zp_sets_used($it, $pt);
+        if ($used > 0.0001) {
+            $prog = $prog ?? zp_progress_map();
+            $ops = array_map(fn($o) => (int)$o['id'], zp_part_ops($pt, true));
+            $fin = zp_stage_through($prog, $it, $pt, $ops);
+            $prog2 = $prog; $prog2['op'][$it][$pt][(int)$e['op_id']] = (float)($prog2['op'][$it][$pt][(int)$e['op_id']] ?? 0) - (float)$e['qty'];
+            $fin2 = zp_stage_through($prog2, $it, $pt, $ops);
+            if ($fin2 < $used - 0.0001 && $fin2 < $fin - 0.0001)
+                return ['ok' => false, 'error' => 'Cannot cancel this entry — ' . $qn($used) . ' of these pieces were already made into sets. Cancel those sets on Make Sets first.'];
+        }
+    }
+    if (!zp_is_cutting((string)$e['stage']) && ($e['op_kind'] ?? 'part') === 'part') {
         /* THE SAME FOR A LATER STAGE: Stitching cannot drop below what has
            already been packed from it. */
         $all = zp_part_stage_ops($pt); $me = zp_stage_pos((string)$e['stage']);
@@ -3767,8 +3805,19 @@ function zp_by_operation(string $from, string $to): array {
               (capped at need) — the same "through every operation" rule the
               booking limits use, so this report and the entry screen agree.
    'behind' names the slowest part at the earliest stage still open. */
+/* sets made per order line, from Make Sets credited to that line (active only) */
+function zp_sets_made_map(bool $fresh = false): array {
+    static $m = null;
+    if ($m !== null && !$fresh) return $m;
+    $m = [];
+    try {
+        foreach (db()->query("SELECT proforma_item_id, SUM(sets_made) q FROM zp_assembly WHERE status='active' AND proforma_item_id IS NOT NULL GROUP BY proforma_item_id")->fetchAll() as $r)
+            $m[(int)$r['proforma_item_id']] = (float)$r['q'];
+    } catch (Throwable $e) {}
+    return $m;
+}
 function zp_line_flow(array $l, array $prog): array {
-    $st = []; $worst = null; $noSize = false; $over = [];
+    $st = []; $worst = null; $noSize = false; $over = []; $pp = [];
     $it = (int)$l['item_id'];
     foreach (zp_product_parts((int)$l['product_id']) as $p) {
         $pt = (int)$p['id'];
@@ -3776,12 +3825,17 @@ function zp_line_flow(array $l, array $prog): array {
         if ($need === ZP_NO_SIZE) { $noSize = true; continue; }
         if ($need <= 0) continue;
         foreach (zp_part_stage_ops($pt) as $pos => $sg) {
-            /* OVER-BOOKED: more booked on an operation than this line needs */
+            /* EXTRA: more booked on an operation than this line needs — allowed for
+               cutting since 22 Nov 2026, so it is INFORMATION, not an error */
             foreach ($sg['ops'] as $oid) {
                 $d = (float)($prog['op'][$it][$pt][$oid] ?? 0);
                 if ($d > $need + 0.0001) $over[$p['part_name'] . ' (' . $sg['name'] . ')'] = max($over[$p['part_name'] . ' (' . $sg['name'] . ')'] ?? 0, $d - $need);
             }
             $thr = min(zp_stage_through($prog, $it, $pt, $sg['ops']), $need);
+            /* each part on its own too (owner, 22 Nov 2026: "why PILLOW (Cutting)
+               for the duvet?") — a set line adds its parts together, so the
+               screen also shows them one by one */
+            $pp[$pos][(string)$p['part_name']] = [$need, $thr];
             $st[$pos] ??= ['name' => $sg['name'], 'need' => 0.0, 'done' => 0.0];
             $st[$pos]['need'] += $need; $st[$pos]['done'] += $thr;
             if ($thr < $need - 0.0001) {
@@ -3793,8 +3847,18 @@ function zp_line_flow(array $l, array $prog): array {
     }
     ksort($st);
     $last = $st ? $st[array_key_last($st)] : null;
+    /* SETS MADE ARE THE EXACT TRUTH PER SIZE (owner, 22 Nov 2026). For a
+       product of two or more parts the line is finished only by Make Sets
+       credited to this order line; a one-part product finishes at its last
+       stage, as before. */
+    $nParts = count(zp_product_parts((int)$l['product_id']));
+    $sets = zp_sets_made_map()[$it] ?? 0.0;
+    $ordered = (float)($l['ordered_qty'] ?? 0);
+    $stagePct = ($last && $last['need'] > 0) ? round($last['done'] / $last['need'] * 100, 1) : 0.0;
+    $isSet = $nParts >= 2;
     return ['stages' => $st, 'behind' => $worst ? $worst[2] : '', 'no_size' => $noSize, 'over' => $over,
-            'pct' => ($last && $last['need'] > 0) ? round($last['done'] / $last['need'] * 100, 1) : 0.0];
+            'sets' => $sets, 'is_set' => $isSet, 'stage_pct' => $stagePct, 'pp' => $pp,
+            'pct' => $isSet ? ($ordered > 0 ? round(min(100, $sets / $ordered * 100), 1) : 0.0) : $stagePct];
 }
 
 /* ============================================================
@@ -3817,13 +3881,16 @@ function zp_line_flow(array $l, array $prog): array {
 function zp_booked_lines(int $pfid): array {
     $out = [];
     try {
-        $st = db()->prepare("SELECT proforma_item_id it, product_id pid, COALESCE(op_kind,'part') k, COALESCE(part_id,0) pt, op_id, SUM(qty) q, COUNT(*) n
-                             FROM zp_entries WHERE status='active' AND proforma_id=? GROUP BY proforma_item_id, product_id, k, pt, op_id");
+        $st = db()->prepare("SELECT proforma_item_id it, product_id pid, COALESCE(op_kind,'part') k, COALESCE(part_id,0) pt, op_id, stage, SUM(qty) q, COUNT(*) n
+                             FROM zp_entries WHERE status='active' AND proforma_id=? GROUP BY proforma_item_id, product_id, k, pt, op_id, stage");
         $st->execute([$pfid]);
         foreach ($st->fetchAll() as $r) {
             $it = (int)$r['it'];
             $out[$it] ??= ['n' => 0, 'pid' => (int)$r['pid'], 'ops' => [], 'set' => []];
             $out[$it]['n'] += (int)$r['n'];
+            /* CUTTING IS OPEN, so cut pieces never fix a minimum order quantity;
+               only work after cutting does (it was planned against the order) */
+            if ($r['k'] === 'part' && zp_is_cutting((string)$r['stage'])) continue;
             if ($r['k'] === 'part') $out[$it]['ops'][(int)$r['pt']][(int)$r['op_id']] = (float)$r['q'];
             else                    $out[$it]['set'][(int)$r['op_id']] = (float)$r['q'];
         }
@@ -3903,7 +3970,10 @@ function zp_order_status(?int $onlyPf = null): array {
             $o['stages'][$pos]['need'] += $sg['need']; $o['stages'][$pos]['done'] += $sg['done'];
         }
         $o['lines'][] = ['item' => (int)$l['item_id'], 'product' => (string)$l['product_name'], 'size' => (string)($l['size'] ?? ''),
-                         'ordered' => (float)$l['ordered_qty'], 'stages' => $f['stages'], 'behind' => $f['behind'], 'pct' => $f['pct'], 'over' => $f['over']];
+                         'ordered' => (float)$l['ordered_qty'], 'stages' => $f['stages'], 'behind' => $f['behind'], 'pct' => $f['pct'], 'over' => $f['over'],
+                         'sets' => $f['sets'], 'is_set' => $f['is_set'], 'stage_pct' => $f['stage_pct'], 'pp' => $f['pp']];
+        $o['sets'] = ($o['sets'] ?? 0) + $f['sets'];
+        $o['wsum'] = ($o['wsum'] ?? 0) + $f['pct'] * (float)$l['ordered_qty'];
         $o['over'] = ($o['over'] ?? 0) + count($f['over']);
         unset($o);
     }
@@ -3935,8 +4005,9 @@ function zp_order_status(?int $onlyPf = null): array {
     } catch (Throwable $e) {}
     foreach ($out as &$o) {
         ksort($o['stages']);
-        $last = $o['stages'] ? $o['stages'][array_key_last($o['stages'])] : null;
-        $o['pct'] = ($last && $last['need'] > 0) ? round($last['done'] / $last['need'] * 100, 1) : 0.0;
+        /* overall = each line's own finish (sets made for a set, last stage for a
+           one-part product), weighted by what the line ordered */
+        $o['pct'] = $o['ordered'] > 0 ? round(($o['wsum'] ?? 0) / $o['ordered'], 1) : 0.0;
         /* NOT STARTED / IN PROGRESS / STALLED / DONE. Stalled = started, not
            finished, and nothing booked for 7 days. No due dates: the owner
            said the delivery date on proformas is not reliable enough. */
@@ -4568,7 +4639,9 @@ function zp_work_index(): array {
                    truth is "that job is done". Those two need different answers:
                    one is a typo to correct, the other is good news. The list
                    only OFFERS open work, but it can now say which it is. */
-                $done = $left <= 0.0001;
+                $isCut = zp_is_cutting((string)$o['stage']);
+                /* an open cutting row stays offered after the plan is met — extra cutting is allowed */
+                $done = !$isCut && $left <= 0.0001;
                 $rate  = zp_rate_for($opId, (float)$o['rate'], $rates, $szRates, $szId);
                 /* THE STAGE ID TRAVELS WITH THE ROW, not just its spelling.
                    The worker list is narrowed by stage, and matching on a name
@@ -4600,6 +4673,10 @@ function zp_work_index(): array {
                     'rate' => round($rate, 2),
                     'left' => round($left, 2),
                     'done' => $done ? 1 : 0,
+                    /* pieces this line needs of this part — the ORDERED SHARE used to
+                       split a booking across sizes (owner: "qty % same as ordered %") */
+                    'need' => round(max(0.0, zp_pieces_needed($l, $partId)), 2),
+                    'open' => $isCut ? 1 : 0,
                     'hay'  => mb_strtolower(trim(implode(' ', [
                                   $l['pi_no'], $l['customer_name'] ?? '', $l['product_name'],
                                   $l['size'] ?? '', $p['part_name'], $o['operation_name'], $stage,

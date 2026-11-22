@@ -16,6 +16,7 @@ function zp_stage_all(bool $a = false): array { return [['id' => 1, 'name' => 'C
 function zp_part_ops(int $pt, bool $a = false): array { return $GLOBALS['OPS'][$pt] ?? []; }
 function zp_product_parts(int $pid): array { return $GLOBALS['PARTS'][$pid] ?? []; }
 function zp_pieces_needed(array $l, int $pt): float { return (float)$l['ordered_qty'] * ($GLOBALS['PER'][$pt] ?? 1); }
+function zp_sets_made_map(bool $f = false): array { return $GLOBALS['SETS'] ?? []; }
 foreach (['zp_part_stage_ops', 'zp_stage_through', 'zp_line_flow'] as $fn) eval(lift($src, $fn));
 
 /* a pillow cover: cut; overlock + hem; pack */

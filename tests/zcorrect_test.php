@@ -23,7 +23,7 @@ ok(str_contains($zc, "if (\$why === '')") && str_contains($zp, "if (\$reason ===
 
 echo "3. Edit keeps what was really booked\n";
 ok(str_contains($zc, 'foreach ($old as $o) {') && str_contains($zc, '$keep[$k] = ($keep[$k] ?? 0) + $take;'), 'the old lines are re-booked as they were');
-ok(str_contains($zc, '$free = round($m[2] - ($keep[$k] ?? 0), 2);'), 'only a higher quantity looks for free room');
+ok(str_contains($zc, "[\$add, \$rest] = ze_alloc(\$grp['mem'], \$rem, !empty(\$grp['open']), \$keep);"), 'only a higher quantity looks for room, split by ordered %');
 ok(str_contains($zc, "if (\$exact) {"), 'the every-line view edits one line on its own size and operation');
 ok(str_contains($zc, "if (\$bookOn > date('Y-m-d'))"), 'a date can move, never into the future');
 ok(str_contains($zc, "\$o['entry_date'] !== \$date"), 'an edit only touches lines of the day shown');

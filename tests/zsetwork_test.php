@@ -214,7 +214,7 @@ ok(strpos($pm, 'zp_save_set_ops') < strpos($pm, 'zp_bridge_sync_product'),
    '  and runs BEFORE the costing bridge, or the sheet would miss it by one save');
 ok(str_contains($pe, "'op_kind'   => \$_POST['r_kind'][\$i]   ?? 'part'"),
    'the entry screen posts which table it booked against');
-ok(str_contains($pe, "var kind = work.kind || 'part'") && str_contains($pe, 'var base = { kind:kind,') && str_contains($pe, 'op:mem[m][1], qty:take'), '  and the staged row carries it');
+ok(str_contains($pe, "var kind = work.kind || 'part'") && str_contains($pe, 'var base = { kind:kind,') && str_contains($pe, "op:+p[1], qty:res[0][k]"), '  and the staged row carries it');
 
 echo "11. Costing is fed\n";
 ok(str_contains($zp, 'const ZP_SET_OP_BASE'), 'the mirror has a marker space of its own');

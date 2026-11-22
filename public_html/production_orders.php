@@ -98,8 +98,10 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
 .zf.os .cell{font-variant-numeric:tabular-nums;white-space:nowrap}
 .zf.os .cell small{color:var(--mut)}
 .zf.os .beh{color:#9a5710;font-size:11.5px}
-.zf.os .ovr{color:#b42318;font-size:11.5px;font-weight:600}
-.zf.os .zf-pill.p-ovr{color:#b42318;background:#fdf0ef;border-color:#f3c6c2;margin-left:4px}
+.zf.os .pp{font-size:10.5px;color:#9a5710;white-space:nowrap;line-height:1.35}
+.zf.os .pp.ok{color:#256f3a}
+.zf.os .ovr{color:#9a5710;font-size:11.5px;font-weight:600}
+.zf.os .zf-pill.p-ovr{color:#9a5710;background:#fff7ec;border-color:#f0d3a8;margin-left:4px}
 .zf.os .chart{display:flex;align-items:flex-end;gap:3px;height:110px;padding:10px 12px 0;overflow-x:auto}
 .zf.os .chart .c{flex:1 0 14px;max-width:34px;display:flex;flex-direction:column-reverse;height:100%}
 .zf.os .chart .c i{display:block;width:100%}
@@ -148,7 +150,7 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
     if (MONEY) cols.push({ k: 'w', label: 'Wages', num: 1, sort: function(r){ return r.w; }, html: function(r){ return r.w ? Z.n0(r.w) : '<span style="color:#9aa8b6">—</span>'; } });
     cols.push({ k: 'last', label: 'Last work', sort: function(r){ return r.last; }, html: function(r){ return r.last ? '<span style="white-space:nowrap">' + esc(Z.nice(r.last)) + '</span>' : '<span style="color:#9aa8b6">—</span>'; } });
     cols.push({ k: 'status', label: 'Status', sort: function(r){ return r.status; }, html: function(r){ var s = ST[r.status];
-      return '<span class="zf-pill ' + s[1] + '">' + s[0] + '</span>' + (r.over ? '<span class="zf-pill p-ovr" title="A line has more booked than it needs — open the order">Over-booked</span>' : '') + (r.status === 'nolink' ? '<div class="s2"><a href="line_links.php" onclick="event.stopPropagation()">Link its lines to products →</a></div>' : ''); } });
+      return '<span class="zf-pill ' + s[1] + '">' + s[0] + '</span>' + (r.over ? '<span class="zf-pill p-ovr" title="Some work is beyond what the order needs (cutting is open) — information">Extra</span>' : '') + (r.status === 'nolink' ? '<div class="s2"><a href="line_links.php" onclick="event.stopPropagation()">Link its lines to products →</a></div>' : ''); } });
     var csv = [['Order', function(r){ return r.no; }], ['Customer', function(r){ return r.cust; }], ['Products', function(r){ return r.prods; }], ['Lines', function(r){ return r.lines; }], ['Ordered', function(r){ return r.ordered; }]];
     STAGES.forEach(function(s){ csv.push([s.n + ' %', function(r){ return r.sp[s.p] == null ? '' : r.sp[s.p]; }]); });
     csv.push(['Overall %', function(r){ return r.pct; }]);
@@ -191,6 +193,7 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
 
 <?php else:
   $s = $ST[$O['status']];
+  $anySet = (bool)array_filter($O['lines'], fn($l) => !empty($l['is_set']));
   $lastPos = $O['stages'] ? array_key_last($O['stages']) : null; ?>
   <div class="zf-hd">
     <div><h1>Order status</h1><div class="zf-sub">Stage by stage: pieces that have been through every operation of that stage.</div></div>
@@ -206,10 +209,14 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
       <?= $O['first'] ? ' · worked ' . e(date('j M', strtotime($O['first']))) . ' – ' . e(date('j M Y', strtotime($O['last']))) : ' · nothing booked yet' ?></div>
     <div class="zf-kpis">
       <?php foreach ($O['stages'] as $pos => $sg): $c = zo_col($sg['name']); $p = $sg['need'] > 0 ? $sg['done'] / $sg['need'] * 100 : 0; ?>
-        <div class="zf-kpi" style="border-left-color:<?= $c[2] ?>"><span><?= e($sg['name']) ?><?= $pos === $lastPos ? ' · overall' : '' ?></span>
+        <div class="zf-kpi" style="border-left-color:<?= $c[2] ?>"><span><?= e($sg['name']) ?><?= $pos === $lastPos && !$anySet ? ' · overall' : '' ?></span>
           <b style="color:<?= $c[1] ?>"><?= number_format($p, $p >= 99.95 || $p == 0 ? 0 : 1) ?>%</b>
           <small><?= $q0($sg['done']) ?> of <?= $q0($sg['need']) ?> pieces · <?= $q0(max(0, $sg['need'] - $sg['done'])) ?> left</small></div>
       <?php endforeach; ?>
+      <?php if ($anySet): $ordSets = array_sum(array_map(fn($l) => !empty($l['is_set']) ? $l['ordered'] : 0, $O['lines'])); $ps = $ordSets > 0 ? min(100, ($O['sets'] ?? 0) / $ordSets * 100) : 0; ?>
+        <div class="zf-kpi" style="border-left-color:#107e3e"><span>Sets made · exact</span><b style="color:#107e3e"><?= number_format($ps, $ps >= 99.95 || $ps == 0 ? 0 : 1) ?>%</b>
+          <small><?= $q0($O['sets'] ?? 0) ?> of <?= $q0($ordSets) ?> sets · overall <?= number_format($O['pct'], 1) ?>%</small></div>
+      <?php endif; ?>
       <?php if ($showMoney): ?>
         <div class="zf-kpi k-green"><span>Wages so far</span><b>PKR <?= $q0($O['wages']) ?></b><small><?= $q0($O['pcs']) ?> operation-pieces booked</small></div>
       <?php endif; ?>
@@ -224,6 +231,7 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
       <table class="zf-t" id="osGrid">
         <thead><tr><th>Product · size</th><th class="n">Ordered</th>
           <?php foreach ($O['stages'] as $sg): ?><th class="n"><?= e($sg['name']) ?></th><?php endforeach; ?>
+          <?php if ($anySet): ?><th class="n" title="Make Sets credited to this order line — the exact finished sets of this size">Sets made</th><?php endif; ?>
           <th>Waiting on</th></tr></thead>
         <tbody>
         <?php foreach ($O['lines'] as $l): ?>
@@ -234,11 +242,18 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
               <td class="n"><?php if (!$sg): ?><span style="color:#9aa8b6">—</span><?php else: $p = $sg['need'] > 0 ? $sg['done'] / $sg['need'] * 100 : 0; ?>
                 <div class="pb"><i><b style="width:<?= min(100, $p) ?>%;background:<?= $c[2] ?>"></b></i><span><?= number_format($p, $p >= 99.95 || $p == 0 ? 0 : 1) ?>%</span></div>
                 <div class="cell"><small><?= $q0($sg['done']) ?> / <?= $q0($sg['need']) ?></small></div>
+                <?php if (count($l['pp'][$pos] ?? []) > 1): foreach ($l['pp'][$pos] as $pn => [$pneed, $pdone]): ?>
+                  <div class="pp<?= $pdone + 0.0001 >= $pneed ? ' ok' : '' ?>"><?= e($pn) ?> <?= $q0($pdone) ?>/<?= $q0($pneed) ?></div>
+                <?php endforeach; endif; ?>
               <?php endif; ?></td>
             <?php endforeach; ?>
+            <?php if ($anySet): ?><td class="n"><?php if (!empty($l['is_set'])): $p = $l['ordered'] > 0 ? min(100, $l['sets'] / $l['ordered'] * 100) : 0; ?>
+                <div class="pb"><i><b style="width:<?= $p ?>%;background:#107e3e"></b></i><span><?= number_format($p, $p >= 99.95 || $p == 0 ? 0 : 1) ?>%</span></div>
+                <div class="cell"><small><?= $q0($l['sets']) ?> / <?= $q0($l['ordered']) ?> sets</small></div>
+              <?php else: ?><span style="color:#9aa8b6" title="One-part product: finished at its last stage">—</span><?php endif; ?></td><?php endif; ?>
             <td><?= $l['behind'] !== '' ? '<span class="beh">' . e($l['behind']) . '</span>' : ($l['pct'] >= 99.95 ? '<span class="zf-pill p-ok">Done</span>' : '<span style="color:#9aa8b6">—</span>') ?>
               <?php foreach ($l['over'] ?? [] as $what => $extra): ?>
-                <div class="ovr" title="More is booked on this line than it needs; the extra counts toward nothing. Correct it on Correct Entries.">Over-booked: <?= e($what) ?> +<?= $q0($extra) ?></div>
+                <div class="ovr" title="More than this line needs — cutting is open, so this is information. Extra parts stay in the pool for Make Sets.">Extra: <?= e($what) ?> +<?= $q0($extra) ?></div>
               <?php endforeach; ?></td>
           </tr>
         <?php endforeach; ?>
@@ -246,10 +261,11 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
         <tfoot><tr><td>Total</td><td class="n"><?= $q0($O['ordered']) ?></td>
           <?php foreach ($O['stages'] as $sg): $p = $sg['need'] > 0 ? $sg['done'] / $sg['need'] * 100 : 0; ?>
             <td class="n"><?= number_format($p, $p >= 99.95 || $p == 0 ? 0 : 1) ?>%<div class="cell"><small><?= $q0($sg['done']) ?> / <?= $q0($sg['need']) ?></small></div></td>
-          <?php endforeach; ?><td></td></tr></tfoot>
+          <?php endforeach; ?>
+          <?php if ($anySet): ?><td class="n"><?= $q0($O['sets'] ?? 0) ?><div class="cell"><small>sets made</small></div></td><?php endif; ?><td></td></tr></tfoot>
       </table>
     </div>
-    <div class="note">Pieces are counted per part: a set with a sheet and two pillow covers needs three pieces of work at each stage. "Waiting on" names the slowest part at the earliest stage still open.</div>
+    <div class="note">Each stage cell adds up ALL the parts of the line (a Duvet set = its pillows + its cover); the small lines under it show each part on its own — green when that part is done. "Waiting on" names the part that is furthest behind at the earliest stage still open. Pieces are counted per part: a set with a sheet and two pillow covers needs three pieces of work at each stage. Parts are booked without a size and shown here split by the ordered %; <b>Sets made</b> (Make Sets credited to the line) is the exact count per size, and a set line is done only when its sets are made. Cutting is open — anything beyond the plan shows as Extra.</div>
   </div>
 
   <div class="zf-card">

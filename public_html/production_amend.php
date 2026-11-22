@@ -320,7 +320,7 @@ page_header('Correct Entries');
     $('caWk').innerHTML = opts.map(function(w){ return '<option value="' + w.id + '"' + (w.id === r.wid ? ' selected' : '') + '>' + esc(w.l) + '</option>'; }).join('');
     $('caHint').textContent = every
       ? 'This one saved line is re-booked on the same size and operation.'
-      : (r.n > 1 ? 'This row is ' + r.n + ' saved lines. They are kept as they are with the new worker or date; a lower quantity comes off the last lines, a higher one is shared over what is still free.' : 'The line is kept as it is with the new worker or date.')
+      : (r.n > 1 ? 'This row is ' + r.n + ' saved lines. They are kept as they are with the new worker or date; a lower quantity comes off the last lines, a higher one is shared by the ordered % of each size.' : 'The line is kept as it is with the new worker or date.')
         + ' The old line stays on the list, marked "Edited", and the new one is checked against what is left.';
     $('caDlg').showModal(); f.new_qty.select();
   });

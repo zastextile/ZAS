@@ -111,23 +111,23 @@ eval(lift($zp, 'function zp_part_pool('));
 eval(lift($zp, 'function zp_assembly_plan('));
 eval(lift($zp, 'function zp_assembly_save('));
 
-echo "1. The pool — parts belong to nobody\n";
+echo "1. The pool — parts belong to nobody, and since 22 Nov 2026 to no size either ('*')\n";
 $pool = zp_part_pool();
-ok(($pool[21]['King']['made'] ?? null) === 420.0,
-   'comforters from BOTH orders are one pile: 300 + 120 = 420, got ' . ($pool[21]['King']['made'] ?? 'null'));
-ok(($pool[22]['King']['made'] ?? null) === 560.0, 'fitted sheets too: 300 + 260 = 560');
-ok(($pool[23]['King']['made'] ?? null) === 300.0, 'neck rolls only exist on the first order');
-ok(count($pool[21]['King']['by']) === 2, 'and it remembers both orders it came from');
-ok($pool[21]['King']['by'][0]['item_id'] === 881,
-   'OLDEST ORDER FIRST — leftovers are used before new pieces, got ' . $pool[21]['King']['by'][0]['item_id']);
-ok($pool[21]['King']['by'][0]['pi'] === 'PI-2291', '  named short, got ' . $pool[21]['King']['by'][0]['pi']);
+ok(($pool[21]['*']['made'] ?? null) === 420.0,
+   'comforters from BOTH orders are one pile: 300 + 120 = 420, got ' . ($pool[21]['*']['made'] ?? 'null'));
+ok(($pool[22]['*']['made'] ?? null) === 560.0, 'fitted sheets too: 300 + 260 = 560');
+ok(($pool[23]['*']['made'] ?? null) === 300.0, 'neck rolls only exist on the first order');
+ok(count($pool[21]['*']['by']) === 2, 'and it remembers both orders it came from');
+ok($pool[21]['*']['by'][0]['item_id'] === 881,
+   'OLDEST ORDER FIRST — leftovers are used before new pieces, got ' . $pool[21]['*']['by'][0]['item_id']);
+ok($pool[21]['*']['by'][0]['pi'] === 'PI-2291', '  named short, got ' . $pool[21]['*']['by'][0]['pi']);
 
 echo "2. Finished means past EVERY operation\n";
 $OPS[23] = [['id'=>303], ['id'=>306]];          // neck roll now has two
 $PROG['op'][881][23] = [303 => 300, 306 => 180];  // 300 cut, 180 stitched
 $p2 = zp_part_pool();
-ok(($p2[23]['King']['made'] ?? null) === 180.0,
-   '300 cut and 180 stitched is 180 FINISHED, not 300 and not 480, got ' . ($p2[23]['King']['made'] ?? 'null'));
+ok(($p2[23]['*']['made'] ?? null) === 180.0,
+   '300 cut and 180 stitched is 180 FINISHED, not 300 and not 480, got ' . ($p2[23]['*']['made'] ?? 'null'));
 $PROG['op'][881][23] = [303 => 300, 306 => 300];
 $OPS[23] = [['id'=>303]];
 
@@ -195,7 +195,11 @@ ok($r4['ok'] === false, 'a future date is refused');
 $r5 = zp_assembly_save('2026-09-18', 7, 'King', 0, null, '', 1);
 ok($r5['ok'] === false && str_contains($r5['error'], 'How many'), 'zero sets is refused');
 $r6 = zp_assembly_plan(7, 'Queen', 0);
-ok($r6['ok'] === true && $r6['can'] === 0.0, 'a size with no parts finished can make nothing');
+/* ANY SIZE OF THE PART (owner, 22 Nov 2026): parts are booked without a real
+   size, so a Queen set may be made from pieces that were booked on King lines */
+$rK = zp_assembly_plan(7, 'King', 0);
+ok($r6['ok'] === true && $r6['can'] === $rK['can'] && ($r6['parts'][0]['made'] ?? -1) === ($rK['parts'][0]['made'] ?? -2),
+   'a Queen set reads the same pool as King — parts booked on King lines count (any size of the part)');
 $r7 = zp_assembly_plan(7, 'Emperor', 0);
 ok($r7['ok'] === false && str_contains($r7['error'], 'not on this product'), 'a size the product does not have is refused');
 
@@ -221,8 +225,8 @@ $PROG['op'][890] = [26 => [307 => 500]];
 $TAKEN = [];
 
 $poolG = zp_part_pool();
-ok(($poolG[26]['King']['left'] ?? 0) === 500.0,
-   'a part from ANOTHER product is in the pool, got ' . ($poolG[26]['King']['left'] ?? 'null'));
+ok(($poolG[26]['*']['left'] ?? 0) === 500.0,
+   'a part from ANOTHER product is in the pool, got ' . ($poolG[26]['*']['left'] ?? 'null'));
 
 $offer = zp_pool_offer(7, 'King', []);
 $names = array_column($offer, 'name');

@@ -41,7 +41,8 @@ ok(str_contains($wi, 'zp_remaining($l, $partId, $opId'), 'it asks zp_remaining f
 /* finished work is now MARKED rather than dropped, so the screen can tell
    "that is already done" apart from "that does not exist" — but it is still
    never offered as something to book against. */
-ok(str_contains($wi, '$done = $left <= 0.0001;'), 'finished work is marked');
+/* since 22 Nov 2026 cutting is OPEN: a cutting row stays offered after its plan is met */
+ok(str_contains($wi, '$done = !$isCut && $left <= 0.0001;'), 'finished work is marked (cutting stays open)');
 ok(str_contains($wi, "'done' => \$done ? 1 : 0,"), '  and the flag rides on the row');
 ok(str_contains($pe, 'return !w.done && hit(w.hay, t);'), '  and it is never offered');
 ok(substr_count($pe, '!w.done &&') === 2, '  on both tabs, got ' . substr_count($pe, '!w.done &&'));

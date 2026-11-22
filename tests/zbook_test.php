@@ -56,6 +56,7 @@ $GLOBALS['STAGE_ROWS'] = [
 /* a part's operations, by stage — none for the parts above, so their limits
    are exactly the cut count as before; part 7 below has all three stages */
 function zp_part_ops(int $partId, bool $activeOnly = false): array { return $GLOBALS['OPS'][$partId] ?? []; }
+function zp_sets_used(int $itemId, int $partId): float { return 0.0; }   // no Make Sets in these sums
 function zp_stage_all(bool $activeOnly = false): array { return $GLOBALS['STAGE_ROWS']; }
 function zp_stage_first(): ?array { $r = zp_stage_all(true); return $r ? $r[0] : null; }
 
@@ -143,8 +144,9 @@ t('400 cut allows 400 stitched, not the 1000 ordered',
   zp_remaining($line, 6, 88, 'Direct Sewing', $cut400) === 400.0,
   zp_remaining($line, 6, 88, 'Direct Sewing', $cut400));
 $over = ['op' => [100 => [6 => [77 => 1200.0]]], 'stage' => [100 => [6 => ['cut' => 1200.0]]]];
-t('cutting MORE than ordered still does not let stitching pass the order',
-  zp_remaining($line, 6, 88, 'Direct Sewing', $over) === 1000.0,
+/* CUTTING IS OPEN since 22 Nov 2026: stitching may use every piece that was cut */
+t('cutting MORE than ordered lets stitching use all of it (cutting is open)',
+  zp_remaining($line, 6, 88, 'Direct Sewing', $over) === 1200.0,
   zp_remaining($line, 6, 88, 'Direct Sewing', $over));
 
 head('EACH OPERATION HAS ITS OWN ALLOWANCE');
@@ -193,9 +195,9 @@ t('the reason is stated', str_contains($src, 'can book twice what exists by spli
 
 head('THE SAVE REFUSES WHAT THE SCREEN REFUSES');
 t('an over-book is rejected with the number left',
-  str_contains($book, 'if ($qty > $left + 0.0001)'));
-t('  and cutting says "that is all the order needs"',
-  str_contains($src, 'that is all the order needs'));
+  str_contains($book, '&& $qty > $left + 0.0001)'));
+t('  but cutting is never refused for being over the plan (open)',
+  str_contains($book, "if (!zp_is_cutting((string)\$op['stage']) && \$qty > \$left + 0.0001)"));
 t('  while stitching says why it is lower',
   str_contains($src, 'you cannot stitch more than was cut'));
 t('a blank row is skipped, not treated as an error',
@@ -346,8 +348,9 @@ t('  while only OPEN work can actually be picked',
 /* this used to live in draw()'s own markup. It now lives in the ONE row
    renderer both lists share, so the in-row list on the "By worker" tab
    finally shows it too — it never did before. */
+/* "left" for a later stage; for open cutting the same number reads "to cut · open" */
 t('what is left is printed on every option',
-  str_contains($pe, "qn(o.left) + '<small>left</small>"));
+  str_contains($pe, "qn(o.left) + '<small>' + (o.open ? (o.left > 0 ? 'to cut · open' : 'plan met · open') : 'left') + '</small>"));
 t('  in the in-row list as well as the top one, from the same renderer',
   substr_count($pe, 'function zeRowHtml(') === 1 && substr_count($pe, 'zePaint(') === 3);
 t('an over-book is flagged as you type, before the save',
