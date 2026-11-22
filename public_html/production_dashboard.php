@@ -69,6 +69,16 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .num{text-align:right;font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace}
 .code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:#5a6b82}
 .split{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;align-items:start}
+.split>*{min-width:0}
+/* a table never spills out of its card: it scrolls inside it instead */
+.zp-card{min-width:0;max-width:100%}
+.tw{max-width:100%;overflow-x:auto}
+.tw table.zp-t{width:100%}
+/* app.css gives every table min-width:980px, which pushed the numbers of the
+   narrow cards (By department, Busiest workers) out of sight. Here a table
+   fits its card. */
+.zd-wrap table.zp-t{min-width:0}
+.prow:hover .pname{color:#0a6ed1}
 @media(min-width:1180px){.split{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr)}}
 .spark{display:flex;align-items:flex-end;gap:2px;height:90px;padding-top:6px}
 .spark i{flex:1;min-width:2px;background:linear-gradient(180deg,#3ec7e0,#0ea8c9);border-radius:2px 2px 0 0;display:block}
@@ -106,6 +116,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       <div><span class="lab">To</span><input class="zin" type="date" name="to" value="<?= e($to) ?>" max="<?= e(date('Y-m-d')) ?>"></div>
       <button class="zp-b pri">Show</button>
       <a class="zp-b" href="production_dashboard.php">Last 30 days</a>
+      <a class="zp-b" href="production_orders.php">Order status</a>
       <a class="zp-b" href="production_reports.php">Reports</a>
     </form>
   </div>
@@ -151,12 +162,13 @@ table.zp-t tbody tr:hover{background:#fafcff}
   <div class="split">
     <div class="zp-card">
       <h2>Orders, furthest behind first</h2>
-      <p class="sub">Percentage is measured on <b>stitching</b> &mdash; the last stage that runs.
-         Measuring on cutting would call an order finished before anything was sewn.</p>
+      <p class="sub">Percentage is measured on the <b>last stage</b> each line goes through (normally Packing),
+         counting pieces that have been through <b>every</b> operation of it. Click a line for the whole order.
+         <a href="production_orders.php">All orders &rarr;</a></p>
       <?php if (!$orders): ?>
         <div class="empty">No order is switched on for production yet.</div>
       <?php else: foreach ($orders as $o): ?>
-        <div class="prow">
+        <a class="prow" href="production_orders.php?order=<?= (int)$o['proforma_id'] ?>" style="display:block;color:inherit;text-decoration:none">
           <div class="ptop">
             <div>
               <div class="pname"><?= e($o['product']) ?><?= trim((string)$o['size']) !== '' ? ' · ' . e($o['size']) : '' ?></div>
@@ -169,7 +181,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
           <?php if ($o['behind']): ?>
             <div class="behind">Waiting on <?= e(implode(', ', array_slice($o['behind'], 0, 3))) ?><?= count($o['behind']) > 3 ? ' and ' . (count($o['behind']) - 3) . ' more' : '' ?></div>
           <?php endif; ?>
-        </div>
+        </a>
       <?php endforeach; endif; ?>
     </div>
 
@@ -182,7 +194,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
         <?php if (!$byDept): ?>
           <div class="empty">Nothing booked in this period.</div>
         <?php else: ?>
-          <table class="zp-t">
+          <div class="tw"><table class="zp-t">
             <thead><tr><th>Department</th><th class="num" style="width:60px">People</th>
               <th class="num" style="width:80px">Pieces</th><th class="num" style="width:100px">Wages</th></tr></thead>
             <tbody>
@@ -199,7 +211,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
               <td colspan="3" style="font-weight:800;font-size:12px">Total</td>
               <td class="num" style="font-weight:800"><?= number_format($tot['wage'], 2) ?></td>
             </tr></tfoot>
-          </table>
+          </table></div>
         <?php endif; ?>
       </div>
       <?php endif; ?>
@@ -210,7 +222,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
         <?php if (!$byWk): ?>
           <div class="empty">Nothing booked in this period.</div>
         <?php else: ?>
-          <table class="zp-t">
+          <div class="tw"><table class="zp-t">
             <thead><tr><th>Worker</th><th class="num" style="width:56px">Days</th>
               <th class="num" style="width:80px">Pieces</th>
               <?php if ($showMoney): ?><th class="num" style="width:100px">Wages</th><?php endif; ?></tr></thead>
@@ -225,7 +237,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
               </tr>
             <?php endforeach; ?>
             </tbody>
-          </table>
+          </table></div>
           <?php if (count($byWk) > 12): ?>
             <p style="margin:10px 0 0;font-size:11.5px;color:#8a97ab">
               Showing 12 of <?= count($byWk) ?>. <a href="production_reports.php?r=worker&amp;from=<?= e($from) ?>&amp;to=<?= e($to) ?>">See them all</a>.</p>

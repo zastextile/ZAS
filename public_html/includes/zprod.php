@@ -3760,47 +3760,110 @@ function zp_by_operation(string $from, string $to): array {
     } catch (Throwable $e) { return []; }
 }
 
-/* ORDER PROGRESS — for each live order line, how far each part has got.
-   Built from the SAME zp_pieces_needed() and zp_remaining() the entry screen
-   uses, so a dashboard can never claim an order is finished while the entry
-   screen still offers work on it. */
-function zp_order_progress(): array {
-    $prog  = zp_progress_map();
-    $out   = [];
-    foreach (zp_open_lines() as $l) {
-        $pid = (int)$l['product_id'];
-        $needTot = 0.0; $cutTot = 0.0; $stitchTot = 0.0; $behind = []; $noSize = false;
-        foreach (zp_product_parts($pid) as $p) {
-            $partId = (int)$p['id'];
-            $need   = zp_pieces_needed($l, $partId);
-            /* ZP_NO_SIZE must never reach a total. Adding -1 in would quietly
-               REDUCE what the order appears to need and push the percentage up,
-               so a line nobody can even book would make the order look ahead of
-               where it is. The line is counted as unplannable instead. */
-            if ($need === ZP_NO_SIZE) { $noSize = true; continue; }
-            $cut    = (float)($prog['stage'][(int)$l['item_id']][$partId]['cut'] ?? 0);
-            $stitch = (float)($prog['stage'][(int)$l['item_id']][$partId]['stitched'] ?? 0);
-            $needTot   += $need;
-            $cutTot    += min($cut, $need);
-            $stitchTot += min($stitch, $need);
-            if ($need > 0 && $cut < $need) $behind[] = $p['part_name'] . ' (cutting)';
-            elseif ($need > 0 && $stitch < $need) $behind[] = $p['part_name'] . ' (stitching)';
+/* ONE ORDER LINE, STAGE BY STAGE (owner, 22 Nov 2026: "each stage and
+   overall"). For every active stage the line's parts go through:
+       need = pieces of those parts the order needs
+       done = pieces that have been through EVERY operation of that stage
+              (capped at need) — the same "through every operation" rule the
+              booking limits use, so this report and the entry screen agree.
+   'behind' names the slowest part at the earliest stage still open. */
+function zp_line_flow(array $l, array $prog): array {
+    $st = []; $worst = null; $noSize = false;
+    $it = (int)$l['item_id'];
+    foreach (zp_product_parts((int)$l['product_id']) as $p) {
+        $pt = (int)$p['id'];
+        $need = zp_pieces_needed($l, $pt);
+        if ($need === ZP_NO_SIZE) { $noSize = true; continue; }
+        if ($need <= 0) continue;
+        foreach (zp_part_stage_ops($pt) as $pos => $sg) {
+            $thr = min(zp_stage_through($prog, $it, $pt, $sg['ops']), $need);
+            $st[$pos] ??= ['name' => $sg['name'], 'need' => 0.0, 'done' => 0.0];
+            $st[$pos]['need'] += $need; $st[$pos]['done'] += $thr;
+            if ($thr < $need - 0.0001) {
+                $r = $thr / $need;
+                if ($worst === null || $pos < $worst[0] || ($pos === $worst[0] && $r < $worst[1]))
+                    $worst = [$pos, $r, $p['part_name'] . ' (' . $sg['name'] . ')'];
+            }
         }
+    }
+    ksort($st);
+    $last = $st ? $st[array_key_last($st)] : null;
+    return ['stages' => $st, 'behind' => $worst ? $worst[2] : '', 'no_size' => $noSize,
+            'pct' => ($last && $last['need'] > 0) ? round($last['done'] / $last['need'] * 100, 1) : 0.0];
+}
+
+/* EVERY ORDER IN PRODUCTION, OR ONE — the Order Status report. One pass over
+   the open lines and one grouped query for wages and dates; the browser does
+   the filtering. */
+function zp_order_status(?int $onlyPf = null): array {
+    $prog = zp_progress_map();
+    $out = [];
+    foreach (zp_open_lines() as $l) {
+        $pf = (int)$l['proforma_id'];
+        if ($onlyPf !== null && $pf !== $onlyPf) continue;
+        $f = zp_line_flow($l, $prog);
+        $out[$pf] ??= ['id' => $pf, 'pi_no' => (string)$l['pi_no'], 'customer' => (string)($l['customer_name'] ?? ''),
+                       'lines' => [], 'stages' => [], 'ordered' => 0.0, 'wages' => 0.0, 'pcs' => 0.0, 'first' => '', 'last' => ''];
+        $o =& $out[$pf];
+        $o['ordered'] += (float)$l['ordered_qty'];
+        foreach ($f['stages'] as $pos => $sg) {
+            $o['stages'][$pos] ??= ['name' => $sg['name'], 'need' => 0.0, 'done' => 0.0];
+            $o['stages'][$pos]['need'] += $sg['need']; $o['stages'][$pos]['done'] += $sg['done'];
+        }
+        $o['lines'][] = ['item' => (int)$l['item_id'], 'product' => (string)$l['product_name'], 'size' => (string)($l['size'] ?? ''),
+                         'ordered' => (float)$l['ordered_qty'], 'stages' => $f['stages'], 'behind' => $f['behind'], 'pct' => $f['pct']];
+        unset($o);
+    }
+    if ($out) {
+        try {
+            $ids = array_keys($out);
+            $st = db()->prepare('SELECT proforma_id, SUM(amount) w, SUM(qty) q, MIN(entry_date) f, MAX(entry_date) l
+                                 FROM zp_entries WHERE status=\'active\' AND proforma_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')
+                                 GROUP BY proforma_id');
+            $st->execute($ids);
+            foreach ($st->fetchAll() as $r) {
+                $o =& $out[(int)$r['proforma_id']];
+                $o['wages'] = (float)$r['w']; $o['pcs'] = (float)$r['q']; $o['first'] = (string)$r['f']; $o['last'] = (string)$r['l'];
+                unset($o);
+            }
+        } catch (Throwable $e) {}
+    }
+    foreach ($out as &$o) {
+        ksort($o['stages']);
+        $last = $o['stages'] ? $o['stages'][array_key_last($o['stages'])] : null;
+        $o['pct'] = ($last && $last['need'] > 0) ? round($last['done'] / $last['need'] * 100, 1) : 0.0;
+        /* NOT STARTED / IN PROGRESS / STALLED / DONE. Stalled = started, not
+           finished, and nothing booked for 7 days. No due dates: the owner
+           said the delivery date on proformas is not reliable enough. */
+        $o['status'] = $o['last'] === '' ? 'new'
+                     : ($o['pct'] >= 99.95 ? 'done'
+                     : ($o['last'] < date('Y-m-d', strtotime('-7 days')) ? 'stalled' : 'run'));
+    }
+    unset($o);
+    return $out;
+}
+
+/* ORDER PROGRESS for the dashboard — now the same measure as the Order Status
+   report: the LAST stage the line goes through, pieces through every one of
+   its operations. It used to add all stitching operations together, so two
+   operations on half the pieces read as finished. */
+function zp_order_progress(): array {
+    $prog = zp_progress_map();
+    $out  = [];
+    foreach (zp_open_lines() as $l) {
+        $f = zp_line_flow($l, $prog);
+        $first = $f['stages'] ? reset($f['stages']) : ['need' => 0, 'done' => 0];
+        $last  = $f['stages'] ? end($f['stages'])   : ['need' => 0, 'done' => 0, 'name' => ''];
         $out[] = [
-            'item_id' => (int)$l['item_id'], 'pi_no' => $l['pi_no'],
+            'item_id' => (int)$l['item_id'], 'proforma_id' => (int)$l['proforma_id'], 'pi_no' => $l['pi_no'],
             'customer' => $l['customer_name'], 'product' => $l['product_name'],
             'size' => $l['size'], 'ordered' => (float)$l['ordered_qty'],
-            'needed' => $needTot, 'cut' => $cutTot, 'stitched' => $stitchTot,
-            /* COMPLETION IS MEASURED ON THE LAST STAGE THAT RUNS, which is
-               stitching. Measuring on cutting would call an order finished
-               while nothing had been sewn. */
-            /* an order carrying an unplannable line has NO honest percentage,
-               so it reports 0 and says why rather than showing a number built
-               from only the parts that happened to resolve */
-            'pct' => ($noSize || $needTot <= 0) ? 0.0 : round($stitchTot / $needTot * 100, 1),
-            'no_size' => $noSize,
-            'size_problem' => $noSize ? zp_size_problem($l) : '',
-            'behind' => $behind,
+            'needed' => (float)$last['need'], 'cut' => (float)$first['done'], 'stitched' => (float)$last['done'],
+            'last_stage' => (string)($last['name'] ?? ''),
+            'pct' => $f['no_size'] ? 0.0 : $f['pct'],
+            'no_size' => $f['no_size'],
+            'size_problem' => $f['no_size'] ? zp_size_problem($l) : '',
+            'behind' => $f['behind'] !== '' ? [$f['behind']] : [],
         ];
     }
     usort($out, fn($a, $b) => $a['pct'] <=> $b['pct']);
