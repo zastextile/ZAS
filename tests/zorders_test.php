@@ -78,5 +78,14 @@ $db = file_get_contents(__DIR__ . '/../public_html/production_dashboard.php');
 ok(str_contains($db, '.zd-wrap table.zp-t{min-width:0}'), 'the dashboard tables fit their cards');
 ok(str_contains($src, "\$f = zp_line_flow(\$l, \$prog);\n        \$first"), 'the dashboard measures orders the same way as the report');
 
+echo "8. Work summary and show / hide (owner, 22 Nov 2026)\n";
+ok(substr_count($pg, 'FROM zp_entries e') === 1 && str_contains($pg, "WHERE e.status='active' AND e.proforma_id=?"), 'the work summary is ONE grouped query for the order');
+ok(str_contains($pg, "if (\$showMoney) { \$row['r'] = round((float)\$r['r'], 2); \$row['a'] = round((float)\$r['a'], 2); }"), '  rate and wages are only sent to people allowed to see them');
+ok(str_contains($pg, "cells(e[1], a, by[lvl] === 'o')"), 'planned · left shows on operation rows only');
+ok(str_contains($pg, 'W.forEach(function(r){ var k = (r.t + \'|\' + r.o + \'|\' + r.s).toLowerCase(); OPDONE[k]'), '  and counts every booking on that operation, not the filtered ones');
+ok(str_contains($pg, 'LEFT JOIN zp_line_set_ops lo ON lo.id = e.op_id AND e.op_kind = \'line\''), 'set work copied onto an order line is named too');
+ok(str_contains($pg, '.zf.os #osGrid:not(.parts) .pp{display:none}'), 'the per-part lines are hidden until Show parts is ticked');
+ok(str_contains($pg, "var KEY = 'zo_view_v1'") && str_contains($pg, 'localStorage.setItem(KEY'), 'the chosen sections are remembered in this browser');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);
