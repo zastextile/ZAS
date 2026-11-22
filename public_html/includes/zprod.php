@@ -3828,6 +3828,18 @@ function zp_order_status(?int $onlyPf = null): array {
             }
         } catch (Throwable $e) {}
     }
+    /* SWITCHED ON, BUT NOTHING THE FLOOR CAN MAKE (owner, 22 Nov 2026: the
+       proforma list said "3 in production", this report showed 2). An order
+       whose lines do not resolve to products is listed too, marked
+       'Lines not linked', so it is fixed rather than forgotten. */
+    try {
+        $sql = 'SELECT id, pi_no, customer_name FROM proforma_invoices WHERE production_enabled = 1' . ($onlyPf !== null ? ' AND id = ' . (int)$onlyPf : '');
+        foreach (db()->query($sql)->fetchAll() as $r) {
+            if (isset($out[(int)$r['id']])) continue;
+            $out[(int)$r['id']] = ['id' => (int)$r['id'], 'pi_no' => (string)$r['pi_no'], 'customer' => (string)($r['customer_name'] ?? ''),
+                                   'lines' => [], 'stages' => [], 'ordered' => 0.0, 'wages' => 0.0, 'pcs' => 0.0, 'first' => '', 'last' => '', 'nolink' => true];
+        }
+    } catch (Throwable $e) {}
     foreach ($out as &$o) {
         ksort($o['stages']);
         $last = $o['stages'] ? $o['stages'][array_key_last($o['stages'])] : null;
@@ -3835,9 +3847,10 @@ function zp_order_status(?int $onlyPf = null): array {
         /* NOT STARTED / IN PROGRESS / STALLED / DONE. Stalled = started, not
            finished, and nothing booked for 7 days. No due dates: the owner
            said the delivery date on proformas is not reliable enough. */
-        $o['status'] = $o['last'] === '' ? 'new'
+        $o['status'] = !empty($o['nolink']) ? 'nolink'
+                     : ($o['last'] === '' ? 'new'
                      : ($o['pct'] >= 99.95 ? 'done'
-                     : ($o['last'] < date('Y-m-d', strtotime('-7 days')) ? 'stalled' : 'run'));
+                     : ($o['last'] < date('Y-m-d', strtotime('-7 days')) ? 'stalled' : 'run')));
     }
     unset($o);
     return $out;

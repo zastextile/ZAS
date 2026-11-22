@@ -43,7 +43,8 @@ function zo_col(string $st): array {
     return $pal[abs(crc32($l)) % count($pal)];
 }
 $q0 = fn($v) => number_format((float)$v, 0);
-$ST = ['new' => ['Not started', 'p-grey'], 'run' => ['In progress', 'p-draft'], 'stalled' => ['Stalled', 'p-sub'], 'done' => ['Done', 'p-ok']];
+$ST = ['new' => ['Not started', 'p-grey'], 'run' => ['In progress', 'p-draft'], 'stalled' => ['Stalled', 'p-sub'], 'done' => ['Done', 'p-ok'],
+       'nolink' => ['Lines not linked', 'p-red']];
 
 if ($pfId) {
     $all = zp_order_status($pfId);
@@ -144,13 +145,14 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
     cols.push({ k: 'pct', label: 'Overall', num: 1, sort: function(r){ return r.pct; }, html: function(r){ return '<b>' + r.pct.toFixed(r.pct >= 99.95 || r.pct === 0 ? 0 : 1) + '%</b>'; } });
     if (MONEY) cols.push({ k: 'w', label: 'Wages', num: 1, sort: function(r){ return r.w; }, html: function(r){ return r.w ? Z.n0(r.w) : '<span style="color:#9aa8b6">—</span>'; } });
     cols.push({ k: 'last', label: 'Last work', sort: function(r){ return r.last; }, html: function(r){ return r.last ? '<span style="white-space:nowrap">' + esc(Z.nice(r.last)) + '</span>' : '<span style="color:#9aa8b6">—</span>'; } });
-    cols.push({ k: 'status', label: 'Status', sort: function(r){ return r.status; }, html: function(r){ var s = ST[r.status]; return '<span class="zf-pill ' + s[1] + '">' + s[0] + '</span>'; } });
+    cols.push({ k: 'status', label: 'Status', sort: function(r){ return r.status; }, html: function(r){ var s = ST[r.status];
+      return '<span class="zf-pill ' + s[1] + '">' + s[0] + '</span>' + (r.status === 'nolink' ? '<div class="s2"><a href="line_links.php" onclick="event.stopPropagation()">Link its lines to products →</a></div>' : ''); } });
     var csv = [['Order', function(r){ return r.no; }], ['Customer', function(r){ return r.cust; }], ['Products', function(r){ return r.prods; }], ['Lines', function(r){ return r.lines; }], ['Ordered', function(r){ return r.ordered; }]];
     STAGES.forEach(function(s){ csv.push([s.n + ' %', function(r){ return r.sp[s.p] == null ? '' : r.sp[s.p]; }]); });
     csv.push(['Overall %', function(r){ return r.pct; }]);
     if (MONEY) csv.push(['Wages', function(r){ return r.w.toFixed(2); }]);
     csv.push(['First work', function(r){ return r.first; }], ['Last work', function(r){ return r.last; }], ['Status', function(r){ return ST[r.status][0]; }]);
-    function cnt(s){ return function(rows){ var n = rows.filter(function(r){ return r.status === s; }).length; return [String(n), { run: 'work booked in the last 7 days', stalled: 'started, nothing for 7 days', new: 'switched on, nothing booked', done: 'last stage finished' }[s]]; }; }
+    function cnt(s){ return function(rows){ var n = rows.filter(function(r){ return r.status === s || (s === 'new' && r.status === 'nolink'); }).length; return [String(n), { run: 'work booked in the last 7 days', stalled: 'started, nothing for 7 days', new: 'switched on, nothing booked', done: 'last stage finished' }[s]]; }; }
     ZFList({
       root: 'osList', rows: R, cols: cols, sort: 'pct', dir: 1, csv: csv, csvName: 'order_status', empty: 'No order is switched on for production yet.',
       searchHint: 'Search order, customer, product…',
@@ -159,7 +161,7 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
       kpis: [
         { id: 'run', label: 'In progress', cls: 'k-blue', test: function(r){ return r.status === 'run'; }, value: cnt('run') },
         { id: 'stalled', label: 'Stalled', cls: 'k-amber', test: function(r){ return r.status === 'stalled'; }, value: cnt('stalled') },
-        { id: 'new', label: 'Not started', cls: 'k-grey', test: function(r){ return r.status === 'new'; }, value: cnt('new') },
+        { id: 'new', label: 'Not started', cls: 'k-grey', test: function(r){ return r.status === 'new' || r.status === 'nolink'; }, value: cnt('new') },
         { id: 'done', label: 'Done', cls: 'k-green', test: function(r){ return r.status === 'done'; }, value: cnt('done') }
       ],
       segs: [['', 'All'], ['open', 'Open', function(r){ return r.status !== 'done'; }], ['done', 'Done', function(r){ return r.status === 'done'; }]],
@@ -175,6 +177,11 @@ page_header($pfId && !empty($O) ? 'Order ' . $O['pi_no'] : 'Order Status');
     });
   })();
   </script>
+
+<?php elseif (!empty($O['nolink'])): ?>
+  <div class="zf-hd"><div><h1>Order status</h1></div><a class="zf-btn" href="production_orders.php">← All orders</a></div>
+  <div class="zf-card"><div class="zf-none"><b><?= e($O['pi_no']) ?> · <?= e($O['customer'] ?: 'no customer') ?></b> is switched on for production, but none of its lines is linked to a product with parts, so the floor has nothing to book on it.<br><br>
+    <a class="zf-btn pri" href="line_links.php">Link its lines to products</a> <a class="zf-btn" href="proforma.php?id=<?= $pfId ?>">Open the proforma</a></div></div>
 
 <?php elseif (empty($O)): ?>
   <div class="zf-hd"><div><h1>Order status</h1></div><a class="zf-btn" href="production_orders.php">← All orders</a></div>

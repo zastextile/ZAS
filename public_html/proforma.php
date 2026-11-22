@@ -187,6 +187,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'creat
     redirect('proforma.php?id=' . $pfid);
 }
 
+/* ---------- production on / off from the list (owner, 22 Nov 2026) ----------
+   The same switch as "Production tracking" inside the proforma, so an order
+   can be put on (or taken off) the Daily Production Entry list without
+   opening it. Turning it off never touches booked work: the wages stay, the
+   order simply stops being offered for new bookings. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'toggle_production') {
+    verify_csrf();
+    if (!costing_perm('proforma') && !is_admin()) { http_response_code(403); exit('No permission to change proforma invoices.'); }
+    $pfid = (int)($_POST['id'] ?? 0); $on = !empty($_POST['on']) ? 1 : 0;
+    $st = db()->prepare('SELECT pi_no, production_enabled FROM proforma_invoices WHERE id=?'); $st->execute([$pfid]);
+    $pf0 = $st->fetch();
+    if ($pf0) {
+        db()->prepare('UPDATE proforma_invoices SET production_enabled=?, updated_at=NOW() WHERE id=?')->execute([$on, $pfid]);
+        try { audit_log(0, 'Proforma', 'update', (string)(int)$pf0['production_enabled'], (string)$on, $pf0['pi_no'] . ': production ' . ($on ? 'switched on' : 'switched off') . ' from the list'); } catch (Throwable $e) {}
+        $_SESSION['flash'] = $pf0['pi_no'] . ($on ? ' is on the Daily Production Entry list now.' : ' is off the Daily Production Entry list. Work already booked keeps its wages.');
+    }
+    redirect('proforma.php');
+}
+
 /* ---------- save edits ---------- */
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='save') {
     verify_csrf();
@@ -690,7 +709,12 @@ if ($id) {
                  same checkboxes, the same name, so saving is unchanged. */ ?>
         <div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px">
           <span style="color:#556b82">Production</span>
-          <span class="zf-pill p-ok" style="display:inline-block;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:3px;border:1px solid #c6e6cf;background:#eef8f0;color:#256f3a"><?= e(ucwords(str_replace('_',' ', $pf['production_status'] ?? 'not_started'))) ?></span>
+          <?php /* the LIVE status from booked work, the same as Order Status (the
+                   old production_status field is no longer kept up to date) */
+            $pfLive = null; try { require_once __DIR__ . '/includes/zprod.php'; $pfLive = zp_order_status((int)$pf['id'])[(int)$pf['id']] ?? null; } catch (Throwable $e) {}
+            $pfLs = ['new' => 'Not started', 'run' => 'In progress', 'stalled' => 'Stalled — nothing for 7 days', 'done' => 'Done', 'nolink' => 'Lines not linked to products'][$pfLive['status'] ?? 'new']; ?>
+          <span class="zf-pill p-ok" style="display:inline-block;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:3px;border:1px solid #c6e6cf;background:#eef8f0;color:#256f3a"><?= e($pfLs) ?><?= $pfLive && in_array($pfLive['status'], ['run', 'stalled'], true) ? ' · ' . e((string)$pfLive['pct']) . '%' : '' ?></span>
+          <a href="production_orders.php?order=<?= (int)$pf['id'] ?>" style="color:#0a6ed1;font-weight:600;text-decoration:none">Order status →</a>
           <span style="color:#556b82;margin-left:8px" title="Only these logins can log entries for this order; an order with nobody ticked does not appear in any Production Staff login's search">Staff who can book it</span>
           <?php if ($productionStaffList): foreach ($productionStaffList as $ps): $on = in_array((int)$ps['id'], $assignedStaffIds, true); ?>
             <label style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:4px;border:1px solid <?= $on?'#b9d3f1':'#d9dee4' ?>;background:<?= $on?'#eaf2fc':'#fff' ?>;color:<?= $on?'#0a6ed1':'#1d2d3e' ?>;font-weight:500;cursor:pointer;text-transform:none;letter-spacing:0">
@@ -787,7 +811,7 @@ if ($id) {
               <td><input data-c="unit" name="i_unit[]" value="<?= e($r['unit']) ?>"></td>
               <td><input class="num" data-c="price" type="number" step="0.01" name="i_price[]" value="<?= e(price_txt($r['unit_price'])) ?>" oninput="pfCalc()"></td>
               <td class="zro amt"><?= e(number_format((float)$r['amount'],2)) ?></td>
-              <td class="zpin-r" style="text-align:center"><button type="button" class="rowx" title="Remove this line" onclick="this.closest('tr').remove();pfCalc()">&times;</button></td>
+              <td class="zpin-r" style="text-align:center;white-space:nowrap"><button type="button" class="rowx" title="Duplicate this line" onclick="pfDup(this)">&#10697;</button><button type="button" class="rowx" title="Remove this line" onclick="this.closest('tr').remove();pfCalc()">&times;</button></td>
             </tr>
           <?php endforeach; ?></tbody>
           <tfoot><tr>
@@ -1008,7 +1032,22 @@ if ($id) {
     /* amounts with thousands separators, as on the printed proforma */
     function pfMoney(v){return (+v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
     var pfSzN = 0;
-    function pfAddRow(){pfSzN++;var tb=document.querySelector('#pfItems tbody');var tr=document.createElement('tr');tr.innerHTML=`<td class="zpin-l"><input type="hidden" name="i_id[]" value="0"><input class="lovf" data-lov="prod" data-c="name" name="i_name[]" autocomplete="off"><input type="hidden" class="pid" name="i_pid[]" value="0"><div class="linkchip"><span class="un">not linked</span></div></td><td class="zdim"><input data-c="desc" name="i_desc[]"></td><td><input data-c="size" name="i_size[]" list="szlnew${pfSzN}" autocomplete="off" oninput="pfSize(this)" onchange="pfSize(this)"><input type="hidden" class="sid" name="i_size_id[]" value="0"><datalist id="szlnew${pfSzN}"></datalist><div class="linkchip szchip"></div></td><td><input class="num" data-c="qty" type="number" step="0.001" name="i_qty[]" value="0" oninput="pfCalc()"></td><td><input data-c="unit" name="i_unit[]"></td><td><input class="num" data-c="price" type="number" step="0.01" name="i_price[]" value="0" oninput="pfCalc()"></td><td class="zro amt">0.00</td><td class="zpin-r" style="text-align:center"><button type="button" class="rowx" title="Remove this line" onclick="this.closest('tr').remove();pfCalc()">&times;</button></td>`;tb.appendChild(tr);if(window.pfSizeRow)window.pfSizeRow(tr)}
+    /* DUPLICATE A LINE (owner, 22 Nov 2026): a copy of the whole line right
+       under it — product and its link, description, size, qty, unit, price —
+       saved as a NEW line (its id is cleared), so the original is untouched. */
+    function pfDup(btn){
+      var tr = btn.closest('tr'), c = tr.cloneNode(true);
+      pfSzN++;
+      tr.querySelectorAll('input,select,textarea').forEach(function(src, i){ var d = c.querySelectorAll('input,select,textarea')[i]; if (d) d.value = src.value; });
+      var idf = c.querySelector('input[name="i_id[]"]'); if (idf) idf.value = '0';
+      var dl = c.querySelector('datalist'), sz = c.querySelector('input[data-c="size"]');
+      if (dl) { dl.id = 'szlnew' + pfSzN; dl.innerHTML = ''; } if (sz) sz.setAttribute('list', 'szlnew' + pfSzN);
+      tr.parentNode.insertBefore(c, tr.nextSibling);
+      if (window.pfSizeRow) window.pfSizeRow(c);
+      pfCalc();
+      var q = c.querySelector('input[data-c="qty"]'); if (q) { q.focus(); q.select(); }
+    }
+    function pfAddRow(){pfSzN++;var tb=document.querySelector('#pfItems tbody');var tr=document.createElement('tr');tr.innerHTML=`<td class="zpin-l"><input type="hidden" name="i_id[]" value="0"><input class="lovf" data-lov="prod" data-c="name" name="i_name[]" autocomplete="off"><input type="hidden" class="pid" name="i_pid[]" value="0"><div class="linkchip"><span class="un">not linked</span></div></td><td class="zdim"><input data-c="desc" name="i_desc[]"></td><td><input data-c="size" name="i_size[]" list="szlnew${pfSzN}" autocomplete="off" oninput="pfSize(this)" onchange="pfSize(this)"><input type="hidden" class="sid" name="i_size_id[]" value="0"><datalist id="szlnew${pfSzN}"></datalist><div class="linkchip szchip"></div></td><td><input class="num" data-c="qty" type="number" step="0.001" name="i_qty[]" value="0" oninput="pfCalc()"></td><td><input data-c="unit" name="i_unit[]"></td><td><input class="num" data-c="price" type="number" step="0.01" name="i_price[]" value="0" oninput="pfCalc()"></td><td class="zro amt">0.00</td><td class="zpin-r" style="text-align:center;white-space:nowrap"><button type="button" class="rowx" title="Duplicate this line" onclick="pfDup(this)">&#10697;</button><button type="button" class="rowx" title="Remove this line" onclick="this.closest('tr').remove();pfCalc()">&times;</button></td>`;tb.appendChild(tr);if(window.pfSizeRow)window.pfSizeRow(tr)}
     pfCalc();
 
     /* ---- the line grid ------------------------------------------------
@@ -1376,11 +1415,18 @@ $pfVal = []; $pfQty = [];
 try { foreach (db()->query("SELECT proforma_id, SUM(qty*unit_price) v, SUM(qty) q FROM proforma_items GROUP BY proforma_id")->fetchAll() as $r) { $pfVal[(int)$r['proforma_id']] = (float)$r['v']; $pfQty[(int)$r['proforma_id']] = (float)$r['q']; } } catch (Throwable $e) {}
 $canConvertShipment = !is_staff() && can_see_rates();
 $pfMoney = can_see_rates();
-$PL = array_map(function ($r) use ($pfVal, $pfQty, $pfMoney) {
+/* THE LIVE PRODUCTION STATUS (owner, 22 Nov 2026: "it says Not Started but
+   in reality it is working"). production_status was written by the old
+   production screens and the rebuilt module never updates it, so it is read
+   from the booked work instead — the same numbers as Order Status. */
+$PSTAT = [];
+try { require_once __DIR__ . '/includes/zprod.php'; foreach (zp_order_status() as $id => $o) $PSTAT[$id] = [$o['status'], $o['pct']]; } catch (Throwable $e) {}
+$pfCanProd = costing_perm('proforma') || is_admin();
+$PL = array_map(function ($r) use ($pfVal, $pfQty, $pfMoney, $PSTAT) {
     $o = ['id' => (int)$r['id'], 'no' => (string)$r['pi_no'], 'date' => (string)($r['pi_date'] ?? ''), 'cust' => (string)($r['customer_name'] ?? ''),
           'prod' => (string)($r['pname'] ?? ''), 'cur' => (string)$r['currency'], 'status' => (string)($r['status'] ?: 'draft'),
           'ship' => (int)($r['converted_shipment_id'] ?? 0), 'pe' => (int)($r['production_enabled'] ?? 0),
-          'ps' => ucwords(str_replace('_', ' ', (string)($r['production_status'] ?? 'not_started'))), 'qty' => $pfQty[(int)$r['id']] ?? 0.0];
+          'ps' => $PSTAT[(int)$r['id']][0] ?? 'new', 'pp' => $PSTAT[(int)$r['id']][1] ?? 0, 'qty' => $pfQty[(int)$r['id']] ?? 0.0];
     if ($pfMoney) $o['val'] = $pfVal[(int)$r['id']] ?? 0.0;
     return $o;
 }, $rows);
@@ -1389,6 +1435,18 @@ $J = fn($v) => json_encode($v, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_
 ?>
 <link rel="stylesheet" href="assets/css/zf.css?v=4">
 <script src="assets/js/zflist.js?v=3"></script>
+<style>
+/* the production switch on the list */
+.zf .pf-pr{display:flex;gap:8px;align-items:flex-start}
+.zf .pf-sw{position:relative;display:inline-block;width:32px;height:18px;flex:0 0 32px;margin-top:1px;cursor:pointer}
+.zf .pf-sw input{opacity:0;width:0;height:0;position:absolute}
+.zf .pf-sw i{position:absolute;inset:0;border-radius:9px;background:#c9d3df;transition:background .15s}
+.zf .pf-sw i::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+.zf .pf-sw input:checked+i{background:#107e3e}
+.zf .pf-sw input:checked+i::after{transform:translateX(14px)}
+.zf .pf-sw input:disabled+i{opacity:.5;cursor:not-allowed}
+.zf .pf-sw input:focus-visible+i{outline:2px solid #0a6ed1;outline-offset:2px}
+</style>
 <div class="zf">
   <div class="zf-hd">
     <div><h1>Proforma Invoices</h1><div class="zf-sub">Quotes and order confirmations, customer-facing. Tick confirmed ones to make one shipment from them.</div></div>
@@ -1397,13 +1455,15 @@ $J = fn($v) => json_encode($v, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_
     <?php endif; ?>
   </div>
   <div id="pfList"></div>
+  <form method="post" id="pfProdForm" style="display:none"><?= csrf_field() ?><input type="hidden" name="action" value="toggle_production"><input type="hidden" name="id"><input type="hidden" name="on"></form>
   <?php if ($canConvertShipment): ?>
   <form method="post" id="pfConvertForm" style="display:none"><?= csrf_field() ?><input type="hidden" name="action" value="convert_to_shipment"></form>
   <?php endif; ?>
 </div>
 <script>
 (function(){
-  var R = <?= $J($PL) ?>, MONEY = <?= $pfMoney ? 'true' : 'false' ?>, CONV = <?= $canConvertShipment ? 'true' : 'false' ?>;
+  var R = <?= $J($PL) ?>, MONEY = <?= $pfMoney ? 'true' : 'false' ?>, CONV = <?= $canConvertShipment ? 'true' : 'false' ?>, CANPROD = <?= $pfCanProd ? 'true' : 'false' ?>;
+  var PS = { new: ['Not started', '#556b82'], run: ['In progress', '#0a6ed1'], stalled: ['Stalled — nothing for 7 days', '#9a5710'], done: ['Done', '#256f3a'], nolink: ['Lines not linked to products', '#b42318'] };
   var Z = window.ZF, esc = Z.esc, month = new Date().toISOString().slice(0, 7);
   var ST = { draft: ['Draft', 'p-draft'], sent: ['Sent', 'p-sub'], confirmed: ['Confirmed', 'p-ok'], archived: ['Archived', 'p-grey'] };
   var kpis = [];
@@ -1424,11 +1484,21 @@ $J = fn($v) => json_encode($v, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_
   if (MONEY) cols.push({ k: 'val', label: 'Value', num: 1, sort: function(r){ return r.val; }, html: function(r){ return '<b style="font-weight:600">' + esc(r.cur) + ' ' + Z.n2(r.val) + '</b>'; } });
   else cols.push({ k: 'cur', label: 'Currency', sort: function(r){ return r.cur; }, html: function(r){ return esc(r.cur); } });
   cols.push({ k: 'status', label: 'Status', sort: function(r){ return r.status; }, html: function(r){ var s = ST[r.status] || [r.status, 'p-grey'];
-    return '<span class="zf-pill ' + s[1] + '">' + esc(s[0]) + '</span>' + (r.ship ? ' <a class="zf-pill p-ok" style="text-decoration:none" href="shipment_view.php?id=' + r.ship + '">→ Shipment</a>' : '')
-      + (r.pe ? '<div class="s2" style="color:#256f3a">● Production: ' + esc(r.ps) + '</div>' : ''); } });
+    return '<span class="zf-pill ' + s[1] + '">' + esc(s[0]) + '</span>' + (r.ship ? ' <a class="zf-pill p-ok" style="text-decoration:none" href="shipment_view.php?id=' + r.ship + '">→ Shipment</a>' : ''); } });
+  /* PRODUCTION, OUTSIDE THE PROFORMA (owner, 22 Nov 2026): the switch that
+     puts the order on Daily Production Entry, its live status, and a link to
+     the order's own status page. */
+  cols.push({ k: 'pe', label: 'Production', sort: function(r){ return r.pe ? 1 + (r.pp || 0) : 0; }, html: function(r){
+    var sw = '<label class="pf-sw" title="' + (r.pe ? 'On the Daily Production Entry list — click to take it off' : 'Click to put it on the Daily Production Entry list') + '" onclick="event.stopPropagation()">'
+      + '<input type="checkbox" data-prod="' + r.id + '"' + (r.pe ? ' checked' : '') + (CANPROD ? '' : ' disabled') + '><i></i></label>';
+    if (!r.pe) return '<div class="pf-pr">' + sw + '<span style="color:#9aa8b6">Off</span></div>';
+    var p = PS[r.ps] || PS.new;
+    return '<div class="pf-pr">' + sw + '<span><span style="color:' + p[1] + ';font-weight:600">' + p[0] + (r.ps === 'run' || r.ps === 'stalled' ? ' · ' + r.pp + '%' : '') + '</span>'
+      + '<div class="s2"><a href="production_orders.php?order=' + r.id + '" onclick="event.stopPropagation()">Order status →</a></div></span></div>'; } });
   var csv = [['PI no.', function(r){ return r.no; }], ['Date', function(r){ return r.date; }], ['Customer', function(r){ return r.cust; }], ['Costing product', function(r){ return r.prod; }], ['Qty', function(r){ return r.qty; }], ['Currency', function(r){ return r.cur; }]];
   if (MONEY) csv.push(['Value', function(r){ return r.val.toFixed(2); }]);
-  csv.push(['Status', function(r){ return (ST[r.status] || [r.status])[0]; }], ['Shipment made', function(r){ return r.ship ? 'yes' : ''; }]);
+  csv.push(['Status', function(r){ return (ST[r.status] || [r.status])[0]; }], ['Shipment made', function(r){ return r.ship ? 'yes' : ''; }],
+           ['Production', function(r){ return r.pe ? (PS[r.ps] || PS.new)[0] + (r.ps === 'run' || r.ps === 'stalled' ? ' ' + r.pp + '%' : '') : 'Off'; }]);
   var L = ZFList({
     root: 'pfList', rows: R, cols: cols, kpis: kpis, dateKey: 'date', sort: 'no', dir: -1, csv: csv, csvName: 'proformas',
     empty: 'No proforma invoices yet — start one with + New Proforma, or convert one from Product Costing.',
@@ -1446,6 +1516,14 @@ $J = fn($v) => json_encode($v, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_
         return '<td></td>';
       }).join('');
     }
+  });
+  document.addEventListener('change', function(e){
+    var c = e.target.closest('[data-prod]'); if (!c) return;
+    var r = R.filter(function(x){ return x.id === +c.dataset.prod; })[0];
+    var msg = c.checked ? 'Put ' + r.no + ' on the Daily Production Entry list?\n\nThe floor can book work on it from now on.'
+                        : 'Take ' + r.no + ' off the Daily Production Entry list?\n\nWork already booked keeps its wages; no new work can be booked until it is switched on again.';
+    if (!confirm(msg)) { c.checked = !c.checked; return; }
+    var f = document.getElementById('pfProdForm'); f.id.value = r.id; f.on.value = c.checked ? '1' : ''; f.submit();
   });
   document.addEventListener('click', function(e){
     if (!e.target.closest('[data-convert]')) return;
