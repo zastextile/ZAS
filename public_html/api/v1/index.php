@@ -1061,6 +1061,26 @@ try {
             ], (bool) Http::input('apply', false), (int) $u['id']));
             break;
 
+        /* People Finance › Entries (owner, 23 Nov 2026): a date range, and one
+           change to many ticked entries. Administrator only, like the rest. */
+        case $method === 'GET' && $route === '/admin/entries/range':
+            require_erp_admin();
+            admin_answer(EntryAdmin::listRange((string) Http::input('from', ''), (string) Http::input('to', ''),
+                (int) Http::input('department_id', 0), (string) Http::input('q', '')));
+            break;
+
+        case $method === 'POST' && $route === '/admin/entries/bulk-edit':
+            Http::requireCsrf();
+            $u = require_erp_admin();
+            $ids = Http::input('ids', []);
+            admin_answer(EntryAdmin::bulkEdit(is_array($ids) ? $ids : [], [
+                'action' => (string) Http::input('action', ''), 'in_time' => (string) Http::input('in_time', ''),
+                'out_time' => (string) Http::input('out_time', ''), 'in_minutes' => (int) Http::input('in_minutes', 0),
+                'out_minutes' => (int) Http::input('out_minutes', 0), 'fill' => (string) Http::input('fill', 'time'),
+                'reason' => (string) Http::input('reason', ''),
+            ], (bool) Http::input('apply', false), (int) $u['id']));
+            break;
+
         case $method === 'POST' && preg_match('#^/admin/entries/(\d+)/(edit|delete)$#', $route, $m) === 1:
             Http::requireCsrf();
             $u = require_erp_admin();

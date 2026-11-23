@@ -370,6 +370,183 @@ final class EntryAdmin
         return ['ok' => true, 'applied' => true, 'added' => $added, 'failed' => $failed] + $summary;
     }
 
+    /**
+     * ENTRIES FOR A DATE RANGE (owner, 23 Nov 2026: People Finance › Entries —
+     * one employee or many, a department, one day or several). Up to 31 shift
+     * days; filed by the SHIFT DAY, so a night guard's 19:00–08:30 belongs to
+     * the day it started. Also returns the people in scope, so the grid can
+     * show a day with no entry as an empty cell. Two queries, both on indexed
+     * columns, whatever the range.
+     *
+     * @return array<string,mixed>
+     */
+    public static function listRange(string $from, string $to, int $deptId = 0, string $q = ''): array
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            return self::no('VALIDATION', 'Choose the first and the last day.');
+        }
+        if ($to < $from) { [$from, $to] = [$to, $from]; }
+        $span = (int) (new DateTimeImmutable($from))->diff(new DateTimeImmutable($to))->days + 1;
+        if ($span > 31) {
+            return self::no('VALIDATION', 'At most 31 days at a time.');
+        }
+        $w = ['e.active = 1']; $p = [];
+        if ($deptId > 0) { $w[] = 'e.department_id = ?'; $p[] = $deptId; }
+        $q = trim($q);
+        if ($q !== '') {
+            $codes = array_values(array_filter(preg_split('/[\s,;]+/', $q) ?: [], fn($c) => $c !== ''));
+            $or = ['e.full_name LIKE ?']; $p2 = ['%' . addcslashes($q, '\\%_') . '%'];
+            if ($codes) { $or[] = 'e.code IN (' . implode(',', array_fill(0, count($codes), '?')) . ')'; $p2 = array_merge($p2, $codes); }
+            $w[] = '(' . implode(' OR ', $or) . ')'; $p = array_merge($p, $p2);
+        }
+        $people = Db::all(
+            'SELECT e.id AS employee_id, e.code AS employee_code, e.full_name, d.name AS department_name
+               FROM att_employees e JOIN att_departments d ON d.id = e.department_id
+              WHERE ' . implode(' AND ', $w) . ' ORDER BY d.name, e.full_name LIMIT 1000', $p);
+        $rows = [];
+        if ($people) {
+            $ids = implode(',', array_map(static fn($r) => (int) $r['employee_id'], $people));
+            $rows = Db::all(
+                "SELECT c.id AS entry_cycle_id, c.employee_id, c.entry_sequence, c.opened_at, c.closed_at, c.present_minutes, c.in_source, c.close_source,
+                        c.edited_at, ei.occurred_at AS scanned_in_at, eo.occurred_at AS scanned_out_at,
+                        e.code AS employee_code, e.full_name, d.name AS department_name, s.name AS shift_name, si.work_date, si.ends_at AS shift_ends_at
+                   FROM att_entry_cycles c
+                   JOIN att_shift_instances si ON si.id = c.shift_instance_id
+                   JOIN att_employees e ON e.id = c.employee_id
+                   JOIN att_departments d ON d.id = e.department_id
+                   JOIN att_shifts s ON s.id = si.shift_id
+                   LEFT JOIN att_events ei ON ei.id = c.gate_in_event_id
+                   LEFT JOIN att_events eo ON eo.id = c.gate_out_event_id
+                  WHERE c.employee_id IN ($ids) AND si.work_date BETWEEN ? AND ?
+                  ORDER BY si.work_date, d.name, e.full_name, c.opened_at LIMIT 5000", [$from, $to]);
+            $utc = new DateTimeZone('UTC');
+            foreach ($rows as &$r) {
+                foreach (['opened_at', 'closed_at', 'edited_at', 'scanned_in_at', 'scanned_out_at', 'shift_ends_at'] as $k) {
+                    $r[$k] = $r[$k] !== null ? Time::iso(new DateTimeImmutable((string) $r[$k], $utc)) : null;
+                }
+                $r['entry_cycle_id'] = (int) $r['entry_cycle_id']; $r['employee_id'] = (int) $r['employee_id'];
+            }
+            unset($r);
+        }
+        foreach ($people as &$e) { $e['employee_id'] = (int) $e['employee_id']; }
+        unset($e);
+        return ['ok' => true, 'from' => $from, 'to' => $to, 'people' => $people, 'entries' => $rows, 'today' => Time::nowUtc()->setTimezone(new DateTimeZone(self::TZ))->format('Y-m-d')];
+    }
+
+    /**
+     * ONE CHANGE TO MANY TICKED ENTRIES (owner, 23 Nov 2026).
+     *   set     the same IN and/or OUT clock time, each on its own day
+     *   move    IN and/or OUT earlier or later by N minutes
+     *   fill    give an entry with no OUT its OUT: a time, or its shift end
+     *   delete  remove them (a full copy of each is kept)
+     *
+     * $apply = false only WORKS IT OUT: every entry before → after, and what
+     * is wrong with any of them. Nothing is written.
+     * $apply = true writes ALL OF THEM OR NONE: one transaction, every entry
+     * through the same edit()/delete() a single change uses — the reason on
+     * each, the record in att_corrections and the audit log, the overlap and
+     * future checks. One refusal and the whole batch is rolled back.
+     *
+     * @param array<int,int> $ids
+     * @param array{action?:string,in_time?:string,out_time?:string,in_minutes?:int,out_minutes?:int,fill?:string,reason?:string} $o
+     * @return array<string,mixed>
+     */
+    public static function bulkEdit(array $ids, array $o, bool $apply, int $actorId): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn($i) => $i > 0)));
+        if (!$ids) {
+            return self::no('VALIDATION', 'Tick at least one entry.');
+        }
+        if (count($ids) > 500) {
+            return self::no('VALIDATION', 'At most 500 entries at a time.');
+        }
+        $act = (string) ($o['action'] ?? '');
+        if (!in_array($act, ['set', 'move', 'fill', 'delete'], true)) {
+            return self::no('VALIDATION', 'Choose what to change.');
+        }
+        $hm = static fn($v) => is_string($v) && preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v) ? $v : '';
+        $inT = $hm($o['in_time'] ?? ''); $outT = $hm($o['out_time'] ?? '');
+        $mIn = max(-720, min(720, (int) ($o['in_minutes'] ?? 0))); $mOut = max(-720, min(720, (int) ($o['out_minutes'] ?? 0)));
+        $fill = ($o['fill'] ?? 'time') === 'shift' ? 'shift' : 'time';
+        if ($act === 'set' && $inT === '' && $outT === '') return self::no('VALIDATION', 'Give a new IN time, a new OUT time, or both.');
+        if ($act === 'move' && $mIn === 0 && $mOut === 0) return self::no('VALIDATION', 'Give the minutes to move IN, OUT or both.');
+        if ($act === 'fill' && $fill === 'time' && $outT === '') return self::no('VALIDATION', 'Give the OUT time.');
+        $reason = trim((string) ($o['reason'] ?? ''));
+        if ($apply && $reason === '') {
+            return self::no('REASON_REQUIRED', 'Say why — the reason is kept with every entry.');
+        }
+
+        $tz = new DateTimeZone(self::TZ); $utc = new DateTimeZone('UTC');
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $rows = Db::all(
+            "SELECT c.id, c.employee_id, c.opened_at, c.closed_at, e.code, e.full_name, si.work_date, si.ends_at
+               FROM att_entry_cycles c JOIN att_employees e ON e.id = c.employee_id JOIN att_shift_instances si ON si.id = c.shift_instance_id
+              WHERE c.id IN ($in) ORDER BY si.work_date, e.full_name, c.opened_at", $ids);
+        $at = static function (DateTimeImmutable $day, string $hm) use ($tz, $utc): DateTimeImmutable {
+            return (new DateTimeImmutable($day->setTimezone($tz)->format('Y-m-d') . ' ' . $hm, $tz))->setTimezone($utc);
+        };
+        $loc = static fn(?DateTimeImmutable $d) => $d ? $d->setTimezone($tz)->format('Y-m-d H:i') : null;
+
+        $plan = []; $bad = 0; $skip = 0;
+        foreach ($rows as $r) {
+            $oIn = new DateTimeImmutable((string) $r['opened_at'], $utc);
+            $oOut = $r['closed_at'] !== null ? new DateTimeImmutable((string) $r['closed_at'], $utc) : null;
+            $nIn = null; $nOut = null; $why = null; $same = false;
+            if ($act === 'set') {
+                $nIn = $inT !== '' ? $at($oIn, $inT) : null;
+                if ($outT !== '') { $nOut = $at($nIn ?? $oIn, $outT); if ($nOut <= ($nIn ?? $oIn)) $nOut = $nOut->modify('+1 day'); }
+            } elseif ($act === 'move') {
+                $nIn = $mIn !== 0 ? $oIn->modify(($mIn > 0 ? '+' : '') . $mIn . ' minutes') : null;
+                $nOut = $mOut !== 0 && $oOut !== null ? $oOut->modify(($mOut > 0 ? '+' : '') . $mOut . ' minutes') : null;
+                if ($nIn === null && $nOut === null) { $same = true; $why = 'no OUT to move'; }
+            } elseif ($act === 'fill') {
+                if ($oOut !== null) { $same = true; $why = 'already has an OUT'; }
+                elseif ($fill === 'shift') $nOut = new DateTimeImmutable((string) $r['ends_at'], $utc);
+                else { $nOut = $at($oIn, $outT); if ($nOut <= $oIn) $nOut = $nOut->modify('+1 day'); }
+            }
+            if ($act !== 'delete' && !$same) {
+                if (($nIn === null || $nIn == $oIn) && ($nOut === null || $nOut == $oOut)) { $same = true; $why = 'already like that'; }
+                else {
+                    $chk = self::checkTimes($nIn ?? $oIn, $nOut ?? $oOut) ?? self::overlap((int) $r['employee_id'], $nIn ?? $oIn, $nOut ?? $oOut, (int) $r['id']);
+                    if ($chk !== null) { $why = $chk['error']; $bad++; }
+                }
+            }
+            if ($same) $skip++;
+            $plan[] = ['id' => (int) $r['id'], 'code' => $r['code'], 'name' => $r['full_name'], 'day' => $r['work_date'],
+                       'in' => $loc($oIn), 'out' => $loc($oOut), 'new_in' => $act === 'delete' ? null : $loc($nIn ?? $oIn),
+                       'new_out' => $act === 'delete' ? null : $loc($nOut ?? $oOut), 'skip' => $same, 'problem' => $same ? null : $why,
+                       '_in' => $nIn, '_out' => $nOut];
+        }
+        $gone = count($ids) - count($rows);
+        $out = ['ok' => true, 'applied' => false, 'action' => $act, 'count' => count($plan) - $skip, 'skipped' => $skip, 'problems' => $bad, 'missing' => $gone,
+                'rows' => array_map(static function ($x) { unset($x['_in'], $x['_out']); return $x; }, $plan)];
+        if (!$apply) {
+            return $out;
+        }
+        if ($bad > 0) {
+            return self::no('PROBLEMS', $bad . ' of the ticked entries cannot be changed like that (see the list). Untick them or change the times — nothing was saved.');
+        }
+        if ($out['count'] === 0) {
+            return self::no('VALIDATION', 'Nothing to change — every ticked entry is already like that.');
+        }
+        try {
+            Db::tx(static function () use ($plan, $act, $reason, $actorId) {
+                foreach ($plan as $x) {
+                    if ($x['skip']) continue;
+                    $r = $act === 'delete' ? self::delete($x['id'], $reason, $actorId) : self::edit($x['id'], $x['_in'], $x['_out'], $reason, $actorId);
+                    if (empty($r['ok'])) {
+                        throw new \RuntimeException($x['code'] . ' ' . $x['name'] . ', ' . $x['day'] . ': ' . ($r['error'] ?? 'refused'));
+                    }
+                }
+            });
+        } catch (\RuntimeException $e) {
+            return self::no('REFUSED', $e->getMessage() . ' — nothing was saved.');
+        } catch (\Throwable $e) {
+            return self::no('FAILED', 'The change could not be saved, so nothing was saved. Try again.');
+        }
+        return ['applied' => true] + $out;
+    }
+
     // ------------------------------------------------------------- helpers
 
     private static function checkTimes(DateTimeImmutable $in, ?DateTimeImmutable $out): ?array

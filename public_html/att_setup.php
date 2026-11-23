@@ -682,148 +682,17 @@ page_header('Attendance — Setup');
   }
 
   // -------------------------------------------------------------- entries
-  /* Administrator only: add an entry for someone who was never scanned,
-     change an IN or OUT time, delete an entry that should not be there.
-     Every change needs a reason and is kept with your name; a deleted entry
-     leaves every report, and a full copy is kept on record. The gate's own
-     scans are never altered: an edited time is shown beside the scan's. */
-  var ENT = null;
-  function khiDate(d){ var t = new Date((d || new Date()).getTime() + (5 * 60 + new Date().getTimezoneOffset()) * 60000);
-    return t.getFullYear() + '-' + ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2); }
-  function khiLocal(iso){ if (!iso) return ''; var d = new Date(iso); if (isNaN(d)) return '';
-    var t = new Date(d.getTime() + (5 * 60 + d.getTimezoneOffset()) * 60000);
-    return khiDate(d) + 'T' + ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2); }
-  function khiTime(iso){ return iso ? khiLocal(iso).slice(11) : '—'; }
-  function hm(m){ m = parseInt(m, 10); if (isNaN(m)) return '—'; return Math.floor(m / 60) + 'h ' + (m % 60) + 'm'; }
+  /* MOVED (owner, 23 Nov 2026): adding, changing and deleting attendance
+     entries now lives in People Finance › Entries — one day or up to 31, one
+     person or many, a department, ticked entries changed together. The same
+     server rules and the same administrator-only routes; this tab only points
+     there, so a bookmark to Setup › Entries still lands somewhere useful. */
   function drawEntries(){
     if (!CAN.admin) return show([el('p', { class: 'muted', text: 'Only an administrator can change entries.' })]);
-    ENT = ENT || { date: khiDate(), employee: '' };
-    var date = el('input', { type: 'date', value: ENT.date, id: 'ent-date', 'aria-label': 'Day' });
-    var who = el('input', { type: 'search', value: ENT.employee, id: 'ent-emp', placeholder: 'Employee code or name' });
-    var bar = el('div', { class: 'bar' }, [date, who,
-      btn('Show', function(){ ENT.date = date.value; ENT.employee = who.value; drawEntries(); }, true),
-      btn('Add entry…', function(){ addEntry(); }), btn('Bulk add…', function(){ bulkEntries(); })]);
-    call('GET', '/admin/entries', { date: ENT.date, employee: ENT.employee }).then(function(r){
-      if (!r.ok) return show([bar, el('p', { class: 'err', text: r.error || 'Could not load.' })]);
-      show([
-        el('p', { class: 'note', text: 'Add an entry for someone who was not scanned, correct an IN or OUT time, or delete an entry that should not be there. Every change needs a reason and is kept with your name. The gate\'s own scans are never altered: an edited time is shown beside the time it was scanned.' }),
-        bar,
-        r.entries.length ? table(['Employee', 'Department', 'Shift', 'IN', 'OUT', 'Present', 'Notes', ''], r.entries, function(x){
-          var notes = [];
-          if (x.in_source === 'admin') notes.push('added by administrator');
-          if (x.scanned_in_at && x.scanned_in_at !== x.opened_at) notes.push('IN scanned ' + khiTime(x.scanned_in_at));
-          if (x.scanned_out_at && x.closed_at && x.scanned_out_at !== x.closed_at) notes.push('OUT scanned ' + khiTime(x.scanned_out_at));
-          if (x.close_source === 'auto_shift_end') notes.push('OUT by the system (not scanned)');
-          if ((x.close_source === 'hr_correction' || x.close_source === 'admin') && !x.scanned_out_at) notes.push('OUT put in by HR / administrator');
-          if (x.edited_at) notes.push('edited ' + khiLocal(x.edited_at).replace('T', ' '));
-          return [el('span', {}, [el('strong', { text: x.employee_code }), ' ' + x.full_name]), x.department_name, x.shift_name,
-            khiTime(x.opened_at), x.closed_at ? khiTime(x.closed_at) : el('span', { class: 'muted', text: 'inside' }), x.present_minutes !== null ? hm(x.present_minutes) : '—',
-            el('span', { class: 'muted', style: 'font-size:12.5px', text: notes.join(' · ') }),
-            el('span', {}, [btn('Edit…', function(){ editEntry(x); }), ' ', btn('Delete…', function(){ deleteEntry(x); })])];
-        }) : el('p', { class: 'muted', id: 'ent-none', text: 'No entries that day' + (ENT.employee ? ' for "' + ENT.employee + '"' : '') + '.' })
-      ]);
-    });
-  }
-  function reasonBox(id){ return el('textarea', { class: 'full', rows: 3, id: id, maxlength: 1000, placeholder: 'For example: scanned the wrong person; came in by the side gate; phone clock was wrong' }); }
-  function addEntry(){
-    var code = el('input', { type: 'text', class: 'full', id: 'ent-add-code', placeholder: 'Employee code' });
-    var tin = el('input', { type: 'datetime-local', id: 'ent-add-in', value: ENT.date + 'T08:00' });
-    var tout = el('input', { type: 'datetime-local', id: 'ent-add-out' });
-    var why = reasonBox('ent-add-why');
-    dialog({ title: 'Add an entry', text: 'For someone who came in but was not scanned. Leave OUT empty if they are still inside. Factory time.',
-      fields: [field('Employee code', code), field('IN', tin), field('OUT (empty = still inside)', tout), field('Reason (required)', why)], okText: 'Add entry',
-      submit: function(){ return call('POST', '/admin/entries', { employee_code: code.value, in_at: tin.value, out_at: tout.value, timezone: 'Asia/Karachi', reason: why.value })
-        .then(function(x){ if (x.ok) { ENT.date = tin.value.slice(0, 10); drawEntries(); } return x; }); } });
-  }
-  /* BULK ADD — the one-time opening. "Check" first: it counts what would be
-     added and what skipped (already has an entry, in the future, no shift)
-     and shows a few of the entries; only then does the button add them.
-     Changing anything puts it back to "Check". */
-  function bulkEntries(){
-    var from = el('input', { type: 'date', id: 'blk-from', value: ENT.date });
-    var to = el('input', { type: 'date', id: 'blk-to', value: ENT.date });
-    var dept = el('select', { id: 'blk-dept', class: 'full' }, [el('option', { value: '0', text: 'All departments' })]);
-    loadDepts().then(function(list){ (list || []).filter(function(d){ return +d.active !== 0; }).forEach(function(d){ dept.appendChild(el('option', { value: d.id, text: d.name })); }); });
-    var codes = el('textarea', { id: 'blk-codes', class: 'full', rows: 2, placeholder: 'Optional: only these codes, e.g. 611, 406, 145 (leave empty for the whole department)' });
-    var DN = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
-    var dayBoxes = DN.map(function(d){ return el('input', { type: 'checkbox', value: d[0], checked: d[0] !== '7' }); });
-    var daysRow = el('div', { class: 'bar', style: 'gap:10px' }, DN.map(function(d, i){ return el('label', { style: 'display:inline-flex;gap:4px;align-items:center;font-weight:500' }, [dayBoxes[i], d[1]]); }));
-    var mShift = el('input', { type: 'radio', name: 'blk-mode', value: 'shift', checked: true, id: 'blk-mode-shift' });
-    var mFixed = el('input', { type: 'radio', name: 'blk-mode', value: 'fixed', id: 'blk-mode-fixed' });
-    var tin = el('input', { type: 'time', id: 'blk-in', value: '08:30' });
-    var tout = el('input', { type: 'time', id: 'blk-out', value: '17:30' });
-    var modeRow = el('div', {}, [
-      el('label', { style: 'display:flex;gap:6px;align-items:center;font-weight:500' }, [mShift, 'Each person\'s own shift times (night guards get their night shift)']),
-      el('label', { style: 'display:flex;gap:6px;align-items:center;font-weight:500;margin-top:4px' }, [mFixed, 'The same times for everybody: IN ', tin, ' OUT ', tout])]);
-    var why = el('textarea', { class: 'full', rows: 2, id: 'blk-why', maxlength: 1000, placeholder: 'For example: opening attendance before the gate system started' });
-    var out = el('div', { id: 'blk-result', style: 'font-size:13px;margin-top:4px' });
-    var checked = null;
-    function body(apply){
-      return { from: from.value, to: to.value, department_id: parseInt(dept.value, 10) || 0, codes: codes.value,
-        days: dayBoxes.filter(function(b){ return b.checked; }).map(function(b){ return b.value; }).join(''),
-        mode: mFixed.checked ? 'fixed' : 'shift', in_time: tin.value, out_time: tout.value, reason: why.value, apply: apply };
-    }
-    function reset(){ if (checked !== null) { checked = null; out.textContent = ''; document.getElementById('attsdlg-ok').textContent = 'Check'; } }
-    [from, to, dept, codes, mShift, mFixed, tin, tout].concat(dayBoxes).forEach(function(n){ n.addEventListener('change', reset); n.addEventListener('input', reset); });
-    function summary(r){
-      var lines = [el('div', { style: 'font-weight:700' }, [r.applied ? ('Added ' + r.added + ' entries.') : (r.to_add + ' entries will be added') + (r.applied ? '' : ' — ' + r.people + ' people × ' + r.days + ' days')])];
-      var sk = [];
-      if (r.skipped_already) sk.push(r.skipped_already + ' already have an entry (left as they are)');
-      if (r.skipped_future) sk.push(r.skipped_future + ' are in the future');
-      if (r.skipped_no_shift) sk.push(r.skipped_no_shift + ' have no shift and no default shift');
-      if (sk.length) lines.push(el('div', { class: 'muted', text: 'Skipped: ' + sk.join('; ') + '.' }));
-      if (r.unknown_codes && r.unknown_codes.length) lines.push(el('div', { class: 'err', text: 'Not found or not active: ' + r.unknown_codes.join(', ') }));
-      if (!r.applied && r.sample && r.sample.length) {
-        lines.push(el('div', { class: 'muted', style: 'margin-top:4px', text: 'For example: ' + r.sample.slice(0, 4).map(function(x){ return x.code + ' ' + x.date.slice(5) + ' ' + x.in + '–' + (x.out || 'inside'); }).join(' · ') }));
-      }
-      if (r.failed && r.failed.length) lines.push(el('div', { class: 'err', text: 'Could not add: ' + r.failed.join('; ') }));
-      out.textContent = ''; lines.forEach(function(n){ out.appendChild(n); });
-    }
-    dialog({ title: 'Bulk add entries', wide: true,
-      text: 'For the opening: mark many people present on many days at once. Days that already have an entry are skipped, never changed. Press Check first — nothing is saved until you press Add. Factory time.',
-      fields: [el('div', { class: 'row2', style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px' }, [field('From', from), field('To', to)]),
-        field('Days of the week', daysRow), field('Department', dept), field('Or only these employee codes', codes),
-        field('Times', modeRow), field('Reason (required, kept with every entry)', why), out],
-      okText: 'Check',
-      submit: function(){
-        if (checked === null) {
-          return call('POST', '/admin/entries/bulk', body(false)).then(function(r){
-            if (!r.ok) return r;
-            checked = r; summary(r);
-            document.getElementById('attsdlg-ok').textContent = r.to_add ? ('Add ' + r.to_add + ' entries') : 'Check';
-            if (!r.to_add) checked = null;
-            return { ok: true, keepOpen: true };
-          });
-        }
-        return call('POST', '/admin/entries/bulk', body(true)).then(function(r){
-          if (!r.ok) return r;
-          summary(r); checked = null;
-          ENT.date = from.value; drawEntries();
-          document.getElementById('attsdlg-ok').hidden = true;
-          document.getElementById('attsdlg-cancel').textContent = 'Close';
-          return { ok: true, keepOpen: true };
-        });
-      } });
-  }
-  function editEntry(x){
-    var tin = el('input', { type: 'datetime-local', id: 'ent-ed-in', value: khiLocal(x.opened_at) });
-    var tout = el('input', { type: 'datetime-local', id: 'ent-ed-out', value: khiLocal(x.closed_at) });
-    var why = reasonBox('ent-ed-why');
-    dialog({ title: 'Edit — ' + x.full_name, text: 'Change the IN or OUT time. The gate\'s scan keeps the time it was scanned at; this entry and every report use the new time. Factory time.',
-      fields: [field('IN', tin), field('OUT' + (x.closed_at ? '' : ' (fill in to close the entry)'), tout), field('Reason (required)', why)], okText: 'Save change',
-      submit: function(){
-        var body = { reason: why.value, timezone: 'Asia/Karachi' };
-        if (tin.value !== khiLocal(x.opened_at)) body.in_at = tin.value;
-        if (tout.value && tout.value !== khiLocal(x.closed_at)) body.out_at = tout.value;
-        if (!body.in_at && !body.out_at) return Promise.resolve({ ok: false, error: 'Nothing was changed.' });
-        return call('POST', '/admin/entries/' + x.entry_cycle_id + '/edit', body).then(function(r){ if (r.ok) drawEntries(); return r; });
-      } });
-  }
-  function deleteEntry(x){
-    var why = reasonBox('ent-del-why');
-    dialog({ title: 'Delete this entry? — ' + x.full_name, text: 'IN ' + khiTime(x.opened_at) + (x.closed_at ? ', OUT ' + khiTime(x.closed_at) : ', still inside') + '. It leaves attendance and every report. A full copy is kept on record with your name and reason; a HOD confirmation of it is set aside.',
-      fields: [field('Reason (required)', why)], okText: 'Delete entry',
-      submit: function(){ return call('POST', '/admin/entries/' + x.entry_cycle_id + '/delete', { reason: why.value }).then(function(r){ if (r.ok) drawEntries(); return r; }); } });
+    var a = btn('Open People Finance › Entries', function(){ location.href = 'att_finance.php#entries'; }, true); a.id = 'ent-moved';
+    show([el('div', { class: 'note' }, [el('strong', { text: 'Entries have moved to People Finance › Entries. ' }),
+      'Add, change and delete attendance entries there — for one person or many, a department, one day or a range of days, with a list to tick and change together and a people × days grid where a missing day stands out. Every change still needs a reason and is kept with your name.']),
+      el('p', {}, [a])]);
   }
 
   // --------------------------------------------------------------- phones

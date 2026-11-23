@@ -307,7 +307,6 @@ page_header('People Finance');
 .fin .mwkey{display:inline-block;width:18px;text-align:center;border-radius:3px;color:#fff;font-weight:700;font-size:11px;margin-left:8px}
 .fin .mwkey.f{background:#1f7a3a}.fin .mwkey.h{background:#d9730d}.fin .mwkey.a{background:#8a96a3}
 .fin .btn.go{background:#1f7a3a;border-color:#1f7a3a}.fin .btn.go:hover{background:#17602d}
-@media (max-width:1100px){.fin .mwgrid{grid-template-columns:1fr 1fr}}
 .fin table.t.entry td{padding:5px 6px;vertical-align:middle}
 .fin table.t.entry input,.fin table.t.entry select{min-height:28px;padding:4px 7px}
 .fin table.t.entry input.n{text-align:right;font-weight:600;min-width:110px}
@@ -409,6 +408,73 @@ page_header('People Finance');
 .fin table.elist tfoot td{background:var(--head);font-weight:700;border-top:2px solid var(--line)}
 .fin table.elist td.signc{min-width:110px;border-bottom:1px solid #9aa7b4}
 @media (max-width:820px){.fin .elist-opts .formgrid{grid-template-columns:1fr 1fr}}
+/* ENTRIES (owner, 23 Nov 2026): attendance IN / OUT for one person or many,
+   one day or a range — a list to tick and change many at once, and a grid of
+   people × days where a missing day stands out. */
+.fin .enbar{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.fin .enbar .fld{min-width:0}
+.fin .enbar input[type=date]{width:138px}
+.fin .enbar select{min-width:150px}
+.fin .enbar input[type=search]{width:210px}
+.fin .enq{display:flex;gap:4px;flex-wrap:wrap}
+.fin .enq .btn{min-height:26px;padding:3px 8px;font-size:12px}
+.fin .seg2{display:inline-flex;border:1px solid #b9c4d0;border-radius:4px;overflow:hidden}
+.fin .seg2 button{border:0;border-right:1px solid var(--line2);background:#fff;color:var(--muted);font:600 12.5px/1 var(--ff);padding:7px 12px;cursor:pointer}
+.fin .seg2 button:last-child{border-right:0}.fin .seg2 button.on{background:var(--sel);color:var(--pri)}
+.fin .enk{display:flex;gap:6px;flex-wrap:wrap}
+.fin .enk button{display:inline-flex;gap:6px;align-items:baseline;border:1px solid var(--line);border-radius:4px;background:#fff;padding:5px 10px;font:600 12px/1.2 var(--ff);color:var(--muted);cursor:pointer}
+.fin .enk button b{font-size:15px;color:var(--navy);font-variant-numeric:tabular-nums}
+.fin .enk button.on{border-color:var(--pri);box-shadow:inset 0 0 0 1px var(--pri);color:var(--pri)}
+.fin .enk button.warn b{color:var(--owed)}
+.fin .entw{overflow:auto;max-height:calc(100vh - 330px);min-height:180px}
+.fin table.t.en th{position:sticky;top:0;z-index:2}
+.fin table.t.en td{padding:4px 10px;white-space:nowrap}
+.fin table.t.en td.nt{white-space:normal;min-width:180px}
+.fin table.t.en tr.pk td{background:#eef5fc}
+.fin table.t.en .tm{font-variant-numeric:tabular-nums;font-weight:600}
+.fin table.t.en .open{color:var(--owed);font-weight:600}
+.fin .ech{display:inline-block;padding:0 6px;margin:1px 3px 1px 0;border-radius:3px;font-size:11px;font-weight:600;line-height:17px;background:#eef1f5;color:#4b5563}
+.fin .ech.adm{background:#e1edf9;color:#17467c}.fin .ech.ed{background:#fff1d6;color:#8a4b00}.fin .ech.sys{background:var(--bad-bg);color:var(--bad)}
+.fin table.t.eg{font-size:12px}
+.fin table.t.eg th,.fin table.t.eg td{padding:3px 4px;text-align:center}
+.fin table.t.eg th:first-child,.fin table.t.eg td:first-child{text-align:left;padding-left:10px;position:sticky;left:0;background:#fff;z-index:1;min-width:170px}
+.fin table.t.eg thead th:first-child{z-index:3;background:var(--head)}
+.fin table.t.eg th .sub{display:block;font-weight:500;color:var(--muted);font-size:10.5px}
+.fin table.t.eg th.we,.fin table.t.eg td.we{background:#f7f8fa}
+.fin table.t.eg td.cell{cursor:pointer;min-width:62px;height:34px;line-height:1.15;font-variant-numeric:tabular-nums}
+.fin table.t.eg td.cell:hover{background:var(--hover);box-shadow:inset 0 0 0 1px var(--pri)}
+.fin table.t.eg td.cell .a{display:block;font-weight:600;color:var(--ink)}
+.fin table.t.eg td.cell .b{display:block;color:var(--muted);font-size:10.5px}
+.fin table.t.eg td.cell.op .b{color:var(--owed);font-weight:600}
+.fin table.t.eg td.cell.ed{box-shadow:inset 0 -2px 0 #e0a030}
+.fin table.t.eg td.cell.none{color:#c3ccd6}
+.fin table.t.eg td.cell.none:hover{color:var(--pri)}
+.fin table.t.eg td.fut{color:#d5dbe3;cursor:default}
+.fin table.t.eg td.sum{font-weight:600;text-align:right;padding-right:10px;white-space:nowrap}
+.fin table.prev{font-size:12px}.fin table.prev td{padding:3px 8px}.fin table.prev .chg{color:var(--pri);font-weight:600}
+.fin table.prev tr.bad td{background:var(--bad-bg)}.fin table.prev tr.skip td{color:var(--muted)}
+.fin .prevw{max-height:280px;overflow:auto;border:1px solid var(--line);border-radius:4px}
+/* MARK ATTENDANCE, FITTED (owner, 23 Nov 2026): one compact bar of settings,
+   short rows, equal day columns, the header and totals stay in view. */
+.fin .mwgrid{display:grid;grid-template-columns:auto minmax(150px,1fr) auto auto minmax(200px,1.6fr);gap:8px 12px;align-items:end}
+.fin .mwgrid input[type=time]{width:104px;padding:4px 6px}
+.fin .mwgrid input[type=date]{width:138px}
+.fin .mwtw{overflow:auto;max-height:calc(100vh - 300px);min-height:200px}
+.fin table.mw{table-layout:fixed}
+.fin table.mw th,.fin table.mw td{padding:3px 6px}
+.fin table.mw thead th{position:sticky;top:0;z-index:2}
+.fin table.mw tr.tot td{position:sticky;bottom:0;z-index:1}
+.fin table.mw th:first-child,.fin table.mw td:first-child{width:34px}
+.fin table.mw th:nth-child(2),.fin table.mw td:nth-child(2){width:210px}
+.fin table.mw td:nth-child(2) b{display:inline}
+.fin table.mw td:nth-child(2) .muted{display:inline;margin-left:6px}
+.fin table.mw th.c,.fin table.mw td.c{text-align:center}
+.fin table.mw th.c .sub{display:block;font-weight:500;font-size:10.5px;color:var(--muted)}
+.fin table.mw th.num,.fin table.mw td.num{width:78px}
+.fin table.mw th.num.w,.fin table.mw td.num.w{width:104px}
+.fin table.mw .seg3 button{width:24px;padding:3px 0;font-size:11.5px}
+.fin table.mw .mwscan,.fin table.mw .mwsheet{padding:1px 6px;font-size:11.5px}
+@media (max-width:1100px){.fin .mwgrid{grid-template-columns:1fr 1fr}.fin .mwgrid .wide{grid-column:1/-1}}
 </style>
 
 <div class="topbar">
@@ -537,12 +603,13 @@ page_header('People Finance');
   }
 
   // ------------------------------------------------------------ tabs
-  var TABS = [['home', 'Home'], ['mark', 'Mark attendance'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Employee Ledger'], ['advances', 'Advances & loans']];
+  var TABS = [['home', 'Home'], ['mark', 'Mark attendance'], ['entries', 'Entries'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Employee Ledger'], ['advances', 'Advances & loans']];
   function drawTabs(){
     var t = document.getElementById('fin-tabs'); t.textContent = '';
     TABS.forEach(function(x){
       if (x[0] === 'prepare' && !S.caps.salary && !S.caps.wage) return;
       if (x[0] === 'mark' && !S.caps.mark) return;
+      if (x[0] === 'entries' && !S.caps.admin) return;
       var n = x[0] === 'sheets' ? (S.caps.approve ? S.counts.waiting : 0) + (S.caps.pay ? S.counts.approved : 0) : 0;
       t.appendChild(el('button', { type: 'button', role: 'tab', 'aria-selected': S.tab === x[0] ? 'true' : 'false', click: function(){ go(x[0]); } },
         [x[1], n ? el('span', { class: 'dot', text: String(n) }) : null]));
@@ -551,7 +618,7 @@ page_header('People Finance');
   function go(tab, arg){
     S.tab = tab; drawTabs();
     try { history.replaceState(null, '', '#' + tab); } catch (e) {}
-    ({ home: home, mark: markWeek, prepare: prepare, sheets: sheets, people: people, ledger: ledger, advances: advances })[tab](arg);
+    ({ home: home, mark: markWeek, entries: entries, prepare: prepare, sheets: sheets, people: people, ledger: ledger, advances: advances })[tab](arg);
   }
   function refreshCounts(){
     return call('GET', '/finance/overview').then(function(r){
@@ -2121,7 +2188,7 @@ page_header('People Finance');
           field('Department', deptSel),
           field('Full day', el('div', { class: 'row', style: 'flex-wrap:nowrap;gap:4px' }, [t.full_in, el('span', { class: 'muted', text: '–' }), t.full_out])),
           field('Half day (under ' + hrs + ' h)', el('div', { class: 'row', style: 'flex-wrap:nowrap;gap:4px' }, [t.half_in, el('span', { class: 'muted', text: '–' }), t.half_out])),
-          field('Reason (kept on every day you mark)', why)]),
+          (function(f){ f.classList.add('wide'); return f; })(field('Reason (kept on every day you mark)', why))]),
         el('div', { class: 'row', style: 'justify-content:space-between;margin-top:10px' }, [
           el('div', { class: 'row' }, [btn('All Full for ticked', function(){ W.forEach(function(w){ if (MW.on[w.employee_id]) D.forEach(function(d){ if (free(w, d)) setMark(w, d, 'F'); }); }); draw(); }, 'sm'),
             btn('Fill days…', function(){
@@ -2142,7 +2209,7 @@ page_header('People Finance');
             }, 'sm'),
             btn('Clear my marks', function(){ MW.marks = {}; draw(); }, 'sm')]),
           el('span', { class: 'lgtip', text: 'Blue days were scanned at the gate; grey days are already on a pay sheet. Neither is changed here.' })])]);
-      var tableBox = el('div', { class: 'cardx scroll' }), foot = el('div', { class: 'row', style: 'justify-content:space-between' }), errBox = el('div', { class: 'err', hidden: true });
+      var tableBox = el('div', { class: 'cardx scroll mwtw' }), foot = el('div', { class: 'row', style: 'justify-content:space-between' }), errBox = el('div', { class: 'err', hidden: true });
       function draw(){
         tableBox.textContent = '';
         if (!W.length) { tableBox.appendChild(el('div', { class: 'empty', text: 'No daily-wage workers here. Set someone to "Daily wages" in Employees first.' })); }
@@ -2164,13 +2231,13 @@ page_header('People Finance');
             var days = D.reduce(function(a, d){ return a + value(w, d); }, 0), pay = Math.round(days * w.daily_rate_paisa);
             tot.d += days; tot.p += pay;
             tb.appendChild(el('tr', {}, [el('td', {}, [cb]), el('td', {}, [el('b', { text: w.full_name }), el('div', { class: 'muted small', text: w.code + ' · ' + w.department_name })])].concat(cells,
-              [el('td', { class: 'num', text: String(days) }), el('td', { class: 'num', text: rs(w.daily_rate_paisa) }), el('td', { class: 'num' }, [el('b', { text: rs(pay) })])])));
+              [el('td', { class: 'num', text: String(days) }), el('td', { class: 'num', text: rs(w.daily_rate_paisa) }), el('td', { class: 'num w' }, [el('b', { text: rs(pay) })])])));
           });
           tb.appendChild(el('tr', { class: 'tot' }, [el('td'), el('td', { text: 'Total — ' + W.length + (W.length === 1 ? ' worker' : ' workers') })].concat(D.map(function(){ return el('td'); }),
-            [el('td', { class: 'num', text: String(tot.d) }), el('td'), el('td', { class: 'num', text: rs(tot.p) })])));
+            [el('td', { class: 'num', text: String(tot.d) }), el('td', { class: 'num' }), el('td', { class: 'num w', text: rs(tot.p) })])));
           tableBox.appendChild(el('table', { class: 't stmt lg mw' }, [el('thead', {}, [el('tr', {}, [el('th', {}, [all]), el('th', { text: 'Worker' })].concat(D.map(function(d){
             return el('th', { class: 'c' }, [DAYS[isoDay(d)].slice(0, 3), el('span', { class: 'sub', text: nice(d).replace(/ \d{4}$/, '') })]); }),
-            [el('th', { style: 'text-align:right', text: 'Days' }), el('th', { style: 'text-align:right', text: 'Rate' }), el('th', { style: 'text-align:right', text: 'Wages (PKR)' })]))]), tb]));
+            [el('th', { class: 'num', style: 'text-align:right', text: 'Days' }), el('th', { class: 'num', style: 'text-align:right', text: 'Rate' }), el('th', { class: 'num w', style: 'text-align:right', text: 'Wages (PKR)' })]))]), tb]));
         }
         var n = Object.keys(MW.marks).length;
         foot.textContent = '';
@@ -2200,6 +2267,318 @@ page_header('People Finance');
       show([head, errBox, tableBox, foot]);
       draw();
     });
+  }
+
+  // ------------------------------------------------------------- entries
+  /* ATTENDANCE ENTRIES (owner, 23 Nov 2026 — moved here from Setup › Entries).
+     Administrator only, and the server checks that again on every call.
+     One day or up to 31, one department or all, one person or a list of
+     codes. LIST: tick entries and change them together — set the same IN/OUT,
+     move by minutes, fill a missing OUT, delete. Every bulk change is CHECKED
+     first (before → after, and what would be refused); Save then writes all
+     of them or none. GRID: people × days, a day with no entry is an empty
+     cell — click it to add, click a filled one to change it. The gate's own
+     scans are never altered: an edited time is shown beside the scanned one. */
+  var EN = { from: '', to: '', dept: '', q: '', view: 'list', flag: '', pick: {}, data: null };
+  function lt(iso){ return iso ? String(iso).slice(11, 16) : ''; }               // factory time, as the server sent it
+  function ld(iso){ return iso ? String(iso).slice(0, 10) : ''; }
+  function loc(iso){ return iso ? String(iso).slice(0, 16) : ''; }            // for a datetime-local box
+  function hmin(m){ m = parseInt(m, 10); if (isNaN(m)) return '—'; return Math.floor(m / 60) + ':' + d2(m % 60); }
+  function enFlags(x){
+    var f = [];
+    if (!x.closed_at) f.push('open');
+    if (x.in_source === 'admin') f.push('admin');
+    if (x.edited_at) f.push('edited');
+    if (x.close_source === 'auto_shift_end') f.push('system');
+    if (x.scanned_in_at) f.push('scanned');
+    return f;
+  }
+  function enNotes(x){
+    var n = [];
+    if (!x.closed_at) n.push(['No OUT', 'sys']);
+    if (x.in_source === 'admin') n.push(['added by admin', 'adm']);
+    if (x.scanned_in_at && x.scanned_in_at !== x.opened_at) n.push(['IN scanned ' + lt(x.scanned_in_at), 'ed']);
+    if (x.scanned_out_at && x.closed_at && x.scanned_out_at !== x.closed_at) n.push(['OUT scanned ' + lt(x.scanned_out_at), 'ed']);
+    if (x.close_source === 'auto_shift_end') n.push(['OUT by the system', 'sys']);
+    if ((x.close_source === 'hr_correction' || x.close_source === 'admin') && !x.scanned_out_at && x.closed_at) n.push(['OUT by HR / admin', 'adm']);
+    if (x.edited_at) n.push(['edited ' + nice(ld(x.edited_at)).replace(/ \d{4}$/, '') + ' ' + lt(x.edited_at), 'ed']);
+    return n;
+  }
+  function entries(){
+    if (!S.caps.admin) return show([el('div', { class: 'cardx empty', text: 'Changing attendance entries is for an administrator.' })]);
+    if (!EN.from) { EN.from = S.today; EN.to = S.today; }
+    var dsel = el('select', { 'aria-label': 'Department' }, [el('option', { value: '', text: 'All departments' })].concat((S.depts || []).map(function(d){ return el('option', { value: String(d.id), text: d.name }); })));
+    dsel.value = EN.dept;
+    var from = el('input', { type: 'date', value: EN.from, max: S.today, 'aria-label': 'From' });
+    var to = el('input', { type: 'date', value: EN.to, max: S.today, 'aria-label': 'To' });
+    var q = el('input', { type: 'search', value: EN.q, placeholder: 'Name, or codes: 101 102 145', 'aria-label': 'Employees' });
+    function load(){
+      EN.from = from.value || S.today; EN.to = to.value || EN.from; EN.dept = dsel.value; EN.q = q.value.trim(); EN.pick = {};
+      if (EN.to < EN.from) { var t = EN.from; EN.from = EN.to; EN.to = t; }
+      if (dt(EN.to) - dt(EN.from) > 30 * 864e5) { EN.to = addDays(EN.from, 30); toast('At most 31 days at a time — showing ' + nice(EN.from) + ' to ' + nice(EN.to) + '.', true); }
+      entries();
+    }
+    [from, to, dsel].forEach(function(n){ n.addEventListener('change', load); });
+    q.addEventListener('keydown', function(e){ if (e.key === 'Enter') load(); });
+    q.addEventListener('search', load);
+    function quick(label, a, b){ return btn(label, function(){ from.value = a; to.value = b; load(); }, 'sm'); }
+    var wkEnd = S.today; while (isoDay(wkEnd) !== S.payDay) wkEnd = addDays(wkEnd, 1);
+    var wkFrom = addDays(wkEnd, -6);
+    var seg = el('div', { class: 'seg2', role: 'group', 'aria-label': 'View' }, [['list', 'List'], ['grid', 'Grid · people × days']].map(function(v){
+      return el('button', { type: 'button', class: EN.view === v[0] ? 'on' : '', 'aria-pressed': EN.view === v[0] ? 'true' : 'false', text: v[1], click: function(){ EN.view = v[0]; draw(); } }); }));
+    var bar = el('div', { class: 'cardx' }, [el('div', { class: 'enbar' }, [
+      field('From', from), field('To', to),
+      el('div', { class: 'fld' }, ['Quick', el('div', { class: 'enq' }, [quick('Today', S.today, S.today), quick('Yesterday', addDays(S.today, -1), addDays(S.today, -1)),
+        quick('Pay week', wkFrom, wkEnd > S.today ? S.today : wkEnd), quick('Last 7 days', addDays(S.today, -6), S.today), quick('This month', S.today.slice(0, 8) + '01', S.today)])]),
+      field('Department', dsel), field('Employees', q),
+      btn('Show', load, 'pri'),
+      el('span', { style: 'flex:1' }),
+      btn('+ Add entry', function(){ enAdd(null, EN.to); }),
+      btn('Bulk add…', function(){ enBulkAdd(); })])]);
+    var kp = el('div', { class: 'enk' }), view = el('div', {}), selbar = el('div', { class: 'selbar', hidden: true });
+    show([bar, el('div', { class: 'row', style: 'justify-content:space-between' }, [kp, seg]), selbar, view]);
+    view.appendChild(el('p', { class: 'muted', text: 'Loading…' }));
+    call('GET', '/admin/entries/range', { from: EN.from, to: EN.to, department_id: EN.dept, q: EN.q }).then(function(r){
+      if (!r.ok) { view.textContent = ''; view.appendChild(fail(r)); return; }
+      EN.data = r; draw();
+    });
+
+    function rows(){
+      var all = (EN.data && EN.data.entries) || [];
+      return EN.flag ? all.filter(function(x){ return enFlags(x).indexOf(EN.flag) >= 0; }) : all;
+    }
+    function draw(){
+      [].forEach.call(seg.children, function(b, i){ var on = (i === 0 ? 'list' : 'grid') === EN.view; b.className = on ? 'on' : ''; b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+      if (!EN.data) return;
+      var all = EN.data.entries, c = { open: 0, admin: 0, edited: 0, system: 0 };
+      all.forEach(function(x){ enFlags(x).forEach(function(f){ if (c[f] !== undefined) c[f]++; }); });
+      var withAny = {}; all.forEach(function(x){ withAny[x.employee_id + '|' + x.work_date] = 1; });
+      kp.textContent = '';
+      [['', 'Entries', all.length, ''], ['open', 'No OUT', c.open, 'warn'], ['system', 'OUT by system', c.system, 'warn'], ['edited', 'Edited', c.edited, ''], ['admin', 'Added by admin', c.admin, '']].forEach(function(k){
+        kp.appendChild(el('button', { type: 'button', class: (EN.flag === k[0] ? 'on ' : '') + (k[2] && k[3] ? k[3] : ''), title: k[0] ? 'Show only these' : 'Show all',
+          click: function(){ EN.flag = EN.flag === k[0] ? '' : k[0]; EN.pick = {}; draw(); } }, [k[1], el('b', { text: String(k[2]) })]));
+      });
+      kp.appendChild(el('span', { class: 'muted small', style: 'align-self:center', text: EN.data.people.length + ' people · ' + nice(EN.data.from) + (EN.data.to !== EN.data.from ? ' – ' + nice(EN.data.to) : '') }));
+      view.textContent = '';
+      if (EN.view === 'grid') return grid();
+      list();
+    }
+    function sel(){
+      var ids = Object.keys(EN.pick).filter(function(k){ return EN.pick[k]; });
+      selbar.hidden = !ids.length; selbar.textContent = '';
+      if (!ids.length) return;
+      var picked = EN.data.entries.filter(function(x){ return EN.pick[x.entry_cycle_id]; }), open = picked.filter(function(x){ return !x.closed_at; }).length;
+      selbar.appendChild(el('b', { text: ids.length + ' ticked' }));
+      selbar.appendChild(btn('Set IN / OUT…', function(){ enBulk('set', ids); }, 'sm'));
+      selbar.appendChild(btn('Move by minutes…', function(){ enBulk('move', ids); }, 'sm'));
+      selbar.appendChild(btn('Fill missing OUT' + (open ? ' (' + open + ')' : '') + '…', function(){ enBulk('fill', ids); }, 'sm', !open));
+      selbar.appendChild(btn('Delete…', function(){ enBulk('delete', ids); }, 'sm danger'));
+      selbar.appendChild(btn('Untick all', function(){ EN.pick = {}; draw(); }, 'sm'));
+    }
+    function list(){
+      var R = rows();
+      if (!R.length) { view.appendChild(el('div', { class: 'cardx empty', text: EN.data.entries.length ? 'None of these.' : 'No entries in these days for these people. Use + Add entry, or the Grid to add a missing day.' })); sel(); return; }
+      var all = el('input', { type: 'checkbox', 'aria-label': 'Tick all shown', checked: R.every(function(x){ return EN.pick[x.entry_cycle_id]; }),
+        change: function(){ R.forEach(function(x){ EN.pick[x.entry_cycle_id] = all.checked; }); draw(); } });
+      var tb = el('tbody'), multi = EN.data.from !== EN.data.to, mins = 0;
+      R.forEach(function(x){
+        mins += +x.present_minutes || 0;
+        var cb = el('input', { type: 'checkbox', checked: !!EN.pick[x.entry_cycle_id], 'aria-label': 'Tick ' + x.full_name,
+          change: function(){ EN.pick[x.entry_cycle_id] = cb.checked; tr.className = cb.checked ? 'pk' : ''; sel(); } });
+        var outDay = x.closed_at && ld(x.closed_at) !== ld(x.opened_at) ? ' +1' : '';
+        var tr = el('tr', { class: EN.pick[x.entry_cycle_id] ? 'pk' : '' }, [
+          el('td', { class: 'tick' }, [cb]),
+          multi ? el('td', { text: DAYS[isoDay(x.work_date)].slice(0, 3) + ' ' + nice(x.work_date).replace(/ \d{4}$/, '') }) : null,
+          el('td', {}, [el('b', { text: x.full_name }), el('span', { class: 'muted small', text: '  ' + x.employee_code + ' · ' + x.department_name })]),
+          el('td', { class: 'muted small', text: x.shift_name }),
+          el('td', { class: 'tm', text: lt(x.opened_at) }),
+          el('td', {}, [x.closed_at ? el('span', { class: 'tm', text: lt(x.closed_at) + outDay }) : el('span', { class: 'open', text: 'inside / no OUT' })]),
+          el('td', { class: 'num tm', text: x.present_minutes != null ? hmin(x.present_minutes) : '—' }),
+          el('td', { class: 'nt' }, enNotes(x).map(function(n){ return el('span', { class: 'ech ' + n[1], text: n[0] }); })),
+          el('td', { style: 'text-align:right' }, [btn('Edit', function(){ enEdit(x); }, 'sm'), ' ', btn('Delete', function(){ enDelete(x); }, 'sm danger')])]);
+        tb.appendChild(tr);
+      });
+      tb.appendChild(el('tr', { class: 'tot' }, [el('td'), multi ? el('td') : null, el('td', { text: R.length + (R.length === 1 ? ' entry' : ' entries') }), el('td'), el('td'), el('td'),
+        el('td', { class: 'num tm', text: hmin(mins) }), el('td'), el('td')]));
+      view.appendChild(el('div', { class: 'cardx scroll entw' }, [el('table', { class: 't en' }, [el('thead', {}, [el('tr', {}, [el('th', { class: 'tick' }, [all]),
+        multi ? el('th', { text: 'Day' }) : null, el('th', { text: 'Employee' }), el('th', { text: 'Shift' }), el('th', { text: 'IN' }), el('th', { text: 'OUT' }),
+        el('th', { style: 'text-align:right', text: 'Hours' }), el('th', { text: 'Notes' }), el('th')])]), tb])]));
+      sel();
+    }
+    function grid(){
+      selbar.hidden = true;
+      var P = EN.data.people, days = [];
+      for (var d = EN.data.from; d <= EN.data.to; d = addDays(d, 1)) days.push(d);
+      if (!P.length) { view.appendChild(el('div', { class: 'cardx empty', text: 'Nobody here. Choose another department, or clear the Employees box.' })); return; }
+      var by = {};
+      rows().forEach(function(x){ (by[x.employee_id + '|' + x.work_date] = by[x.employee_id + '|' + x.work_date] || []).push(x); });
+      var people = EN.flag ? P.filter(function(p){ return days.some(function(d){ return by[p.employee_id + '|' + d]; }); }) : P;
+      var tb = el('tbody'), dayTot = {};
+      people.forEach(function(p){
+        var n = 0, m = 0;
+        var cells = days.map(function(d){
+          var xs = by[p.employee_id + '|' + d], we = isoDay(d) === 7 ? ' we' : '';
+          if (d > EN.data.today) return el('td', { class: 'fut' + we, text: '' });
+          if (!xs) return el('td', { class: 'cell none' + we, title: 'No entry — click to add', text: '+', click: function(){ enAdd(p, d); } });
+          n++; dayTot[d] = (dayTot[d] || 0) + 1;
+          xs.forEach(function(x){ m += +x.present_minutes || 0; });
+          var x = xs[0], open = xs.some(function(y){ return !y.closed_at; }), ed = xs.some(function(y){ return y.edited_at || y.in_source === 'admin'; });
+          return el('td', { class: 'cell' + (open ? ' op' : '') + (ed ? ' ed' : '') + we,
+            title: xs.map(function(y){ return lt(y.opened_at) + '–' + (y.closed_at ? lt(y.closed_at) : 'no OUT') + (y.present_minutes != null ? ' (' + hmin(y.present_minutes) + ')' : ''); }).join('\n') + '\nClick to change',
+            click: function(){ xs.length === 1 ? enEdit(x) : enDay(p, d, xs); } }, [
+            el('span', { class: 'a', text: lt(x.opened_at) + (xs.length > 1 ? ' ×' + xs.length : '') }),
+            el('span', { class: 'b', text: open ? 'no OUT' : lt(xs[xs.length - 1].closed_at) })]);
+        });
+        tb.appendChild(el('tr', {}, [el('td', {}, [el('b', { text: p.full_name }), el('div', { class: 'muted small', text: p.employee_code + ' · ' + p.department_name })])].concat(cells,
+          [el('td', { class: 'sum', text: n + ' d' }), el('td', { class: 'sum', text: hmin(m) })])));
+      });
+      tb.appendChild(el('tr', { class: 'tot' }, [el('td', { text: people.length + ' people' })].concat(days.map(function(d){ return el('td', { text: d > EN.data.today ? '' : String(dayTot[d] || 0) }); }), [el('td'), el('td')])));
+      view.appendChild(el('div', { class: 'cardx scroll entw' }, [el('table', { class: 't eg' }, [el('thead', {}, [el('tr', {}, [el('th', { text: 'Employee' })].concat(days.map(function(d){
+        return el('th', { class: isoDay(d) === 7 ? 'we' : '' }, [DAYS[isoDay(d)].slice(0, 3), el('span', { class: 'sub', text: String(+d.slice(8)) + ' ' + MON[+d.slice(5, 7) - 1] })]); }),
+        [el('th', { style: 'text-align:right', text: 'Days' }), el('th', { style: 'text-align:right', text: 'Hours' })]))]), tb])]));
+      view.appendChild(el('p', { class: 'muted small', style: 'margin:0', text: 'Each cell: IN on top, OUT below. "+" = no entry that day — click to add one. Amber = no OUT. A line under a cell = added or edited by an administrator. The bottom row counts people with an entry each day.' }));
+    }
+  }
+  function enReason(id, ph){ return el('input', { type: 'text', id: id, maxlength: 1000, placeholder: ph || 'e.g. came in by the side gate; phone clock was wrong; from the paper register' }); }
+  function enDone(msg){ closeModal(); toast(msg); entries(); }
+  function enAdd(p, day){
+    var code = el('input', { type: 'text', value: p ? p.employee_code : '', placeholder: 'Employee code', list: 'en-codes' });
+    var dl = el('datalist', { id: 'en-codes' }, ((EN.data && EN.data.people) || []).map(function(x){ return el('option', { value: x.employee_code, label: x.full_name + ' · ' + x.department_name }); }));
+    var tin = el('input', { type: 'datetime-local', value: (day || S.today) + 'T08:30' });
+    var tout = el('input', { type: 'datetime-local', value: (day || S.today) < S.today ? (day || S.today) + 'T17:30' : '' });
+    var why = enReason('en-add-why'), err = el('div', { class: 'err', hidden: true });
+    modal([el('h2', { text: p ? 'Add an entry — ' + p.full_name : 'Add an entry' }),
+      el('p', { class: 'muted small', text: 'For someone who came in but was not scanned. Leave OUT empty if they are still inside. Factory time.' }),
+      el('div', { class: 'formgrid' }, [field('Employee code', code), field('IN', tin), field('OUT (empty = still inside)', tout), (function(f){ f.style.gridColumn = '1/-1'; return f; })(field('Reason (required)', why))]), dl, err,
+      el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Close', closeModal), btn('Add entry', function(){
+        err.hidden = true;
+        call('POST', '/admin/entries', { employee_code: code.value.trim(), in_at: tin.value, out_at: tout.value, timezone: 'Asia/Karachi', reason: why.value }).then(function(r){
+          if (!r.ok) { err.textContent = r.error || 'Not added.'; err.hidden = false; return; }
+          enDone('Entry added.');
+        });
+      }, 'pri')])]);
+  }
+  function enEdit(x){
+    var tin = el('input', { type: 'datetime-local', value: loc(x.opened_at) });
+    var tout = el('input', { type: 'datetime-local', value: loc(x.closed_at) });
+    var why = enReason('en-ed-why'), err = el('div', { class: 'err', hidden: true });
+    modal([el('h2', { text: 'Change — ' + x.full_name + ' (' + x.employee_code + ')' }),
+      el('p', { class: 'muted small', text: nice(x.work_date) + ' · ' + x.shift_name + (x.scanned_in_at ? ' · scanned IN ' + lt(x.scanned_in_at) : '') + (x.scanned_out_at ? ', OUT ' + lt(x.scanned_out_at) : '') + '. The gate\'s scan keeps its own time; this entry and every report use the new one.' }),
+      el('div', { class: 'formgrid' }, [field('IN', tin), field('OUT' + (x.closed_at ? '' : ' (fill in to close it)'), tout), (function(f){ f.style.gridColumn = '1/-1'; return f; })(field('Reason (required)', why))]), err,
+      el('div', { class: 'row', style: 'justify-content:space-between' }, [btn('Delete this entry…', function(){ enDelete(x); }, 'danger'), el('div', { class: 'row' }, [btn('Close', closeModal), btn('Save change', function(){
+        err.hidden = true;
+        var b = { reason: why.value, timezone: 'Asia/Karachi' };
+        if (tin.value !== loc(x.opened_at)) b.in_at = tin.value;
+        if (tout.value && tout.value !== loc(x.closed_at)) b.out_at = tout.value;
+        if (!b.in_at && !b.out_at) { err.textContent = 'Nothing was changed.'; err.hidden = false; return; }
+        call('POST', '/admin/entries/' + x.entry_cycle_id + '/edit', b).then(function(r){
+          if (!r.ok) { err.textContent = r.error || 'Not saved.'; err.hidden = false; return; }
+          enDone('Entry changed.');
+        });
+      }, 'pri')])])]);
+  }
+  function enDelete(x){
+    var why = enReason('en-del-why', 'e.g. scanned the wrong person'), err = el('div', { class: 'err', hidden: true });
+    modal([el('h2', { text: 'Delete this entry? — ' + x.full_name }),
+      el('p', { class: 'muted small', text: nice(x.work_date) + ': IN ' + lt(x.opened_at) + (x.closed_at ? ', OUT ' + lt(x.closed_at) : ', no OUT') + '. It leaves attendance and every report; a full copy is kept on record with your name and reason.' }),
+      field('Reason (required)', why), err,
+      el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Close', closeModal), btn('Delete entry', function(){
+        err.hidden = true;
+        call('POST', '/admin/entries/' + x.entry_cycle_id + '/delete', { reason: why.value }).then(function(r){
+          if (!r.ok) { err.textContent = r.error || 'Not deleted.'; err.hidden = false; return; }
+          enDone('Entry deleted.');
+        });
+      }, 'danger')])]);
+  }
+  function enDay(p, d, xs){
+    modal([el('h2', { text: p.full_name + ' — ' + nice(d) }),
+      el('table', { class: 't' }, [el('tbody', {}, xs.map(function(x){ return el('tr', {}, [el('td', { class: 'tm', text: lt(x.opened_at) + ' – ' + (x.closed_at ? lt(x.closed_at) : 'no OUT') }),
+        el('td', { class: 'num', text: x.present_minutes != null ? hmin(x.present_minutes) : '' }), el('td', { style: 'text-align:right' }, [btn('Change', function(){ enEdit(x); }, 'sm'), ' ', btn('Delete', function(){ enDelete(x); }, 'sm danger')])]); }))]),
+      el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Add another', function(){ enAdd(p, d); }), btn('Close', closeModal)])]);
+  }
+  /* ONE CHANGE TO MANY TICKED ENTRIES — Check first, then Save all or none */
+  function enBulk(act, ids){
+    var T = { set: 'Set IN / OUT for ' + ids.length + ' entries', move: 'Move ' + ids.length + ' entries by minutes', fill: 'Fill the missing OUT', delete: 'Delete ' + ids.length + ' entries' }[act];
+    var f = {}, flds = [];
+    if (act === 'set') { f.in_time = el('input', { type: 'time' }); f.out_time = el('input', { type: 'time' }); flds = [field('New IN (empty = keep)', f.in_time), field('New OUT (empty = keep)', f.out_time)]; }
+    if (act === 'move') { f.in_minutes = el('input', { type: 'number', step: 1, min: -720, max: 720, value: 0 }); f.out_minutes = el('input', { type: 'number', step: 1, min: -720, max: 720, value: 0 });
+      flds = [field('Move IN by minutes (− earlier, + later)', f.in_minutes), field('Move OUT by minutes', f.out_minutes)]; }
+    if (act === 'fill') { f.fill = el('select', {}, [el('option', { value: 'shift', text: 'Each person\'s shift end' }), el('option', { value: 'time', text: 'This time:' })]); f.out_time = el('input', { type: 'time', value: '17:30' });
+      var tf = field('Time', f.out_time); tf.hidden = true;
+      f.fill.addEventListener('change', function(){ tf.hidden = f.fill.value !== 'time'; });
+      flds = [field('OUT at', f.fill), tf]; }
+    var why = enReason('en-bk-why'), out = el('div', {}), err = el('div', { class: 'err', hidden: true }), checked = false;
+    function body(apply){
+      var b = { ids: ids.map(Number), action: act, reason: why.value, apply: apply };
+      Object.keys(f).forEach(function(k){ b[k] = f[k].value; });
+      return b;
+    }
+    var ok = btn('Check', function(){
+      err.hidden = true; ok.disabled = true;
+      call('POST', '/admin/entries/bulk-edit', body(checked)).then(function(r){
+        ok.disabled = false;
+        if (!r.ok) { err.textContent = r.error || 'Not saved.'; err.hidden = false; if (checked) { checked = false; ok.textContent = 'Check'; } return; }
+        if (r.applied) return enDone((act === 'delete' ? 'Deleted ' : 'Changed ') + r.count + (r.count === 1 ? ' entry.' : ' entries.'));
+        out.textContent = '';
+        out.appendChild(el('div', { style: 'font-weight:600;margin:4px 0' }, [r.count + (act === 'delete' ? ' will be deleted' : ' will change') + (r.skipped ? ' · ' + r.skipped + ' left as they are' : '') + (r.problems ? ' · ' : ''),
+          r.problems ? el('span', { style: 'color:var(--bad)', text: r.problems + ' cannot be changed like that' }) : null]));
+        out.appendChild(el('div', { class: 'prevw' }, [el('table', { class: 't prev' }, [el('thead', {}, [el('tr', {}, ['Employee', 'Day', 'Now', act === 'delete' ? '' : 'After', ''].map(function(h){ return el('th', { text: h }); }))]),
+          el('tbody', {}, r.rows.map(function(x){
+            var now = x.in.slice(11) + ' – ' + (x.out ? x.out.slice(11) : 'no OUT');
+            var aft = act === 'delete' ? '' : x.new_in.slice(11) + ' – ' + (x.new_out ? x.new_out.slice(11) + (x.new_out.slice(0, 10) !== x.new_in.slice(0, 10) ? ' +1' : '') : 'no OUT');
+            return el('tr', { class: x.problem ? 'bad' : x.skip ? 'skip' : '' }, [el('td', { text: x.code + ' ' + x.name }), el('td', { text: nice(x.day).replace(/ \d{4}$/, '') }),
+              el('td', { text: now }), el('td', { class: x.skip ? '' : 'chg', text: aft }), el('td', { class: 'small', text: x.problem || (x.skip ? 'no change' : '') })]); }))])]));
+        if (r.problems) { ok.textContent = 'Check'; checked = false; return; }
+        checked = r.count > 0; ok.textContent = checked ? (act === 'delete' ? 'Delete ' : 'Save ') + r.count + (r.count === 1 ? ' entry' : ' entries') : 'Check';
+      });
+    }, act === 'delete' ? 'danger' : 'pri');
+    function reset(){ if (checked) { checked = false; ok.textContent = 'Check'; out.textContent = ''; } }
+    Object.keys(f).forEach(function(k){ f[k].addEventListener('input', reset); f[k].addEventListener('change', reset); });
+    modal([el('h2', { text: T }),
+      el('p', { class: 'muted small', text: 'Press Check to see every entry before and after. Save then changes ALL of them or NONE — one refusal and nothing is saved. Each change keeps your reason and name; the gate\'s own scans are never altered. Factory time.' }),
+      flds.length ? el('div', { class: 'formgrid' }, flds) : null, field('Reason (required, kept on every entry)', why), out, err,
+      el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Close', closeModal), ok])], true);
+  }
+  /* BULK ADD — many people, many days (the old Setup › Bulk add, same server rules) */
+  function enBulkAdd(){
+    var from = el('input', { type: 'date', value: EN.from, max: S.today }), to = el('input', { type: 'date', value: EN.to, max: S.today });
+    var dsel = el('select', {}, [el('option', { value: '0', text: 'All departments' })].concat((S.depts || []).map(function(d){ return el('option', { value: String(d.id), text: d.name }); })));
+    dsel.value = EN.dept || '0';
+    var codes = el('input', { type: 'text', value: /^[\d\s,;]+$/.test(EN.q) ? EN.q : '', placeholder: 'Optional: only these codes, e.g. 611 406 145' });
+    var DN = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
+    var boxes = DN.map(function(d){ return el('input', { type: 'checkbox', value: d[0], checked: d[0] !== '7' }); });
+    var mode = el('select', {}, [el('option', { value: 'shift', text: 'Each person\'s own shift times' }), el('option', { value: 'fixed', text: 'The same times for everybody' })]);
+    var tin = el('input', { type: 'time', value: '08:30' }), tout = el('input', { type: 'time', value: '17:30' });
+    var why = enReason('en-ba-why', 'e.g. from the paper register; opening attendance'), out = el('div', { class: 'small' }), err = el('div', { class: 'err', hidden: true }), checked = false;
+    function body(apply){ return { from: from.value, to: to.value, department_id: +dsel.value || 0, codes: codes.value, days: boxes.filter(function(b){ return b.checked; }).map(function(b){ return b.value; }).join(''),
+      mode: mode.value, in_time: tin.value, out_time: tout.value, reason: why.value, apply: apply }; }
+    var ok = btn('Check', function(){
+      err.hidden = true; ok.disabled = true;
+      call('POST', '/admin/entries/bulk', body(checked)).then(function(r){
+        ok.disabled = false;
+        if (!r.ok) { err.textContent = r.error || 'Not added.'; err.hidden = false; return; }
+        if (r.applied) { EN.from = from.value; EN.to = to.value; return enDone('Added ' + r.added + ' entries.' + (r.failed && r.failed.length ? ' Some could not be added.' : '')); }
+        var sk = [];
+        if (r.skipped_already) sk.push(r.skipped_already + ' already have an entry (left as they are)');
+        if (r.skipped_future) sk.push(r.skipped_future + ' are in the future');
+        if (r.skipped_no_shift) sk.push(r.skipped_no_shift + ' have no shift');
+        out.textContent = '';
+        out.appendChild(el('div', { style: 'font-weight:600', text: r.to_add + ' entries will be added — ' + r.people + ' people × ' + r.days + ' days.' }));
+        if (sk.length) out.appendChild(el('div', { class: 'muted', text: 'Skipped: ' + sk.join('; ') + '.' }));
+        if (r.unknown_codes && r.unknown_codes.length) out.appendChild(el('div', { style: 'color:var(--bad)', text: 'Not found or not active: ' + r.unknown_codes.join(', ') }));
+        if (r.sample && r.sample.length) out.appendChild(el('div', { class: 'muted', text: 'For example: ' + r.sample.slice(0, 4).map(function(x){ return x.code + ' ' + x.date.slice(5) + ' ' + x.in + '–' + (x.out || 'inside'); }).join(' · ') }));
+        checked = r.to_add > 0; ok.textContent = checked ? 'Add ' + r.to_add + ' entries' : 'Check';
+      });
+    }, 'pri');
+    function reset(){ if (checked) { checked = false; ok.textContent = 'Check'; out.textContent = ''; } }
+    [from, to, dsel, codes, mode, tin, tout].concat(boxes).forEach(function(n){ n.addEventListener('change', reset); n.addEventListener('input', reset); });
+    modal([el('h2', { text: 'Bulk add entries' }),
+      el('p', { class: 'muted small', text: 'Mark many people present on many days at once (at most 62 days). A day that already has an entry is skipped, never changed. Press Check first — nothing is saved until you press Add. Factory time.' }),
+      el('div', { class: 'formgrid' }, [field('From', from), field('To', to), field('Department', dsel), field('Or only these codes', codes),
+        el('div', { class: 'fld', style: 'grid-column:1/-1' }, ['Days of the week', el('div', { class: 'row' }, DN.map(function(d, i){ return el('label', { class: 'daypick' }, [boxes[i], d[1]]); }))]),
+        field('Times', mode), field('IN – OUT (same times only)', el('div', { class: 'row', style: 'flex-wrap:nowrap;gap:4px' }, [tin, el('span', { class: 'muted', text: '–' }), tout])),
+        (function(x){ x.style.gridColumn = '1/-1'; return x; })(field('Reason (required, kept on every entry)', why))]), out, err,
+      el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Close', closeModal), ok])], true);
   }
 
   // ------------------------------------------------------- employee ledger
@@ -2538,7 +2917,7 @@ page_header('People Finance');
   refreshCounts().then(function(r){
     if (!r.ok) return show([fail(r)]);
     var h = (location.hash || '').slice(1);
-    go(TABS.some(function(x){ return x[0] === h; }) && (h !== 'prepare' || S.caps.salary || S.caps.wage) && (h !== 'mark' || S.caps.mark) ? h : 'home');
+    go(TABS.some(function(x){ return x[0] === h; }) && (h !== 'prepare' || S.caps.salary || S.caps.wage) && (h !== 'mark' || S.caps.mark) && (h !== 'entries' || S.caps.admin) ? h : 'home');
   });
 })();
 </script>
