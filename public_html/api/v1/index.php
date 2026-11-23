@@ -41,9 +41,11 @@ require_once dirname(__DIR__, 2) . '/includes/att/AttBackup.php';
 require_once dirname(__DIR__, 2) . '/includes/att/SystemCheck.php';
 require_once dirname(__DIR__, 2) . '/includes/att/EntryAdmin.php';
 require_once dirname(__DIR__, 2) . '/includes/att/FinanceService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/CardService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
+use Att\CardService;
 use Att\AttendanceService;
 use Att\Audit;
 use Att\Db;
@@ -1095,6 +1097,56 @@ try {
            PEOPLE FINANCE. fin_caps() says who is asking and what they may
            do; FinanceService checks it again for the thing itself (which
            kind of sheet, whose department, their own sheet or not). */
+        /* ---------------------------------------------------------------
+           CARDS (owner, 23 Nov 2026): People Finance › Cards. Whoever sets up
+           pay (Admin, Accounts, HR) links cards and switches the canteen on;
+           a HOD sees only their own people. The page sends a fingerprint of
+           the card, never its number. */
+        case $method === 'GET' && $route === '/finance/cards':
+            [, $caps] = fin_caps('setup');
+            admin_answer(CardService::people($caps['departments']));
+            break;
+
+        case $method === 'POST' && $route === '/finance/cards/link':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps('setup');
+            admin_answer(CardService::link((int) Http::input('employee_id', 0), (string) Http::input('card', ''), Http::input('replace', false) === true,
+                (string) Http::input('reason', ''), $caps['departments'], (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/finance/cards/unlink':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps('setup');
+            admin_answer(CardService::unlink((int) Http::input('employee_id', 0), (string) Http::input('reason', ''), $caps['departments'], (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/finance/cards/canteen':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps('setup');
+            $ids = Http::input('employee_ids', []);
+            admin_answer(CardService::canteen(is_array($ids) ? $ids : [], Http::input('on', false) === true, $caps['departments'], (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/finance/cards/who':
+            Http::requireCsrf();
+            [, $caps] = fin_caps('setup');
+            admin_answer(CardService::who((string) Http::input('card', ''), $caps['departments']));
+            break;
+
+        /* THE CANTEEN APP'S CARD CHECK — server to server, no user session.
+           Locked by a key kept only in config/config.php ('canteen_link_key',
+           at least 32 characters). With no key set, the address is closed. */
+        case $method === 'POST' && $route === '/canteen/card-check':
+            $key = (string) ($GLOBALS['config']['canteen_link_key'] ?? '');
+            if (strlen($key) < 32) {
+                Http::fail('NOT_SET_UP', 'The canteen link is not switched on.', 503);
+            }
+            if (!hash_equals($key, (string) ($_SERVER['HTTP_X_LINK_KEY'] ?? ''))) {
+                Http::fail('FORBIDDEN', 'Wrong or missing key.', 403);
+            }
+            admin_answer(CardService::check(strtolower(trim((string) Http::input('card', '')))));
+            break;
+
         case $method === 'GET' && $route === '/finance/overview':
             [$u, $caps] = fin_caps();
             admin_answer(Fin::overview($caps, (int) $u['id']) + ['caps' => $caps + ['staff' => Fin::mayEditStaff((int) $u['id']), 'photo' => Roles::can('attadm', 'u'), 'delete_staff' => (bool) $caps['admin']], 'departments' => Employees::departments()]);

@@ -475,6 +475,23 @@ page_header('People Finance');
 .fin table.mw .seg3 button{width:24px;padding:3px 0;font-size:11.5px}
 .fin table.mw .mwscan,.fin table.mw .mwsheet{padding:1px 6px;font-size:11.5px}
 @media (max-width:1100px){.fin .mwgrid{grid-template-columns:1fr 1fr}.fin .mwgrid .wide{grid-column:1/-1}}
+/* CARDS (owner, 23 Nov 2026) */
+.fin .cdpanel{display:flex;gap:14px;align-items:center;flex-wrap:wrap;border:1px dashed var(--line);background:#fafbfc;border-radius:6px;padding:10px 14px}
+.fin .cdpanel.on{border:2px dashed var(--pri);background:#f5f9fe}
+.fin .cdpanel .ic{width:40px;height:40px;border-radius:50%;background:#e1edf9;color:var(--pri);display:flex;align-items:center;justify-content:center;font-size:20px;flex:none}
+.fin .cdpanel.on .ic{background:var(--pri);color:#fff}
+.fin .cdpanel b{color:var(--navy);font-size:13.5px}
+.fin .cdmsg{border-radius:4px;padding:8px 12px;font-weight:600;font-size:13px;border:1px solid var(--line)}
+.fin .cdmsg.ok{background:#e7f4ec;border-color:#bfe3ca;color:#107e3e}
+.fin .cdmsg.bad{background:var(--bad-bg);border-color:#f0b8b8;color:#8e0000}
+.fin .cdmsg.warn{background:var(--warn-bg);border-color:#f0c36d;color:var(--warn-ink)}
+.fin .cdsw{display:inline-flex;cursor:pointer}
+.fin .cdsw input{position:absolute;opacity:0;width:1px;height:1px}
+.fin .cdsw i{width:34px;height:18px;border-radius:9px;background:#c5ced8;position:relative;transition:.15s}
+.fin .cdsw i::after{content:"";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.fin .cdsw input:checked+i{background:#107e3e}.fin .cdsw input:checked+i::after{left:18px}
+.fin .cdsw input:focus-visible+i{box-shadow:0 0 0 2px rgba(10,95,180,.35)}
+.fin .cdsw input:disabled+i{opacity:.5}
 </style>
 
 <div class="topbar">
@@ -603,13 +620,14 @@ page_header('People Finance');
   }
 
   // ------------------------------------------------------------ tabs
-  var TABS = [['home', 'Home'], ['mark', 'Mark attendance'], ['entries', 'Entries'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Employee Ledger'], ['advances', 'Advances & loans']];
+  var TABS = [['home', 'Home'], ['mark', 'Mark attendance'], ['entries', 'Entries'], ['cards', 'Cards'], ['prepare', 'Prepare pay'], ['sheets', 'Pay sheets'], ['people', 'Employees'], ['ledger', 'Employee Ledger'], ['advances', 'Advances & loans']];
   function drawTabs(){
     var t = document.getElementById('fin-tabs'); t.textContent = '';
     TABS.forEach(function(x){
       if (x[0] === 'prepare' && !S.caps.salary && !S.caps.wage) return;
       if (x[0] === 'mark' && !S.caps.mark) return;
       if (x[0] === 'entries' && !S.caps.admin) return;
+      if (x[0] === 'cards' && !S.caps.setup) return;
       var n = x[0] === 'sheets' ? (S.caps.approve ? S.counts.waiting : 0) + (S.caps.pay ? S.counts.approved : 0) : 0;
       t.appendChild(el('button', { type: 'button', role: 'tab', 'aria-selected': S.tab === x[0] ? 'true' : 'false', click: function(){ go(x[0]); } },
         [x[1], n ? el('span', { class: 'dot', text: String(n) }) : null]));
@@ -618,7 +636,7 @@ page_header('People Finance');
   function go(tab, arg){
     S.tab = tab; drawTabs();
     try { history.replaceState(null, '', '#' + tab); } catch (e) {}
-    ({ home: home, mark: markWeek, entries: entries, prepare: prepare, sheets: sheets, people: people, ledger: ledger, advances: advances })[tab](arg);
+    ({ home: home, mark: markWeek, entries: entries, cards: cardsTab, prepare: prepare, sheets: sheets, people: people, ledger: ledger, advances: advances })[tab](arg);
   }
   function refreshCounts(){
     return call('GET', '/finance/overview').then(function(r){
@@ -2581,6 +2599,200 @@ page_header('People Finance');
       el('div', { class: 'row', style: 'justify-content:flex-end' }, [btn('Close', closeModal), ok])], true);
   }
 
+  // --------------------------------------------------------------- cards
+  /* EMPLOYEE CARDS (owner, 23 Nov 2026). A card is linked by TAPPING it on a
+     keyboard-type reader: the reader "types" its digits and Enter in a fraction
+     of a second. While a tap is awaited, this page catches those keys before
+     they reach any box, turns the digits into a fingerprint (SHA-256) here in
+     the browser, and sends only the fingerprint. Slow key presses — a person
+     typing — are ignored, so a card cannot be typed in, and the number is
+     never shown, sent or kept. The list loads once; every change after that is
+     one small call and is updated on screen without reloading. */
+  var CD = { people: null, dept: '', q: '', filt: 'all', pick: {}, mode: null };
+  function cardHash(digits){
+    if (!window.crypto || !crypto.subtle) return Promise.reject(new Error('This page must be opened over https to read cards.'));
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(digits)).then(function(b){
+      return [].map.call(new Uint8Array(b), function(x){ return ('0' + x.toString(16)).slice(-2); }).join(''); });
+  }
+  function beep(ok){
+    try { var a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain();
+      o.frequency.value = ok ? 1200 : 300; g.gain.value = 0.08; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + (ok ? 0.12 : 0.35));
+      setTimeout(function(){ try { a.close(); } catch (e) {} }, 600); } catch (e) {}
+  }
+  /* the reader listener — on only while CD.mode is set */
+  var RD = { buf: '', t0: 0, last: 0, idle: null };
+  function readerKey(e){
+    if (!CD.mode || S.tab !== 'cards' || !shade.hidden) return;
+    var now = Date.now(), k = e.key;
+    if (/^[0-9]$/.test(k)) {
+      e.preventDefault(); e.stopPropagation();
+      if (now - RD.last > 80) { RD.buf = ''; RD.t0 = now; }      // a slow key starts again: people type slowly, readers do not
+      RD.buf += k; RD.last = now;
+      clearTimeout(RD.idle);
+      RD.idle = setTimeout(function(){ if (RD.buf.length >= 8 && RD.last - RD.t0 <= 60 * RD.buf.length) gotCard(); }, 200);   // a reader that sends no Enter
+    } else if (k === 'Enter' || k === 'Tab') {
+      if (RD.buf) { e.preventDefault(); e.stopPropagation(); }
+      clearTimeout(RD.idle);
+      if (RD.buf.length >= 6 && now - RD.t0 <= 60 * (RD.buf.length + 1)) gotCard(); else RD.buf = '';
+    } else if (k === 'Escape') { stopMode(); }
+  }
+  document.addEventListener('keydown', readerKey, true);
+  function gotCard(){
+    var d = RD.buf; RD.buf = ''; RD.t0 = 0;
+    cardHash(d).then(function(h){ d = null; onCard(h); }, function(err){ cardMsg(err.message, 'bad'); beep(false); });
+  }
+  var cardMsg = function(){}, stopMode = function(){}, onCard = function(){};
+
+  function cardsTab(){
+    if (!S.caps.setup) return show([el('div', { class: 'cardx empty', text: 'Cards are for Admin, Accounts and HR.' })]);
+    show([el('p', { class: 'muted', text: 'Loading…' })]);
+    (CD.people ? Promise.resolve({ ok: true, people: CD.people }) : call('GET', '/finance/cards')).then(function(r){
+      if (!r.ok) return show([fail(r)]);
+      CD.people = r.people;
+      var P = CD.people, byId = {}; P.forEach(function(p){ byId[p.employee_id] = p; });
+      var panel = el('div', { class: 'cdpanel' }), msg = el('div', { class: 'cdmsg', hidden: true });
+      var dsel = el('select', { 'aria-label': 'Department' }, [el('option', { value: '', text: 'All departments' })].concat(
+        Object.keys(P.reduce(function(a, p){ a[p.department_name] = 1; return a; }, {})).sort().map(function(n){ return el('option', { value: n, text: n }); })));
+      dsel.value = CD.dept;
+      var q = el('input', { type: 'search', value: CD.q, placeholder: 'Name or employee code', 'aria-label': 'Search' });
+      var startBtn = btn('Start: everyone without a card', function(){ startRun(); }, 'pri');
+      var whoBtn = btn('Who has this card? (tap it)', function(){ setMode({ kind: 'who' }); });
+      var bar = el('div', { class: 'cardx' }, [el('div', { class: 'enbar' }, [field('Department', dsel), field('Search', q), el('span', { style: 'flex:1' }), startBtn, whoBtn])]);
+      var kp = el('div', { class: 'enk' }), selbar = el('div', { class: 'selbar', hidden: true }), box = el('div', { class: 'cardx scroll entw' });
+      dsel.addEventListener('change', function(){ CD.dept = dsel.value; draw(); });
+      q.addEventListener('input', function(){ CD.q = q.value; draw(); });
+
+      function shown(){
+        var w = CD.q.trim().toLowerCase();
+        return P.filter(function(p){
+          if (CD.dept && p.department_name !== CD.dept) return false;
+          if (w && (p.full_name + ' ' + p.code).toLowerCase().indexOf(w) < 0) return false;
+          return ({ all: true, none: p.active && !p.has_card, card: p.has_card, on: p.canteen_ok, off: p.active && !p.canteen_ok, left: !p.active && p.has_card })[CD.filt];
+        });
+      }
+      cardMsg = function(t, cls){ msg.textContent = t; msg.className = 'cdmsg ' + (cls || ''); msg.hidden = !t; };
+      function drawPanel(){
+        panel.textContent = ''; var m = CD.mode;
+        [q, dsel, startBtn, whoBtn].forEach(function(n){ n.disabled = !!m; });
+        if (!m) {
+          panel.className = 'cdpanel';
+          panel.appendChild(el('div', { class: 'ic', text: '▭' }));
+          panel.appendChild(el('div', {}, [el('b', { text: 'Reader idle.' }), el('div', { class: 'muted small', text: 'Press Start to link cards one person after another, use Link or Replace on a row, or Who has this card? to find a card\'s owner. Card numbers are never shown.' })]));
+          return;
+        }
+        panel.className = 'cdpanel on';
+        var p = m.id ? byId[m.id] : null;
+        panel.appendChild(el('div', { class: 'ic', text: '📶' }));
+        panel.appendChild(el('div', {}, [el('b', { text: m.kind === 'who' ? 'Tap the card to see whose it is.' : (m.replace ? 'Tap the NEW card for ' : 'Tap the card for ') + p.full_name + ' (' + p.code + ').' }),
+          el('div', { class: 'muted small', text: m.kind === 'run' ? 'Linked and saved at once, then the next person without a card is selected. ' + m.left + ' to go after this one.' : 'Waiting for the reader. Esc stops.' })]));
+        panel.appendChild(el('span', { style: 'flex:1' }));
+        panel.appendChild(el('span', { class: 'tchip done', style: 'font-size:12px;line-height:24px;padding:0 10px', text: '● Reader listening' }));
+        if (m.kind === 'run') panel.appendChild(btn('Skip', function(){ nextRun(m.id); }, 'sm'));
+        panel.appendChild(btn('Stop', function(){ stopMode(); }, 'sm'));
+      }
+      function setMode(m, keep){ CD.mode = m; RD.buf = ''; if (!keep) cardMsg(''); drawPanel(); draw(); }
+      stopMode = function(){ CD.mode = null; RD.buf = ''; drawPanel(); draw(); };
+      function queue(){ return shown().filter(function(p){ return p.active && !p.has_card; }); }
+      function startRun(){ var Q = queue(); if (!Q.length) { cardMsg('Everybody shown already has a card.', 'ok'); return; } setMode({ kind: 'run', id: Q[0].employee_id, left: Q.length - 1 }); }
+      function nextRun(after){
+        var Q = queue().filter(function(p){ return p.employee_id !== after; });
+        if (!Q.length) { stopMode(); cardMsg('Done — everybody shown has a card.', 'ok'); return; }
+        setMode({ kind: 'run', id: Q[0].employee_id, left: Q.length - 1 }, true);
+      }
+      onCard = function(h){
+        var m = CD.mode; if (!m) return;
+        if (m.kind === 'who') {
+          call('POST', '/finance/cards/who', { card: h }).then(function(r){
+            if (!r.ok) { cardMsg(r.error, 'bad'); beep(false); return; }
+            beep(r.found);
+            if (!r.found) cardMsg('This card is not linked to anyone.', 'warn');
+            else if (r.hidden) cardMsg('This card belongs to someone outside your departments.', 'warn');
+            else cardMsg('This card belongs to ' + r.full_name + ' (' + r.code + ') · ' + r.department_name + (r.active ? '' : ' · LEFT') + ' · linked ' + (r.linked_at ? nice(r.linked_at) : '') + ' · Canteen ' + (r.canteen_ok ? 'on' : 'off'), 'ok');
+          });
+          return;
+        }
+        var p = byId[m.id];
+        call('POST', '/finance/cards/link', { employee_id: m.id, card: h, replace: !!m.replace, reason: m.reason || '' }).then(function(r){
+          if (!r.ok) { beep(false); cardMsg((r.reason_code === 'CARD_TAKEN' || r.reason_code === 'SAME_CARD' ? '✕ ' : '') + r.error, 'bad'); return; }
+          beep(true);
+          p.has_card = 1; p.linked_at = S.today;
+          cardMsg('✓ Card ' + (r.replaced ? 'replaced' : 'linked') + ' — ' + p.full_name + ' (' + p.code + ').', 'ok');
+          if (m.kind === 'run') nextRun(m.id); else stopMode();
+        });
+      };
+      function draw(){
+        var R = shown(), cnt = { all: 0, none: 0, card: 0, on: 0, off: 0, left: 0 };
+        P.filter(function(p){ return (!CD.dept || p.department_name === CD.dept); }).forEach(function(p){
+          cnt.all++; if (p.active && !p.has_card) cnt.none++; if (p.has_card) cnt.card++; if (p.canteen_ok) cnt.on++; if (p.active && !p.canteen_ok) cnt.off++; if (!p.active && p.has_card) cnt.left++; });
+        kp.textContent = '';
+        [['all', 'All'], ['none', 'No card', 'warn'], ['card', 'Card linked'], ['on', 'Canteen on'], ['off', 'Canteen off'], ['left', 'Left, card still linked', 'warn']].forEach(function(k){
+          kp.appendChild(el('button', { type: 'button', class: (CD.filt === k[0] ? 'on ' : '') + (cnt[k[0]] && k[2] ? k[2] : ''), disabled: !!CD.mode,
+            click: function(){ CD.filt = k[0]; CD.pick = {}; draw(); } }, [k[1], el('b', { text: String(cnt[k[0]]) })]));
+        });
+        box.textContent = '';
+        if (!R.length) { box.appendChild(el('div', { class: 'empty', text: P.length ? 'Nobody here.' : 'No employees yet.' })); sel(); return; }
+        var all = el('input', { type: 'checkbox', 'aria-label': 'Tick all shown', checked: R.every(function(p){ return CD.pick[p.employee_id]; }),
+          change: function(){ R.forEach(function(p){ CD.pick[p.employee_id] = all.checked; }); draw(); } });
+        var tb = el('tbody');
+        R.forEach(function(p){
+          var cur = CD.mode && CD.mode.id === p.employee_id;
+          var cb = el('input', { type: 'checkbox', checked: !!CD.pick[p.employee_id], 'aria-label': 'Tick ' + p.full_name, change: function(){ CD.pick[p.employee_id] = cb.checked; sel(); } });
+          var sw = el('label', { class: 'cdsw', title: p.canteen_ok ? 'Canteen on — click to switch off' : 'Canteen off — click to switch on' }, [
+            el('input', { type: 'checkbox', checked: !!p.canteen_ok, disabled: !!CD.mode, 'aria-label': 'Canteen for ' + p.full_name, change: function(e){
+              var on = e.target.checked;
+              call('POST', '/finance/cards/canteen', { employee_ids: [p.employee_id], on: on }).then(function(r){
+                if (!r.ok) { e.target.checked = !on; toast(r.error || 'Not saved.', true); return; }
+                p.canteen_ok = on ? 1 : 0; draw();
+              });
+            } }), el('i')]);
+          var acts = !p.active ? (p.has_card ? [btn('Unlink card', function(){ unlink(p); }, 'sm')] : [])
+            : p.has_card ? [btn('Replace (tap new)', function(){ replace(p); }, 'sm', !!CD.mode), ' ', btn('Unlink', function(){ unlink(p); }, 'sm', !!CD.mode)]
+            : [btn('Link (tap)', function(){ setMode({ kind: 'one', id: p.employee_id }); }, 'sm', !!CD.mode)];
+          tb.appendChild(el('tr', { class: cur ? 'pk' : '' }, [el('td', { class: 'tick' }, [cb]),
+            el('td', {}, [el('b', { text: p.full_name }), el('span', { class: 'muted small', text: '  ' + p.code })]),
+            el('td', { class: 'small', text: p.department_name }),
+            el('td', {}, [cur ? el('span', { class: 'tchip in', text: '● tap now' }) : p.has_card ? el('span', { class: 'tchip ' + (p.active ? 'done' : 'rep'), text: '✓ Card linked' }) : el('span', { class: 'muted', text: 'No card' })]),
+            el('td', { class: 'small', text: p.linked_at ? nice(p.linked_at) : '—' }),
+            el('td', {}, [sw]),
+            el('td', {}, [el('span', { class: 'tchip ' + (p.active ? 'done' : 'off'), text: p.active ? 'Active' : 'Left' })]),
+            el('td', { style: 'text-align:right;white-space:nowrap' }, acts)]));
+        });
+        box.appendChild(el('table', { class: 't en' }, [el('thead', {}, [el('tr', {}, [el('th', { class: 'tick' }, [all]), el('th', { text: 'Employee' }), el('th', { text: 'Department' }),
+          el('th', { text: 'Card' }), el('th', { text: 'Linked on' }), el('th', { text: 'Canteen' }), el('th', { text: 'Status' }), el('th')])]), tb]));
+        sel();
+      }
+      function sel(){
+        var ids = Object.keys(CD.pick).filter(function(k){ return CD.pick[k]; }).map(Number);
+        selbar.hidden = !ids.length || !!CD.mode; selbar.textContent = '';
+        if (selbar.hidden) return;
+        function set(on){ call('POST', '/finance/cards/canteen', { employee_ids: ids, on: on }).then(function(r){
+          if (!r.ok) { toast(r.error || 'Not saved.', true); return; }
+          ids.forEach(function(i){ if (byId[i]) byId[i].canteen_ok = on ? 1 : 0; }); CD.pick = {}; toast('Canteen ' + (on ? 'on' : 'off') + ' for ' + r.changed + (r.changed === 1 ? ' person.' : ' people.')); draw(); }); }
+        selbar.appendChild(el('b', { text: ids.length + ' ticked' }));
+        selbar.appendChild(btn('Canteen on', function(){ set(true); }, 'sm'));
+        selbar.appendChild(btn('Canteen off', function(){ set(false); }, 'sm'));
+        selbar.appendChild(btn('Untick all', function(){ CD.pick = {}; draw(); }, 'sm'));
+      }
+      function replace(p){
+        ask('Replace ' + p.full_name + '\'s card', 'Say why, then tap the new card. The old card stops working at once.', [{ k: 'reason', label: 'Reason (required)', placeholder: 'e.g. lost, broken', wide: true }], 'Next: tap the new card', function(v){
+          if (!v.reason) return { ok: false, error: 'Say why the card is replaced.' };
+          closeModal(); setMode({ kind: 'one', id: p.employee_id, replace: true, reason: v.reason }); return { ok: true };
+        });
+      }
+      function unlink(p){
+        ask('Unlink ' + p.full_name + '\'s card', 'The card stops working at once — at the canteen too.', [{ k: 'reason', label: 'Reason (required)', placeholder: 'e.g. left the company, card lost', wide: true }], 'Unlink card', function(v){
+          return call('POST', '/finance/cards/unlink', { employee_id: p.employee_id, reason: v.reason }).then(function(r){
+            if (!r.ok) return r;
+            p.has_card = 0; p.linked_at = null; closeModal(); toast('Card unlinked — ' + p.full_name + '.'); draw(); return r;
+          });
+        });
+      }
+      show([panel, msg, bar, el('div', { class: 'row', style: 'justify-content:space-between' }, [kp]), selbar, box,
+        el('p', { class: 'muted small', style: 'margin:0', text: 'A card is linked only by tapping it on the reader; typing digits does nothing. One card per person: a card already linked to someone is refused and names who has it. Replacing or unlinking needs a reason, and every change is kept with who made it. The canteen refuses a card of someone who has left, or whose Canteen switch is off.' })]);
+      drawPanel(); draw();
+    });
+  }
+
   // ------------------------------------------------------- employee ledger
   /* THE EMPLOYEE LEDGER. Without a person chosen: everybody between two dates
      (owed before, earned, deducted, paid, owed at the end). With a person: their
@@ -2917,7 +3129,7 @@ page_header('People Finance');
   refreshCounts().then(function(r){
     if (!r.ok) return show([fail(r)]);
     var h = (location.hash || '').slice(1);
-    go(TABS.some(function(x){ return x[0] === h; }) && (h !== 'prepare' || S.caps.salary || S.caps.wage) && (h !== 'mark' || S.caps.mark) && (h !== 'entries' || S.caps.admin) ? h : 'home');
+    go(TABS.some(function(x){ return x[0] === h; }) && (h !== 'prepare' || S.caps.salary || S.caps.wage) && (h !== 'mark' || S.caps.mark) && (h !== 'entries' || S.caps.admin) && (h !== 'cards' || S.caps.setup) ? h : 'home');
   });
 })();
 </script>
