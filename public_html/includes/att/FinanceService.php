@@ -2147,7 +2147,7 @@ final class FinanceService
             if ($day > $today) { $errors[] = "$label: that day has not come yet."; continue; }
             $st = self::dayStates([$id], $day, $day)[$id][$day] ?? ['minutes' => 0, 'open' => 0, 'scanned' => 0, 'sheet' => null];
             if ($st['sheet'] !== null) { $errors[] = "$label: already on pay sheet {$st['sheet']}. Use Add Earning for a missed day."; continue; }
-            if ($st['scanned'] > 0) { $errors[] = "$label: scanned at the gate. Correct it in Setup › Entries."; continue; }
+            if ($st['scanned'] > 0) { $errors[] = "$label: scanned at the gate. Correct it in People Finance › Entries."; continue; }
             $own = array_map(static fn($r) => (int) $r['id'], Db::all(
                 "SELECT c.id FROM att_entry_cycles c JOIN att_shift_instances si ON si.id = c.shift_instance_id WHERE c.employee_id = ? AND si.work_date = ?", [$id, $day]));
             if ($mark === 'A' && $own === []) { continue; }
