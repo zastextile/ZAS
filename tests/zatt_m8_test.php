@@ -51,8 +51,18 @@ foreach ($mm as $x) {
 ok(count($routes) >= 60, 'the router has ' . count($routes) . ' routes, all read');
 $guards = '/Http::require(User|Permission)\(|require_erp_admin\(|require_gate_or_hod\(|ot_view_scope\(|fin_caps\(/';
 $open = array_values(array_filter($routes, fn($r) => !preg_match($guards, $r['body']) && !in_array($r['name'], ['/auth/login', '/auth/logout', '/auth/phone-resume'], true)));
+/* THE ONE SERVER-TO-SERVER ADDRESS (owner, 23 Nov 2026): the canteen app's
+   card check has no user and no browser, so no session or CSRF. It is allowed
+   here ONLY while its body keeps the key lock: closed with no key, compared
+   with hash_equals, refused on a wrong key. */
+$canteen = array_values(array_filter($routes, fn($r) => $r['name'] === '/canteen/card-check'))[0]['body'] ?? '';
+$keyLocked = str_contains($canteen, "canteen_link_key") && str_contains($canteen, 'strlen($key) < 32') && str_contains($canteen, "hash_equals(\$key, (string) (\$_SERVER['HTTP_X_LINK_KEY']")
+    && str_contains($canteen, "Http::fail('FORBIDDEN'");
+ok($canteen !== '' && $keyLocked, 'the canteen card check is locked by the key: closed without one, hash_equals, refused when wrong');
+$serverOnly = $keyLocked ? ['/canteen/card-check'] : [];
+$open = array_values(array_filter($open, fn($r) => !in_array($r['name'], $serverOnly, true)));
 ok($open === [], 'EVERY ROUTE BUT LOGIN, LOGOUT AND PHONE RESUME CHECKS WHO IS ASKING' . ($open ? ' — unguarded: ' . implode(', ', array_column($open, 'name')) : ''));
-$noCsrf = array_values(array_filter($routes, fn($r) => $r['method'] === 'POST' && !str_contains($r['body'], 'Http::requireCsrf()') && !in_array($r['name'], ['/auth/login', '/auth/phone-resume'], true)));
+$noCsrf = array_values(array_filter($routes, fn($r) => $r['method'] === 'POST' && !str_contains($r['body'], 'Http::requireCsrf()') && !in_array($r['name'], array_merge(['/auth/login', '/auth/phone-resume'], $serverOnly), true)));
 ok($noCsrf === [], 'EVERY WRITE BUT LOGIN AND PHONE RESUME NEEDS THE CSRF TOKEN' . ($noCsrf ? ' — missing: ' . implode(', ', array_column($noCsrf, 'name')) : ''));
 /* Phone resume is a sign-in, like login: no session yet, so no CSRF token.
    It must stand on its key alone — rate limited by address and by phone. */
