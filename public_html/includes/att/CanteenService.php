@@ -236,7 +236,11 @@ final class CanteenService
         $tail = ' (' . $n . ($n === 1 ? ' order)' : ' orders)');
         $head = 'Canteen ' . $span . ' · ';
         $parts = [];
-        foreach ($dish as $name => $q) { $parts[] = $q . ' ' . $name; }
+        foreach ($dish as $name => $q) {
+            // An Urdu name is wrapped in Unicode isolate marks, so "1 بریانی, 6 چائے" keeps
+            // its order on a left-to-right page instead of being flipped around the numbers.
+            $parts[] = $q . ' ' . (preg_match('/\p{Arabic}/u', (string) $name) ? "\u{2068}" . $name . "\u{2069}" : $name);
+        }
         $list = implode(', ', $parts);
         $room = 160 - mb_strlen($head) - mb_strlen($tail);
         if (mb_strlen($list) > $room) { $list = rtrim(mb_substr($list, 0, $room - 1), ' ,') . '…'; }

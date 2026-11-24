@@ -2799,7 +2799,7 @@ page_header('People Finance');
         selbar.appendChild(btn('Untick all', function(){ CD.pick = {}; draw(); }, 'sm'));
       }
       function setLimit(ids, who, now){
-        ask('Weekly canteen limit — ' + who, 'The most this person may spend at the canteen in one week (Friday to Thursday). The canteen is told on the next card tap. Every change is kept with who made it.',
+        ask('Weekly canteen limit — ' + who, 'The most each person may spend at the canteen in one week (Friday to Thursday). The canteen is told on the next card tap. Every change is kept with who made it.',
           [{ k: 'amt', label: 'Limit each week (Rs)', money: true, value: now === null ? '' : plain(now), placeholder: '1000' }], 'Save limit', function(v){
             var p = toPaisa(v.amt);
             if (p === null || p < 0 || p % 100) return { ok: false, error: 'Give the limit in whole rupees, e.g. 1500.' };
