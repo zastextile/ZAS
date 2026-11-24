@@ -42,10 +42,12 @@ require_once dirname(__DIR__, 2) . '/includes/att/SystemCheck.php';
 require_once dirname(__DIR__, 2) . '/includes/att/EntryAdmin.php';
 require_once dirname(__DIR__, 2) . '/includes/att/FinanceService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/CardService.php';
+require_once dirname(__DIR__, 2) . '/includes/att/CanteenService.php';
 require_once dirname(__DIR__, 2) . '/includes/att/Http.php';
 
 use Att\AdminService;
 use Att\CardService;
+use Att\CanteenService;
 use Att\AttendanceService;
 use Att\Audit;
 use Att\Db;
@@ -1125,6 +1127,25 @@ try {
             [$u, $caps] = fin_caps('setup');
             $ids = Http::input('employee_ids', []);
             admin_answer(CardService::canteen(is_array($ids) ? $ids : [], Http::input('on', false) === true, $caps['departments'], (int) $u['id']));
+            break;
+
+        case $method === 'POST' && $route === '/finance/cards/limit':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps('setup');
+            $ids = Http::input('employee_ids', []);
+            admin_answer(CardService::setLimit(is_array($ids) ? $ids : [], fin_paisa(Http::input('limit_paisa')), $caps['departments'], (int) $u['id']));
+            break;
+
+        /* GET CANTEEN CHARGES (owner, 24 Nov 2026): Prepare pay asks the canteen
+           what is owed up to the Thursday on or before the sheet's last day. Only
+           people who prepare pay; the key never leaves the server. */
+        case $method === 'POST' && $route === '/finance/canteen/fetch':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps();
+            if (!$caps['salary'] && !$caps['wage']) {
+                Http::fail('FORBIDDEN', 'Only the people who prepare pay can get canteen charges.', 403);
+            }
+            admin_answer(CanteenService::fetch((string) Http::input('to', ''), (int) $u['id']));
             break;
 
         case $method === 'POST' && $route === '/finance/cards/who':

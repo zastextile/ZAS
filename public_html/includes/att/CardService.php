@@ -35,6 +35,16 @@ final class CardService
         return self::no('NOT_READY', 'Cards are not set up on the server yet. Run the database step once: php att_migrate.php up');
     }
 
+    public const DEFAULT_LIMIT = 100000;               // Rs 1,000 a week, in paisa
+    public const MAX_LIMIT = 10000000;                 // Rs 100,000 a week
+
+    /** The weekly limit column comes with the canteen step (0024). Before it, everyone has the default. */
+    public static function hasLimit(): bool
+    {
+        static $has = null;
+        return $has ??= Db::columnExists('att_emp_cards', 'weekly_limit_paisa');
+    }
+
     public static function isHash(string $h): bool
     {
         return (bool) preg_match('/^[0-9a-f]{64}$/', $h);
@@ -52,7 +62,8 @@ final class CardService
         [$w, $p] = self::deptWhere($departments);
         $rows = Db::all(
             "SELECT e.id AS employee_id, e.code, e.full_name, e.active, d.name AS department_name, f.pay_type,
-                    (c.card_hash IS NOT NULL) AS has_card, c.linked_at, COALESCE(c.canteen_ok, 0) AS canteen_ok
+                    (c.card_hash IS NOT NULL) AS has_card, c.linked_at, COALESCE(c.canteen_ok, 0) AS canteen_ok,
+                    " . (self::hasLimit() ? 'COALESCE(c.weekly_limit_paisa, ' . self::DEFAULT_LIMIT . ')' : (string) self::DEFAULT_LIMIT) . " AS weekly_limit_paisa
                FROM att_employees e
                JOIN att_departments d ON d.id = e.department_id
                LEFT JOIN att_fin_profiles f ON f.employee_id = e.id
@@ -61,11 +72,11 @@ final class CardService
               ORDER BY e.active DESC, d.name, e.full_name LIMIT 5000", $p);
         foreach ($rows as &$r) {
             $r['employee_id'] = (int) $r['employee_id']; $r['active'] = (int) $r['active'];
-            $r['has_card'] = (int) $r['has_card']; $r['canteen_ok'] = (int) $r['canteen_ok'];
+            $r['has_card'] = (int) $r['has_card']; $r['canteen_ok'] = (int) $r['canteen_ok']; $r['weekly_limit_paisa'] = (int) $r['weekly_limit_paisa'];
             $r['linked_at'] = self::day($r['linked_at']);
         }
         unset($r);
-        return ['ok' => true, 'people' => $rows];
+        return ['ok' => true, 'people' => $rows, 'limits' => self::hasLimit()];
     }
 
     /** Link a tapped card to a person. A person who already has one needs replace + a reason. */
@@ -164,6 +175,47 @@ final class CardService
         return ['ok' => true, 'changed' => $done];
     }
 
+    /**
+     * Each person's weekly canteen limit (owner, 24 Nov 2026: "different per
+     * person"). Sent to the canteen with every card check. Logged with the old
+     * and new figure.
+     */
+    public static function setLimit(array $ids, mixed $paisa, ?array $departments, int $actorId): array
+    {
+        if (!self::ready()) {
+            return self::notReady();
+        }
+        if (!self::hasLimit()) {
+            return self::no('NOT_READY', 'Weekly limits come with the canteen database step. Run it once: php att_migrate.php up');
+        }
+        if (!is_int($paisa) || $paisa < 0 || $paisa > self::MAX_LIMIT || $paisa % 100 !== 0) {
+            return self::no('VALIDATION', 'Give a weekly limit in whole rupees, from 0 to 100,000.');
+        }
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn($i) => $i > 0)));
+        if (!$ids || count($ids) > 1000) {
+            return self::no('VALIDATION', $ids ? 'At most 1,000 people at a time.' : 'Choose at least one person.');
+        }
+        $done = 0;
+        Db::tx(static function () use ($ids, $paisa, $departments, $actorId, &$done) {
+            foreach ($ids as $id) {
+                $e = Db::one('SELECT id, department_id FROM att_employees WHERE id = ?', [$id]);
+                if ($e === null || !self::inScope($departments, (int) $e['department_id'])) {
+                    continue;
+                }
+                $was = Db::value('SELECT weekly_limit_paisa FROM att_emp_cards WHERE employee_id = ?', [$id]);
+                $was = $was === null || $was === false ? self::DEFAULT_LIMIT : (int) $was;
+                if ($was === $paisa) {
+                    continue;
+                }
+                Db::run('INSERT INTO att_emp_cards (employee_id, weekly_limit_paisa, updated_by) VALUES (?, ?, ?)
+                         ON DUPLICATE KEY UPDATE weekly_limit_paisa = VALUES(weekly_limit_paisa), updated_by = VALUES(updated_by)', [$id, $paisa, $actorId]);
+                self::log($id, 'limit', null, null, 'Rs ' . number_format(intdiv($was, 100)) . ' → Rs ' . number_format(intdiv($paisa, 100)), $actorId);
+                $done++;
+            }
+        });
+        return ['ok' => true, 'changed' => $done];
+    }
+
     /** Whose card is this? For the page's "Who has this card?". */
     public static function who(string $hash, ?array $departments): array
     {
@@ -199,13 +251,15 @@ final class CardService
         if (!self::isHash($hash)) {
             return self::no('VALIDATION', 'Send the card fingerprint: 64 lowercase hex characters.');
         }
-        $r = Db::one('SELECT e.id AS employee_id, e.code, e.full_name, e.active, d.name AS department_name, c.canteen_ok
+        $r = Db::one('SELECT e.id AS employee_id, e.code, e.full_name, e.active, d.name AS department_name, c.canteen_ok, '
+                       . (self::hasLimit() ? 'c.weekly_limit_paisa' : self::DEFAULT_LIMIT . ' AS weekly_limit_paisa') . '
                          FROM att_emp_cards c JOIN att_employees e ON e.id = c.employee_id JOIN att_departments d ON d.id = e.department_id
                         WHERE c.card_hash = ?', [$hash]);
         if ($r === null) {
             return ['ok' => true, 'allowed' => false, 'reason' => 'unknown_card', 'message' => 'This card is not linked to anyone.'];
         }
-        $out = ['ok' => true, 'employee_id' => (int) $r['employee_id'], 'code' => $r['code'], 'name' => $r['full_name'], 'department' => $r['department_name']];
+        $out = ['ok' => true, 'employee_id' => (int) $r['employee_id'], 'code' => $r['code'], 'name' => $r['full_name'], 'department' => $r['department_name'],
+                'weekly_limit' => (int) $r['weekly_limit_paisa']];
         if ((int) $r['active'] !== 1) {
             return $out + ['allowed' => false, 'reason' => 'left', 'message' => $r['full_name'] . ' has left.'];
         }

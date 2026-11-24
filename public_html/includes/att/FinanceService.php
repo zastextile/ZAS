@@ -38,6 +38,8 @@ use DateTimeZone;
  * Money is whole paisa (int). Amounts cross the API as paisa too.
  */
 /** Thrown inside a transaction to undo all of it and say why (never a database error). */
+require_once __DIR__ . '/CanteenService.php';
+
 final class FinStop extends \Exception
 {
 }
@@ -49,7 +51,7 @@ final class FinanceService
     /** Lines a person may add to someone's pay. */
     private const ADDABLE = ['bonus' => 'earn', 'other_earning' => 'earn', 'deduction' => 'deduct'];
     /** Worked-out lines that cannot be changed on a sheet: change salary setup instead. */
-    private const FIXED = ['basic'];
+    private const FIXED = ['basic', 'canteen'];          // canteen: whole orders the canteen holds for this sheet
 
     private static ?string $today = null;
 
@@ -646,7 +648,7 @@ final class FinanceService
     public static function lineRef(array $l): string
     {
         $map = ['basic' => 'SAL', 'allowance' => 'ALW', 'daily' => 'WAG', 'overtime' => 'OT', 'production' => 'PRD', 'bonus' => 'BON', 'other_earning' => 'ERN',
-                'leave' => 'LVE', 'deduction' => 'DED', 'advance' => 'REC', 'loan' => 'LREC'];
+                'leave' => 'LVE', 'deduction' => 'DED', 'advance' => 'REC', 'loan' => 'LREC', 'canteen' => 'CNT'];
         $kind = (string) ($l['kind'] ?? '');
         $pre = $kind === 'payment' ? 'PAY' : ($kind === 'opening' ? 'OPN' : ($map[(string) ($l['line_kind'] ?? '')] ?? ($kind === 'deduction' ? 'DED' : 'ERN')));
         return $pre . '-' . substr(str_replace('-', '', (string) ($l['entry_date'] ?? '')), 2, 4) . '-' . str_pad((string) (int) ($l['id'] ?? 0), 6, '0', STR_PAD_LEFT);
@@ -1037,6 +1039,13 @@ final class FinanceService
         if ($carry > 0) {
             $add('carry', 'carry', 'carry', $kind === 'contract' ? 'Production booked, not yet paid' : 'Balance owed from before', $carry, $kind === 'contract' ? 'from Production' : 'from the ledger');
         }
+        /* CANTEEN (owner, 24 Nov 2026): what the person bought, fetched by "Get canteen
+           charges". One line, whole orders oldest first, before any recovery and never
+           more than the pay there is; the rest waits for the next sheet. */
+        if (($canteen = CanteenService::lineFor($id, $to, self::net($L))) !== null) {
+            $add('canteen', 'canteen', 'deduct', $canteen['label'], $canteen['amount'], $canteen['detail']);
+            $L[count($L) - 1]['canteen_ids'] = $canteen['ids'];
+        }
         if (($settle && self::hasEarning($L)) || ($kind === 'contract' && $carry > 0)) {
             // A recovery follows the plan, but never takes more than the pay there is.
             $room = self::net($L);
@@ -1126,7 +1135,7 @@ final class FinanceService
             return self::no('VALIDATION', 'Tick at least one person.');
         }
         self::syncProduction();
-        return Db::tx(static function () use ($kind, $from, $to, $items, $caps, $actorId) {
+        $out = Db::tx(static function () use ($kind, $from, $to, $items, $caps, $actorId) {
             $built = [];
             foreach ($items as $it) {
                 $empId = (int) ($it['employee_id'] ?? 0);
@@ -1152,7 +1161,12 @@ final class FinanceService
                 if ($net < 0) {
                     return self::no('VALIDATION', $e['full_name'] . ': the deductions are more than the pay. Lower a deduction or the recovery.');
                 }
-                $built[$empId] = ['e' => $e, 'lines' => $lines, 'calc' => self::net($lines, true), 'net' => $net,
+                $canteenIds = [];
+                foreach ($lines as $l) { $canteenIds = array_merge($canteenIds, $l['canteen_ids'] ?? []); }
+                if (!CanteenService::stillFree($canteenIds)) {
+                    return self::no('STALE', $e['full_name'] . ': the canteen charges changed a moment ago. Open Prepare pay again.');
+                }
+                $built[$empId] = ['e' => $e, 'lines' => $lines, 'calc' => self::net($lines, true), 'net' => $net, 'canteen' => $canteenIds,
                                   'method' => in_array($it['method'] ?? null, ['bank', 'cash'], true) ? $it['method'] : $e['pay_method']];
             }
             $ref = self::nextRef();
@@ -1161,10 +1175,20 @@ final class FinanceService
             foreach ($built as $empId => $b) {
                 Db::run('INSERT INTO att_fin_sheet_items (sheet_id, employee_id, calc_paisa, amount_paisa, method) VALUES (?,?,?,?,?)', [$sheetId, $empId, $b['calc'], $b['net'], $b['method']]);
                 self::storeLines(Db::lastId(), $b['lines']);
+                CanteenService::putOnSheet($sheetId, $b['canteen']);
             }
             Audit::record('fin.sheet_prepare', 'att_fin_sheet', $sheetId, null, ['ref' => $ref, 'kind' => $kind, 'from' => $from, 'to' => $to, 'people' => count($built)], $actorId);
             return ['ok' => true, 'sheet_id' => $sheetId, 'ref' => $ref, 'people' => count($built), 'total_paisa' => array_sum(array_column($built, 'net'))];
         });
+        if (($out['ok'] ?? false) && CanteenService::ready()) {
+            // Ask the canteen to hold this sheet's orders. Whatever it will not hold comes off the sheet now.
+            $note = CanteenService::reserveSheet((int) $out['sheet_id']);
+            if ($note !== null) {
+                $out['canteen_note'] = $note;
+                $out['total_paisa'] = (int) Db::value('SELECT COALESCE(SUM(amount_paisa), 0) FROM att_fin_sheet_items WHERE sheet_id = ?', [(int) $out['sheet_id']]);
+            }
+        }
+        return $out;
     }
 
     /**
@@ -1194,8 +1218,8 @@ final class FinanceService
                 continue;
             }
             if (!$l['editable']) {
-                $label = $l['label']; unset($l);
-                return self::no('VALIDATION', "$who: $label cannot be changed on a pay sheet. Change it in salary setup.");
+                $label = $l['label']; $lk = $l['kind']; unset($l);
+                return self::no('VALIDATION', $lk === 'canteen' ? "$who: the canteen line is the canteen's own orders and cannot be changed here. Refund or cancel it at the canteen." : "$who: $label cannot be changed on a pay sheet. Change it in salary setup.");
             }
             $reason = mb_substr(trim((string) ($c['reason'] ?? '')), 0, 255);
             // Paying part of what is already owed needs no story; changing an earning or a deduction does.
@@ -1367,7 +1391,7 @@ final class FinanceService
         if (!$direct && !$caps['approve']) {
             return self::no('FORBIDDEN', 'Only Admin or Audit can approve a pay sheet.');
         }
-        return Db::tx(static function () use ($id, $caps, $actorId, $direct) {
+        $out = Db::tx(static function () use ($id, $caps, $actorId, $direct) {
             $s = Db::one('SELECT * FROM att_fin_sheets WHERE id = ? FOR UPDATE', [$id]);
             if ($s === null) {
                 return self::no('NOT_FOUND', 'No such pay sheet.');
@@ -1430,15 +1454,30 @@ final class FinanceService
             // An entry of earnings or deductions has nothing to hand over: it is posted and done.
             $status = $s['kind'] === 'entry' && !$hasPay ? 'posted' : 'approved';
             Db::run('UPDATE att_fin_sheets SET status = ?, approved_by = ?, approved_at = ? WHERE id = ?', [$status, $actorId, Time::sql(), $id]);
+            CanteenService::onApprove($id, (string) $s['ref']);          // the canteen settles what it held for this sheet
             Audit::record('fin.sheet_approve', 'att_fin_sheet', $id, ['status' => 'waiting'], ['status' => $status], $actorId);
             return ['ok' => true, 'sheet_id' => $id, 'status' => $status];
         });
+        return self::tellCanteen($out);
+    }
+
+    /** After a sheet changed hands: send the canteen its waiting settle / release messages. Never fails the action. */
+    private static function tellCanteen(array $out): array
+    {
+        if (($out['ok'] ?? false) && CanteenService::ready() && CanteenService::pendingCount() > 0) {
+            try {
+                CanteenService::flush();
+            } catch (\Throwable $e) {
+                error_log('[att-canteen] ' . $e->getMessage());       // retried on the next fetch
+            }
+        }
+        return $out;
     }
 
     /** Back to the people who prepare: the sheet is closed as "returned" and its people can be prepared again. */
     public static function sendBack(int $id, string $reason, array $caps, int $actorId): array
     {
-        return Db::tx(static function () use ($id, $reason, $caps, $actorId) {
+        return self::tellCanteen(Db::tx(static function () use ($id, $reason, $caps, $actorId) {
             $s = Db::one('SELECT * FROM att_fin_sheets WHERE id = ? FOR UPDATE', [$id]);
             if ($s === null) {
                 return self::no('NOT_FOUND', 'No such pay sheet.');
@@ -1453,9 +1492,10 @@ final class FinanceService
                 return self::no('REASON_REQUIRED', 'Say why it is going back.');
             }
             Db::run("UPDATE att_fin_sheets SET status = 'returned', returned_by = ?, returned_at = ?, return_reason = ? WHERE id = ?", [$actorId, Time::sql(), mb_substr(trim($reason), 0, 255), $id]);
+            CanteenService::onClose($id, (string) $s['ref']);            // its orders wait for another sheet
             Audit::record('fin.sheet_return', 'att_fin_sheet', $id, ['status' => 'waiting'], ['status' => 'returned'], $actorId, trim($reason));
             return ['ok' => true, 'sheet_id' => $id, 'status' => 'returned'];
-        });
+        }));
     }
 
     /**
@@ -1469,7 +1509,7 @@ final class FinanceService
         if (trim($reason) === '') {
             return self::no('REASON_REQUIRED', 'Say why it is being cancelled — the reason is kept on every line.');
         }
-        return Db::tx(static function () use ($id, $reason, $caps, $actorId) {
+        return self::tellCanteen(Db::tx(static function () use ($id, $reason, $caps, $actorId) {
             $s = Db::one('SELECT * FROM att_fin_sheets WHERE id = ? FOR UPDATE', [$id]);
             if ($s === null) {
                 return self::no('NOT_FOUND', 'No such pay sheet.');
@@ -1486,9 +1526,10 @@ final class FinanceService
             }
             Db::run('UPDATE att_fin_ledger SET cancelled_at = ?, cancelled_by = ?, cancel_reason = ? WHERE sheet_id = ? AND cancelled_at IS NULL', [Time::sql(), $actorId, $why, $id]);
             Db::run("UPDATE att_fin_sheets SET status = 'cancelled', returned_by = ?, returned_at = ?, return_reason = ? WHERE id = ?", [$actorId, Time::sql(), $why, $id]);
+            CanteenService::onClose($id, (string) $s['ref']);            // struck off here, so owed again (or let go, if not yet settled)
             Audit::record('fin.sheet_cancel', 'att_fin_sheet', $id, ['status' => $s['status']], ['status' => 'cancelled'], $actorId, $why);
             return ['ok' => true, 'sheet_id' => $id, 'status' => 'cancelled', 'was' => $s['status']];
-        });
+        }));
     }
 
     public static function pay(int $id, string $date, string $reason, array $caps, int $actorId): array
@@ -1826,7 +1867,7 @@ final class FinanceService
         if ($why === '') {
             return self::no('REASON_REQUIRED', 'Say why this person is taken off — the reason is kept.');
         }
-        return Db::tx(static function () use ($id, $employeeId, $why, $caps, $actorId) {
+        return self::tellCanteen(Db::tx(static function () use ($id, $employeeId, $why, $caps, $actorId) {
             $s = Db::one('SELECT * FROM att_fin_sheets WHERE id = ? FOR UPDATE', [$id]);
             if ($s === null) {
                 return self::no('NOT_FOUND', 'No such pay sheet.');
@@ -1860,10 +1901,11 @@ final class FinanceService
                 Db::run('UPDATE att_fin_sheets SET status = ?, returned_by = ?, returned_at = ?, return_reason = ? WHERE id = ?',
                     [$live ? 'cancelled' : 'returned', $actorId, Time::sql(), mb_substr('Everyone was taken off: ' . $why, 0, 255), $id]);
             }
+            CanteenService::onRemove($id, (string) $s['ref'], $employeeId, $left === 0);
             Audit::record('fin.sheet_remove_person', 'att_fin_sheet', $id, ['employee_id' => $employeeId, 'name' => $item['full_name'], 'amount_paisa' => (int) $item['amount_paisa'], 'was' => $s['status'], 'lines' => $lines],
                 ['people_left' => $left], $actorId, $why);
             return ['ok' => true, 'sheet_id' => $id, 'people_left' => $left, 'closed' => $left === 0];
-        });
+        }));
     }
 
     // ------------------------------------------------- production adjustment

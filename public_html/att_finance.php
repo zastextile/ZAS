@@ -486,6 +486,9 @@ page_header('People Finance');
 .fin .cdmsg.bad{background:var(--bad-bg);border-color:#f0b8b8;color:#8e0000}
 .fin .cdmsg.warn{background:var(--warn-bg);border-color:#f0c36d;color:var(--warn-ink)}
 .fin .cdsw{display:inline-flex;cursor:pointer}
+.fin .cdlim{border:1px solid var(--line,#d5dbe3);background:transparent;border-radius:6px;padding:2px 8px;font:inherit;font-size:13px;color:var(--ink,#1d2d3e);cursor:pointer;white-space:nowrap}
+.fin .cdlim:hover:not(:disabled){border-color:#0a6ed1;color:#0a6ed1}
+.fin .cdlim:disabled{opacity:.5;cursor:default}
 .fin .cdsw input{position:absolute;opacity:0;width:1px;height:1px}
 .fin .cdsw i{width:34px;height:18px;border-radius:9px;background:#c5ced8;position:relative;transition:.15s}
 .fin .cdsw i::after{content:"";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
@@ -751,7 +754,7 @@ page_header('People Finance');
       var row = el('div', { class: 'ln ' + l.side }, [
         el('span', { class: 'lb' }, [el('b', { text: l.label }), l.detail && !byHand ? el('small', { text: l.detail }) : null]), calc,
         el('span', { class: 'amt' }, [el('i', { text: l.side === 'deduct' ? '−' : '' }), amt]),
-        el('span', { class: 'rs' }, [l.editable ? why : el('span', { class: 'fixed', text: 'Fixed — change it in People › pay setup' })]),
+        el('span', { class: 'rs' }, [l.editable ? why : el('span', { class: 'fixed', text: l.kind === 'canteen' ? 'From the canteen — a mistake is refunded there' : 'Fixed — change it in People › pay setup' })]),
         byHand ? el('button', { type: 'button', class: 'x', title: 'Remove this line', 'aria-label': 'Remove ' + l.label, text: '×', click: function(){ m.removed[l.key] = true; delete m.ch[l.key]; row.remove(); refresh(); } }) : el('span')]);
       function sync(){
         var p = toPaisa(amt.value), r = why.value.trim();
@@ -1007,6 +1010,10 @@ page_header('People Finance');
       btn('Tick all shown', function(){ shown().forEach(function(r){ P.on[r.employee_id] = true; }); draw(); }, 'sm'),
       btn('Untick all', function(){ P.on = {}; draw(); }, 'sm'),
       btn('Add a line to everyone ticked', bulk, 'sm'),
+      /* GET CANTEEN CHARGES (owner, 24 Nov 2026): one press asks the canteen what
+         is owed up to the Thursday on or before the last day; each person then
+         shows one "Canteen …" line. Pressing it again never charges twice. */
+      btn('Get canteen charges', getCanteen, 'sm'),
       /* ONLY THE TICKED PEOPLE (owner, 21 Nov 2026): "when I select and ask for
          amend … it again shows the whole list". Both tables now open with the
          people ticked here, inside the department / search shown — not
@@ -1036,6 +1043,20 @@ page_header('People Finance');
           closeModal(); draw(); toast('Added to ' + t.length + '.');
         });
     }
+    function getCanteen(e){
+      var b = e && e.currentTarget; if (b) { b.disabled = true; b.textContent = 'Asking the canteen…'; }
+      call('POST', '/finance/canteen/fetch', { to: P.to }).then(function(r){
+        if (b) { b.disabled = false; b.textContent = 'Get canteen charges'; }
+        if (!r.ok) return toast(r.error || 'The canteen could not be reached.', true);
+        var msg = r.orders || r.refunds
+          ? 'Canteen up to ' + nice(r.up_to) + ': ' + r.orders + (r.orders === 1 ? ' order' : ' orders') + (r.refunds ? ', ' + r.refunds + (r.refunds === 1 ? ' refund' : ' refunds') : '') + ' for ' + r.people + (r.people === 1 ? ' person' : ' people') + ', Rs ' + rs(r.total_paisa) + '.'
+          : 'The canteen has nothing owed up to ' + nice(r.up_to) + '.';
+        if (r.skipped_count) msg += ' ' + r.skipped_count + ' left out: ' + r.skipped[0];
+        if (r.pending_calls) msg += ' ' + r.pending_calls + ' message' + (r.pending_calls === 1 ? '' : 's') + ' to the canteen still waiting; it will be retried.';
+        toast(msg, !!r.skipped_count);
+        reload();
+      });
+    }
     function sums(){
       var t = ticked(), total = 0, bad = false;
       t.forEach(function(r){ var x = netOf(r.lines, P.models[r.employee_id]); total += x.net; if (x.bad) bad = true; });
@@ -1048,7 +1069,7 @@ page_header('People Finance');
       var items = t.map(function(r){ return payload(r.employee_id, r.lines, P.models[r.employee_id], r.method); });
       call('POST', '/finance/sheets', { kind: P.kind, from: P.from, to: P.to, items: items }).then(function(r){
         if (!r.ok) return toast(r.error || 'That could not be saved.', true);
-        toast('Pay sheet ' + r.ref + ' sent for approval — ' + r.people + (r.people === 1 ? ' person' : ' people') + ', Rs ' + rs(r.total_paisa) + '.');
+        toast('Pay sheet ' + r.ref + ' sent for approval — ' + r.people + (r.people === 1 ? ' person' : ' people') + ', Rs ' + rs(r.total_paisa) + '.' + (r.canteen_note ? ' ' + r.canteen_note : ''), !!r.canteen_note);
         P.models = {}; P.on = {}; P.open = {}; S.sheetFilter = 'waiting'; refreshCounts(); go('sheets');
       });
     }
@@ -2646,9 +2667,9 @@ page_header('People Finance');
   function cardsTab(){
     if (!S.caps.setup) return show([el('div', { class: 'cardx empty', text: 'Cards are for Admin, Accounts and HR.' })]);
     show([el('p', { class: 'muted', text: 'Loading…' })]);
-    (CD.people ? Promise.resolve({ ok: true, people: CD.people }) : call('GET', '/finance/cards')).then(function(r){
+    (CD.people ? Promise.resolve({ ok: true, people: CD.people, limits: CD.limits }) : call('GET', '/finance/cards')).then(function(r){
       if (!r.ok) return show([fail(r)]);
-      CD.people = r.people;
+      CD.people = r.people; CD.limits = !!r.limits;
       var P = CD.people, byId = {}; P.forEach(function(p){ byId[p.employee_id] = p; });
       var panel = el('div', { class: 'cdpanel' }), msg = el('div', { class: 'cdmsg', hidden: true });
       var dsel = el('select', { 'aria-label': 'Department' }, [el('option', { value: '', text: 'All departments' })].concat(
@@ -2754,11 +2775,14 @@ page_header('People Finance');
             el('td', {}, [cur ? el('span', { class: 'tchip in', text: '● tap now' }) : p.has_card ? el('span', { class: 'tchip ' + (p.active ? 'done' : 'rep'), text: '✓ Card linked' }) : el('span', { class: 'muted', text: 'No card' })]),
             el('td', { class: 'small', text: p.linked_at ? nice(p.linked_at) : '—' }),
             el('td', {}, [sw]),
+            /* WEEKLY LIMIT (owner, 24 Nov 2026: "different per person"), sent to the canteen with every tap */
+            el('td', {}, [CD.limits ? el('button', { type: 'button', class: 'cdlim', title: 'Change ' + p.full_name + '\'s weekly canteen limit', disabled: !!CD.mode,
+              text: 'Rs ' + rs(p.weekly_limit_paisa), click: function(){ setLimit([p.employee_id], p.full_name, p.weekly_limit_paisa); } }) : el('span', { class: 'muted small', text: 'Rs 1,000' })]),
             el('td', {}, [el('span', { class: 'tchip ' + (p.active ? 'done' : 'off'), text: p.active ? 'Active' : 'Left' })]),
             el('td', { style: 'text-align:right;white-space:nowrap' }, acts)]));
         });
         box.appendChild(el('table', { class: 't en' }, [el('thead', {}, [el('tr', {}, [el('th', { class: 'tick' }, [all]), el('th', { text: 'Employee' }), el('th', { text: 'Department' }),
-          el('th', { text: 'Card' }), el('th', { text: 'Linked on' }), el('th', { text: 'Canteen' }), el('th', { text: 'Status' }), el('th')])]), tb]));
+          el('th', { text: 'Card' }), el('th', { text: 'Linked on' }), el('th', { text: 'Canteen' }), el('th', { text: 'Weekly limit' }), el('th', { text: 'Status' }), el('th')])]), tb]));
         sel();
       }
       function sel(){
@@ -2771,7 +2795,21 @@ page_header('People Finance');
         selbar.appendChild(el('b', { text: ids.length + ' ticked' }));
         selbar.appendChild(btn('Canteen on', function(){ set(true); }, 'sm'));
         selbar.appendChild(btn('Canteen off', function(){ set(false); }, 'sm'));
+        if (CD.limits) selbar.appendChild(btn('Set weekly limit', function(){ setLimit(ids, ids.length + (ids.length === 1 ? ' person' : ' people'), null); }, 'sm'));
         selbar.appendChild(btn('Untick all', function(){ CD.pick = {}; draw(); }, 'sm'));
+      }
+      function setLimit(ids, who, now){
+        ask('Weekly canteen limit — ' + who, 'The most this person may spend at the canteen in one week (Friday to Thursday). The canteen is told on the next card tap. Every change is kept with who made it.',
+          [{ k: 'amt', label: 'Limit each week (Rs)', money: true, value: now === null ? '' : plain(now), placeholder: '1000' }], 'Save limit', function(v){
+            var p = toPaisa(v.amt);
+            if (p === null || p < 0 || p % 100) return { ok: false, error: 'Give the limit in whole rupees, e.g. 1500.' };
+            return call('POST', '/finance/cards/limit', { employee_ids: ids, limit_paisa: p }).then(function(r){
+              if (!r.ok) return r;
+              ids.forEach(function(i){ if (byId[i]) byId[i].weekly_limit_paisa = p; });
+              closeModal(); if (ids.length > 1) CD.pick = {};
+              toast('Weekly limit Rs ' + rs(p) + ' — ' + r.changed + (r.changed === 1 ? ' person changed.' : ' people changed.')); draw(); return r;
+            });
+          });
       }
       function replace(p){
         ask('Replace ' + p.full_name + '\'s card', 'Say why, then tap the new card. The old card stops working at once.', [{ k: 'reason', label: 'Reason (required)', placeholder: 'e.g. lost, broken', wide: true }], 'Next: tap the new card', function(v){
