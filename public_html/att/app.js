@@ -28,7 +28,7 @@
   'use strict';
 
   var API = '../api/v1/index.php?route=';
-  var APP_VERSION = '1.6.1';
+  var APP_VERSION = '1.7.0';
   var CHUNK = 50;
   var LOCK_AFTER_MS = 30 * 60 * 1000;   // until the server says otherwise (Settings: app_lock_minutes)
   /* The PIN is the owner's choice (Settings: app_pin_required, off by default):
@@ -940,6 +940,138 @@
     });
   }
 
+  // ------------------------------------------------------------- card tap
+  /* CARD TAP AT THE GATE (owner, 24 Nov 2026): "security will tap the card on
+     the reader and attendance is done, then the next person".
+     The reader is a USB "keyboard" (PC, or an Android phone with an OTG
+     cable): it types the card's digits very fast and presses Enter. A burst
+     like that is a card; a person typing is far slower and is left alone.
+     The digits are turned into a fingerprint (SHA-256) here and never kept or
+     shown; the fingerprint is matched against this phone's own employee list,
+     so a tap needs no connection and asks the server nothing.
+     Then it is automatic: IN if the person is outside, OUT if inside, shown
+     big for 3 seconds with Undo and "It is OUT/IN instead", then saved and
+     sent like any scan. Another card during those 3 seconds saves the one
+     before at once. Typing a code still works exactly as before. */
+  var RD = { buf: '', first: 0, last: 0, timer: null };
+  var TAP = null, TAP_SECONDS = 3;
+  function readerKey(e) {
+    if (S.screen !== 'main' || S.tab !== 'gate' || e.ctrlKey || e.altKey || e.metaKey) return;
+    var now = Date.now();
+    if (/^[0-9]$/.test(e.key || '') && e.keyCode !== 229) {
+      if (RD.buf && now - RD.last > 80) typedByHand();        // a pause: what came before was a person typing
+      if (!RD.buf) RD.first = now;
+      RD.buf += e.key; RD.last = now;
+      e.preventDefault(); e.stopPropagation();
+      clearTimeout(RD.timer); RD.timer = setTimeout(readerIdle, 200);
+      return;
+    }
+    if ((e.key === 'Enter' || e.key === 'Tab') && RD.buf) {
+      e.preventDefault(); e.stopPropagation(); clearTimeout(RD.timer);
+      if (isBurst()) { var d = RD.buf; RD.buf = ''; onCard(d); } else typedByHand();
+    }
+  }
+  function isBurst() { var n = RD.buf.length; return n >= 6 && (RD.last - RD.first) <= n * 60; }
+  function readerIdle() { if (RD.buf.length >= 8 && isBurst()) { var d = RD.buf; RD.buf = ''; onCard(d); } else typedByHand(); }
+  /* Slow digits from a real keyboard: give them back to the box they were meant for. */
+  function typedByHand() {
+    var d = RD.buf; RD.buf = ''; clearTimeout(RD.timer);
+    var t = document.activeElement;
+    if (d && t && t.tagName === 'INPUT') { t.value += d; t.dispatchEvent(new Event('input', { bubbles: true })); }
+  }
+  function cardHash(digits) {
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(digits)).then(hex);
+  }
+  /* What this phone knows of the person: its own scans first, then the list. */
+  function stateHere(emp, rows, listAt) {
+    var mine = rows.filter(function (r) { return r.employee_code === emp.code && (r.event_type === 'GATE_IN' || r.event_type === 'GATE_OUT') && r.state !== 'rejected'; });
+    var last = mine[mine.length - 1];
+    if (last && (last.state === 'pending' || last.created_at > listAt || emp.inside === undefined || emp.inside === null)) {
+      return { inside: last.event_type === 'GATE_IN', last: last };
+    }
+    if (emp.inside !== undefined && emp.inside !== null) return { inside: !!parseInt(emp.inside, 10), last: last };
+    return { inside: false, last: last };
+  }
+  function onCard(digits) {
+    commitTap();
+    var input = document.getElementById('code'); if (input && input.value) { input.value = ''; paintEmployee(''); }
+    cardHash(digits).then(function (h) { return byCard(h, false); })
+      .catch(function (e) { say('bad', 'The card could not be read here (' + (e && e.message ? e.message : 'unknown') + '). Type the code instead.'); feedback('bad'); });
+  }
+  function byCard(h, again) {
+      return Promise.all([AttDB.getAll('employees'), AttDB.allOutbox(), AttDB.getMeta('employees_at')]).then(function (v) {
+        var emp = v[0].filter(function (x) { return x.card_hash && x.card_hash === h; })[0];
+        /* A card linked a moment ago on the Cards page: fetch the list once more, then look again. */
+        if (!emp && !again && navigator.onLine && !S.needLogin) return refreshLookups().then(function () { return byCard(h, true); });
+        if (!emp) {
+          gateView('idle');
+          say('bad', v[0].length ? 'This card is not linked to anyone on this phone\'s list. Type the code instead, and ask HR to link the card (People Finance › Cards). Nothing was saved.'
+                                 : 'No employee list on this phone yet, so the card cannot be read. Get a connection, or type the code. Nothing was saved.');
+          feedback('bad'); return;
+        }
+        var st = stateHere(emp, v[1], v[2] || 0);
+        // A second tap of the same card a moment later is a mistake, not an exit.
+        if (st.last && (Date.now() - Date.parse(st.last.occurred_at)) < S.policies.dup * 1000) {
+          say('bad', emp.full_name + ' (' + emp.code + ') was just recorded ' + (st.last.event_type === 'GATE_IN' ? 'IN' : 'OUT') + ' at ' + timeOf(Date.parse(st.last.occurred_at)) + '. Nothing new was saved.');
+          feedback('warn'); return;
+        }
+        startTap(emp, st.inside ? 'GATE_OUT' : 'GATE_IN');
+      });
+  }
+  function startTap(emp, type) {
+    quiet();
+    TAP = { emp: emp, type: type, left: TAP_SECONDS, timer: null };
+    paintTap(); feedback('tap');
+    TAP.timer = setInterval(function () {
+      if (!TAP) return;
+      TAP.left--;
+      if (TAP.left <= 0) commitTap(); else paintTap();
+    }, 1000);
+  }
+  function paintTap() {
+    var box = document.getElementById('gate-tap');
+    if (!box) return;
+    var idle = document.getElementById('gate-idle'), person = document.getElementById('gate-person');
+    if (!TAP) { box.hidden = true; box.textContent = ''; return; }
+    if (idle) idle.hidden = true; if (person) person.hidden = true;
+    var isIn = TAP.type === 'GATE_IN', e = TAP.emp;
+    box.hidden = false; box.className = 'tap ' + (isIn ? 'in' : 'out');
+    box.textContent = '';
+    box.appendChild(el('div', { class: 'tap-head' }, [el('span', { class: 'tap-word', text: (isIn ? '→ IN' : '← OUT') }), el('span', { class: 'tap-count', text: 'saving in ' + TAP.left + ' s' })]));
+    box.appendChild(el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'tapphoto', hidden: '' }),
+      el('div', { class: 'whotext' }, [el('p', { class: 'empname', id: 'tapname', text: e.full_name }), el('p', { class: 'hint', text: e.code + ' · ' + (isIn ? 'coming in' : 'leaving') + ' · card tap' })])]));
+    box.appendChild(el('div', { class: 'row' }, [
+      el('button', { class: 'btn', id: 'tap-undo', type: 'button', text: 'Undo', on: { click: undoTap } }),
+      el('button', { class: 'btn', id: 'tap-switch', type: 'button', text: 'It is ' + (isIn ? 'OUT' : 'IN') + ' instead', on: { click: switchTap } }),
+      el('button', { class: 'btn primary', id: 'tap-save', type: 'button', text: 'Save now', on: { click: commitTap } })]));
+    paintPhoto('tapphoto', e);
+  }
+  function undoTap() {
+    if (!TAP) return;
+    var e = TAP.emp; clearInterval(TAP.timer); TAP = null; paintTap(); gateView('idle');
+    say('ok', 'Undone — nothing was saved for ' + e.full_name + '.'); feedback('tap');
+  }
+  function switchTap() {
+    if (!TAP) return;
+    TAP.type = TAP.type === 'GATE_IN' ? 'GATE_OUT' : 'GATE_IN'; TAP.left = TAP_SECONDS; paintTap(); feedback('tap');
+  }
+  /* Save the tap waiting its 3 seconds (or now: another card, Save now, leaving the screen). */
+  function commitTap() {
+    if (!TAP) return Promise.resolve();
+    var t = TAP; clearInterval(t.timer); TAP = null; paintTap(); gateView('idle');
+    return saveEvent(t.type, t.emp.code, t.emp.full_name, { source: 'card' }).then(function () {
+      feedback('ok');
+      say('ok', (t.type === 'GATE_IN' ? 'IN' : 'OUT') + ' for ' + t.emp.full_name + ' (' + t.emp.code + ') — saved on this phone. Sending…');
+      refreshLists(); paintStatus();
+      return syncNow();
+    }).catch(function (e) {
+      say('bad', 'COULD NOT SAVE the card tap for ' + t.emp.full_name + '. Nothing was recorded. ' + (e && e.message ? e.message : '') + ' Type the code and try again.');
+      feedback('bad');
+    });
+  }
+  document.addEventListener('keydown', readerKey, true);
+  window.addEventListener('pagehide', function () { commitTap(); });
+
   function hodByCode() {
     var input = document.getElementById('hodcode');
     var value = (input.value || '').trim();
@@ -1129,7 +1261,7 @@
     root.appendChild(el('div', { id: 'message' }));
 
     if (S.tab === 'gate') {
-      var ci = codeInput('code', function (v) { quiet(); paintEmployee(v); decideFor(v); }, pointAtAction);
+      var ci = codeInput('code', function (v) { if (TAP) commitTap(); quiet(); paintEmployee(v); decideFor(v); }, pointAtAction);
       var bigBtn = function (type) {
         var isIn = type === 'GATE_IN';
         return el('button', { class: 'btn big ' + (isIn ? 'in' : 'out'), id: isIn ? 'btn-in' : 'btn-out', type: 'button', hidden: '', on: { click: function () { gateAction(type); } } }, [
@@ -1138,13 +1270,14 @@
         ]);
       };
       body.appendChild(el('div', { class: 'card scan-card', id: 'scan-card' }, [
-        el('label', { class: 'step', for: 'code' }, [el('b', { text: '1' }), 'Type or scan the employee code']),
+        el('label', { class: 'step', for: 'code' }, [el('b', { text: '1' }), 'Tap the card on the reader — or type / scan the code']),
         el('div', { class: 'row' }, [ci.input, ci.toggle, ('BarcodeDetector' in window) ? el('button', { class: 'btn', id: 'scan', type: 'button', text: 'Scan', on: { click: function () { scanInto('code'); } } }) : null]),
         el('div', { class: 'idle', id: 'gate-idle' }, [
           el('div', { class: 'idle-ico', 'aria-hidden': 'true' }, [el('span', { text: '⇄' })]),
           el('p', { class: 'idle-title', text: 'Ready for the next person' }),
-          el('p', { class: 'idle-sub', text: 'The right button appears here: IN if they are outside, OUT if they are inside.' })
+          el('p', { class: 'idle-sub', text: 'A card tap is recorded by itself: IN if they are outside, OUT if inside. For a typed code the right button appears here.' })
         ]),
+        el('div', { class: 'tap', id: 'gate-tap', hidden: '' }),
         el('div', { class: 'person', id: 'gate-person', hidden: '' }, [
           el('div', { class: 'who' }, [el('div', { class: 'photo none', id: 'empphoto', hidden: '' }), el('div', { class: 'whotext' }, [
             el('p', { id: 'empname', class: 'empname' }), el('span', { id: 'empstate', class: 'chip' }), el('p', { id: 'emphint', class: 'hint' })])]),

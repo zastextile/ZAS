@@ -159,3 +159,13 @@ footer{margin:24px 2px 6px;font-size:12.5px;color:var(--muted);border-top:1px so
 .pick.tile.on .tick{background:var(--ok);color:#fff;box-shadow:none}
 .pick.tile:focus-within{outline:3px solid var(--note);outline-offset:1px}
 @media (prefers-reduced-motion:reduce){.pick.tile,.pick.tile .face{transition:none}}
+/* CARD TAP (24 Nov 2026): the person, IN or OUT, for 3 seconds, then saved */
+.tap{border-radius:20px;padding:14px 16px;margin:10px 0 4px;color:#fff;animation:pop .32s cubic-bezier(.2,.9,.3,1.25)}
+.tap.in{background:linear-gradient(160deg,var(--ok2),var(--ok))}
+.tap.out{background:linear-gradient(160deg,var(--out2),var(--out))}
+.tap-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.tap-word{font-size:40px;font-weight:900;letter-spacing:.05em}
+.tap-count{font-size:14px;font-weight:700;opacity:.9}
+.tap .empname{color:#fff;font-size:22px}.tap .hint{color:rgba(255,255,255,.9);margin:4px 0 0}
+.tap .photo{background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.35);color:#fff}
+.tap .row{display:flex;gap:8px;flex-wrap:wrap}.tap .btn{flex:1 1 auto;min-height:48px}

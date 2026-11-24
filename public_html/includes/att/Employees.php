@@ -223,11 +223,17 @@ final class Employees
         /* has_photo is a yes/no for the phone to know whether asking for the
            picture is worth a request. The picture's whereabouts never leave
            the server. */
+        /* CARD TAP AT THE GATE (owner, 24 Nov 2026): the card's fingerprint goes
+           with the list, so the phone knows a tapped card with no connection and
+           asks the server nothing per tap. A fingerprint, never the number. */
+        $cards = Db::tableExists('att_emp_cards');
         $sql = 'SELECT e.id, e.code, e.full_name, e.department_id, e.qr_payload,
                        (e.reference_photo_key IS NOT NULL) AS has_photo,
-                       (c.id IS NOT NULL) AS inside, c.opened_at AS inside_since
+                       (c.id IS NOT NULL) AS inside, c.opened_at AS inside_since, '
+             . ($cards ? 'k.card_hash' : 'NULL AS card_hash') . '
                   FROM att_employees e
-                  LEFT JOIN att_entry_cycles c ON c.open_employee_id = e.id
+                  LEFT JOIN att_entry_cycles c ON c.open_employee_id = e.id'
+             . ($cards ? ' LEFT JOIN att_emp_cards k ON k.employee_id = e.id' : '') . '
                  WHERE e.active = 1';
         if ($departmentIds !== null) {
             if ($departmentIds === []) {
