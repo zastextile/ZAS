@@ -245,9 +245,14 @@ async function signIn(ctx, email) {
       (await dl.nth(0).inputValue()) + ' / ' + (await dl.nth(1).inputValue()));
     await dl.nth(1).fill('2026-03-02T17:45');
     await p.fill('#en-ed-why', 'Left at 17:45');
+    const ranges = []; p.on('request', q => { if (q.url().includes('entries%2Frange') || q.url().includes('entries/range')) ranges.push(q.url()); });
     await p.click('.fin-shade button:has-text("Save change")');
     await p.waitForFunction(() => [...document.querySelectorAll('#fin-body table.en tbody tr')].some(r => /Worker 2/.test(r.textContent) && /17:45/.test(r.textContent)), null, { timeout: 10000 }).catch(() => {});
     check('  the change is saved and shown', /17:45/.test(await row('Worker 2').textContent()));
+    const W2 = await p.evaluate(() => EN.data.entries.filter(x => /Worker 2/.test(x.full_name))[0].employee_code).catch(() => '');
+    check('  LIGHT: after one edit only that person is asked for again, not the whole list', ranges.length === 1 && decodeURIComponent(ranges[0]).includes('q=' + W2), ranges.join(' | '));
+    check('  and the other people are still on the list', /Worker 1/.test(await p.textContent('#fin-body')) && /Worker 3/.test(await p.textContent('#fin-body')));
+    ranges.length = 0;
     await row('Worker 3').locator('button:has-text("Delete")').click();
     await p.waitForSelector('.fin-shade:not([hidden]) #en-del-why');
     await p.click('.fin-shade button:has-text("Delete entry")');
@@ -257,6 +262,7 @@ async function signIn(ctx, email) {
     await p.click('.fin-shade button:has-text("Delete entry")');
     await p.waitForFunction(() => !/Worker 3/.test(document.getElementById('fin-body').textContent), null, { timeout: 10000 }).catch(() => {});
     check('  with a reason, the entry is deleted from the list', !/Worker 3/.test(await p.textContent('#fin-body')));
+    check('  LIGHT: a delete asks the server for no list at all', ranges.length === 0, ranges.join(' | '));
     /* one change to many ticked entries: checked first, then saved */
     await row('Worker 1').locator('input[type=checkbox]').check();
     await p.click('#fin-body .selbar button:has-text("Move by minutes")');

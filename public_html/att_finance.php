@@ -2381,6 +2381,32 @@ page_header('People Finance');
       if (!r.ok) { view.textContent = ''; view.appendChild(fail(r)); return; }
       EN.data = r; draw();
     });
+    /* LIGHT REFRESH (owner, 24 Nov 2026: "after any one edit it refreshes … load
+       on server"). After ONE change only that person's few days are asked for
+       again and put in place; the rest of the list stays as it is. A delete
+       asks for nothing at all. Bulk changes still reload the whole list. */
+    var same = function(a, b){ return String(a).toUpperCase() === String(b).toUpperCase(); };
+    EN.patch = function(code, d1, d2){
+      if (!EN.data || !code) return entries();
+      var a = d1 < EN.data.from ? EN.data.from : d1, b = d2 > EN.data.to ? EN.data.to : d2;
+      var known = EN.data.people.some(function(p){ return same(p.employee_code, code); });
+      if (a > b || (!known && EN.q)) return draw();          // outside the days or the filter shown: nothing to put in place
+      call('GET', '/admin/entries/range', { from: a, to: b, department_id: EN.dept, q: code }).then(function(r){
+        if (!r.ok) return entries();
+        EN.data.entries = EN.data.entries.filter(function(x){ return !(same(x.employee_code, code) && x.work_date >= a && x.work_date <= b); })
+          .concat(r.entries.filter(function(x){ return same(x.employee_code, code); }));
+        EN.data.entries.sort(function(x, y){
+          return x.work_date < y.work_date ? -1 : x.work_date > y.work_date ? 1
+            : ((x.department_name + ' ' + x.full_name).localeCompare(y.department_name + ' ' + y.full_name) || (x.opened_at < y.opened_at ? -1 : x.opened_at > y.opened_at ? 1 : 0)); });
+        if (!known) r.people.filter(function(p){ return same(p.employee_code, code); }).forEach(function(p){ EN.data.people.push(p); });
+        draw();
+      });
+    };
+    EN.drop = function(id){
+      if (!EN.data) return entries();
+      EN.data.entries = EN.data.entries.filter(function(x){ return x.entry_cycle_id !== id; });
+      delete EN.pick[id]; draw();
+    };
 
     function rows(){
       var all = (EN.data && EN.data.entries) || [];
@@ -2479,7 +2505,7 @@ page_header('People Finance');
     }
   }
   function enReason(id, ph){ return el('input', { type: 'text', id: id, maxlength: 1000, placeholder: ph || 'e.g. came in by the side gate; phone clock was wrong; from the paper register' }); }
-  function enDone(msg){ closeModal(); toast(msg); entries(); }
+  function enDone(msg, after){ closeModal(); toast(msg); if (after && EN.patch) after(); else entries(); }
   function enAdd(p, day){
     var code = el('input', { type: 'text', value: p ? p.employee_code : '', placeholder: 'Employee code', list: 'en-codes' });
     var dl = el('datalist', { id: 'en-codes' }, ((EN.data && EN.data.people) || []).map(function(x){ return el('option', { value: x.employee_code, label: x.full_name + ' · ' + x.department_name }); }));
@@ -2493,7 +2519,8 @@ page_header('People Finance');
         err.hidden = true;
         call('POST', '/admin/entries', { employee_code: code.value.trim(), in_at: tin.value, out_at: tout.value, timezone: 'Asia/Karachi', reason: why.value }).then(function(r){
           if (!r.ok) { err.textContent = r.error || 'Not added.'; err.hidden = false; return; }
-          enDone('Entry added.');
+          var d0 = tin.value.slice(0, 10), c0 = code.value.trim();
+          enDone('Entry added.', function(){ EN.patch(c0, addDays(d0, -1), addDays(d0, 1)); });
         });
       }, 'pri')])]);
   }
@@ -2512,7 +2539,8 @@ page_header('People Finance');
         if (!b.in_at && !b.out_at) { err.textContent = 'Nothing was changed.'; err.hidden = false; return; }
         call('POST', '/admin/entries/' + x.entry_cycle_id + '/edit', b).then(function(r){
           if (!r.ok) { err.textContent = r.error || 'Not saved.'; err.hidden = false; return; }
-          enDone('Entry changed.');
+          var nd = (b.in_at || loc(x.opened_at)).slice(0, 10), lo = nd < x.work_date ? nd : x.work_date, hi = nd > x.work_date ? nd : x.work_date;
+          enDone('Entry changed.', function(){ EN.patch(x.employee_code, addDays(lo, -1), addDays(hi, 1)); });
         });
       }, 'pri')])])]);
   }
@@ -2525,7 +2553,7 @@ page_header('People Finance');
         err.hidden = true;
         call('POST', '/admin/entries/' + x.entry_cycle_id + '/delete', { reason: why.value }).then(function(r){
           if (!r.ok) { err.textContent = r.error || 'Not deleted.'; err.hidden = false; return; }
-          enDone('Entry deleted.');
+          enDone('Entry deleted.', function(){ EN.drop(x.entry_cycle_id); });
         });
       }, 'danger')])]);
   }
