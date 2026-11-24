@@ -45,6 +45,13 @@ final class CardService
         return $has ??= Db::columnExists('att_emp_cards', 'weekly_limit_paisa');
     }
 
+    /** The job title for the printed card comes with step 0025. */
+    public static function hasDesignation(): bool
+    {
+        static $has = null;
+        return $has ??= Db::columnExists('att_emp_cards', 'designation');
+    }
+
     public static function isHash(string $h): bool
     {
         return (bool) preg_match('/^[0-9a-f]{64}$/', $h);
@@ -63,7 +70,8 @@ final class CardService
         $rows = Db::all(
             "SELECT e.id AS employee_id, e.code, e.full_name, e.active, d.name AS department_name, f.pay_type,
                     (c.card_hash IS NOT NULL) AS has_card, c.linked_at, COALESCE(c.canteen_ok, 0) AS canteen_ok,
-                    " . (self::hasLimit() ? 'COALESCE(c.weekly_limit_paisa, ' . self::DEFAULT_LIMIT . ')' : (string) self::DEFAULT_LIMIT) . " AS weekly_limit_paisa
+                    " . (self::hasLimit() ? 'COALESCE(c.weekly_limit_paisa, ' . self::DEFAULT_LIMIT . ')' : (string) self::DEFAULT_LIMIT) . " AS weekly_limit_paisa,
+                    " . (self::hasDesignation() ? 'c.designation' : 'NULL AS designation') . ", (e.reference_photo_key IS NOT NULL) AS has_photo
                FROM att_employees e
                JOIN att_departments d ON d.id = e.department_id
                LEFT JOIN att_fin_profiles f ON f.employee_id = e.id
@@ -72,11 +80,11 @@ final class CardService
               ORDER BY e.active DESC, d.name, e.full_name LIMIT 5000", $p);
         foreach ($rows as &$r) {
             $r['employee_id'] = (int) $r['employee_id']; $r['active'] = (int) $r['active'];
-            $r['has_card'] = (int) $r['has_card']; $r['canteen_ok'] = (int) $r['canteen_ok']; $r['weekly_limit_paisa'] = (int) $r['weekly_limit_paisa'];
+            $r['has_card'] = (int) $r['has_card']; $r['canteen_ok'] = (int) $r['canteen_ok']; $r['weekly_limit_paisa'] = (int) $r['weekly_limit_paisa']; $r['has_photo'] = (int) $r['has_photo'];
             $r['linked_at'] = self::day($r['linked_at']);
         }
         unset($r);
-        return ['ok' => true, 'people' => $rows, 'limits' => self::hasLimit()];
+        return ['ok' => true, 'people' => $rows, 'limits' => self::hasLimit(), 'designations' => self::hasDesignation()];
     }
 
     /** Link a tapped card to a person. A person who already has one needs replace + a reason. */
@@ -214,6 +222,55 @@ final class CardService
             }
         });
         return ['ok' => true, 'changed' => $done];
+    }
+
+    /**
+     * The job title printed on the ID card. Empty clears it. Logged with the
+     * old and new words.
+     */
+    public static function setDesignation(array $ids, string $text, ?array $departments, int $actorId): array
+    {
+        if (!self::ready()) {
+            return self::notReady();
+        }
+        if (!self::hasDesignation()) {
+            return self::no('NOT_READY', 'Designations come with the ID card database step. Run it once: php att_migrate.php up');
+        }
+        $text = trim(preg_replace('/\s+/u', ' ', $text) ?? '');
+        if (mb_strlen($text) > 80) {
+            return self::no('VALIDATION', 'Keep the designation to 80 letters or fewer.');
+        }
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn($i) => $i > 0)));
+        if (!$ids || count($ids) > 1000) {
+            return self::no('VALIDATION', $ids ? 'At most 1,000 people at a time.' : 'Choose at least one person.');
+        }
+        $new = $text === '' ? null : $text;
+        $done = 0;
+        Db::tx(static function () use ($ids, $new, $departments, $actorId, &$done) {
+            foreach ($ids as $id) {
+                $e = Db::one('SELECT id, department_id FROM att_employees WHERE id = ?', [$id]);
+                if ($e === null || !self::inScope($departments, (int) $e['department_id'])) {
+                    continue;
+                }
+                $was = Db::value('SELECT designation FROM att_emp_cards WHERE employee_id = ?', [$id]);
+                $was = $was === false ? null : $was;
+                if ($was === $new) {
+                    continue;
+                }
+                Db::run('INSERT INTO att_emp_cards (employee_id, designation, updated_by) VALUES (?, ?, ?)
+                         ON DUPLICATE KEY UPDATE designation = VALUES(designation), updated_by = VALUES(updated_by)', [$id, $new, $actorId]);
+                self::log($id, 'designation', null, null, mb_substr(($was ?? '—') . ' → ' . ($new ?? '—'), 0, 255), $actorId);
+                $done++;
+            }
+        });
+        return ['ok' => true, 'changed' => $done];
+    }
+
+    /** May this user see this employee (for the card photo)? */
+    public static function visible(int $employeeId, ?array $departments): bool
+    {
+        $d = Db::value('SELECT department_id FROM att_employees WHERE id = ?', [$employeeId]);
+        return $d !== null && $d !== false && self::inScope($departments, (int) $d);
     }
 
     /** Whose card is this? For the page's "Who has this card?". */

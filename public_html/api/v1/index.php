@@ -1148,6 +1148,26 @@ try {
             admin_answer(CanteenService::fetch((string) Http::input('to', ''), (int) $u['id']));
             break;
 
+        /* ID CARD PRINTING (owner, 24 Nov 2026): the job title, and the photo
+           for the printed card. Same people as the Cards page; each photo
+           shown is one line in the audit log, as everywhere else. */
+        case $method === 'POST' && $route === '/finance/cards/designation':
+            Http::requireCsrf();
+            [$u, $caps] = fin_caps('setup');
+            $ids = Http::input('employee_ids', []);
+            admin_answer(CardService::setDesignation(is_array($ids) ? $ids : [], (string) Http::input('designation', ''), $caps['departments'], (int) $u['id']));
+            break;
+
+        case $method === 'GET' && $route === '/finance/cards/photo':
+            [$u, $caps] = fin_caps('setup');
+            $eid = (int) Http::input('id', 0);
+            if (!CardService::visible($eid, $caps['departments'])) {
+                Http::fail('NOT_FOUND', 'No such employee.', 404);
+            }
+            Http::rateLimit('photo:user:' . (int) $u['id'], 900, 600);
+            send_image(PhotoService::reference($eid, (int) $u['id'], 'ID card'));
+            break;
+
         case $method === 'POST' && $route === '/finance/cards/who':
             Http::requireCsrf();
             [, $caps] = fin_caps('setup');

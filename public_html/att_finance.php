@@ -486,6 +486,7 @@ page_header('People Finance');
 .fin .cdmsg.bad{background:var(--bad-bg);border-color:#f0b8b8;color:#8e0000}
 .fin .cdmsg.warn{background:var(--warn-bg);border-color:#f0c36d;color:var(--warn-ink)}
 .fin .cdsw{display:inline-flex;cursor:pointer}
+.fin .cddes{border:0;background:none;padding:0;margin-top:2px;font:inherit;font-size:12px;color:#0a5fb4;cursor:pointer}.fin .cddes.none{color:#8a97a6}.fin .cddes:hover{text-decoration:underline}
 .fin .cdlim{border:1px solid var(--line,#d5dbe3);background:transparent;border-radius:6px;padding:2px 8px;font:inherit;font-size:13px;color:var(--ink,#1d2d3e);cursor:pointer;white-space:nowrap}
 .fin .cdlim:hover:not(:disabled){border-color:#0a6ed1;color:#0a6ed1}
 .fin .cdlim:disabled{opacity:.5;cursor:default}
@@ -2692,12 +2693,100 @@ page_header('People Finance');
   }
   var cardMsg = function(){}, stopMode = function(){}, onCard = function(){};
 
+  /* ID CARD PRINTING (owner, 24 Nov 2026: design C, portrait 54 × 85.6 mm, no
+     company name or logo). Built in a new window from what the Cards page
+     already has; only the photos are asked for, one each. Printed at 100%. */
+  function idPrint(w, list, lay, backs){
+    var base = new URL(API, location.href).href, D = w.document;
+    /* Built element by element (never from HTML text), like every page here. */
+    function mk(tag, cls, text, kids){
+      var n = D.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text;
+      (kids || []).forEach(function(k){ if (k) n.appendChild(k); }); return n;
+    }
+    function face(){
+      var NS = 'http://www.w3.org/2000/svg', sv = D.createElementNS(NS, 'svg');
+      sv.setAttribute('viewBox', '0 0 100 110'); sv.setAttribute('class', 'sil');
+      var c = D.createElementNS(NS, 'circle'); c.setAttribute('cx', '50'); c.setAttribute('cy', '38'); c.setAttribute('r', '22'); c.setAttribute('fill', '#97a8bb');
+      var pa = D.createElementNS(NS, 'path'); pa.setAttribute('d', 'M8 110c4-26 22-38 42-38s38 12 42 38z'); pa.setAttribute('fill', '#97a8bb');
+      sv.appendChild(c); sv.appendChild(pa); return sv;
+    }
+    function dots(words){ var f = mk('div', 'foot'); words.forEach(function(t, i){ if (i) f.appendChild(mk('i')); f.appendChild(D.createTextNode(t)); }); return f; }
+    function front(p){
+      var nm = p.full_name || '', big = nm.length > 22 ? 3.3 : nm.length > 16 ? 3.8 : 4.4;
+      var ph = mk('div', 'ph');
+      if (p.has_photo) {
+        var im = D.createElement('img'); im.alt = ''; im.src = base + encodeURIComponent('/finance/cards/photo') + '&id=' + encodeURIComponent(p.employee_id); ph.appendChild(im);
+      } else ph.appendChild(face());
+      var name = mk('div', 'nm', nm); name.style.fontSize = big + 'mm';
+      var no = mk('div', 'cd', 'Employee No. '); no.appendChild(mk('b', '', p.code));
+      return mk('div', 'card c', null, [mk('div', 'top', null, [mk('b', '', 'EMPLOYEE ID')]), ph,
+        mk('div', 'info', null, [name, p.designation ? mk('div', 'dg', p.designation) : null, mk('div', 'dp', p.department_name), no]),
+        dots(['GATE', 'CANTEEN', 'ATTENDANCE'])]);
+    }
+    function back(){
+      var p1 = mk('p', '', 'This card is the property of '); p1.appendChild(mk('b', '', 'the company')); p1.appendChild(D.createTextNode(' and must be shown on request.'));
+      return mk('div', 'card bk', null, [mk('div', 'top', 'EMPLOYEE IDENTITY CARD'),
+        mk('div', 'body', null, [p1, mk('p', '', 'It is personal and may not be lent to anyone.'), mk('p', '', 'If found, please return it to the company office.')]),
+        mk('div', 'tapz', null, [mk('span', '', ')))'), D.createTextNode('Tap here on the reader')]), mk('div', 'sig', 'Authorised signature'), mk('div', 'foot', 'Report a lost card to HR at once')]);
+    }
+    var pages = [];
+    if (lay === 'card') {
+      list.forEach(function(p){ pages.push(mk('div', 'pg one', null, [front(p)])); if (backs) pages.push(mk('div', 'pg one', null, [back()])); });
+    } else {
+      for (var i = 0; i < list.length; i += 9) {
+        var chunk = list.slice(i, i + 9);
+        pages.push(mk('div', 'pg a4', null, chunk.map(function(p){ return mk('div', 'slot', null, [front(p)]); })));
+        if (backs) {                                    // mirrored, so each back lands behind its front when the sheet is turned over
+          var slots = [];
+          for (var r = 0; r < chunk.length; r += 3) { var row = chunk.slice(r, r + 3); while (row.length < 3) row.push(null); row.reverse().forEach(function(p){ slots.push(mk('div', 'slot' + (p ? '' : ' empty'), null, p ? [back()] : [])); }); }
+          pages.push(mk('div', 'pg a4', null, slots));
+        }
+      }
+    }
+    var css = '*{box-sizing:border-box;margin:0;padding:0}html,body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;font-family:Inter,Arial,sans-serif}' +
+      (lay === 'card' ? '@page{size:54mm 85.6mm;margin:0}.pg.one{width:54mm;height:85.6mm;overflow:hidden;page-break-after:always;break-after:page}'
+                      : '@page{size:A4 portrait;margin:0}.pg.a4{width:210mm;height:297mm;padding:16mm 20mm;display:grid;grid-template-columns:repeat(3,54mm);grid-auto-rows:85.6mm;gap:4mm;page-break-after:always;break-after:page}' +
+                        '.slot{outline:.2mm dashed #9aa6b2;outline-offset:0}.slot.empty{outline:none}') +
+      '.card{width:54mm;height:85.6mm;position:relative;overflow:hidden;background:#fff}' +
+      '.c .top{height:30mm;background:linear-gradient(150deg,#0f2742,#1d4e89 70%,#0a6ed1);color:#fff;text-align:center;padding-top:5mm}.c .top b{font:800 3.4mm Inter,Arial;letter-spacing:.12em}' +
+      '.c .ph{position:absolute;left:50%;top:13.5mm;transform:translateX(-50%);width:26mm;height:31mm;border-radius:2.4mm;border:.8mm solid #fff;overflow:hidden;background:linear-gradient(160deg,#dfe6ee,#c8d3df);display:flex;align-items:flex-end;justify-content:center}' +
+      '.c .ph img{width:100%;height:100%;object-fit:cover;display:block}.c .ph .sil{width:80%}' +
+      '.c .info{position:absolute;left:3mm;right:3mm;top:47.5mm;text-align:center}.nm{font:800 4.4mm/1.15 Inter,Arial;color:#0f2742}' +
+      '.dg{font:600 2.8mm Inter,Arial;color:#1d4e89;margin-top:1mm}.dp{display:inline-block;margin-top:1.8mm;font:700 2.2mm Inter,Arial;letter-spacing:.06em;color:#fff;background:#e07a1f;border-radius:1mm;padding:.7mm 1.6mm;text-transform:uppercase}' +
+      '.cd{margin-top:2mm;font:500 2.3mm Inter,Arial;color:#5b6b7c}.cd b{color:#0f2742;font-weight:800;font-size:3.2mm;letter-spacing:.04em}' +
+      '.c .foot{position:absolute;left:0;right:0;bottom:0;height:7mm;background:#0f2742;color:#fff;display:flex;align-items:center;justify-content:center;font:600 2mm Inter,Arial;letter-spacing:.1em}' +
+      '.c .foot i{display:inline-block;width:1.6mm;height:1.6mm;border-radius:50%;background:#e07a1f;margin:0 1.6mm}' +
+      '.bk .top{height:11mm;background:#0f2742;color:#fff;display:flex;align-items:center;justify-content:center;font:800 2.5mm Inter,Arial;letter-spacing:.1em}' +
+      '.bk .body{padding:4mm 4mm;font:500 2.3mm/1.5 Inter,Arial;color:#33465c}.bk .body p+p{margin-top:1.6mm}.bk .body b{color:#0f2742}' +
+      '.bk .tapz{position:absolute;left:0;right:0;top:44mm;display:flex;flex-direction:column;align-items:center;gap:1.4mm;font:700 2.1mm Inter,Arial;color:#0a6ed1}' +
+      '.bk .tapz span{width:10mm;height:10mm;border:.4mm solid #0a6ed1;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:3.6mm}' +
+      '.bk .sig{position:absolute;left:10mm;right:10mm;bottom:12mm;border-top:.3mm solid #8795a6;text-align:center;font:500 1.9mm Inter,Arial;color:#5b6b7c;padding-top:.8mm}' +
+      '.bk .foot{position:absolute;left:0;right:0;bottom:0;height:7mm;background:#f3f6f9;display:flex;align-items:center;justify-content:center;font:600 1.9mm Inter,Arial;color:#5b6b7c}' +
+      '@media screen{body{background:#e9edf2;padding:6mm}.pg{background:#fff;margin:0 auto 6mm;box-shadow:0 1mm 3mm rgba(0,0,0,.15)}.bar{position:sticky;top:0;background:#0f2742;color:#fff;padding:3mm 5mm;margin:-6mm -6mm 6mm;font:600 14px Arial;display:flex;gap:4mm;align-items:center}.bar button{font:700 14px Arial;padding:2mm 5mm;border:0;border-radius:1.5mm;background:#fff;color:#0f2742;cursor:pointer}.bar .note{font-weight:400;opacity:.8}}' +
+      '@media print{.bar{display:none}}';
+    D.title = 'ID cards (' + list.length + ')';
+    var lk = D.createElement('link'); lk.rel = 'stylesheet'; lk.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&display=swap'; D.head.appendChild(lk);
+    var stEl = D.createElement('style'); stEl.textContent = css; D.head.appendChild(stEl);
+    var pb = mk('button', '', 'Print'); pb.type = 'button'; pb.addEventListener('click', function(){ w.print(); });
+    var st = mk('span', '', 'Loading photos…');
+    D.body.appendChild(mk('div', 'bar', null, [st, pb, mk('span', 'note', 'Scale 100% · ' + (lay === 'card' ? 'card printer, one card per page' : 'A4, cut along the dashed lines'))]));
+    pages.forEach(function(pg){ D.body.appendChild(pg); });
+    var imgs = [].slice.call(D.images), left = imgs.length;
+    function ready(){ st.textContent = list.length + ' card' + (list.length === 1 ? '' : 's') + ' ready'; setTimeout(function(){ w.focus(); w.print(); }, 500); }
+    function one(){ left--; if (left > 0) st.textContent = 'Loading photos… ' + left + ' to go'; else ready(); }
+    if (!left) ready();
+    imgs.forEach(function(im){
+      if (im.complete && im.naturalWidth) return one();
+      im.addEventListener('load', one);
+      im.addEventListener('error', function(){ var f = face(); im.parentNode.replaceChild(f, im); one(); });
+    });
+  }
   function cardsTab(){
     if (!S.caps.setup) return show([el('div', { class: 'cardx empty', text: 'Cards are for Admin, Accounts and HR.' })]);
     show([el('p', { class: 'muted', text: 'Loading…' })]);
-    (CD.people ? Promise.resolve({ ok: true, people: CD.people, limits: CD.limits }) : call('GET', '/finance/cards')).then(function(r){
+    (CD.people ? Promise.resolve({ ok: true, people: CD.people, limits: CD.limits, designations: CD.desig }) : call('GET', '/finance/cards')).then(function(r){
       if (!r.ok) return show([fail(r)]);
-      CD.people = r.people; CD.limits = !!r.limits;
+      CD.people = r.people; CD.limits = !!r.limits; CD.desig = !!r.designations;
       var P = CD.people, byId = {}; P.forEach(function(p){ byId[p.employee_id] = p; });
       var panel = el('div', { class: 'cdpanel' }), msg = el('div', { class: 'cdmsg', hidden: true });
       var dsel = el('select', { 'aria-label': 'Department' }, [el('option', { value: '', text: 'All departments' })].concat(
@@ -2794,11 +2883,15 @@ page_header('People Finance');
                 p.canteen_ok = on ? 1 : 0; draw();
               });
             } }), el('i')]);
+          var idBtn = btn('ID card', function(){ printIds([p]); }, 'sm', !!CD.mode);
           var acts = !p.active ? (p.has_card ? [btn('Unlink card', function(){ unlink(p); }, 'sm')] : [])
             : p.has_card ? [btn('Replace (tap new)', function(){ replace(p); }, 'sm', !!CD.mode), ' ', btn('Unlink', function(){ unlink(p); }, 'sm', !!CD.mode)]
             : [btn('Link (tap)', function(){ setMode({ kind: 'one', id: p.employee_id }); }, 'sm', !!CD.mode)];
           tb.appendChild(el('tr', { class: cur ? 'pk' : '' }, [el('td', { class: 'tick' }, [cb]),
-            el('td', {}, [el('b', { text: p.full_name }), el('span', { class: 'muted small', text: '  ' + p.code })]),
+            el('td', {}, [el('b', { text: p.full_name }), el('span', { class: 'muted small', text: '  ' + p.code }),
+              /* the job title printed on the ID card; click to change */
+              CD.desig ? el('div', {}, [el('button', { type: 'button', class: 'cddes' + (p.designation ? '' : ' none'), title: 'Designation printed on the ID card — click to change',
+                text: p.designation || '+ designation', click: function(){ setDesig([p.employee_id], p.full_name, p.designation || ''); } })]) : null]),
             el('td', { class: 'small', text: p.department_name }),
             el('td', {}, [cur ? el('span', { class: 'tchip in', text: '● tap now' }) : p.has_card ? el('span', { class: 'tchip ' + (p.active ? 'done' : 'rep'), text: '✓ Card linked' }) : el('span', { class: 'muted', text: 'No card' })]),
             el('td', { class: 'small', text: p.linked_at ? nice(p.linked_at) : '—' }),
@@ -2807,7 +2900,7 @@ page_header('People Finance');
             el('td', {}, [CD.limits ? el('button', { type: 'button', class: 'cdlim', title: 'Change ' + p.full_name + '\'s weekly canteen limit', disabled: !!CD.mode,
               text: 'Rs ' + rs(p.weekly_limit_paisa), click: function(){ setLimit([p.employee_id], p.full_name, p.weekly_limit_paisa); } }) : el('span', { class: 'muted small', text: 'Rs 1,000' })]),
             el('td', {}, [el('span', { class: 'tchip ' + (p.active ? 'done' : 'off'), text: p.active ? 'Active' : 'Left' })]),
-            el('td', { style: 'text-align:right;white-space:nowrap' }, acts)]));
+            el('td', { style: 'text-align:right;white-space:nowrap' }, (p.active ? [idBtn, ' '] : []).concat(acts))]));
         });
         box.appendChild(el('table', { class: 't en' }, [el('thead', {}, [el('tr', {}, [el('th', { class: 'tick' }, [all]), el('th', { text: 'Employee' }), el('th', { text: 'Department' }),
           el('th', { text: 'Card' }), el('th', { text: 'Linked on' }), el('th', { text: 'Canteen' }), el('th', { text: 'Weekly limit' }), el('th', { text: 'Status' }), el('th')])]), tb]));
@@ -2824,7 +2917,32 @@ page_header('People Finance');
         selbar.appendChild(btn('Canteen on', function(){ set(true); }, 'sm'));
         selbar.appendChild(btn('Canteen off', function(){ set(false); }, 'sm'));
         if (CD.limits) selbar.appendChild(btn('Set weekly limit', function(){ setLimit(ids, ids.length + (ids.length === 1 ? ' person' : ' people'), null); }, 'sm'));
+        if (CD.desig) selbar.appendChild(btn('Set designation', function(){ setDesig(ids, ids.length + (ids.length === 1 ? ' person' : ' people'), ''); }, 'sm'));
+        selbar.appendChild(btn('Print ID cards (' + ids.length + ')', function(){ printIds(ids.map(function(i){ return byId[i]; }).filter(Boolean)); }, 'sm pri'));
         selbar.appendChild(btn('Untick all', function(){ CD.pick = {}; draw(); }, 'sm'));
+      }
+      function setDesig(ids, who, now){
+        ask('Designation — ' + who, 'The job title printed on the ID card, e.g. Machine Operator, Supervisor, Helper. Leave it empty to print none.',
+          [{ k: 'd', label: 'Designation', value: now, placeholder: 'e.g. Machine Operator', wide: true }], 'Save', function(v){
+            return call('POST', '/finance/cards/designation', { employee_ids: ids, designation: v.d }).then(function(r){
+              if (!r.ok) return r;
+              ids.forEach(function(i){ if (byId[i]) byId[i].designation = v.d.replace(/\s+/g, ' ') || null; });
+              closeModal(); if (ids.length > 1) CD.pick = {};
+              toast('Designation saved — ' + r.changed + (r.changed === 1 ? ' person changed.' : ' people changed.')); draw(); return r;
+            });
+          });
+      }
+      function printIds(list){
+        if (!list.length) return;
+        var noPhoto = list.filter(function(p){ return !p.has_photo; }).length;
+        ask('Print ' + list.length + ' ID card' + (list.length === 1 ? '' : 's'), 'Portrait card, 54 × 85.6 mm. A new window opens; choose your printer there and set the scale to 100% (no "fit to page").' +
+            (noPhoto ? ' ' + noPhoto + (noPhoto === 1 ? ' person has' : ' people have') + ' no photo on file; their card shows an empty face.' : ''),
+          [{ k: 'lay', label: 'Printer', type: 'select', options: [['card', 'Card printer — one card per page'], ['a4', 'A4 sheet — 9 cards, cut marks']] },
+           { k: 'back', label: 'Sides', type: 'select', options: [['both', 'Front and back'], ['front', 'Front only']] }], 'Open print window', function(v){
+            var w = window.open('about:blank', '_blank');
+            if (!w) return { ok: false, error: 'The browser blocked the new window. Allow pop-ups for this site and try again.' };
+            closeModal(); idPrint(w, list, v.lay, v.back === 'both'); return { ok: true };
+          });
       }
       function setLimit(ids, who, now){
         ask('Weekly canteen limit — ' + who, 'The most each person may spend at the canteen in one week (Friday to Thursday). The canteen is told on the next card tap. Every change is kept with who made it.',
