@@ -2119,6 +2119,17 @@ function zp_set_work_cost(int $productId, int $sizeId = 0): float {
     return round($t, 2);
 }
 
+/* SETS ALREADY MADE ON ONE SET JOB OF ONE LINE.
+   A line that took its own copy after work started has its earlier sets filed
+   under the PRODUCT's job id (op_kind 'set'); its copy keeps that id in
+   set_op_id, so both are counted — otherwise taking a copy would quietly
+   reset the count and let the same sets be paid twice (26 Nov 2026). */
+function zp_set_done(array $prog, int $itemId, array $w): float {
+    $n = (float)($prog['set'][$itemId][$w['kind']][(int)$w['id']] ?? 0);
+    if ($w['kind'] === 'line' && (int)($w['set_op_id'] ?? 0) > 0) $n += (float)($prog['set'][$itemId]['set'][(int)$w['set_op_id']] ?? 0);
+    return $n;
+}
+
 /* Saves an order line's own list, in screen order.
    $rows = [ ['id','set_op_id','stage_id','operation_name','rate','off'], ... ]
    A row marked off is kept and switched off — see the table comment. */
@@ -3625,7 +3636,7 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
 
             $key   = $itemId . ':set:' . $kind . ':' . $opId;
             $taken = $batch[$key] ?? 0.0;
-            $done  = (float)($prog['set'][$itemId][$kind][$opId] ?? 0);
+            $done  = zp_set_done($prog, $itemId, $found);
             $left  = (float)$line['ordered_qty'] - $done - $taken;
             if ($qty > $left + 0.0001) {
                 $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
@@ -4360,6 +4371,52 @@ function zp_booked_on_order(int $proformaId): array {
    (owner, 26 Nov 2026: "by operation" and "by PI line", skip, add,
    save without a reload)
    ============================================================ */
+/* Every set job one line carries, on or skipped, with what it has made.
+   kind 'set' = the line follows the product's list; 'line' = its own copy. */
+function zp_line_set_all(int $it, int $pid, int $szId, array $prog, array $booked): array {
+    $rates = zp_set_rate_map($pid); $std = [];
+    foreach (zp_set_ops($pid, false) as $o) $std[(int)$o['id']] = zp_set_rate_for((int)$o['id'], (float)$o['rate'], $rates, $szId);
+    $rows = [];
+    if (zp_line_has_own_set($it)) {
+        try {
+            $st = db()->prepare("SELECT * FROM zp_line_set_ops WHERE proforma_item_id=? ORDER BY seq, id"); $st->execute([$it]);
+            foreach ($st->fetchAll() as $r) $rows[] = ['id' => (int)$r['id'], 'kind' => 'line', 'set_op_id' => (int)($r['set_op_id'] ?? 0),
+                'stage_id' => (int)($r['stage_id'] ?? 0), 'name' => (string)$r['operation_name'], 'rate' => (float)$r['rate'], 'on' => (bool)$r['is_active']];
+        } catch (Throwable $e) {}
+    } else {
+        foreach (zp_set_ops($pid, true) as $o) $rows[] = ['id' => (int)$o['id'], 'kind' => 'set', 'set_op_id' => (int)$o['id'],
+            'stage_id' => (int)($o['stage_id'] ?? 0), 'name' => (string)$o['operation_name'], 'rate' => $std[(int)$o['id']], 'on' => true];
+    }
+    $out = [];
+    foreach ($rows as $w) {
+        $b = $booked[$w['kind'] . ':' . $w['id']] ?? [0, 0];
+        if ($w['kind'] === 'line' && $w['set_op_id'] > 0) { $b2 = $booked['set:' . $w['set_op_id']] ?? [0, 0]; $b = [$b[0] + $b2[0], $b[1] + $b2[1]]; }
+        $out[] = ['key' => $it . ':' . $w['kind'] . ':' . $w['id'], 'name' => $w['name'], 'stage_id' => $w['stage_id'],
+                  'stage' => $w['stage_id'] > 0 ? zp_stage_name($w['stage_id']) : '', 'rate' => round($w['rate'], 2),
+                  'std' => $w['set_op_id'] > 0 && isset($std[$w['set_op_id']]) ? round($std[$w['set_op_id']], 2) : null,
+                  'added' => $w['set_op_id'] === 0, 'on' => $w['on'], 'done' => round(zp_set_done($prog, $it, $w), 2),
+                  'bq' => round($b[0], 2), 'ba' => round($b[1], 2)];
+    }
+    return $out;
+}
+
+/* Gives a line its own copy of the product's set work if it has none, and
+   returns [key => line row id] for its rows, under both the old 'set' key and
+   the new 'line' key — so a change typed before the copy still lands. */
+function zp_line_set_own(int $it, int $pid, int $szId): array {
+    if (!zp_line_has_own_set($it) && zp_set_ops($pid, true)) {
+        $r = zp_line_take_set_copy($it, $pid, $szId);
+        if (!$r['ok']) throw new RuntimeException($r['error']);
+    }
+    $map = [];
+    $st = db()->prepare("SELECT id, set_op_id FROM zp_line_set_ops WHERE proforma_item_id=?"); $st->execute([$it]);
+    foreach ($st->fetchAll() as $r) {
+        $map[$it . ':line:' . (int)$r['id']] = (int)$r['id'];
+        if ($r['set_op_id'] !== null) $map[$it . ':set:' . (int)$r['set_op_id']] = (int)$r['id'];
+    }
+    return $map;
+}
+
 function zp_order_sheet(int $pf): array {
     zp_ensure_schema();
     zp_line_ctx(true);
@@ -4382,6 +4439,12 @@ function zp_order_sheet(int $pf): array {
             $booked[$it][$op][1] = ($booked[$it][$op][1] ?? 0) + (float)$r['a'];
             $byRate[$it][$op][] = [round((float)$r['r'], 2), round((float)$r['q'], 2)];   // what was paid at each rate
         }
+    } catch (Throwable $e) {}
+    $setBooked = [];
+    try {
+        $st = db()->prepare("SELECT proforma_item_id it, op_kind k, op_id, SUM(qty) q, SUM(amount) a FROM zp_entries WHERE status='active' AND proforma_id=? AND op_kind IN ('set','line') GROUP BY proforma_item_id, op_kind, op_id");
+        $st->execute([$pf]);
+        foreach ($st->fetchAll() as $r) $setBooked[(int)$r['it']][$r['k'] . ':' . (int)$r['op_id']] = [(float)$r['q'], (float)$r['a']];
     } catch (Throwable $e) {}
     $tierOut = fn($t) => $t ? array_map(fn($x) => ['qty' => $x[0], 'rate' => round($x[1], 2)], $t) : null;
     $c = zp_line_ctx(); $orate = zp_order_rate_map($pf); $prog = zp_progress_map();
@@ -4419,6 +4482,10 @@ function zp_order_sheet(int $pf): array {
             }
             $L['parts'][] = ['part_id' => $pt, 'part' => (string)$p['part_name'], 'ops' => $rows];
         }
+        /* SET / PACK WORK of this line, per set — skipped rows included so
+           they can be switched back on (26 Nov 2026) */
+        $L['own_set'] = zp_line_has_own_set($it);
+        $L['sets'] = zp_line_set_all($it, $pid, $szId, $prog, $setBooked[$it] ?? []);
         $lines[] = $L;
     }
     usort($lines, fn($a, $b) => $a['no'] <=> $b['no']);
@@ -4430,7 +4497,8 @@ function zp_order_sheet(int $pf): array {
 /* ALL THE CHANGES OF ONE SAVE, UNDER ONE REASON — all or nothing.
    $ch = ['orate' => {op: "7.50"|""}, 'lrate' => {"item:op": ...}, 'oskip' => {op: true|false},
           'lskip' => {"item:op": bool}, 'add' => [{item, part, stage, name, rate}], 'remove' => [op ids],
-          'tiers' => {"o:op"|"l:item:op": [{qty, rate}, ...] | []}] */
+          'tiers' => {"o:op"|"l:item:op": [{qty, rate}, ...] | []},
+          'sets' => {"item:kind:id": {rate?, skip?}}, 'sadd' => [{items: [item ids], name, stage, rate}]] */
 function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): array {
     $reason = trim($reason);
     $sheet = zp_order_sheet($pf);
@@ -4498,17 +4566,40 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
         if ($same) continue;
         $todo[] = ['tier', $it, $op, $steps];
     }
+    /* SET / PACK WORK: {"item:kind:id": {rate, skip}} and new jobs for ticked lines */
+    $setRow = []; $lineById = [];
+    foreach ($sheet['lines'] as $l) { $lineById[$l['item']] = $l; foreach ($l['sets'] as $w) $setRow[$w['key']] = $w + ['item' => $l['item']]; }
+    foreach ((array)($ch['sets'] ?? []) as $k => $v) {
+        if (!isset($setRow[$k])) { $bad[] = 'A set job that is not on that line was sent.'; continue; }
+        $w = $setRow[$k]; $v = (array)$v;
+        if (array_key_exists('rate', $v)) {
+            $r = $num($v['rate']); if ($r === null) { $bad[] = '"' . $v['rate'] . '" is not a rate.'; continue; }
+            if (abs($r - $w['rate']) > 0.001) $todo[] = ['srate', $k, $r];
+        }
+        if (array_key_exists('skip', $v) && (bool)$v['skip'] === $w['on']) $todo[] = ['sskip', $k, (bool)$v['skip']];
+    }
+    foreach ((array)($ch['sadd'] ?? []) as $a) {
+        $items = array_values(array_unique(array_map('intval', (array)($a['items'] ?? []))));
+        $name = trim(preg_replace('/\s+/u', ' ', (string)($a['name'] ?? '')) ?? ''); $r = $num($a['rate'] ?? ''); $sg = (int)($a['stage'] ?? 0);
+        if (!$items || array_diff($items, array_keys($lineById))) { $bad[] = 'Tick the lines of this order the set work is for.'; continue; }
+        if ($name === '' || mb_strlen($name) > 120) { $bad[] = 'Give the set work a name (up to 120 letters).'; continue; }
+        if ($sg && !isset($stageOk[$sg])) { $bad[] = 'Choose the stage of the set work.'; continue; }
+        if ($r === null) { $bad[] = 'Give the set work a rate per set.'; continue; }
+        $todo[] = ['sadd', $items, $name, $sg, $r];
+    }
     foreach ((array)($ch['remove'] ?? []) as $op) {
         $op = (int)$op; if (!isset($opInfo[$op]) || !$opInfo[$op]['extra']) { $bad[] = 'Only an operation added for this order can be removed — skip a normal one instead.'; continue; }
         $todo[] = ['remove', $op];
     }
     if ($bad) return ['ok' => false, 'error' => implode(' ', array_unique($bad)) . ' Nothing was saved.'];
+    $openLine = []; foreach (zp_open_lines() as $l) if ((int)$l['proforma_id'] === $pf) $openLine[(int)$l['item_id']] = $l;
     if (!$todo) return ['ok' => false, 'error' => 'Nothing changed.'];
     $lineName = []; foreach ($sheet['lines'] as $l) $lineName[$l['item']] = 'Line ' . $l['no'] . ' (' . $l['prod'] . ($l['size'] !== '' ? ' ' . $l['size'] : '') . ')';
     db()->beginTransaction();
     try {
         foreach ($todo as $t) {
-            $o = isset($t[1]) && in_array($t[0], ['orate', 'oclear', 'oskip', 'remove'], true) ? $opInfo[$t[1]] : (isset($t[2]) && isset($opInfo[$t[2]]) ? $opInfo[$t[2]] : null);
+            $o = in_array($t[0], ['srate', 'sskip', 'sadd'], true) ? null
+               : (isset($t[1]) && in_array($t[0], ['orate', 'oclear', 'oskip', 'remove'], true) ? $opInfo[$t[1]] : (isset($t[2]) && isset($opInfo[$t[2]]) ? $opInfo[$t[2]] : null));
             switch ($t[0]) {
                 case 'orate':
                     $r = zp_order_rate_save($pf, $t[1], $t[2], $reason, $userId);
@@ -4542,6 +4633,29 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
                         ->execute([$pt, $sg, $seq, $stageOk[$sg], $name, $r, $pf, $it]);
                     $pname = ''; foreach ($lineParts as $ps) if (isset($ps[$pt])) { $pname = $ps[$pt]; break; }
                     zp_rate_log((int)db()->lastInsertId(), $pf, $pname, $name, null, $r, 'ADDED for ' . ($it ? $lineName[$it] : 'the whole order') . ' — ' . $reason, $userId);
+                    break;
+                case 'srate': case 'sskip': case 'sadd':
+                    $its = $t[0] === 'sadd' ? $t[1] : [$setRow[$t[1]]['item']];
+                    foreach ($its as $it) {
+                        $ln = $openLine[$it];
+                        $map = zp_line_set_own($it, (int)$ln['product_id'], zp_line_size_id($ln));
+                        if ($t[0] === 'sadd') {
+                            $seq = (int)db()->query("SELECT COALESCE(MAX(seq),0)+1 FROM zp_line_set_ops WHERE proforma_item_id=" . (int)$it)->fetchColumn();
+                            db()->prepare("INSERT INTO zp_line_set_ops (proforma_item_id, set_op_id, seq, stage_id, operation_name, rate, is_active) VALUES (?,NULL,?,?,?,?,1)")
+                                ->execute([$it, $seq, $t[3] ?: null, mb_substr($t[2], 0, 120), $t[4]]);
+                            zp_rate_log(null, $pf, 'Set work', $t[2], null, $t[4], 'ADDED per set for ' . $lineName[$it] . ' — ' . $reason, $userId);
+                            continue;
+                        }
+                        $w = $setRow[$t[1]]; $lid = $map[$t[1]] ?? 0;
+                        if (!$lid) throw new RuntimeException('Could not find "' . $w['name'] . '" on ' . $lineName[$it] . '.');
+                        if ($t[0] === 'srate') {
+                            db()->prepare("UPDATE zp_line_set_ops SET rate=? WHERE id=? AND proforma_item_id=?")->execute([$t[2], $lid, $it]);
+                            zp_rate_log(null, $pf, 'Set work', $w['name'], $w['rate'], $t[2], $lineName[$it] . ' only, per set: ' . $reason, $userId);
+                        } else {
+                            db()->prepare("UPDATE zp_line_set_ops SET is_active=? WHERE id=? AND proforma_item_id=?")->execute([$t[2] ? 0 : 1, $lid, $it]);
+                            zp_rate_log(null, $pf, 'Set work', $w['name'], $w['rate'], $w['rate'], ($t[2] ? 'SKIPPED for ' : 'Back on for ') . $lineName[$it] . ' — ' . $reason, $userId);
+                        }
+                    }
                     break;
                 case 'tier':
                     [, $it, $op, $steps] = $t; $o = $opInfo[$op];
@@ -5115,7 +5229,7 @@ function zp_work_index(): array {
            SETS against the order quantity — folding happens as parts arrive,
            so it must not wait on the slowest part. */
         foreach (zp_line_set_work((int)$l['item_id'], $pid, $szId) as $w) {
-            $done = (float)($prog['set'][(int)$l['item_id']][$w['kind']][(int)$w['id']] ?? 0);
+            $done = zp_set_done($prog, (int)$l['item_id'], $w);
             $left = max(0.0, (float)$l['ordered_qty'] - $done);
             $stage = (int)$w['stage_id'] > 0 ? zp_stage_name((int)$w['stage_id']) : '';
             $out[] = [

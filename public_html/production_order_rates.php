@@ -193,6 +193,13 @@ page_header('Order Rate Amendments');
 .zf.or .or-add select,.zf.or .or-add input{width:auto !important;flex:0 0 auto;height:28px;border:1px solid #c9d3df;border-radius:3px;padding:0 6px;font:inherit;font-size:12.5px;display:inline-block}
 .zf.or .or-add select{max-width:200px}
 .zf.or .or-add input.nm{width:220px !important}.zf.or .or-add input.rt{width:80px !important;text-align:right}
+/* set / pack work (26 Nov 2026) */
+.zf.or tr.or-sh td{background:#f4f7f2;color:#1f6b35;font-weight:700;font-size:12.5px;padding:5px 10px;border-top:1px solid #d5e6d9}
+.zf.or tr.or-sh small{font-weight:400;color:var(--mut);margin-left:8px}
+.zf.or .pill-x.st{background:#e8f6ec;color:#1f6b35}
+.zf.or .or-sadd .tk{display:flex;gap:4px 10px;flex-wrap:wrap;align-items:center;font-size:12px;flex-basis:100%}
+.zf.or .or-sadd .tk label{display:inline-flex;gap:4px;align-items:center;white-space:nowrap}
+.zf.or .or-sadd .tk input{width:auto !important;height:auto}
 /* split rate (26 Nov 2026) */
 .zf.or .pill-x.tr{background:#e3f5f7;color:#0e6170}
 .zf.or .sp-btn{height:24px;padding:0 8px;font-size:11.5px;border:1px solid #b3e0e6;background:#f4fbfc;color:#0e6170;border-radius:3px;cursor:pointer;white-space:nowrap}
@@ -347,7 +354,7 @@ page_header('Order Rate Amendments');
 
   /* ---- state: the saved order (D) and what has been typed (P) ---- */
   var view = 'op', edit = false, open = {}, P, OP;
-  function reset(){ P = { orate: {}, lrate: {}, oskip: {}, lskip: {}, add: [], remove: {}, tiers: {} }; }
+  function reset(){ P = { orate: {}, lrate: {}, oskip: {}, lskip: {}, add: [], remove: {}, tiers: {}, sets: {}, sadd: [] }; }
   function index(){ OP = {}; D.ops.forEach(function(o){ OP[o.id] = o; }); }
   reset(); index();
   D.lines.forEach(function(l){ open['l' + l.item] = false; });
@@ -360,6 +367,15 @@ page_header('Order Rate Amendments');
   function gone(o){ return !!P.remove[o.id]; }
   function effLine(l, r){ var o = OP[r.id], x = lRate(l, r); if (x != null) return x; var y = oRate(o); return y != null ? y : r.base; }
   function skipped(l, r){ return oSkip(OP[r.id]) || lSkip(l, r) || gone(OP[r.id]); }
+
+  /* ---- SET / PACK WORK: per set, per line ---- */
+  function sRate(w){ var c = P.sets[w.key]; if (c && c.rate != null) { var v = num(c.rate); return v === null || isNaN(v) ? w.rate : v; } return w.rate; }
+  function sOn(w){ var c = P.sets[w.key]; return c && c.skip != null ? !c.skip : w.on; }
+  function sChanged(w){ var c = P.sets[w.key]; if (!c) return 0; var n = 0;
+    if (c.rate != null) { var v = num(c.rate); if (v === null || isNaN(v) || Math.abs(v - w.rate) > 0.001) n++; }
+    if (c.skip != null && c.skip === w.on) n++; return n; }
+  function allSets(fn){ D.lines.forEach(function(l){ (l.sets || []).forEach(function(w){ fn(l, w); }); }); }
+  function sname(n){ return String(n).trim().toLowerCase(); }
 
   /* ---- A SPLIT RATE: the first N pieces at one rate, the next at another ----
      "o:op" counts the whole order, "l:item:op" one line. Same arithmetic as
@@ -414,6 +430,9 @@ page_header('Order Rate Amendments');
         return;
       }
       var e = effLine(l, r); t += r.need * e; still += Math.max(0, r.need - r.done) * e; }); });
+    (l.sets || []).forEach(function(w){ if (!sOn(w)) { sk++; return; } var rt = sRate(w); if (P.sets[w.key] && P.sets[w.key].rate != null || (w.std != null && Math.abs(w.rate - w.std) > 0.001)) own++;
+      t += l.qty * rt; still += Math.max(0, l.qty - w.done) * rt; });
+    P.sadd.forEach(function(a){ if (a.items.indexOf(l.item) >= 0) { t += l.qty * a.rate; still += l.qty * a.rate; } });
     P.add.forEach(function(a){ if ((a.item === 0 || a.item === l.item) && l.parts.some(function(p){ return p.part_id === a.part; })) {
       var need = 0; l.parts.forEach(function(p){ if (p.part_id === a.part && p.ops[0]) need = p.ops[0].need; }); t += need * a.rate; still += need * a.rate; } });
     return { total: t, still: still, own: own, sk: sk };
@@ -427,6 +446,7 @@ page_header('Order Rate Amendments');
       if (P.lskip[k] != null && P.lskip[k] !== r.lskip) n++; }); }); });
     Object.keys(P.oskip).forEach(function(k){ if (P.oskip[k] !== OP[k].oskip) n++; });
     Object.keys(P.tiers).forEach(function(k){ if (tDiff(k)) n++; });
+    allSets(function(l, w){ n += sChanged(w); }); n += P.sadd.length;
     return n + P.add.length + Object.keys(P.remove).length;
   }
 
@@ -435,7 +455,8 @@ page_header('Order Rate Amendments');
     D.lines.forEach(function(l){ var c = lineCost(l); tot += c.total; still += c.still; own += c.own; sk += c.sk; l.parts.forEach(function(p){ p.ops.forEach(function(r){ ba += r.ba; }); }); });
     var nsp = D.ops.filter(function(o){ return tiers('o:' + o.id); }).length;
     D.lines.forEach(function(l){ l.parts.forEach(function(p){ p.ops.forEach(function(r){ if (tiers('l:' + l.item + ':' + r.id)) nsp++; }); }); });
-    var am = D.ops.filter(function(o){ return oRate(o) != null; }).length, ex = D.ops.filter(function(o){ return o.extra && !gone(o); }).length + P.add.length;
+    var am = D.ops.filter(function(o){ return oRate(o) != null; }).length, ex = D.ops.filter(function(o){ return o.extra && !gone(o); }).length + P.add.length + P.sadd.length;
+    allSets(function(l, w){ if (w.added && sOn(w)) ex++; });
     var cards = [
       ['k-blue', 'PI lines', D.lines.length, D.ops.length + ' operations'],
       ['k-amber', 'Own rates', am + own, am + ' for the order · ' + own + ' for one line' + (nsp ? ' · ' + nsp + ' split' : '')],
@@ -458,6 +479,72 @@ page_header('Order Rate Amendments');
       + '<button type="button" class="zf-btn sm pri" data-addgo="' + item + '">Add</button></div></td></tr>';
   }
   function tag(o){ return (o.extra ? '<span class="pill-x ex" title="Added for this order only">extra' + (o.extra_item ? ' · one line' : '') + '</span>' : ''); }
+
+  /* the form that adds set / pack work to the lines ticked */
+  function setAddForm(item){
+    var it = D.lines.map(function(l){ return '<label><input type="checkbox" value="' + l.item + '" data-prod="' + esc(l.prod) + '"' + (!item || l.item === item ? ' checked' : '') + '> Line ' + l.no + ' ' + esc(l.size || l.prod) + '</label>'; }).join('');
+    var pack = D.stages.filter(function(s){ return /pack/i.test(s.name); })[0];
+    return '<tr><td colspan="9" style="padding:0"><div class="or-add or-sadd"><b style="font-size:12.5px">+ Add set / pack work (per set)</b>'
+      + '<input class="nm" placeholder="e.g. Poly bag, Carton, Folding" maxlength="120"><select class="as"><option value="0">no stage</option>' + D.stages.map(function(s){ return '<option value="' + s.id + '"' + (pack && s.id === pack.id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') + '</select>'
+      + '<input class="rt" placeholder="Rate / set" inputmode="decimal"><button type="button" class="zf-btn sm pri" data-saddgo="1">Add</button>'
+      + '<div class="tk"><span class="mut">For:</span>' + it + '<button type="button" class="zf-btn sm" data-tick="all">All lines</button>'
+      + (item ? '<button type="button" class="zf-btn sm" data-tick="same" data-prod="' + esc((D.lines.filter(function(l){ return l.item === item; })[0] || {}).prod || '') + '">Same product</button>' : '')
+      + '<button type="button" class="zf-btn sm" data-tick="none">None</button></div></div></td></tr>';
+  }
+  function setNewRow(a, l){
+    return '<tr class="or-r chg"><td>' + esc(a.name) + '<span class="pill-x new">new · per set</span></td><td>' + (a.sname ? stPill(a.sname) : '') + '</td><td class="n">—</td><td class="n"><b>' + n2(a.rate) + '</b></td>'
+      + (l ? '<td class="n">—</td><td class="n">' + qn(l.qty) + '</td><td class="n">' + pk(l.qty * a.rate) + '</td><td></td>'
+           : '<td class="n">' + a.items.length + '/' + D.lines.length + '</td><td class="n">—</td><td class="n">' + qn(D.lines.reduce(function(t, x){ return t + (a.items.indexOf(x.item) >= 0 ? x.qty : 0); }, 0)) + '</td><td></td>')
+      + '<td><button type="button" class="zf-btn sm" data-undosadd="' + P.sadd.indexOf(a) + '">Undo</button></td></tr>';
+  }
+  /* the line's own box */
+  function setBlock(l){
+    var S = (l.sets || []).filter(function(w){ return want(w.name + ' ' + w.stage + ' set pack ' + l.prod); }), adds = P.sadd.filter(function(a){ return a.items.indexOf(l.item) >= 0; });
+    if (!S.length && !adds.length && !edit) return '';
+    var h = '<tr class="or-sh"><td colspan="9">Set / pack work<small>per set · ' + qn(l.qty) + ' sets · ' + (l.own_set ? 'this order\'s own list' : 'as on the product') + '</small></td></tr>';
+    if (!S.length && !adds.length) h += '<tr><td colspan="9"><span class="mut" style="font-size:12px">No set or pack work on this line yet.</span></td></tr>';
+    S.forEach(function(w){
+      var on = sOn(w), rt = sRate(w), c = P.sets[w.key] || {}, ch = edit && sChanged(w) > 0;
+      h += '<tr class="or-r' + (ch ? ' chg' : '') + (on ? '' : ' skip') + '" style="box-shadow:inset 4px 0 0 #1f6b35">'
+        + '<td>' + esc(w.name) + '<span class="pill-x st">per set</span>' + (w.added ? '<span class="pill-x ex">added</span>' : '') + (!on ? '<span class="pill-x sk">skipped</span>' : '') + '</td>'
+        + '<td>' + (w.stage ? stPill(w.stage) : '') + '</td><td class="n">' + (w.std == null ? '<span class="mut">—</span>' : n2(w.std) + '<span class="tag">product</span>') + '</td>'
+        + '<td class="n">' + (edit && on ? '<input class="or-in" data-sr="' + w.key + '" inputmode="decimal" value="' + esc(c.rate != null ? c.rate : w.rate.toFixed(2)) + '">' : (w.std != null && Math.abs(rt - w.std) > 0.001 ? '<b>' + n2(rt) + '</b> <span class="pill-x ln">this line</span>' : n2(rt))) + '</td>'
+        + '<td class="n">' + (w.bq > 0 ? qn(w.bq) + ' sets<div class="s2">PKR ' + n2(w.ba) + '</div>' : '<span class="mut">—</span>') + '</td>'
+        + '<td class="n">' + (on ? qn(Math.max(0, l.qty - w.done)) : '<span class="mut">—</span>') + '</td>'
+        + '<td class="n">' + (on ? pk(l.qty * rt) : '<span class="mut">0</span>') + '</td>'
+        + '<td class="sk">' + (edit ? '<label class="skc"><input type="checkbox" data-ss="' + w.key + '"' + (on ? '' : ' checked') + '> this line</label>' : '') + '</td><td></td></tr>';
+    });
+    adds.forEach(function(a){ h += setNewRow(a, l); });
+    if (edit) h += setAddForm(l.item);
+    return h;
+  }
+  /* By operation: one row per set job NAME across the order's lines — type
+     a rate here and it fills every line that has the job */
+  function setGroup(){
+    var by = {}, order = [];
+    allSets(function(l, w){ var k = sname(w.name); if (!by[k]) { by[k] = { name: w.name, stage: w.stage, rows: [] }; order.push(k); } by[k].rows.push([l, w]); });
+    var keys = order.filter(function(k){ return want(by[k].name + ' ' + by[k].stage + ' set pack'); });
+    if (!keys.length && !P.sadd.length && !edit) return '';
+    var g = 'pSet', shut = open[g] === false;
+    var h = '<tr class="or-g' + (shut ? ' shut' : '') + '" data-g="' + g + '"><td colspan="9"><span class="car">▾</span> Set / pack work<small>per set · ' + keys.length + ' job' + (keys.length === 1 ? '' : 's') + '</small></td></tr>';
+    if (shut) return h;
+    if (edit) h += setAddForm(0);
+    keys.forEach(function(k){
+      var G = by[k], on = G.rows.filter(function(x){ return sOn(x[1]); }), rates = {}, bq = 0, ba = 0, still = 0, ch = edit && G.rows.some(function(x){ return sChanged(x[1]) > 0; });
+      G.rows.forEach(function(x){ bq += x[1].bq; ba += x[1].ba; if (sOn(x[1])) { rates[n2(sRate(x[1]))] = 1; still += Math.max(0, x[0].qty - x[1].done); } });
+      var rl = Object.keys(rates), first = on[0] ? (P.sets[on[0][1].key] && P.sets[on[0][1].key].rate != null ? P.sets[on[0][1].key].rate : sRate(on[0][1]).toFixed(2)) : '';
+      h += '<tr class="or-r' + (ch ? ' chg' : '') + (on.length ? '' : ' skip') + '" style="box-shadow:inset 4px 0 0 #1f6b35">'
+        + '<td>' + esc(G.name) + '<span class="pill-x st">per set</span>' + (!on.length ? '<span class="pill-x sk">skipped</span>' : '') + '</td><td>' + (G.stage ? stPill(G.stage) : '') + '</td><td class="n"><span class="mut">—</span></td>'
+        + '<td class="n">' + (edit && on.length ? '<input class="or-in" data-sn="' + esc(k) + '" inputmode="decimal" value="' + esc(rl.length === 1 ? first : '') + '" placeholder="' + (rl.length > 1 ? 'mixed' : '') + '" title="Typing here fills every line that has this job">'
+            : (rl.length ? '<b>' + rl.join(' / ') + '</b>' : '<span class="mut">—</span>')) + '</td>'
+        + '<td class="n">' + on.length + '/' + D.lines.length + '</td>'
+        + '<td class="n">' + (bq > 0 ? qn(bq) + ' sets<div class="s2">PKR ' + n2(ba) + '</div>' : '<span class="mut">—</span>') + '</td>'
+        + '<td class="n">' + (still > 0 ? qn(still) : '<span class="mut">0</span>') + '</td>'
+        + '<td class="sk">' + (edit ? '<label class="skc"><input type="checkbox" data-ssn="' + esc(k) + '"' + (on.length ? '' : ' checked') + '> every line</label>' : '') + '</td><td></td></tr>';
+    });
+    P.sadd.forEach(function(a){ h += setNewRow(a, null).replace('new · per set', 'new · per set · ' + a.items.length + ' line' + (a.items.length === 1 ? '' : 's')); });
+    return h;
+  }
 
   /* THE SPLIT PANEL under an operation: produced, balance, each step and how
      far along it is — and, in edit, the steps themselves. */
@@ -540,6 +627,7 @@ page_header('Order Rate Amendments');
       adds.forEach(function(a, i){ h += newRow(a); });
     });
     P.add.filter(function(a){ return a.item === 0 && order.indexOf(a.pname) < 0; }).forEach(function(a){ h += newRow(a); });
+    h += setGroup();
     $('orBody').innerHTML = h || '<tr><td colspan="9"><div class="zf-none">Nothing matches.</div></td></tr>';
     $('orCnt').textContent = n + ' of ' + D.ops.length + ' operations';
   }
@@ -554,7 +642,7 @@ page_header('Order Rate Amendments');
     $('orHead').innerHTML = '<tr><th>Part · operation</th><th>Stage</th><th class="n">Order rate</th><th class="n">This line pays</th><th class="n">Booked on line</th><th class="n">Still to make</th><th class="n">Cost</th><th>Skip</th><th></th></tr>';
     var h = '', n = 0;
     D.lines.forEach(function(l){
-      var hay = l.prod + ' ' + l.size; var any = want(hay) || l.parts.some(function(p){ return p.ops.some(function(r){ var o = OP[r.id]; return want(p.part + ' ' + o.op + ' ' + o.stage); }); });
+      var hay = l.prod + ' ' + l.size; var any = want(hay) || (l.sets || []).some(function(w){ return want(w.name + ' set pack'); }) || l.parts.some(function(p){ return p.ops.some(function(r){ var o = OP[r.id]; return want(p.part + ' ' + o.op + ' ' + o.stage); }); });
       if (!any) return;
       n++;
       var c = lineCost(l), g = 'l' + l.item, shut = !open[g];
@@ -586,6 +674,7 @@ page_header('Order Rate Amendments');
       });
       P.add.filter(function(a){ return (a.item === l.item || a.item === 0) && l.parts.some(function(p){ return p.part_id === a.part; }); }).forEach(function(a){ h += newRow(a); });
       if (edit) h += addForm(l.item);
+      h += setBlock(l);
     });
     $('orBody').innerHTML = h || '<tr><td colspan="9"><div class="zf-none">Nothing matches.</div></td></tr>';
     $('orCnt').textContent = n + ' of ' + D.lines.length + ' lines';
@@ -606,12 +695,23 @@ page_header('Order Rate Amendments');
 
   $('orView').addEventListener('click', function(e){ var b = e.target.closest('button'); if (!b) return; view = b.dataset.v; paint(); });
   $('orS').addEventListener('input', paint);
-  $('orOpen').addEventListener('click', function(){ D.lines.forEach(function(l){ open['l' + l.item] = true; }); Object.keys(open).forEach(function(k){ if (k[0] === 'p') open[k] = true; }); D.ops.forEach(function(o){ open['p' + o.part] = true; }); paint(); });
-  $('orShut').addEventListener('click', function(){ D.lines.forEach(function(l){ open['l' + l.item] = false; }); D.ops.forEach(function(o){ open['p' + o.part] = false; }); paint(); });
+  $('orOpen').addEventListener('click', function(){ D.lines.forEach(function(l){ open['l' + l.item] = true; }); Object.keys(open).forEach(function(k){ if (k[0] === 'p') open[k] = true; }); D.ops.forEach(function(o){ open['p' + o.part] = true; }); open.pSet = true; paint(); });
+  $('orShut').addEventListener('click', function(){ D.lines.forEach(function(l){ open['l' + l.item] = false; }); D.ops.forEach(function(o){ open['p' + o.part] = false; }); open.pSet = false; paint(); });
   $('orBody').addEventListener('click', function(e){
     var g = e.target.closest('tr.or-g, tr.or-l');
     if (g && !e.target.closest('input,button,select,label')) { var k = g.dataset.g; open[k] = k[0] === 'l' ? !open[k] : open[k] === false; paint(); return; }
     var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.tick) { var bx = b.closest('.or-sadd'); [].forEach.call(bx.querySelectorAll('.tk input'), function(c){ c.checked = b.dataset.tick === 'all' || (b.dataset.tick === 'same' && c.dataset.prod === b.dataset.prod); }); return; }
+    if (b.dataset.undosadd != null) { P.sadd.splice(+b.dataset.undosadd, 1); paint(); return; }
+    if (b.dataset.saddgo) {
+      var sb = b.closest('.or-sadd'), snm = sb.querySelector('.nm').value.trim(), srt = num(sb.querySelector('.rt').value), sas = sb.querySelector('.as');
+      var items = [].map.call(sb.querySelectorAll('.tk input:checked'), function(c){ return +c.value; });
+      if (!snm) { sb.querySelector('.nm').focus(); return toast('Give the set work a name, e.g. Poly bag.', true); }
+      if (srt === null || isNaN(srt)) { sb.querySelector('.rt').focus(); return toast('Give the rate per set.', true); }
+      if (!items.length) return toast('Tick at least one line.', true);
+      P.sadd.push({ items: items, name: snm, stage: +sas.value, sname: +sas.value ? sas.options[sas.selectedIndex].text : '', rate: srt });
+      items.forEach(function(i){ open['l' + i] = true; }); paint(); return;
+    }
     if (b.dataset.sp) { open['s' + b.dataset.sp] = !open['s' + b.dataset.sp]; paint(); return; }
     if (b.dataset.ton) { var tk = b.dataset.ton, pp = tk.split(':'), nd, cur;
       if (pp[0] === 'o') { nd = oNeed(+pp[1])[0]; cur = oRate(OP[pp[1]]); if (cur == null) cur = OP[pp[1]].std; }
@@ -636,6 +736,11 @@ page_header('Order Rate Amendments');
   });
   $('orBody').addEventListener('change', function(e){
     var t = e.target;
+    if (t.dataset.ss || t.dataset.ssn) {
+      allSets(function(l, w){ if (t.dataset.ss ? w.key !== t.dataset.ss : sname(w.name) !== t.dataset.ssn) return;
+        var c = P.sets[w.key] = P.sets[w.key] || {}; if (t.checked === !w.on) delete c.skip; else c.skip = t.checked; if (c.rate == null && c.skip == null) delete P.sets[w.key]; });
+      paint(); return;
+    }
     if (t.dataset.os) { var o = OP[t.dataset.os]; if (t.checked === o.oskip) delete P.oskip[o.id]; else P.oskip[o.id] = t.checked; paint(); }
     if (t.dataset.ls) { var parts = t.dataset.ls.split(':'), r = null; D.lines.forEach(function(l){ if (l.item === +parts[0]) l.parts.forEach(function(p){ p.ops.forEach(function(x){ if (x.id === +parts[1]) r = x; }); }); });
       if (r && t.checked === r.lskip) delete P.lskip[t.dataset.ls]; else P.lskip[t.dataset.ls] = t.checked; paint(); }
@@ -648,8 +753,9 @@ page_header('Order Rate Amendments');
       P.tiers[tk][+i.dataset.ti][i.dataset.tf] = i.value; paint();
       var a0 = document.querySelector(sel0); if (a0) { a0.focus(); try { a0.setSelectionRange(pos0, pos0); } catch (x) {} } return; }
     if (!i.classList.contains('or-in')) return;
-    var sel = i.dataset.or ? '[data-or="' + i.dataset.or + '"]' : '[data-lr="' + i.dataset.lr + '"]';
-    if (i.dataset.or) P.orate[i.dataset.or] = i.value; else P.lrate[i.dataset.lr] = i.value;
+    var at = ['or', 'lr', 'sr', 'sn'].filter(function(a){ return i.dataset[a] != null; })[0], sel = '[data-' + at + '="' + (window.CSS && CSS.escape ? CSS.escape(i.dataset[at]) : i.dataset[at]) + '"]';
+    if (at === 'or') P.orate[i.dataset.or] = i.value; else if (at === 'lr') P.lrate[i.dataset.lr] = i.value;
+    else allSets(function(l, w){ if (at === 'sr' ? w.key === i.dataset.sr : sname(w.name) === i.dataset.sn && sOn(w)) { (P.sets[w.key] = P.sets[w.key] || {}).rate = i.value; } });
     var pos = i.selectionStart; paint();
     var again = document.querySelector('.or-in' + sel); if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (x) {} }
   });
@@ -671,9 +777,13 @@ page_header('Order Rate Amendments');
       if (!why) { $('orWhy').focus(); $('orWhy').style.borderColor = '#b42318'; $('orWhy').placeholder = 'A reason is required — e.g. double-stitched hem in the contract'; return; }
       var bad = Object.keys(P.orate).map(function(k){ return P.orate[k]; }).concat(Object.keys(P.lrate).map(function(k){ return P.lrate[k]; })).filter(function(v){ return isNaN(num(v)); });
       if (bad.length) return toast('"' + bad[0] + '" is not a rate.', true);
+      var sbad = []; allSets(function(l, w){ var c = P.sets[w.key]; if (c && c.rate != null && (num(c.rate) === null || isNaN(num(c.rate)))) sbad.push(c.rate); });
+      if (sbad.length) return toast('"' + sbad[0] + '" is not a rate.', true);
       var tb = Object.keys(P.tiers).filter(tBad); if (tb.length) { open['s' + tb[0]] = true; paint(); return toast('A split step is missing its pieces or rate.', true); }
       var tiersOut = {}; Object.keys(P.tiers).forEach(function(k){ if (tDiff(k)) { var T = tiers(k); tiersOut[k] = T ? T.map(function(x){ return { qty: x[0], rate: x[1] }; }) : []; } });
+      var setsOut = {}; allSets(function(l, w){ if (sChanged(w)) { var c = P.sets[w.key], o = {}; if (c.rate != null) o.rate = c.rate; if (c.skip != null) o.skip = c.skip; setsOut[w.key] = o; } });
       var ch = { orate: P.orate, lrate: P.lrate, oskip: P.oskip, lskip: P.lskip, remove: Object.keys(P.remove).map(Number), tiers: tiersOut,
+                 sets: setsOut, sadd: P.sadd.map(function(a){ return { items: a.items, name: a.name, stage: a.stage, rate: a.rate }; }),
                  add: P.add.map(function(a){ return { item: a.item, part: a.part, stage: a.stage, name: a.name, rate: a.rate }; }) };
       var fd = new FormData($('orTok')); fd.append('action', 'save_json'); fd.append('proforma_id', PF); fd.append('reason', why); fd.append('changes', JSON.stringify(ch));
       var b = this; b.disabled = true; b.textContent = 'Saving…';
