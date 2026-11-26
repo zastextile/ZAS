@@ -1029,9 +1029,11 @@ page_header('People Finance');
             if (!t.length) return toast('Tick the people to amend first — or press "Tick all shown".', true);
             amendGrid({ kind: P.kind, items: t, models: P.models, onApply: function(ids){ ids.forEach(function(id){ P.on[id] = true; }); draw(); if (ids.length) toast(ids.length + (ids.length === 1 ? ' person' : ' people') + ' amended — check, then Send for approval.'); } });
           }, 'sm')]);
+    var canBox = el('div', { class: 'cardx', hidden: true, style: 'border-color:#f0c36d;background:#fffaf0' });
     show([el('div', { class: 'cardx stack' }, [el('div', { class: 'row', style: 'justify-content:space-between' }, [seg, el('span', { class: 'pill', text: period(P.kind, P.from, P.to) })]), dates]),
-          el('div', { class: 'cardx' }, [tools]), listBox, bar]);
-    function shown(){ return P.rows.filter(function(r){ return (!P.dept || r.department_name === P.dept) && (!P.q || (r.full_name + ' ' + r.code).toLowerCase().indexOf(P.q) >= 0); }); }
+          el('div', { class: 'cardx' }, [tools]), canBox, listBox, bar]);
+    function shown(){ return P.rows.filter(function(r){ return (!P.dept || r.department_name === P.dept) && (!P.q || (r.full_name + ' ' + r.code).toLowerCase().indexOf(P.q) >= 0)
+; }); }
     function ticked(){ return P.rows.filter(function(r){ return P.on[r.employee_id]; }); }
     function bulk(){
       var t = ticked(); if (!t.length) return toast('Tick the people first.', true);
@@ -1054,9 +1056,31 @@ page_header('People Finance');
           : 'The canteen has nothing owed up to ' + nice(r.up_to) + '.';
         if (r.skipped_count) msg += ' ' + r.skipped_count + ' left out: ' + r.skipped[0];
         if (r.pending_calls) msg += ' ' + r.pending_calls + ' message' + (r.pending_calls === 1 ? '' : 's') + ' to the canteen still waiting; it will be retried.';
+        /* where are the others? said in one line, worked out here */
+        var KN = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractors' }, away = {}, onSheet = 0;
+        (r.who || []).forEach(function(w){ if (w.sheet_ref) onSheet++; else if (w.pay_type && w.pay_type !== P.kind) away[KN[w.pay_type]] = (away[KN[w.pay_type]] || 0) + 1; });
+        var where = Object.keys(away).map(function(k){ return away[k] + ' on ' + k; });
+        if (onSheet) where.push(onSheet + ' already on a pay sheet');
+        if (where.length) msg += ' Not on this tab: ' + where.join(', ') + '.';
         toast(msg, !!r.skipped_count);
+        P.canteen = { up_to: r.up_to };
         reload();
       });
+    }
+    /* CANTEEN ON THIS LIST (owner, 26 Nov 2026: "show only those selected; if
+       none, nothing"). Only the people shown here who have a canteen line;
+       nobody → no box. Worked out on the page; nothing more is asked of the server. */
+    function canteenBox(){
+      canBox.textContent = '';
+      var mine = P.canteen ? shown().filter(function(r){ return r.lines.some(function(l){ return l.kind === 'canteen'; }); }) : [];
+      canBox.hidden = !mine.length;
+      if (!mine.length) return;
+      var tot = 0;
+      canBox.appendChild(el('b', { text: 'Canteen on this list — ' + mine.length + (mine.length === 1 ? ' person' : ' people') }));
+      canBox.appendChild(el('div', { class: 'small', style: 'margin-top:4px;line-height:1.7' }, mine.map(function(r){
+        var l = r.lines.filter(function(x){ return x.kind === 'canteen'; })[0]; tot += l.amount_paisa;
+        return el('div', { style: 'color:var(--ink)' }, [el('b', { text: r.full_name }), el('span', { class: 'muted', text: '  ' + r.code + ' · ' }), l.label.split(' · ')[0] + ' − Rs ' + rs(l.amount_paisa)]);
+      }).concat([el('div', { class: 'muted', text: 'Total Rs ' + rs(tot) + '. The line is on each person below; it reaches the ledger when the sheet is approved.' })])));
     }
     function sums(){
       var t = ticked(), total = 0, bad = false;
@@ -1100,7 +1124,7 @@ page_header('People Finance');
       });
       listBox.appendChild(list);
       if (!rows.length) listBox.appendChild(el('div', { class: 'cardx empty', text: 'Nobody matches the filter.' }));
-      sums();
+      sums(); canteenBox();
     }
     function load(){
       listBox.textContent = ''; listBox.appendChild(el('p', { class: 'muted', text: 'Working it out…' })); bar.hidden = true;

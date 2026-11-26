@@ -167,6 +167,9 @@ ok(count($fake->calls) === 0 && $prev('S001') === null, 'before the button, no l
 $f1 = K::fetch('2026-11-30', $admin);
 ok($f1['ok'] && $f1['up_to'] === '2026-11-26', 'asks up to the Thursday on or before the last day (26 Nov)');
 ok($f1['orders'] === 8 && $f1['refunds'] === 1 && $f1['skipped_count'] === 2, '8 good orders, 1 refund; 2 left out (not a ZAS person, items not adding up)');
+$w1 = []; foreach ($f1['who'] ?? [] as $w) { $w1[$w['code']] = $w; }
+ok(isset($w1['S001'], $w1['S002']) && $w1['S001']['pay_type'] === 'salary' && $w1['S001']['paisa'] === 39000 && $w1['S001']['sheet_ref'] === null,
+   'the answer names WHO has charges, their kind of pay and the amount, so Prepare pay can say where to find them');
 $rows1 = $n('SELECT COUNT(*) FROM att_canteen_rows');
 $f2 = K::fetch('2026-11-30', $admin);
 ok($f2['orders'] === 8 && $n('SELECT COUNT(*) FROM att_canteen_rows') === $rows1, 'pressing it again adds nothing new');

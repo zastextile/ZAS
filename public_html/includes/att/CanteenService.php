@@ -127,8 +127,34 @@ final class CanteenService
         foreach ($orders as $o) { $people[$o['employee_id']] = true; $total += $o['amount']; }
         foreach ($refunds as $f) { $people[$f['employee_id']] = true; $total -= $f['amount']; }
         Audit::record('canteen.fetch', 'att_canteen', 0, null, ['up_to' => $upTo, 'orders' => count($orders), 'refunds' => count($refunds), 'total_paisa' => $total, 'skipped' => count($skipped)], $actorId);
-        return ['ok' => true, 'up_to' => $upTo, 'orders' => count($orders), 'refunds' => count($refunds), 'people' => count($people),
+        return ['ok' => true, 'up_to' => $upTo, 'orders' => count($orders), 'refunds' => count($refunds), 'people' => count($people), 'who' => self::waiting($upTo),
                 'total_paisa' => $total, 'skipped' => array_slice($skipped, 0, 20), 'skipped_count' => count($skipped), 'pending_calls' => self::pendingCount()];
+    }
+
+    /**
+     * WHO HAS CANTEEN CHARGES (owner, 26 Nov 2026: "it shows only the bottom
+     * message"): each person with charges up to that Thursday, their kind of
+     * pay, and whether they wait for a sheet or are already on one, so
+     * Prepare pay can say where to find them.
+     * @return list<array<string,mixed>>
+     */
+    public static function waiting(string $upTo): array
+    {
+        $out = [];
+        foreach (Db::all("SELECT r.employee_id, e.code, e.full_name, f.pay_type,
+                                 SUM(CASE WHEN r.kind = 'order' THEN r.amount_paisa ELSE -r.amount_paisa END) AS paisa,
+                                 SUM(r.kind = 'order') AS orders, MAX(s.ref) AS sheet_ref
+                            FROM att_canteen_rows r
+                            JOIN att_employees e ON e.id = r.employee_id
+                            LEFT JOIN att_fin_profiles f ON f.employee_id = e.id
+                            LEFT JOIN att_fin_sheets s ON s.id = r.sheet_id
+                           WHERE DATE(r.at) <= ? AND ((r.zas_state = 'free' AND r.canteen_state IN ('unsettled','settled')) OR r.zas_state = 'on_sheet')
+                           GROUP BY r.employee_id, e.code, e.full_name, f.pay_type
+                           ORDER BY e.full_name LIMIT 200", [$upTo]) as $r) {
+            $out[] = ['employee_id' => (int) $r['employee_id'], 'code' => $r['code'], 'name' => $r['full_name'], 'pay_type' => $r['pay_type'],
+                      'paisa' => (int) $r['paisa'], 'orders' => (int) $r['orders'], 'sheet_ref' => $r['sheet_ref']];
+        }
+        return $out;
     }
 
     /** @return array<string,mixed>|string a clean row, or why it was left out */
