@@ -96,6 +96,8 @@ if ($worker) {
                 if ($left <= 0.0001) continue;               // finished — not work
                 $done = (float)($prog['op'][(int)$l['item_id']][$partId][$opId] ?? 0);
                 $rate = zp_rate_for($opId, (float)$o['rate'], zp_line_rate_map((int)$l['proforma_id'], (int)$l['item_id']));
+                if (($tier = zp_tiers_for((int)$l['proforma_id'], (int)$l['item_id'], $opId)) !== null)
+                    $rate = zp_tier_rate_now($tier[1], zp_scope_done($prog, (int)$l['proforma_id'], (int)$l['item_id'], $opId, $tier[0]));
                 $cards[] = [
                     'item_id' => (int)$l['item_id'], 'op_id' => $opId,
                     'pi' => $l['pi_no'], 'customer' => $l['customer_name'],

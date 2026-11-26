@@ -484,6 +484,25 @@ function zp_ensure_schema(): void {
     try { db()->exec("ALTER TABLE zp_part_ops ADD COLUMN only_proforma_id INT NULL DEFAULT NULL"); } catch (Throwable $e) {}
     try { db()->exec("ALTER TABLE zp_part_ops ADD COLUMN only_item_id INT NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
     try { db()->exec("CREATE INDEX idx_zpo_only ON zp_part_ops (only_proforma_id)"); } catch (Throwable $e) {}
+
+    /* ---- A SPLIT RATE (owner, 26 Nov 2026): one operation pays by quantity —
+       the first 1,000 pieces at 4.00, the rest at 4.25. Counted on the pieces
+       produced for the whole order (item 0) or for one line. qty NULL = the
+       rest. Each booking is priced by where the running count stands, and one
+       that crosses a step is booked as two entries. ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_rate_tiers (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        proforma_id INT NOT NULL,
+        proforma_item_id INT NOT NULL DEFAULT 0,
+        op_id INT NOT NULL,
+        seq INT NOT NULL DEFAULT 0,
+        qty DECIMAL(12,2) NULL,
+        rate DECIMAL(12,2) NOT NULL,
+        reason VARCHAR(255) NOT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX(proforma_id, op_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
     zas_schema_mark('zp', [__FILE__]);
 }
 
@@ -726,7 +745,7 @@ function zp_line_ctx(bool $fresh = false): array {
     static $c = null;
     if ($fresh) $c = null;
     if ($c !== null) return $c;
-    $c = ['skip' => [], 'extra' => [], 'lrate' => [], 'pf' => []];
+    $c = ['skip' => [], 'extra' => [], 'lrate' => [], 'pf' => [], 'tier' => []];
     zp_ensure_schema();
     try {
         foreach (db()->query("SELECT proforma_id, proforma_item_id, op_id FROM zp_op_skip")->fetchAll() as $r)
@@ -735,6 +754,8 @@ function zp_line_ctx(bool $fresh = false): array {
             $c['extra'][(int)$r['part_id']][] = $r;
         foreach (db()->query("SELECT proforma_item_id, op_id, rate FROM zp_line_rates")->fetchAll() as $r)
             $c['lrate'][(int)$r['proforma_item_id']][(int)$r['op_id']] = (float)$r['rate'];
+        foreach (db()->query("SELECT proforma_id, proforma_item_id, op_id, qty, rate FROM zp_rate_tiers ORDER BY seq, id")->fetchAll() as $r)
+            $c['tier'][(int)$r['proforma_id']][(int)$r['proforma_item_id']][(int)$r['op_id']][] = [$r['qty'] === null ? null : (float)$r['qty'], (float)$r['rate']];
     } catch (Throwable $e) {}
     return $c;
 }
@@ -784,6 +805,49 @@ function zp_line_rate_map(int $proformaId, int $itemId): array {
     $m = zp_order_rate_map($proformaId);
     foreach (zp_line_ctx()['lrate'][$itemId] ?? [] as $op => $r) $m[$op] = $r;
     return $m;
+}
+
+/* THE SPLIT THAT APPLIES to one line's operation: the line's own, else the
+   order's. null = none, the flat rate stands. ['line'|'order', [[qty|null, rate], ...]] */
+function zp_tiers_for(int $proformaId, int $itemId, int $opId): ?array {
+    $c = zp_line_ctx(); $t = $c['tier'][$proformaId] ?? [];
+    if ($itemId > 0 && !empty($t[$itemId][$opId])) return ['line', $t[$itemId][$opId]];
+    if ($itemId > 0 && isset($c['lrate'][$itemId][$opId])) return null;   // a line's own flat rate beats the order's split
+    if (!empty($t[0][$opId])) return ['order', $t[0][$opId]];
+    return null;
+}
+/* pieces already produced on an operation, for one line or the whole order */
+function zp_scope_done(array $prog, int $proformaId, int $itemId, int $opId, string $scope): float {
+    static $items = null;
+    $ids = [$itemId];
+    if ($scope === 'order') {
+        if ($items === null) { $items = []; foreach (zp_open_lines() as $l) $items[(int)$l['proforma_id']][] = (int)$l['item_id']; }
+        $ids = $items[$proformaId] ?? [$itemId];
+    }
+    $n = 0.0;
+    foreach ($ids as $it) foreach ($prog['op'][$it] ?? [] as $ops) $n += (float)($ops[$opId] ?? 0);
+    return $n;
+}
+/* qty pieces starting after $done pieces: [[qty, rate], ...] by step */
+function zp_tier_split(array $tiers, float $done, float $qty): array {
+    $out = []; $from = 0.0; $left = $qty; $at = $done;
+    foreach ($tiers as $i => [$tq, $rate]) {
+        $last = $i === count($tiers) - 1 || $tq === null;
+        $to = $last ? INF : $from + (float)$tq;
+        if ($left > 0.0001 && $at < $to) {
+            $take = $last ? $left : min($left, $to - $at);
+            $out[] = [round($take, 2), (float)$rate];
+            $left -= $take; $at += $take;
+        }
+        if ($last) break;
+        $from = $to;
+    }
+    return $out;
+}
+/* the rate the NEXT piece pays, after $done pieces */
+function zp_tier_rate_now(array $tiers, float $done): float {
+    $p = zp_tier_split($tiers, $done, 1.0);
+    return (float)($p[0][1] ?? ($tiers[count($tiers) - 1][1] ?? 0));
 }
 
 /* Save the whole grid for one part in one go.
@@ -3519,7 +3583,7 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
     foreach (zp_open_lines() as $l) $lines[(int)$l['item_id']] = $l;
     $prog = zp_progress_map();
 
-    $errors = []; $ready = []; $batch = []; $rateCache = []; $sizeRateCache = [];
+    $errors = []; $ready = []; $batch = []; $rateCache = []; $sizeRateCache = []; $tierBatch = [];
     foreach ($rows as $i => $r) {
         $label  = 'Line ' . ($i + 1);
         $itemId = (int)($r['item_id'] ?? 0);
@@ -3649,8 +3713,17 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
         if (!isset($sizeRateCache[$prodId])) $sizeRateCache[$prodId] = zp_op_rate_map($prodId);
         $rate = zp_rate_for($opId, (float)$op['rate'], $rateCache[$pfid . ':' . $itemId],
                             $sizeRateCache[$prodId], zp_line_size_id($line));
+        /* A SPLIT RATE (26 Nov 2026): priced by where the running count stands —
+           pieces already booked, plus earlier rows of this same sheet. A row
+           that crosses a step is booked as two entries, one at each rate. */
+        $pieces = [[$qty, $rate]];
+        if (($tier = zp_tiers_for($pfid, $itemId, $opId)) !== null) {
+            $sk = $tier[0] === 'line' ? "L$itemId:$opId" : "O$pfid:$opId";
+            $pieces = zp_tier_split($tier[1], zp_scope_done($prog, $pfid, $itemId, $opId, $tier[0]) + ($tierBatch[$sk] ?? 0.0), $qty);
+            $tierBatch[$sk] = ($tierBatch[$sk] ?? 0.0) + $qty;
+        }
 
-        $ready[] = [
+        foreach ($pieces as [$pq, $rate]) $ready[] = [
             'entry_date' => $date, 'worker_id' => $wid,
             'proforma_id' => $pfid, 'proforma_item_id' => $itemId,
             'product_id' => (int)$line['product_id'], 'part_id' => $partId,
@@ -3659,10 +3732,10 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
                operation row so they can never drift apart */
             'op_id' => $opId,
             'stage_id' => (int)($op['stage_id'] ?: zp_stage_id_for((string)$op['stage'])),
-            'stage' => (string)$op['stage'], 'qty' => $qty,
+            'stage' => (string)$op['stage'], 'qty' => $pq,
             /* FROZEN HERE, FOR GOOD. Change the rate tomorrow and this wage
                stays exactly what was paid today. */
-            'rate_applied' => $rate, 'amount' => round($qty * $rate, 2),
+            'rate_applied' => $rate, 'amount' => round($pq * $rate, 2),
             'note' => mb_substr(trim((string)($r['note'] ?? '')), 0, 255) ?: null,
             'created_by' => $userId,
         ];
@@ -4299,20 +4372,26 @@ function zp_order_sheet(int $pf): array {
         $st = db()->prepare("SELECT id, unit_price FROM proforma_items WHERE proforma_id=? ORDER BY sort_order, id"); $st->execute([$pf]);
         $k = 0; foreach ($st->fetchAll() as $r) { $price[(int)$r['id']] = (float)$r['unit_price']; $no[(int)$r['id']] = ++$k; }
     } catch (Throwable $e) {}
-    $booked = [];
+    $booked = []; $byRate = [];
     try {
-        $st = db()->prepare("SELECT proforma_item_id it, op_id, SUM(qty) q, SUM(amount) a FROM zp_entries WHERE status='active' AND proforma_id=? GROUP BY proforma_item_id, op_id");
+        $st = db()->prepare("SELECT proforma_item_id it, op_id, rate_applied r, SUM(qty) q, SUM(amount) a FROM zp_entries WHERE status='active' AND proforma_id=? GROUP BY proforma_item_id, op_id, rate_applied");
         $st->execute([$pf]);
-        foreach ($st->fetchAll() as $r) $booked[(int)$r['it']][(int)$r['op_id']] = [(float)$r['q'], (float)$r['a']];
+        foreach ($st->fetchAll() as $r) {
+            $it = (int)$r['it']; $op = (int)$r['op_id'];
+            $booked[$it][$op][0] = ($booked[$it][$op][0] ?? 0) + (float)$r['q'];
+            $booked[$it][$op][1] = ($booked[$it][$op][1] ?? 0) + (float)$r['a'];
+            $byRate[$it][$op][] = [round((float)$r['r'], 2), round((float)$r['q'], 2)];   // what was paid at each rate
+        }
     } catch (Throwable $e) {}
+    $tierOut = fn($t) => $t ? array_map(fn($x) => ['qty' => $x[0], 'rate' => round($x[1], 2)], $t) : null;
     $c = zp_line_ctx(); $orate = zp_order_rate_map($pf); $prog = zp_progress_map();
     $ops = []; $lines = [];
-    $opRow = function (array $o, string $part) use (&$ops, $orate, $c, $pf) {
+    $opRow = function (array $o, string $part) use (&$ops, $orate, $c, $pf, $tierOut) {
         $id = (int)$o['id'];
         if (!isset($ops[$id])) $ops[$id] = ['id' => $id, 'part_id' => (int)$o['part_id'], 'part' => $part, 'op' => (string)$o['operation_name'],
             'stage' => zp_stage_name((int)($o['stage_id'] ?: zp_stage_id_for((string)$o['stage']))) ?: (string)$o['stage'],
             'std' => round((float)$o['rate'], 2), 'orate' => array_key_exists($id, $orate) ? round((float)$orate[$id], 2) : null,
-            'oskip' => isset($c['skip'][$pf][0][$id]), 'extra' => !empty($o['only_proforma_id']) ? 1 : 0, 'extra_item' => (int)($o['only_item_id'] ?? 0),
+            'oskip' => isset($c['skip'][$pf][0][$id]), 'otier' => $tierOut($c['tier'][$pf][0][$id] ?? null), 'extra' => !empty($o['only_proforma_id']) ? 1 : 0, 'extra_item' => (int)($o['only_item_id'] ?? 0),
             'lines' => []];
     };
     foreach (zp_open_lines() as $l) {
@@ -4335,7 +4414,8 @@ function zp_order_sheet(int $pf): array {
                 $rows[] = ['id' => $id, 'base' => round(zp_rate_for($id, (float)$o['rate'], [], $szRates, $szId), 2),
                            'lrate' => isset($c['lrate'][$it][$id]) ? round($c['lrate'][$it][$id], 2) : null,
                            'lskip' => isset($c['skip'][$pf][$it][$id]), 'need' => round($need, 2), 'done' => round($done, 2),
-                           'bq' => round($booked[$it][$id][0] ?? 0, 2), 'ba' => round($booked[$it][$id][1] ?? 0, 2)];
+                           'bq' => round($booked[$it][$id][0] ?? 0, 2), 'ba' => round($booked[$it][$id][1] ?? 0, 2),
+                           'ltier' => $tierOut($c['tier'][$pf][$it][$id] ?? null), 'paid' => $byRate[$it][$id] ?? []];
             }
             $L['parts'][] = ['part_id' => $pt, 'part' => (string)$p['part_name'], 'ops' => $rows];
         }
@@ -4349,7 +4429,8 @@ function zp_order_sheet(int $pf): array {
 
 /* ALL THE CHANGES OF ONE SAVE, UNDER ONE REASON — all or nothing.
    $ch = ['orate' => {op: "7.50"|""}, 'lrate' => {"item:op": ...}, 'oskip' => {op: true|false},
-          'lskip' => {"item:op": bool}, 'add' => [{item, part, stage, name, rate}], 'remove' => [op ids]] */
+          'lskip' => {"item:op": bool}, 'add' => [{item, part, stage, name, rate}], 'remove' => [op ids],
+          'tiers' => {"o:op"|"l:item:op": [{qty, rate}, ...] | []}] */
 function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): array {
     $reason = trim($reason);
     $sheet = zp_order_sheet($pf);
@@ -4392,6 +4473,30 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
         if ($name === '' || mb_strlen($name) > 120) { $bad[] = 'Give the new operation a name (up to 120 letters).'; continue; }
         if ($r === null) { $bad[] = 'Give the new operation a rate.'; continue; }
         $todo[] = ['add', $it, $pt, $sg, $name, $r];
+    }
+    /* A SPLIT: "o:op" for the whole order, "l:item:op" for one line;
+       [{qty, rate}, ...] — every step but the last has a quantity, the last is
+       "the rest". An empty list takes the split off. */
+    foreach ((array)($ch['tiers'] ?? []) as $k => $list) {
+        $kp = explode(':', (string)$k);
+        if ($kp[0] === 'o' && count($kp) === 2 && isset($opInfo[(int)$kp[1]])) { $it = 0; $op = (int)$kp[1]; $was = $opInfo[$op]['otier']; }
+        elseif ($kp[0] === 'l' && count($kp) === 3 && isset($lineOp[(int)$kp[1] . ':' . (int)$kp[2]])) { $it = (int)$kp[1]; $op = (int)$kp[2]; $was = $lineOp[$it . ':' . $op]['ltier']; }
+        else { $bad[] = 'A split was sent for an operation that is not on this order.'; continue; }
+        $list = array_values((array)$list);
+        if (!$list) { if ($was) $todo[] = ['tier', $it, $op, []]; continue; }
+        if (count($list) < 2 || count($list) > 6) { $bad[] = 'A split needs 2 to 6 steps.'; continue; }
+        $steps = []; $ok = true;
+        foreach ($list as $i => $x) {
+            $r = $num($x['rate'] ?? ''); $last = $i === count($list) - 1;
+            $q = $last ? null : $num($x['qty'] ?? '');
+            if ($r === null || (!$last && ($q === null || $q <= 0))) { $ok = false; break; }
+            $steps[] = [$q, $r];
+        }
+        if (!$ok) { $bad[] = 'Every step of a split needs a quantity above 0 and a rate (the last step is "the rest").'; continue; }
+        $same = $was && count($was) === count($steps);
+        if ($same) foreach ($steps as $i => $x) if ((float)($was[$i]['qty'] ?? -1) !== (float)($x[0] ?? -1) || (float)$was[$i]['rate'] !== (float)$x[1]) $same = false;
+        if ($same) continue;
+        $todo[] = ['tier', $it, $op, $steps];
     }
     foreach ((array)($ch['remove'] ?? []) as $op) {
         $op = (int)$op; if (!isset($opInfo[$op]) || !$opInfo[$op]['extra']) { $bad[] = 'Only an operation added for this order can be removed — skip a normal one instead.'; continue; }
@@ -4437,6 +4542,20 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
                         ->execute([$pt, $sg, $seq, $stageOk[$sg], $name, $r, $pf, $it]);
                     $pname = ''; foreach ($lineParts as $ps) if (isset($ps[$pt])) { $pname = $ps[$pt]; break; }
                     zp_rate_log((int)db()->lastInsertId(), $pf, $pname, $name, null, $r, 'ADDED for ' . ($it ? $lineName[$it] : 'the whole order') . ' — ' . $reason, $userId);
+                    break;
+                case 'tier':
+                    [, $it, $op, $steps] = $t; $o = $opInfo[$op];
+                    db()->prepare("DELETE FROM zp_rate_tiers WHERE proforma_id=? AND proforma_item_id=? AND op_id=?")->execute([$pf, $it, $op]);
+                    $ins = db()->prepare("INSERT INTO zp_rate_tiers (proforma_id, proforma_item_id, op_id, seq, qty, rate, reason, created_by) VALUES (?,?,?,?,?,?,?,?)");
+                    $txt = []; $from = 0.0;
+                    foreach ($steps as $i => [$q, $r]) {
+                        $ins->execute([$pf, $it, $op, $i + 1, $q, $r, mb_substr($reason, 0, 255), $userId]);
+                        $txt[] = $q === null ? 'rest @ ' . number_format($r, 2) : number_format($from + 1) . '–' . number_format($from + $q) . ' @ ' . number_format($r, 2);
+                        $from += (float)$q;
+                    }
+                    $flat = $it ? ($lineOp[$it . ':' . $op]['lrate'] ?? $o['orate'] ?? $o['std']) : ($o['orate'] ?? $o['std']);
+                    zp_rate_log($op, $pf, $o['part'], $o['op'], $flat, $steps ? $steps[0][1] : $flat,
+                        ($steps ? 'SPLIT for ' : 'Split taken off for ') . ($it ? $lineName[$it] : 'the whole order') . ($steps ? ': ' . implode(', ', $txt) : '') . ' — ' . $reason, $userId);
                     break;
                 case 'remove':
                     db()->prepare("UPDATE zp_part_ops SET is_active=0 WHERE id=? AND only_proforma_id=?")->execute([$t[1], $pf]);
@@ -4944,6 +5063,9 @@ function zp_work_index(): array {
                 /* an open cutting row stays offered after the plan is met — extra cutting is allowed */
                 $done = !$isCut && $left <= 0.0001;
                 $rate  = zp_rate_for($opId, (float)$o['rate'], $rates, $szRates, $szId);
+                /* a split rate: the rate the NEXT piece pays (26 Nov 2026) */
+                if (($tier = zp_tiers_for((int)$l['proforma_id'], (int)$l['item_id'], $opId)) !== null)
+                    $rate = zp_tier_rate_now($tier[1], zp_scope_done($prog, (int)$l['proforma_id'], (int)$l['item_id'], $opId, $tier[0]));
                 /* THE STAGE ID TRAVELS WITH THE ROW, not just its spelling.
                    The worker list is narrowed by stage, and matching on a name
                    would break the first time a stage is renamed — which is the

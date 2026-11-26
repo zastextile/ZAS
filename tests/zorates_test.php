@@ -13,7 +13,7 @@ ok(str_contains($s, "if (!is_admin() && !is_colleague())"), 'nobody else opens t
 
 echo "2. The server decides what may be saved (26 Nov 2026: one save for every kind of change)\n";
 $zp = file_get_contents(__DIR__ . '/../public_html/includes/zprod.php');
-$save = substr($zp, strpos($zp, 'function zp_order_sheet_save('), 9000);
+$save = substr($zp, $i = strpos($zp, 'function zp_order_sheet_save('), strpos($zp, 'function zp_ops_for_order(') - $i);
 ok(str_contains($s, "zp_order_sheet_save((int)(\$_POST['proforma_id'] ?? 0), \$ch, (string)(\$_POST['reason'] ?? ''), \$userId)"), 'the page hands every change to the module\'s one writer');
 ok(str_contains($save, "\$sheet = zp_order_sheet(\$pf);") && str_contains($save, "if (!isset(\$opInfo[\$op])) { \$bad[] = 'An operation that is not on this order was sent.'"), 'the allowed operations come from THIS order, read on the server');
 ok(str_contains($save, "if (!isset(\$lineOp[\$k])) { \$bad[] = 'An operation that is not on that line was sent.'"), '  and a line rate only for an operation that line really has');
