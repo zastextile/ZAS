@@ -35,6 +35,21 @@ $canEdit = is_admin();
 $pfId    = (int)($_GET['order'] ?? 0);
 $msg = ''; $err = '';
 
+/* SAVE WITHOUT A RELOAD (owner, 26 Nov 2026): the page posts every change of
+   one session — order rates, line rates, skips, added operations — and gets the
+   whole order back to redraw. One request; nothing else is asked for. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_json') {
+    verify_csrf();
+    header('Content-Type: application/json; charset=utf-8');
+    if (!$canEdit) { echo json_encode(['ok' => false, 'error' => 'Only an admin may change this order.']); exit; }
+    $ch = json_decode((string)($_POST['changes'] ?? ''), true);
+    $out = is_array($ch) ? zp_order_sheet_save((int)($_POST['proforma_id'] ?? 0), $ch, (string)($_POST['reason'] ?? ''), $userId)
+                         : ['ok' => false, 'error' => 'Nothing readable was sent.'];
+    if ($out['ok'] ?? false) $out['history'] = zp_rate_log_read(60, (int)$_POST['proforma_id'], array_column($out['ops'], 'id'));
+    echo json_encode($out, JSON_HEX_TAG | JSON_HEX_AMP);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $pfId = (int)($_POST['proforma_id'] ?? 0);
@@ -94,59 +109,15 @@ $orders = zp_rate_orders();
 $order  = null;
 foreach ($orders as $o) if ((int)$o['id'] === $pfId) { $order = $o; break; }
 
-/* EVERYTHING THIS ORDER CARRIES, BUILT ONCE. The browser does the rest —
-   grouping, filters, search, the edit table and its live totals — so a
-   click asks the server nothing. */
-$allOps  = $order ? zp_ops_for_order($pfId) : [];
-$amend   = $order ? zp_order_rate_map($pfId) : [];
+/* EVERYTHING THIS ORDER CARRIES, BUILT ONCE (zp_order_sheet). The browser does
+   the rest — both views, filters, search, show/hide, live totals — so a click
+   asks the server nothing. */
+$SHEET   = $order ? zp_order_sheet($pfId) : null;
+$allOps  = $SHEET && $SHEET['ok'] ? $SHEET['ops'] : [];
 $history = $order ? zp_rate_log_read(60, $pfId, array_column($allOps, 'id')) : zp_rate_log_read(60);
-
-/* WHAT IS STILL TO MAKE, AND WHAT IT WOULD COST WITHOUT THE AMENDMENT.
-   Per order line: pieces the plan needs minus pieces booked, priced at the
-   rate the line would pay with no amendment (its size rate, else standard).
-   The browser multiplies by the amended rate to show the difference. */
-$IMP = [];   // op id => [still, baseCost, sizeRated]
-$SEQ = [];   // op id => [part seq, stage position, op seq]
-$PROD = [];  // op id => first product, in the order's own line order
-if ($order) {
-    $prog = zp_progress_map();
-    foreach (zp_open_lines() as $l) {
-        if ((int)$l['proforma_id'] !== $pfId) continue;
-        $pid = (int)$l['product_id'];
-        $szRates = zp_op_rate_map($pid); $szId = zp_line_size_id($l);
-        foreach (zp_product_parts($pid) as $pi => $p) {
-            $need = zp_pieces_needed($l, (int)$p['id']);
-            if ($need === ZP_NO_SIZE) $need = 0.0;
-            foreach (zp_part_ops((int)$p['id'], true) as $o) {
-                $oid  = (int)$o['id'];
-                $done = (float)($prog['op'][(int)$l['item_id']][(int)$p['id']][$oid] ?? 0);
-                $still = max(0.0, $need - $done);
-                $base = zp_rate_for($oid, (float)$o['rate'], [], $szRates, $szId);
-                $IMP[$oid] ??= [0.0, 0.0, false];
-                $IMP[$oid][0] += $still;
-                $IMP[$oid][1] += $still * $base;
-                if (abs($base - (float)$o['rate']) > 0.001) $IMP[$oid][2] = true;
-                $SEQ[$oid] ??= [$pi, zp_stage_pos((string)$o['stage']) ?? 99, (int)$o['seq']];
-                $PROD[$oid] ??= trim((string)$l['product_name']);
-            }
-        }
-    }
-}
-$rows = array_map(function ($o) use ($amend, $IMP, $SEQ, $PROD) {
-    $id = (int)$o['id'];
-    return [
-        'id' => $id, 'prod' => $PROD[$id] ?? ($o['products'][0] ?? 'Not on this order any more'),
-        'prods' => $o['products'], 'part' => (string)$o['part'], 'op' => (string)$o['operation'], 'st' => (string)$o['stage'],
-        'std' => round((float)$o['standard'], 2), 'rate' => array_key_exists($id, $amend) ? round((float)$amend[$id], 2) : null,
-        'bq' => round((float)$o['booked_qty'], 2), 'ba' => round((float)$o['booked_amt'], 2),
-        'still' => round($IMP[$id][0] ?? 0, 2), 'base' => round($IMP[$id][1] ?? 0, 2), 'sz' => (bool)($IMP[$id][2] ?? false),
-        'on' => (bool)$o['on_order'], 'seq' => $SEQ[$id] ?? [99, 99, 0],
-    ];
-}, $allOps);
+$rows    = $allOps;
 
 page_header('Order Rate Amendments');
-$nAll = count($rows); $nAm = count($amend);
-$nUse = count(array_filter($rows, fn($r) => $r['bq'] > 0 || $r['rate'] !== null));
 ?>
 <link rel="stylesheet" href="assets/css/zf.css?v=4">
 <style>
@@ -205,13 +176,32 @@ $nUse = count(array_filter($rows, fn($r) => $r['bq'] > 0 || $r['rate'] !== null)
   .zf.or .zf-seg{flex-wrap:wrap}
 }
 </style>
-<?php /* the module skin stays on, as on every production page; the Fiori look
-         lives inside it in .zf */ ?>
+<style>
+/* 26 Nov 2026: two views, show/hide, skip, add, save without reload */
+.zf.or .or-views{display:inline-flex;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.zf.or .or-views button{border:0;background:#fff;padding:5px 12px;font:inherit;font-size:12.5px;font-weight:600;color:var(--mut);cursor:pointer}
+.zf.or .or-views button.on{background:var(--pri);color:#fff}
+.zf.or tr.or-l td{background:#eef3f9;cursor:pointer;border-bottom:1px solid var(--line)}
+.zf.or tr.or-l td b{color:var(--ink)}
+.zf.or tr.or-l .lm{color:var(--mut);font-size:12px;margin-left:8px}
+.zf.or tr.or-l .lc{float:right;font-size:12px;color:var(--ink)}
+.zf.or tr.or-l .lc b{font-size:13px}
+.zf.or tr.skip td{opacity:.55}.zf.or tr.skip td .sk{opacity:1}
+.zf.or .pill-x{display:inline-block;font-size:10.5px;font-weight:700;border-radius:3px;padding:0 5px;margin-left:5px}
+.zf.or .pill-x.new{background:#e8f1fc;color:#0a4f96}.zf.or .pill-x.ex{background:#f1ecfb;color:#5a3fa8}.zf.or .pill-x.sk{background:#fdf0ef;color:#b42318}.zf.or .pill-x.ln{background:#fff4e2;color:#9a5710}
+.zf.or .or-add{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 10px;background:#f7f9fb;border-bottom:1px solid var(--line)}
+.zf.or .or-add select,.zf.or .or-add input{height:28px;border:1px solid #c9d3df;border-radius:3px;padding:0 6px;font:inherit;font-size:12.5px}
+.zf.or .or-add input.nm{width:200px}.zf.or .or-add input.rt{width:80px;text-align:right}
+.zf.or .or-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1d2d3e;color:#fff;padding:10px 16px;border-radius:6px;font-weight:600;font-size:13px;z-index:99;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.zf.or .or-toast.bad{background:#b42318}
+.zf.or label.skc{display:inline-flex;gap:4px;align-items:center;font-size:12px;color:var(--mut);cursor:pointer;white-space:nowrap}
+</style>
+<?php /* the module skin stays on, as on every production page; the Fiori look lives inside it in .zf */ ?>
 <div class="zskin">
 <div class="zf or">
   <div class="or-hd">
     <div><h1>Order rates</h1>
-      <div class="zf-sub">One order paying a different rate for an operation, without moving any other order. Wages already booked never change.</div></div>
+      <div class="zf-sub">What this order pays, by operation or by PI line. Skip what it does not need, add what it does. Wages already booked never change.</div></div>
     <div style="display:flex;gap:8px;align-items:center">
       <div class="or-pk">
         <input class="zf-in" id="orQ" autocomplete="off" placeholder="Find an order — PI no. or customer…"
@@ -230,89 +220,71 @@ $nUse = count(array_filter($rows, fn($r) => $r['bq'] > 0 || $r['rate'] !== null)
     <div class="zf-card"><div class="zf-none">
       <?= $orders ? 'Find an order above — type part of the PI number or the customer.' : 'No order is switched on for production yet, so there is nothing to amend.' ?>
     </div></div>
+  <?php elseif (!$SHEET['ok'] || !$SHEET['lines']): ?>
+    <div class="zf-card"><div class="zf-none">This order's lines do not resolve to products with parts yet. Check the product names on <a href="product_master.php">Master Products</a>.</div></div>
   <?php else: ?>
     <div class="or-obj">
       <h2><?= e($order['pi_no']) ?> · <?= e($order['customer_name'] ?: 'no customer') ?></h2>
-      <div class="zf-sub">A rate set here moves this order only. Work booked after you save pays it; anything already booked keeps what it was paid.</div>
+      <div class="zf-sub">Most specific wins: this line → this order → the size → the standard. Work booked after you save pays the new rate.</div>
       <div class="zf-kpis" id="orKpi"></div>
     </div>
 
     <div class="zf-card">
       <div class="zf-bar">
-        <span class="zf-seg" id="orSeg">
-          <button type="button" data-f="use" class="on">In use <b><?= $nUse ?></b></button>
-          <button type="button" data-f="am">Amended <b><?= $nAm ?></b></button>
-          <button type="button" data-f="new">Not started <b><?= $nAll - $nUse ?></b></button>
-          <button type="button" data-f="all">All <b><?= $nAll ?></b></button>
-        </span>
-        <input class="zf-in q" id="orS" placeholder="Search part, operation, stage…" autocomplete="off">
+        <span class="or-views" id="orView"><button type="button" data-v="op" class="on">By operation</button><button type="button" data-v="line">By PI line</button></span>
+        <input class="zf-in q" id="orS" placeholder="Search part, operation, stage, product…" autocomplete="off">
+        <button type="button" class="zf-btn sm" id="orOpen">Show all</button>
+        <button type="button" class="zf-btn sm" id="orShut">Hide all</button>
         <span class="zf-cnt" id="orCnt"></span>
-        <?php if ($canEdit && $rows): ?><button type="button" class="zf-btn pri" id="orEditBtn">Edit rates</button><?php endif; ?>
+        <?php if ($canEdit): ?><button type="button" class="zf-btn pri" id="orEditBtn">Edit</button><?php endif; ?>
       </div>
-      <?php if (!$rows): ?>
-        <div class="zf-none">This order's lines do not resolve to products with parts yet. Check the product names on <a href="product_master.php">Master Products</a>.</div>
-      <?php else: ?>
       <div class="zf-tw" style="max-height:none">
-        <table class="zf-t">
-          <thead><tr>
-            <th>Part · operation</th><th>Stage</th><th class="n">Standard</th><th class="n">This order pays</th><th class="n">Difference / pc</th>
-            <th class="n">Already booked</th><th class="n">Still to make</th><th class="n" title="Still to make × (this order's rate − the rate it would pay without the amendment)">Extra cost</th>
-            <th class="or-x" hidden></th>
-          </tr></thead>
-          <tbody id="orBody"></tbody>
-        </table>
+        <table class="zf-t"><thead id="orHead"></thead><tbody id="orBody"></tbody></table>
       </div>
       <div class="or-foot" id="orFoot" hidden>
         <span id="orChg"></span>
-        <input class="zf-in" id="orWhy" maxlength="250" placeholder="Why does this order pay differently? (required — kept with the change)">
+        <input class="zf-in" id="orWhy" maxlength="250" placeholder="Why does this order change? (required — kept with every change)">
         <button type="button" class="zf-btn" id="orDiscard">Discard</button>
         <button type="button" class="zf-btn ok" id="orSave">Save</button>
       </div>
-      <div class="or-note">Extra cost = pieces still to make × (this order's rate − the rate they would pay without the amendment). Already-booked wages are never re-priced.</div>
-      <?php endif; ?>
+      <div class="or-note">A skipped operation leaves Production Entry and the cost for that order or line; work already booked on it stays paid. An added operation is for this order only — it never changes the part or any other order.</div>
     </div>
-
-    <form method="post" id="orForm" hidden>
-      <?= csrf_field() ?><input type="hidden" name="action" value="save_many">
-      <input type="hidden" name="proforma_id" value="<?= $pfId ?>"><input type="hidden" name="reason" value="">
-    </form>
   <?php endif; ?>
 
   <details class="zf-card"<?= $order ? '' : ' open' ?>>
-    <summary><?= $order ? 'Rate history for ' . e($order['pi_no']) : 'Every rate that has moved' ?> (<?= count($history) ?>)</summary>
-    <?php if (!$history): ?>
-      <div class="zf-none"><?= $order ? 'No rate touching this order has changed yet.' : 'No rate has changed yet.' ?></div>
-    <?php else: ?>
-      <div class="zf-tw" style="max-height:420px"><table class="zf-t">
-        <thead><tr><th>When</th><th>Part · operation</th><th>Scope</th><th class="n">From</th><th class="n">To</th><th>Reason</th></tr></thead>
-        <tbody>
-        <?php foreach ($history as $h): ?>
-          <tr style="cursor:default">
-            <td class="n" style="text-align:left"><?= e(date('j M Y H:i', strtotime($h['created_at']))) ?></td>
-            <td><?= e($h['part_name'] ?: '—') ?><div class="s2"><?= e($h['operation_name'] ?: '—') ?></div></td>
-            <td><?= $h['proforma_id'] ? '<span class="zf-pill p-draft">this order</span>' : '<span class="zf-pill p-grey">standard</span>' ?></td>
-            <td class="n"><?= $h['old_rate'] === null ? '—' : number_format((float)$h['old_rate'], 2) ?></td>
-            <td class="n"><b><?= number_format((float)$h['new_rate'], 2) ?></b></td>
-            <td style="color:var(--mut)"><?= e($h['reason'] ?: '—') ?></td>
-          </tr>
-        <?php endforeach; ?>
-        </tbody>
-      </table></div>
-    <?php endif; ?>
+    <summary><?= $order ? 'History for ' . e($order['pi_no']) : 'Every rate that has moved' ?> (<span id="orHn"><?= count($history) ?></span>)</summary>
+    <div class="zf-tw" style="max-height:420px"><table class="zf-t">
+      <thead><tr><th>When</th><th>Part · operation</th><th>Scope</th><th class="n">From</th><th class="n">To</th><th>Reason</th></tr></thead>
+      <tbody id="orHist">
+      <?php foreach ($history as $h): ?>
+        <tr style="cursor:default">
+          <td class="n" style="text-align:left"><?= e(date('j M Y H:i', strtotime($h['created_at']))) ?></td>
+          <td><?= e($h['part_name'] ?: '—') ?><div class="s2"><?= e($h['operation_name'] ?: '—') ?></div></td>
+          <td><?= $h['proforma_id'] ? '<span class="zf-pill p-draft">this order</span>' : '<span class="zf-pill p-grey">standard</span>' ?></td>
+          <td class="n"><?= $h['old_rate'] === null ? '—' : number_format((float)$h['old_rate'], 2) ?></td>
+          <td class="n"><b><?= number_format((float)$h['new_rate'], 2) ?></b></td>
+          <td style="color:var(--mut)"><?= e($h['reason'] ?: '—') ?></td>
+        </tr>
+      <?php endforeach; ?>
+      <?php if (!$history): ?><tr><td colspan="6"><div class="zf-none">Nothing has changed yet.</div></td></tr><?php endif; ?>
+      </tbody>
+    </table></div>
   </details>
+  <form id="orTok" hidden><?= csrf_field() ?></form>
 </div>
 
 <script>
 (function(){
   var ORDERS = <?= json_encode(array_map(fn($o) => ['id' => (int)$o['id'], 'no' => (string)$o['pi_no'], 'c' => (string)($o['customer_name'] ?? ''),
                  'w' => (int)$o['worked_ops'], 'a' => (int)$o['amend_count']], $orders), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
-  var ROWS = <?= json_encode($rows, JSON_HEX_TAG | JSON_HEX_AMP) ?>;
-  var CAN = <?= $canEdit ? 'true' : 'false' ?>;
+  var D = <?= json_encode($SHEET && $SHEET['ok'] ? $SHEET : null, JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+  var PF = <?= (int)$pfId ?>, CAN = <?= $canEdit ? 'true' : 'false' ?>;
   var $ = function(i){ return document.getElementById(i); };
   function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
   function n2(v){ return (Math.round(v*100)/100).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
   function qn(v){ return (Math.round(v*100)/100).toLocaleString('en-US'); }
-  function pk(v){ var a = Math.abs(v); return (v < 0 ? '−' : '') + 'PKR ' + a.toLocaleString('en-US', {maximumFractionDigits:0}); }
+  function pk(v){ return 'PKR ' + Math.round(v).toLocaleString('en-US'); }
+  function num(s){ s = String(s == null ? '' : s).replace(/,/g, '').trim(); if (s === '') return null; var v = parseFloat(s); return isNaN(v) || v < 0 ? NaN : Math.round(v*100)/100; }
 
   /* ---- THE ORDER PICKER: type, the list narrows, Enter opens ---- */
   var q = $('orQ'), list = $('orList'), cur = 0, shown = [];
@@ -320,21 +292,15 @@ $nUse = count(array_filter($rows, fn($r) => $r['bq'] > 0 || $r['rate'] !== null)
     var t = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     var hit = ORDERS.filter(function(o){ var h = (o.no + ' ' + o.c).toLowerCase(); return t.every(function(w){ return h.indexOf(w) >= 0; }); });
     var live = hit.filter(function(o){ return o.w || o.a; }), idle = hit.filter(function(o){ return !o.w && !o.a; });
-    shown = live.concat(idle).slice(0, 60);
-    if (cur >= shown.length) cur = 0;
+    shown = live.concat(idle).slice(0, 60); if (cur >= shown.length) cur = 0;
     var h = '', k = 0;
     [['In production', live], ['Switched on, nothing made yet', idle]].forEach(function(g){
-      var part = g[1].filter(function(o){ return shown.indexOf(o) >= 0; });
-      if (!part.length) return;
+      var part = g[1].filter(function(o){ return shown.indexOf(o) >= 0; }); if (!part.length) return;
       h += '<div class="gh">' + g[0] + '</div>';
-      part.forEach(function(o){
-        var bits = []; if (o.w) bits.push(o.w + ' worked'); if (o.a) bits.push(o.a + ' amended');
-        h += '<a href="production_order_rates.php?order=' + o.id + '"' + (k === cur ? ' class="cur"' : '') + '><span><b>' + esc(o.no) + '</b> · ' + esc(o.c || 'no customer') + '</span><small>' + bits.join(' · ') + '</small></a>';
-        k++;
-      });
+      part.forEach(function(o){ var bits = []; if (o.w) bits.push(o.w + ' worked'); if (o.a) bits.push(o.a + ' amended');
+        h += '<a href="production_order_rates.php?order=' + o.id + '"' + (k === cur ? ' class="cur"' : '') + '><span><b>' + esc(o.no) + '</b> · ' + esc(o.c || 'no customer') + '</span><small>' + bits.join(' · ') + '</small></a>'; k++; });
     });
-    list.innerHTML = h || '<div class="gh">No order matches.</div>';
-    list.hidden = false;
+    list.innerHTML = h || '<div class="gh">No order matches.</div>'; list.hidden = false;
   }
   q.addEventListener('focus', function(){ q.select(); paintOrders(); });
   q.addEventListener('input', function(){ cur = 0; paintOrders(); });
@@ -345,168 +311,244 @@ $nUse = count(array_filter($rows, fn($r) => $r['bq'] > 0 || $r['rate'] !== null)
     else if (e.key === 'Escape') { list.hidden = true; q.blur(); }
   });
   q.addEventListener('blur', function(){ setTimeout(function(){ list.hidden = true; }, 150); });
+  if (!D || !$('orBody')) return;
 
-  if (!$('orBody')) return;
-
-  /* ---- STAGE COLOURS — the same rule as Daily Production Entry ---- */
   function stStyle(st){
     var PAL = [['#f1ecfb','#5a3fa8','#d6cbf2'],['#e3f5f7','#0e6170','#b3e0e6'],['#fbe9f1','#9d174d','#f2c4d8'],['#eef2f6','#33465f','#cfd8e3'],['#fdeee8','#9a3412','#f6cdb9']];
     var l = String(st || '').toLowerCase();
     if (l.indexOf('cut') >= 0) return ['#fff4e2','#9a5710','#f1cf97'];
     if (/stitch|sew|singer|overlock/.test(l)) return ['#e8f1fc','#0a4f96','#b9d3f1'];
     if (l.indexOf('pack') >= 0) return ['#e8f6ec','#1f6b35','#bfe3ca'];
-    var h = 0; for (var i = 0; i < l.length; i++) h = (h*31 + l.charCodeAt(i)) >>> 0;
-    return PAL[h % PAL.length];
+    var h = 0; for (var i = 0; i < l.length; i++) h = (h*31 + l.charCodeAt(i)) >>> 0; return PAL[h % PAL.length];
+  }
+  function stPill(st){ var c = stStyle(st); return '<span class="st" style="background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2] + '">' + esc(st) + '</span>'; }
+
+  /* ---- state: the saved order (D) and what has been typed (P) ---- */
+  var view = 'op', edit = false, open = {}, P, OP;
+  function reset(){ P = { orate: {}, lrate: {}, oskip: {}, lskip: {}, add: [], remove: {} }; }
+  function index(){ OP = {}; D.ops.forEach(function(o){ OP[o.id] = o; }); }
+  reset(); index();
+  D.lines.forEach(function(l){ open['l' + l.item] = false; });
+
+  function oRate(o){ if (P.orate[o.id] != null) { var v = num(P.orate[o.id]); return v === null ? null : (isNaN(v) ? o.orate : v); } return o.orate; }
+  function oSkip(o){ return P.oskip[o.id] != null ? P.oskip[o.id] : o.oskip; }
+  function key(l, r){ return l.item + ':' + r.id; }
+  function lRate(l, r){ var k = key(l, r); if (P.lrate[k] != null) { var v = num(P.lrate[k]); return v === null ? null : (isNaN(v) ? r.lrate : v); } return r.lrate; }
+  function lSkip(l, r){ var k = key(l, r); return P.lskip[k] != null ? P.lskip[k] : r.lskip; }
+  function gone(o){ return !!P.remove[o.id]; }
+  function effLine(l, r){ var o = OP[r.id], x = lRate(l, r); if (x != null) return x; var y = oRate(o); return y != null ? y : r.base; }
+  function skipped(l, r){ return oSkip(OP[r.id]) || lSkip(l, r) || gone(OP[r.id]); }
+  /* what a line costs, at the rates it will pay, and what is still to make */
+  function lineCost(l){
+    var t = 0, still = 0, own = 0, sk = 0;
+    l.parts.forEach(function(p){ p.ops.forEach(function(r){
+      if (lRate(l, r) != null) own++;
+      if (skipped(l, r)) { sk++; return; }
+      var e = effLine(l, r); t += r.need * e; still += Math.max(0, r.need - r.done) * e; }); });
+    P.add.forEach(function(a){ if ((a.item === 0 || a.item === l.item) && l.parts.some(function(p){ return p.part_id === a.part; })) {
+      var need = 0; l.parts.forEach(function(p){ if (p.part_id === a.part && p.ops[0]) need = p.ops[0].need; }); t += need * a.rate; still += need * a.rate; } });
+    return { total: t, still: still, own: own, sk: sk };
   }
 
-  /* ---- grouped by product, in the order's own order: part, stage, operation ---- */
-  var groups = [], gi = {};
-  ROWS.slice().sort(function(a, b){
-    return (a.seq[0] - b.seq[0]) || (a.seq[1] - b.seq[1]) || (a.seq[2] - b.seq[2]) || (a.id - b.id);
-  }).forEach(function(r){
-    if (gi[r.prod] == null) { gi[r.prod] = groups.length; groups.push({name: r.prod, rows: []}); }
-    groups[gi[r.prod]].rows.push(r);
-  });
-  /* products in the order the order lists them */
-  var prodOrder = []; ROWS.forEach(function(r){ if (prodOrder.indexOf(r.prod) < 0) prodOrder.push(r.prod); });
-
-  var filt = 'use', edit = false, shut = {}, pend = {};   // pend[id] = typed value (string)
-  if (!ROWS.some(function(r){ return r.bq > 0 || r.rate !== null; })) filt = 'all';   // nothing worked yet: show everything
-  [].forEach.call($('orSeg').querySelectorAll('button'), function(b){ b.classList.toggle('on', b.dataset.f === filt); });
-
-  function want(r){
-    if (filt === 'use') return r.bq > 0 || r.rate !== null || (edit && pend[r.id] != null);
-    if (filt === 'am')  return r.rate !== null;
-    if (filt === 'new') return r.bq <= 0;
-    return true;
-  }
-  /* the rate this row WILL pay: typed value in edit mode, else the saved one */
-  function eff(r){
-    if (edit && pend[r.id] != null) { var s = String(pend[r.id]).trim(); if (s === '' || s === 'std') return null; var v = parseFloat(s.replace(/,/g, '')); return isNaN(v) ? r.rate : Math.round(v*100)/100; }
-    return r.rate;
-  }
-  function changed(r){
-    if (pend[r.id] == null) return false;
-    var e = eff(r);
-    if (e === null) return r.rate !== null;
-    if (r.rate === null) return !(Math.abs(e - r.std) < 0.001 && !r.sz);   // typing the standard on a plain row is no change
-    return Math.abs(e - r.rate) > 0.001;
-  }
-  function extra(r){ var e = eff(r); return e === null ? 0 : e * r.still - r.base; }
-
-  function paint(){
-    var t = $('orS').value.trim().toLowerCase().split(/\s+/).filter(Boolean), n = 0, h = '';
-    prodOrder.forEach(function(pn){
-      var g = groups[gi[pn]]; if (!g) return;
-      var rs = g.rows.filter(function(r){ var hay = (r.prod + ' ' + r.part + ' ' + r.op + ' ' + r.st).toLowerCase(); return want(r) && t.every(function(w){ return hay.indexOf(w) >= 0; }); });
-      if (!rs.length) return;
-      var am = g.rows.filter(function(r){ return eff(r) !== null; }).length;
-      h += '<tr class="or-g' + (shut[pn] ? ' shut' : '') + '" data-g="' + esc(pn) + '"><td colspan="9"><span class="car">▾</span> ' + esc(pn)
-         + '<small>' + rs.length + ' operation' + (rs.length === 1 ? '' : 's') + (am ? ' · ' + am + ' amended' : '') + '</small></td></tr>';
-      if (shut[pn]) return;
-      rs.forEach(function(r){
-        n++;
-        var c = stStyle(r.st), e = eff(r), d = e === null ? null : e - r.std, x = extra(r), ch = edit && changed(r);
-        h += '<tr class="or-r' + (ch ? ' chg' : '') + '" style="box-shadow:inset 4px 0 0 ' + c[1] + '">'
-          + '<td>' + esc(r.part) + '<div class="s2">' + esc(r.op) + (r.on ? '' : ' <span class="tag">no longer on this order</span>') + '</div></td>'
-          + '<td><span class="st" style="background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2] + '">' + esc(r.st) + '</span></td>'
-          + '<td class="n">' + n2(r.std) + (r.sz ? '<span class="tag" title="Some sizes have their own rate">by size</span>' : '') + '</td>'
-          + '<td class="n">' + (edit
-              ? '<input class="or-in" data-id="' + r.id + '" inputmode="decimal" value="' + esc(pend[r.id] != null ? pend[r.id] : (r.rate === null ? '' : r.rate.toFixed(2))) + '" placeholder="' + n2(r.std) + '">'
-              : (e === null ? '<span class="mut">standard</span>' : '<b>' + n2(e) + '</b> <span class="zf-pill p-draft">amended</span>')) + '</td>'
-          + '<td class="n">' + (ch && e === null ? '<span class="dn">→ standard</span>' : d === null || Math.abs(d) < 0.001 ? '<span class="mut">—</span>' : '<span class="' + (d > 0 ? 'up' : 'dn') + '">' + (d > 0 ? '+' : '−') + n2(Math.abs(d)) + (d > 0 ? ' ▲' : ' ▼') + '</span>') + '</td>'
-          + '<td class="n">' + (r.bq > 0 ? qn(r.bq) + ' pcs<div class="s2">PKR ' + n2(r.ba) + '</div>' : '<span class="mut">not started</span>') + '</td>'
-          + '<td class="n">' + (r.still > 0 ? qn(r.still) : '<span class="mut">0</span>') + '</td>'
-          + '<td class="n">' + (Math.abs(x) < 0.5 ? '<span class="mut">—</span>' : '<b class="' + (x > 0 ? 'up' : 'dn') + '">' + pk(x) + '</b>') + '</td>'
-          + '<td class="or-x"' + (edit ? '' : ' hidden') + '>' + (edit && (r.rate !== null || pend[r.id] != null) ? '<button type="button" class="zf-btn sm" data-reset="' + r.id + '" title="Back to the standard rate">Reset</button>' : '') + '</td>'
-          + '</tr>';
-      });
-    });
-    $('orBody').innerHTML = h || '<tr><td colspan="9"><div class="zf-none">' + (filt === 'use' ? 'Nothing has been worked or amended on this order yet — open <b>All</b> to set a rate before the work starts.' : 'Nothing matches.') + '</div></td></tr>';
-    $('orCnt').textContent = n + ' of ' + ROWS.length;
-    [].forEach.call(document.querySelectorAll('th.or-x'), function(th){ th.hidden = !edit; });
-    kpis(); foot();
+  function changes(){
+    var n = 0;
+    Object.keys(P.orate).forEach(function(k){ var o = OP[k], v = num(P.orate[k]); if (isNaN(v)) { n++; return; } if (v === null ? o.orate !== null : (o.orate === null ? !(Math.abs(v - o.std) < 0.001) : Math.abs(v - o.orate) > 0.001)) n++; });
+    D.lines.forEach(function(l){ l.parts.forEach(function(p){ p.ops.forEach(function(r){ var k = key(l, r);
+      if (P.lrate[k] != null) { var v = num(P.lrate[k]); if (isNaN(v) || (v === null ? r.lrate !== null : (r.lrate === null || Math.abs(v - r.lrate) > 0.001))) n++; }
+      if (P.lskip[k] != null && P.lskip[k] !== r.lskip) n++; }); }); });
+    Object.keys(P.oskip).forEach(function(k){ if (P.oskip[k] !== OP[k].oskip) n++; });
+    return n + P.add.length + Object.keys(P.remove).length;
   }
 
   function kpis(){
-    var am = 0, bq = 0, ba = 0, x = 0, st = 0;
-    ROWS.forEach(function(r){ if (eff(r) !== null) am++; bq += r.bq; ba += r.ba; x += extra(r); st += r.still; });
+    var tot = 0, still = 0, own = 0, sk = 0, ba = 0;
+    D.lines.forEach(function(l){ var c = lineCost(l); tot += c.total; still += c.still; own += c.own; sk += c.sk; l.parts.forEach(function(p){ p.ops.forEach(function(r){ ba += r.ba; }); }); });
+    var am = D.ops.filter(function(o){ return oRate(o) != null; }).length, ex = D.ops.filter(function(o){ return o.extra && !gone(o); }).length + P.add.length;
     var cards = [
-      ['k-blue',  'Operations', ROWS.length, ROWS.filter(function(r){ return r.bq > 0; }).length + ' worked on this order'],
-      ['k-amber', 'Amended', am, am ? 'this order pays its own rate' : 'all on standard'],
-      ['k-green', 'Already booked', 'PKR ' + n2(ba), qn(bq) + ' pcs — never re-priced'],
-      [x > 0.5 ? 'k-red' : 'k-grey', 'Extra on what is left', Math.abs(x) < 0.5 ? 'PKR 0' : (x > 0 ? '+' : '') + pk(x), qn(st) + ' pcs still to make' + (edit ? ' (with your changes)' : '')]
+      ['k-blue', 'PI lines', D.lines.length, D.ops.length + ' operations'],
+      ['k-amber', 'Own rates', am + own, am + ' for the order · ' + own + ' for one line'],
+      ['k-grey', 'Skipped / added', sk + ' / ' + ex, 'operations this order does not do / does extra'],
+      ['k-green', 'Labour for the order', pk(tot), pk(ba) + ' already booked · ' + pk(still) + ' still to make' + (edit ? ' (with your changes)' : '')]
     ];
     $('orKpi').innerHTML = cards.map(function(c){ return '<div class="zf-kpi ' + c[0] + '"><span>' + c[1] + '</span><b>' + c[2] + '</b><small>' + c[3] + '</small></div>'; }).join('');
   }
-  function nChanged(){ return ROWS.filter(changed).length; }
-  function foot(){
-    var f = $('orFoot'); if (!f) return;
-    f.hidden = !edit;
-    var n = nChanged();
-    $('orChg').innerHTML = n ? '<b>' + n + '</b> change' + (n === 1 ? '' : 's') : 'Type the rate this order pays — blank or Reset = standard';
-    $('orSave').textContent = n ? 'Save ' + n + ' change' + (n === 1 ? '' : 's') : 'Save';
-    $('orSave').disabled = !n;
+
+  function want(txt){ var t = $('orS').value.trim().toLowerCase().split(/\s+/).filter(Boolean); txt = txt.toLowerCase(); return t.every(function(w){ return txt.indexOf(w) >= 0; }); }
+  function partOpts(item){
+    var seen = {}, out = [];
+    D.lines.forEach(function(l){ if (item && l.item !== item) return; l.parts.forEach(function(p){ if (!seen[p.part_id]) { seen[p.part_id] = 1; out.push([p.part_id, p.part]); } }); });
+    return out.map(function(p){ return '<option value="' + p[0] + '">' + esc(p[1]) + '</option>'; }).join('');
+  }
+  function addForm(item){
+    return '<tr><td colspan="9" style="padding:0"><div class="or-add" data-add="' + item + '"><b style="font-size:12.5px">+ Add an operation for ' + (item ? 'this line' : 'the whole order') + '</b>'
+      + '<select class="ap">' + partOpts(item) + '</select><select class="as">' + D.stages.map(function(s){ return '<option value="' + s.id + '">' + esc(s.name) + '</option>'; }).join('') + '</select>'
+      + '<input class="nm" placeholder="Operation, e.g. Extra wash" maxlength="120"><input class="rt" placeholder="Rate" inputmode="decimal">'
+      + '<button type="button" class="zf-btn sm pri" data-addgo="' + item + '">Add</button></div></td></tr>';
+  }
+  function tag(o){ return (o.extra ? '<span class="pill-x ex" title="Added for this order only">extra' + (o.extra_item ? ' · one line' : '') + '</span>' : ''); }
+
+  /* ---------------- BY OPERATION: one rate for the whole order ---------------- */
+  function paintOp(){
+    $('orHead').innerHTML = '<tr><th>Part · operation</th><th>Stage</th><th class="n">Standard</th><th class="n">This order pays</th><th class="n">Lines</th><th class="n">Booked</th><th class="n">Still to make</th><th>Skip</th><th></th></tr>';
+    var by = {}, order = [], n = 0, h = '';
+    D.ops.forEach(function(o){ if (!by[o.part]) { by[o.part] = []; order.push(o.part); } by[o.part].push(o); });
+    if (edit) h += addForm(0);
+    order.forEach(function(pn){
+      var rs = by[pn].filter(function(o){ return want(pn + ' ' + o.op + ' ' + o.stage); }), adds = P.add.filter(function(a){ return a.item === 0 && a.pname === pn; });
+      if (!rs.length && !adds.length) return;
+      var g = 'p' + pn, shut = open[g] === false;
+      h += '<tr class="or-g' + (shut ? ' shut' : '') + '" data-g="' + esc(g) + '"><td colspan="9"><span class="car">▾</span> ' + esc(pn) + '<small>' + rs.length + ' operation' + (rs.length === 1 ? '' : 's') + '</small></td></tr>';
+      if (shut) return;
+      rs.forEach(function(o){
+        n++;
+        var bq = 0, ba = 0, still = 0, nl = 0;
+        D.lines.forEach(function(l){ l.parts.forEach(function(p){ p.ops.forEach(function(r){ if (r.id !== o.id) return; nl++; bq += r.bq; ba += r.ba; if (!skipped(l, r)) still += Math.max(0, r.need - r.done); }); }); });
+        var e = oRate(o), sk = oSkip(o), rm = gone(o);
+        var ch = edit && ((P.orate[o.id] != null) || (P.oskip[o.id] != null && P.oskip[o.id] !== o.oskip) || rm);
+        h += '<tr class="or-r' + (ch ? ' chg' : '') + (sk || rm ? ' skip' : '') + '" style="box-shadow:inset 4px 0 0 ' + stStyle(o.stage)[1] + '">'
+          + '<td>' + esc(o.op) + tag(o) + (sk ? '<span class="pill-x sk">skipped</span>' : '') + (rm ? '<span class="pill-x sk">removed</span>' : '') + '</td>'
+          + '<td>' + stPill(o.stage) + '</td><td class="n">' + n2(o.std) + '</td>'
+          + '<td class="n">' + (edit && !rm ? '<input class="or-in" data-or="' + o.id + '" inputmode="decimal" value="' + esc(P.orate[o.id] != null ? P.orate[o.id] : (o.orate === null ? '' : o.orate.toFixed(2))) + '" placeholder="' + n2(o.std) + '">'
+              : (e === null ? '<span class="mut">standard</span>' : '<b>' + n2(e) + '</b>' + (e > o.std ? ' <span class="up">▲</span>' : e < o.std ? ' <span class="dn">▼</span>' : ''))) + '</td>'
+          + '<td class="n">' + nl + '/' + D.lines.length + '</td>'
+          + '<td class="n">' + (bq > 0 ? qn(bq) + ' pcs<div class="s2">PKR ' + n2(ba) + '</div>' : '<span class="mut">—</span>') + '</td>'
+          + '<td class="n">' + (still > 0 ? qn(still) : '<span class="mut">0</span>') + '</td>'
+          + '<td class="sk">' + (edit && !rm ? '<label class="skc"><input type="checkbox" data-os="' + o.id + '"' + (sk ? ' checked' : '') + '> whole order</label>' : '') + '</td>'
+          + '<td>' + (edit && o.extra ? (rm ? '<button type="button" class="zf-btn sm" data-unrm="' + o.id + '">Keep</button>' : '<button type="button" class="zf-btn sm" data-rm="' + o.id + '">Remove</button>') : '') + '</td></tr>';
+      });
+      adds.forEach(function(a, i){ h += newRow(a); });
+    });
+    P.add.filter(function(a){ return a.item === 0 && order.indexOf(a.pname) < 0; }).forEach(function(a){ h += newRow(a); });
+    $('orBody').innerHTML = h || '<tr><td colspan="9"><div class="zf-none">Nothing matches.</div></td></tr>';
+    $('orCnt').textContent = n + ' of ' + D.ops.length + ' operations';
+  }
+  function newRow(a){
+    return '<tr class="or-r chg"><td>' + esc(a.pname) + ' · ' + esc(a.name) + '<span class="pill-x new">new' + (a.item ? ' · this line' : '') + '</span></td><td>' + stPill(a.sname) + '</td><td class="n">—</td><td class="n"><b>' + n2(a.rate) + '</b></td>'
+      + '<td colspan="4"></td><td><button type="button" class="zf-btn sm" data-undoadd="' + P.add.indexOf(a) + '">Undo</button></td></tr>';
   }
 
-  $('orSeg').addEventListener('click', function(e){
-    var b = e.target.closest('button'); if (!b) return;
-    filt = b.dataset.f;
-    [].forEach.call(this.querySelectorAll('button'), function(x){ x.classList.toggle('on', x === b); });
-    paint();
-  });
+  /* ---------------- BY PI LINE: each line on its own ---------------- */
+  function paintLine(){
+    var C = D.order.currency || '';
+    $('orHead').innerHTML = '<tr><th>Part · operation</th><th>Stage</th><th class="n">Order rate</th><th class="n">This line pays</th><th class="n">Booked on line</th><th class="n">Still to make</th><th class="n">Cost</th><th>Skip</th><th></th></tr>';
+    var h = '', n = 0;
+    D.lines.forEach(function(l){
+      var hay = l.prod + ' ' + l.size; var any = want(hay) || l.parts.some(function(p){ return p.ops.some(function(r){ var o = OP[r.id]; return want(p.part + ' ' + o.op + ' ' + o.stage); }); });
+      if (!any) return;
+      n++;
+      var c = lineCost(l), g = 'l' + l.item, shut = !open[g];
+      h += '<tr class="or-l' + (shut ? ' shut' : '') + '" data-g="' + g + '"><td colspan="9"><span class="car">' + (shut ? '▸' : '▾') + '</span> <b>Line ' + l.no + ' · ' + esc(l.prod) + '</b>'
+        + (l.size ? '<span class="lm">' + esc(l.size) + '</span>' : '') + '<span class="lm">' + qn(l.qty) + ' pcs' + (l.price ? ' · sale ' + esc(C) + ' ' + n2(l.price) : '') + '</span>'
+        + (c.own ? '<span class="pill-x ln">' + c.own + ' own rate' + (c.own === 1 ? '' : 's') + '</span>' : '') + (c.sk ? '<span class="pill-x sk">' + c.sk + ' skipped</span>' : '')
+        + '<span class="lc">labour <b>PKR ' + n2(l.qty ? c.total / l.qty : 0) + '</b>/pc · ' + pk(c.total) + '</span></td></tr>';
+      if (shut) return;
+      l.parts.forEach(function(p){
+        p.ops.forEach(function(r){
+          var o = OP[r.id]; if (!want(p.part + ' ' + o.op + ' ' + o.stage + ' ' + hay)) return;
+          var k = key(l, r), lr = lRate(l, r), e = effLine(l, r), os = oSkip(o), ls = lSkip(l, r), sk = os || ls || gone(o), base = oRate(o) != null ? oRate(o) : r.base;
+          var ch = edit && ((P.lrate[k] != null) || (P.lskip[k] != null && P.lskip[k] !== r.lskip));
+          h += '<tr class="or-r' + (ch ? ' chg' : '') + (sk ? ' skip' : '') + '" style="box-shadow:inset 4px 0 0 ' + stStyle(o.stage)[1] + '">'
+            + '<td>' + esc(p.part) + '<div class="s2">' + esc(o.op) + tag(o) + (os ? '<span class="pill-x sk">skipped for order</span>' : ls ? '<span class="pill-x sk">skipped</span>' : '') + '</div></td>'
+            + '<td>' + stPill(o.stage) + '</td><td class="n">' + n2(base) + (oRate(o) != null ? '<span class="tag">order</span>' : r.base !== o.std ? '<span class="tag">size</span>' : '') + '</td>'
+            + '<td class="n">' + (edit && !sk ? '<input class="or-in" data-lr="' + k + '" inputmode="decimal" value="' + esc(P.lrate[k] != null ? P.lrate[k] : (r.lrate === null ? '' : r.lrate.toFixed(2))) + '" placeholder="' + n2(base) + '">'
+                : (lr == null ? '<span class="mut">same</span>' : '<b>' + n2(lr) + '</b> <span class="pill-x ln">this line</span>')) + '</td>'
+            + '<td class="n">' + (r.bq > 0 ? qn(r.bq) + ' pcs<div class="s2">PKR ' + n2(r.ba) + '</div>' : '<span class="mut">—</span>') + '</td>'
+            + '<td class="n">' + (sk ? '<span class="mut">—</span>' : qn(Math.max(0, r.need - r.done))) + '</td>'
+            + '<td class="n">' + (sk ? '<span class="mut">0</span>' : pk(r.need * e)) + '</td>'
+            + '<td class="sk">' + (edit && !os && !gone(o) ? '<label class="skc"><input type="checkbox" data-ls="' + k + '"' + (ls ? ' checked' : '') + '> this line</label>' : '') + '</td><td></td></tr>';
+        });
+      });
+      P.add.filter(function(a){ return (a.item === l.item || a.item === 0) && l.parts.some(function(p){ return p.part_id === a.part; }); }).forEach(function(a){ h += newRow(a); });
+      if (edit) h += addForm(l.item);
+    });
+    $('orBody').innerHTML = h || '<tr><td colspan="9"><div class="zf-none">Nothing matches.</div></td></tr>';
+    $('orCnt').textContent = n + ' of ' + D.lines.length + ' lines';
+  }
+
+  function paint(){
+    [].forEach.call($('orView').children, function(b){ b.classList.toggle('on', b.dataset.v === view); });
+    view === 'op' ? paintOp() : paintLine();
+    kpis(); foot();
+  }
+  function foot(){
+    var f = $('orFoot'); f.hidden = !edit; if (!edit) return;
+    var n = changes();
+    $('orChg').innerHTML = n ? '<b>' + n + '</b> change' + (n === 1 ? '' : 's') : 'Type a rate (blank = back to the one above it), tick Skip, or add an operation';
+    $('orSave').textContent = n ? 'Save ' + n + ' change' + (n === 1 ? '' : 's') : 'Save'; $('orSave').disabled = !n;
+  }
+  function toast(t, bad){ var x = document.createElement('div'); x.className = 'or-toast' + (bad ? ' bad' : ''); x.textContent = t; document.querySelector('.zf.or').appendChild(x); setTimeout(function(){ x.remove(); }, bad ? 6000 : 3500); }
+
+  $('orView').addEventListener('click', function(e){ var b = e.target.closest('button'); if (!b) return; view = b.dataset.v; paint(); });
   $('orS').addEventListener('input', paint);
+  $('orOpen').addEventListener('click', function(){ D.lines.forEach(function(l){ open['l' + l.item] = true; }); Object.keys(open).forEach(function(k){ if (k[0] === 'p') open[k] = true; }); D.ops.forEach(function(o){ open['p' + o.part] = true; }); paint(); });
+  $('orShut').addEventListener('click', function(){ D.lines.forEach(function(l){ open['l' + l.item] = false; }); D.ops.forEach(function(o){ open['p' + o.part] = false; }); paint(); });
   $('orBody').addEventListener('click', function(e){
-    var g = e.target.closest('tr.or-g');
-    if (g) { var k = g.dataset.g; shut[k] = !shut[k]; paint(); return; }
-    var rb = e.target.closest('[data-reset]');
-    if (rb) { var id = +rb.dataset.reset, r = ROWS.filter(function(x){ return x.id === id; })[0]; if (r && r.rate === null) delete pend[id]; else pend[id] = ''; paint(); }
+    var g = e.target.closest('tr.or-g, tr.or-l');
+    if (g && !e.target.closest('input,button,select,label')) { var k = g.dataset.g; open[k] = k[0] === 'l' ? !open[k] : open[k] === false; paint(); return; }
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.rm) { P.remove[b.dataset.rm] = true; paint(); }
+    else if (b.dataset.unrm) { delete P.remove[b.dataset.unrm]; paint(); }
+    else if (b.dataset.undoadd != null) { P.add.splice(+b.dataset.undoadd, 1); paint(); }
+    else if (b.dataset.addgo != null) {
+      var box = b.closest('.or-add'), it = +b.dataset.addgo, ap = box.querySelector('.ap'), as = box.querySelector('.as'), nm = box.querySelector('.nm').value.trim(), rt = num(box.querySelector('.rt').value);
+      if (!nm) { box.querySelector('.nm').focus(); return toast('Give the new operation a name.', true); }
+      if (rt === null || isNaN(rt)) { box.querySelector('.rt').focus(); return toast('Give the new operation a rate.', true); }
+      P.add.push({ item: it, part: +ap.value, pname: ap.options[ap.selectedIndex].text, stage: +as.value, sname: as.options[as.selectedIndex].text, name: nm, rate: rt });
+      if (it) open['l' + it] = true; paint();
+    }
   });
-  /* typing updates the row's figures without redrawing the box being typed in */
+  $('orBody').addEventListener('change', function(e){
+    var t = e.target;
+    if (t.dataset.os) { var o = OP[t.dataset.os]; if (t.checked === o.oskip) delete P.oskip[o.id]; else P.oskip[o.id] = t.checked; paint(); }
+    if (t.dataset.ls) { var parts = t.dataset.ls.split(':'), r = null; D.lines.forEach(function(l){ if (l.item === +parts[0]) l.parts.forEach(function(p){ p.ops.forEach(function(x){ if (x.id === +parts[1]) r = x; }); }); });
+      if (r && t.checked === r.lskip) delete P.lskip[t.dataset.ls]; else P.lskip[t.dataset.ls] = t.checked; paint(); }
+  });
+  /* typing updates the figures without losing the cursor */
   $('orBody').addEventListener('input', function(e){
-    var i = e.target.closest('.or-in'); if (!i) return;
-    pend[+i.dataset.id] = i.value;
-    var pos = i.selectionStart, id = i.dataset.id;
-    paint();
-    var again = document.querySelector('.or-in[data-id="' + id + '"]'); if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (x) {} }
+    var i = e.target; if (!i.classList.contains('or-in')) return;
+    var sel = i.dataset.or ? '[data-or="' + i.dataset.or + '"]' : '[data-lr="' + i.dataset.lr + '"]';
+    if (i.dataset.or) P.orate[i.dataset.or] = i.value; else P.lrate[i.dataset.lr] = i.value;
+    var pos = i.selectionStart; paint();
+    var again = document.querySelector('.or-in' + sel); if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (x) {} }
   });
   $('orBody').addEventListener('keydown', function(e){
-    var i = e.target.closest('.or-in'); if (!i || e.key !== 'Enter') return;
-    e.preventDefault();
+    var i = e.target.closest('.or-in'); if (!i || e.key !== 'Enter') return; e.preventDefault();
     var all = [].slice.call(document.querySelectorAll('.or-in')), k = all.indexOf(i);
     if (all[k + 1]) { all[k + 1].focus(); all[k + 1].select(); } else $('orWhy').focus();
   });
 
   if (CAN && $('orEditBtn')) {
-    $('orEditBtn').addEventListener('click', function(){
-      if (edit) return;
-      edit = true; pend = {}; this.hidden = true;
-      paint();
-      var f = document.querySelector('.or-in'); if (f) { f.focus(); f.select(); }
-    });
+    $('orEditBtn').addEventListener('click', function(){ if (edit) return; edit = true; reset(); this.hidden = true; paint(); });
     $('orDiscard').addEventListener('click', function(){
-      if (nChanged() && !confirm('Throw away the changes you typed?')) return;
-      edit = false; pend = {}; $('orEditBtn').hidden = false; $('orWhy').value = ''; paint();
+      if (changes() && !confirm('Throw away the changes you typed?')) return;
+      edit = false; reset(); $('orEditBtn').hidden = false; $('orWhy').value = ''; paint();
     });
     $('orSave').addEventListener('click', function(){
-      var ch = ROWS.filter(changed);
-      if (!ch.length) return;
+      var n = changes(); if (!n) return;
       var why = $('orWhy').value.trim();
-      if (!why) { $('orWhy').focus(); $('orWhy').placeholder = 'A reason is required — e.g. double-stitched hem in the contract'; $('orWhy').style.borderColor = '#b42318'; return; }
-      var bad = ch.filter(function(r){ var s = String(pend[r.id]).trim(); return s !== '' && s !== 'std' && (isNaN(parseFloat(s.replace(/,/g, ''))) || parseFloat(s.replace(/,/g, '')) < 0); });
-      if (bad.length) { alert('"' + pend[bad[0].id] + '" is not a rate.'); return; }
-      var f = $('orForm');
-      f.reason.value = why;
-      ch.forEach(function(r){
-        var e = eff(r);
-        [['op[]', r.id], ['rate[]', e === null ? 'std' : e.toFixed(2)]].forEach(function(kv){
-          var h = document.createElement('input'); h.type = 'hidden'; h.name = kv[0]; h.value = kv[1]; f.appendChild(h);
-        });
-      });
-      window.onbeforeunload = null;
-      f.submit();
+      if (!why) { $('orWhy').focus(); $('orWhy').style.borderColor = '#b42318'; $('orWhy').placeholder = 'A reason is required — e.g. double-stitched hem in the contract'; return; }
+      var bad = Object.keys(P.orate).map(function(k){ return P.orate[k]; }).concat(Object.keys(P.lrate).map(function(k){ return P.lrate[k]; })).filter(function(v){ return isNaN(num(v)); });
+      if (bad.length) return toast('"' + bad[0] + '" is not a rate.', true);
+      var ch = { orate: P.orate, lrate: P.lrate, oskip: P.oskip, lskip: P.lskip, remove: Object.keys(P.remove).map(Number),
+                 add: P.add.map(function(a){ return { item: a.item, part: a.part, stage: a.stage, name: a.name, rate: a.rate }; }) };
+      var fd = new FormData($('orTok')); fd.append('action', 'save_json'); fd.append('proforma_id', PF); fd.append('reason', why); fd.append('changes', JSON.stringify(ch));
+      var b = this; b.disabled = true; b.textContent = 'Saving…';
+      fetch(location.pathname + '?order=' + PF, { method: 'POST', body: fd, credentials: 'same-origin' }).then(function(r){ return r.json(); }).then(function(r){
+        if (!r.ok) { b.disabled = false; foot(); return toast(r.error || 'Not saved.', true); }
+        D = r; index(); edit = false; reset(); $('orEditBtn').hidden = false; $('orWhy').value = ''; $('orWhy').style.borderColor = '';
+        if (r.history) paintHist(r.history);
+        paint(); toast(r.saved + ' change' + (r.saved === 1 ? '' : 's') + ' saved — work booked from now on follows them. Wages already booked are unchanged.');
+      }).catch(function(){ b.disabled = false; foot(); toast('The server could not be reached. Nothing was saved; try again.', true); });
     });
-    window.onbeforeunload = function(){ return edit && nChanged() ? 'You have unsaved rate changes.' : undefined; };
+    window.addEventListener('beforeunload', function(e){ if (edit && changes()) { e.preventDefault(); e.returnValue = ''; } });
+  }
+  function paintHist(H){
+    $('orHn').textContent = H.length;
+    $('orHist').innerHTML = H.length ? H.map(function(h){ var d = new Date(String(h.created_at).replace(' ', 'T'));
+      return '<tr style="cursor:default"><td class="n" style="text-align:left">' + esc(d.toLocaleString('en-GB', {day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'})) + '</td>'
+        + '<td>' + esc(h.part_name || '—') + '<div class="s2">' + esc(h.operation_name || '—') + '</div></td><td>' + (h.proforma_id ? '<span class="zf-pill p-draft">this order</span>' : '<span class="zf-pill p-grey">standard</span>') + '</td>'
+        + '<td class="n">' + (h.old_rate === null ? '—' : n2(+h.old_rate)) + '</td><td class="n"><b>' + n2(+h.new_rate) + '</b></td><td style="color:var(--mut)">' + esc(h.reason || '—') + '</td></tr>'; }).join('')
+      : '<tr><td colspan="6"><div class="zf-none">Nothing has changed yet.</div></td></tr>';
   }
   paint();
 })();

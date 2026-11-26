@@ -90,12 +90,12 @@ if ($worker) {
         foreach (zp_product_parts($pid) as $p) {
             $partId = (int)$p['id'];
             $needed = zp_pieces_needed($l, $partId);
-            foreach (zp_part_ops($partId, true) as $o) {
+            foreach (zp_line_ops((int)$l['item_id'], $partId, (int)$l['proforma_id']) as $o) {
                 $opId = (int)$o['id'];
                 $left = zp_remaining($l, $partId, $opId, (string)$o['stage'], $prog);
                 if ($left <= 0.0001) continue;               // finished — not work
                 $done = (float)($prog['op'][(int)$l['item_id']][$partId][$opId] ?? 0);
-                $rate = zp_rate_for($opId, (float)$o['rate'], zp_order_rate_map((int)$l['proforma_id']));
+                $rate = zp_rate_for($opId, (float)$o['rate'], zp_line_rate_map((int)$l['proforma_id'], (int)$l['item_id']));
                 $cards[] = [
                     'item_id' => (int)$l['item_id'], 'op_id' => $opId,
                     'pi' => $l['pi_no'], 'customer' => $l['customer_name'],

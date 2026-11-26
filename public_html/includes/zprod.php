@@ -446,6 +446,44 @@ function zp_ensure_schema(): void {
         cancel_reason VARCHAR(255) NULL,
         INDEX(pay_date), INDEX(worker_id), INDEX(status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- ONE ORDER LINE PAYS DIFFERENTLY (owner, 26 Nov 2026): the same
+       product on two proforma lines at two sale prices. Most specific wins:
+       this line, then this order, then the size, then the standard. ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_line_rates (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        proforma_id INT NOT NULL,
+        proforma_item_id INT NOT NULL,
+        op_id INT NOT NULL,
+        rate DECIMAL(12,2) NOT NULL,
+        reason VARCHAR(255) NOT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_line_op (proforma_item_id, op_id),
+        INDEX(proforma_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- AN OPERATION THIS ORDER (item 0) OR ONE LINE DOES NOT NEED: it
+       leaves the work list, the stage flow and the cost for that order/line.
+       Work already booked on it stays paid. ---- */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_op_skip (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        proforma_id INT NOT NULL,
+        proforma_item_id INT NOT NULL DEFAULT 0,
+        op_id INT NOT NULL,
+        reason VARCHAR(255) NOT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_skip (proforma_id, proforma_item_id, op_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
+    /* ---- AN EXTRA OPERATION FOR ONE ORDER (or one line of it): a real
+       operation row, so a wage booked on it is filed, named and reported like
+       any other — but it belongs to that order only and never shows on the
+       part itself or on any other order. ---- */
+    try { db()->exec("ALTER TABLE zp_part_ops ADD COLUMN only_proforma_id INT NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    try { db()->exec("ALTER TABLE zp_part_ops ADD COLUMN only_item_id INT NOT NULL DEFAULT 0"); } catch (Throwable $e) {}
+    try { db()->exec("CREATE INDEX idx_zpo_only ON zp_part_ops (only_proforma_id)"); } catch (Throwable $e) {}
     zas_schema_mark('zp', [__FILE__]);
 }
 
@@ -665,10 +703,87 @@ function zp_duplicate_part(int $id, ?int $userId = null): array {
 function zp_part_ops(int $partId, bool $activeOnly = false): array {
     if ($partId <= 0) return [];
     zp_ensure_schema();
-    $sql = "SELECT * FROM zp_part_ops WHERE part_id=?" . ($activeOnly ? " AND is_active=1" : "") . " ORDER BY seq, id";
-    $st = db()->prepare($sql);
-    $st->execute([$partId]);
+    /* the part's OWN operations: an extra added for one order is not one of them */
+    $sql = "SELECT * FROM zp_part_ops WHERE part_id=? AND only_proforma_id IS NULL" . ($activeOnly ? " AND is_active=1" : "") . " ORDER BY seq, id";
+    try {
+        $st = db()->prepare($sql);
+        $st->execute([$partId]);
+    } catch (Throwable $e) {                       // before the column exists
+        $st = db()->prepare("SELECT * FROM zp_part_ops WHERE part_id=?" . ($activeOnly ? " AND is_active=1" : "") . " ORDER BY seq, id");
+        $st->execute([$partId]);
+    }
     return $st->fetchAll();
+}
+
+/* ============================================================
+   ONE ORDER, ONE LINE — what it skips, what it adds, what it pays
+   (owner, 26 Nov 2026)
+   ============================================================
+   Everything here is read ONCE per request into small maps. An order with no
+   skip, no extra and no line rate gets exactly zp_part_ops() and the order
+   rates, so nothing changes for it. */
+function zp_line_ctx(bool $fresh = false): array {
+    static $c = null;
+    if ($fresh) $c = null;
+    if ($c !== null) return $c;
+    $c = ['skip' => [], 'extra' => [], 'lrate' => [], 'pf' => []];
+    zp_ensure_schema();
+    try {
+        foreach (db()->query("SELECT proforma_id, proforma_item_id, op_id FROM zp_op_skip")->fetchAll() as $r)
+            $c['skip'][(int)$r['proforma_id']][(int)$r['proforma_item_id']][(int)$r['op_id']] = true;
+        foreach (db()->query("SELECT * FROM zp_part_ops WHERE only_proforma_id IS NOT NULL AND is_active=1 ORDER BY seq, id")->fetchAll() as $r)
+            $c['extra'][(int)$r['part_id']][] = $r;
+        foreach (db()->query("SELECT proforma_item_id, op_id, rate FROM zp_line_rates")->fetchAll() as $r)
+            $c['lrate'][(int)$r['proforma_item_id']][(int)$r['op_id']] = (float)$r['rate'];
+    } catch (Throwable $e) {}
+    return $c;
+}
+/* which order an order line belongs to — read once */
+function zp_item_order(int $itemId): int {
+    static $m = null;
+    if ($itemId <= 0) return 0;
+    if ($m === null || !isset($m[$itemId])) {
+        try {
+            $st = db()->prepare("SELECT proforma_id FROM proforma_items WHERE id=?");
+            $st->execute([$itemId]);
+            $m[$itemId] = (int)$st->fetchColumn();
+        } catch (Throwable $e) { $m[$itemId] = 0; }
+    }
+    return $m[$itemId];
+}
+/* Is this operation skipped for this line (by the line itself, or by its whole order)? */
+function zp_op_skipped(int $proformaId, int $itemId, int $opId): bool {
+    $s = zp_line_ctx()['skip'][$proformaId] ?? [];
+    return isset($s[0][$opId]) || ($itemId > 0 && isset($s[$itemId][$opId]));
+}
+/* THE OPERATIONS ONE ORDER LINE ACTUALLY NEEDS on one part: the part's own,
+   minus what is skipped for it, plus what was added for its order or for it. */
+function zp_line_ops(int $itemId, int $partId, int $proformaId = 0): array {
+    $ops = zp_part_ops($partId, true);
+    if ($itemId <= 0) return $ops;
+    $c = zp_line_ctx();
+    $pf = $proformaId > 0 ? $proformaId : zp_item_order($itemId);
+    if (!isset($c['skip'][$pf]) && empty($c['extra'][$partId])) return $ops;
+    $out = [];
+    foreach ($ops as $o) if (!zp_op_skipped($pf, $itemId, (int)$o['id'])) $out[] = $o;
+    foreach ($c['extra'][$partId] ?? [] as $o) {
+        if ((int)$o['only_proforma_id'] !== $pf) continue;
+        if ((int)$o['only_item_id'] !== 0 && (int)$o['only_item_id'] !== $itemId) continue;
+        if (zp_op_skipped($pf, $itemId, (int)$o['id'])) continue;
+        $out[] = $o;
+    }
+    if (count($out) !== count($ops)) {
+        /* in the order the work happens: stage, then the operation's own place */
+        $pos = []; foreach (zp_stage_all(true) as $i => $st) $pos[(int)$st['id']] = $i;
+        usort($out, fn($a, $b) => (($pos[(int)($a['stage_id'] ?? 0)] ?? 99) <=> ($pos[(int)($b['stage_id'] ?? 0)] ?? 99)) ?: ((int)$a['seq'] <=> (int)$b['seq']) ?: ((int)$a['id'] <=> (int)$b['id']));
+    }
+    return $out;
+}
+/* The rates one order line pays: its order's amendments, with its own on top. */
+function zp_line_rate_map(int $proformaId, int $itemId): array {
+    $m = zp_order_rate_map($proformaId);
+    foreach (zp_line_ctx()['lrate'][$itemId] ?? [] as $op => $r) $m[$op] = $r;
+    return $m;
 }
 
 /* Save the whole grid for one part in one go.
@@ -1488,20 +1603,24 @@ function zp_size_note(array $line): string {
    for the ACTIVE stages this part has active operations in. Position 0 is the
    first stage — the one that makes the pieces. Held for the request: the
    entry list asks once per order line. */
-function zp_part_stage_ops(int $partId): array {
+function zp_part_stage_ops(int $partId, int $itemId = 0): array {
     static $cache = [];
-    if (isset($cache[$partId])) return $cache[$partId];
+    $ck = $partId . ':' . $itemId;
+    if (isset($cache[$ck])) return $cache[$ck];
     $pos = []; $nm = [];
     foreach (zp_stage_all(true) as $i => $st) { $pos[(int)$st['id']] = $i; $nm[mb_strtolower(trim((string)$st['name']))] = $i; }
     $out = [];
-    foreach (zp_part_ops($partId, true) as $o) {
+    /* for one order line: its own list (skips out, extras in). The guard keeps
+       the stand-alone copies of this function in the tests working. */
+    $ops = ($itemId > 0 && function_exists('zp_line_ops')) ? zp_line_ops($itemId, $partId) : zp_part_ops($partId, true);
+    foreach ($ops as $o) {
         $i = $pos[(int)($o['stage_id'] ?? 0)] ?? ($nm[mb_strtolower(trim((string)$o['stage']))] ?? null);
         if ($i === null) continue;                       // a stage switched off is not part of the flow
         $out[$i]['name'] = (string)(zp_stage_all(true)[$i]['name'] ?? '');
         $out[$i]['ops'][] = (int)$o['id'];
     }
     ksort($out);
-    return $cache[$partId] = $out;
+    return $cache[$ck] = $out;
 }
 function zp_stage_pos(string $stage): ?int {
     foreach (zp_stage_all(true) as $i => $st) if (mb_strtolower(trim((string)$st['name'])) === mb_strtolower(trim($stage))) return $i;
@@ -1510,10 +1629,10 @@ function zp_stage_pos(string $stage): ?int {
 /* THE STAGE THAT FEEDS THIS ONE on this part: the nearest earlier stage the
    part has operations in. Null when that is the first stage (cutting) or
    there is none — then the cut count is the limit, exactly as before. */
-function zp_stage_feeder(int $partId, string $stage): ?array {
+function zp_stage_feeder(int $partId, string $stage, int $itemId = 0): ?array {
     $me = zp_stage_pos($stage);
     if ($me === null || $me === 0) return null;
-    $all = zp_part_stage_ops($partId);
+    $all = zp_part_stage_ops($partId, $itemId);
     for ($i = $me - 1; $i >= 1; $i--) if (!empty($all[$i]['ops'])) return $all[$i];
     return null;
 }
@@ -1542,12 +1661,12 @@ function zp_flow_problem(int $itemId, int $partId, ?array $prog = null): string 
     $qn = fn($v) => rtrim(rtrim(number_format($v, 2), '0'), '.');
     $used = zp_sets_used($itemId, $partId);
     if ($used > 0.0001) {
-        $fin = zp_stage_through($prog, $itemId, $partId, array_map(fn($o) => (int)$o['id'], zp_part_ops($partId, true)));
+        $fin = zp_stage_through($prog, $itemId, $partId, array_map(fn($o) => (int)$o['id'], function_exists('zp_line_ops') ? zp_line_ops($itemId, $partId) : zp_part_ops($partId, true)));
         if ($fin < $used - 0.0001) return $qn($used) . ' of these pieces were already made into sets, but only ' . $qn($fin) . ' would be finished.';
     }
     $cut = (float)($prog['stage'][$itemId][$partId]['cut'] ?? 0);
     $prev = null;
-    foreach (zp_part_stage_ops($partId) as $i => $sg) {
+    foreach (zp_part_stage_ops($partId, $itemId) as $i => $sg) {
         if ($i === 0) { $prev = $sg; continue; }
         $most = 0.0;
         foreach ($sg['ops'] as $oid) $most = max($most, (float)($prog['op'][$itemId][$partId][$oid] ?? 0));
@@ -1585,7 +1704,7 @@ function zp_remaining(array $line, int $partId, int $opId, string $stage, array 
         /* A LATER STAGE WAITS FOR THE ONE BEFORE IT, not only for cutting:
            Packing cannot pass the pieces that have been through every
            Stitching operation (Overlock 900, Hem 600 → 600 can be packed). */
-        $feed = zp_stage_feeder($partId, $stage);
+        $feed = zp_stage_feeder($partId, $stage, $itemId);
         if ($feed) $ceiling = min($ceiling, zp_stage_through($prog, $itemId, $partId, $feed['ops']));
     }
     return max(0.0, $ceiling - $done);
@@ -3483,6 +3602,14 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
         if (!$op) { $errors[] = "$label: that operation no longer exists, or has been switched off."; continue; }
         if ($partId <= 0) $partId = (int)$op['part_id'];
         if ($partId !== (int)$op['part_id']) { $errors[] = "$label: that operation belongs to a different part."; continue; }
+        /* THIS ORDER'S OWN LIST (owner, 26 Nov 2026): an operation skipped for
+           this order or line takes no new work; an extra one belongs to its own
+           order (and line) and nowhere else. */
+        $lpf = (int)$line['proforma_id'];
+        if (zp_op_skipped($lpf, $itemId, $opId)) { $errors[] = "$label: {$op['operation_name']} is skipped for this order — nothing is booked on it."; continue; }
+        if (!empty($op['only_proforma_id']) && ((int)$op['only_proforma_id'] !== $lpf || ((int)$op['only_item_id'] !== 0 && (int)$op['only_item_id'] !== $itemId))) {
+            $errors[] = "$label: {$op['operation_name']} was added for another order and cannot be booked on this one."; continue;
+        }
 
         /* the part must actually be on the product this line makes */
         $onProd = false;
@@ -3503,7 +3630,7 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
         /* cutting is open: what it shows as left is the plan, not a limit */
         if (!zp_is_cutting((string)$op['stage']) && $qty > $left + 0.0001) {
             $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
-            $feed = zp_is_cutting($op['stage']) ? null : zp_stage_feeder($partId, (string)$op['stage']);
+            $feed = zp_is_cutting($op['stage']) ? null : zp_stage_feeder($partId, (string)$op['stage'], $itemId);
             $why = ($feed
                    ? "{$op['stage']} cannot go past what has been through every {$feed['name']} operation"
                    : "only {$num} have been cut, and you cannot stitch more than was cut");
@@ -3513,13 +3640,14 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
         $batch[$key] = $taken + $qty;
 
         $pfid = (int)$line['proforma_id'];
-        if (!isset($rateCache[$pfid])) $rateCache[$pfid] = zp_order_rate_map($pfid);
+        /* the line's own rate first, then the order's (owner, 26 Nov 2026) */
+        if (!isset($rateCache[$pfid . ':' . $itemId])) $rateCache[$pfid . ':' . $itemId] = zp_line_rate_map($pfid, $itemId);
         /* the size rates belong to the PRODUCT, not the order, so they are
            cached per product — several orders of the same product share one
            lookup instead of one each */
         $prodId = (int)$line['product_id'];
         if (!isset($sizeRateCache[$prodId])) $sizeRateCache[$prodId] = zp_op_rate_map($prodId);
-        $rate = zp_rate_for($opId, (float)$op['rate'], $rateCache[$pfid],
+        $rate = zp_rate_for($opId, (float)$op['rate'], $rateCache[$pfid . ':' . $itemId],
                             $sizeRateCache[$prodId], zp_line_size_id($line));
 
         $ready[] = [
@@ -3589,7 +3717,7 @@ function zp_cancel_entry(int $id, string $reason, ?int $userId = null): array {
         $prog = zp_progress_map();
         $cut  = (float)($prog['stage'][$it][$pt]['cut'] ?? 0);
         $most = 0.0; $what = '';
-        foreach (zp_part_stage_ops($pt) as $i => $sg) {
+        foreach (zp_part_stage_ops($pt, $it) as $i => $sg) {
             if ($i === 0) continue;
             foreach ($sg['ops'] as $oid) { $d = (float)($prog['op'][$it][$pt][$oid] ?? 0); if ($d > $most) { $most = $d; $what = $sg['name']; } }
         }
@@ -3603,7 +3731,7 @@ function zp_cancel_entry(int $id, string $reason, ?int $userId = null): array {
         $used = zp_sets_used($it, $pt);
         if ($used > 0.0001) {
             $prog = $prog ?? zp_progress_map();
-            $ops = array_map(fn($o) => (int)$o['id'], zp_part_ops($pt, true));
+            $ops = array_map(fn($o) => (int)$o['id'], zp_line_ops($it, $pt));
             $fin = zp_stage_through($prog, $it, $pt, $ops);
             $prog2 = $prog; $prog2['op'][$it][$pt][(int)$e['op_id']] = (float)($prog2['op'][$it][$pt][(int)$e['op_id']] ?? 0) - (float)$e['qty'];
             $fin2 = zp_stage_through($prog2, $it, $pt, $ops);
@@ -3614,7 +3742,7 @@ function zp_cancel_entry(int $id, string $reason, ?int $userId = null): array {
     if (!zp_is_cutting((string)$e['stage']) && ($e['op_kind'] ?? 'part') === 'part') {
         /* THE SAME FOR A LATER STAGE: Stitching cannot drop below what has
            already been packed from it. */
-        $all = zp_part_stage_ops($pt); $me = zp_stage_pos((string)$e['stage']);
+        $all = zp_part_stage_ops($pt, $it); $me = zp_stage_pos((string)$e['stage']);
         $next = null;
         if ($me !== null) foreach ($all as $i => $sg) if ($i > $me) { $next = $sg; break; }
         if ($next && !empty($all[$me]['ops'])) {
@@ -3824,7 +3952,7 @@ function zp_line_flow(array $l, array $prog): array {
         $need = zp_pieces_needed($l, $pt);
         if ($need === ZP_NO_SIZE) { $noSize = true; continue; }
         if ($need <= 0) continue;
-        foreach (zp_part_stage_ops($pt) as $pos => $sg) {
+        foreach (zp_part_stage_ops($pt, $it) as $pos => $sg) {
             /* EXTRA: more booked on an operation than this line needs — allowed for
                cutting since 22 Nov 2026, so it is INFORMATION, not an error */
             foreach ($sg['ops'] as $oid) {
@@ -4151,6 +4279,179 @@ function zp_booked_on_order(int $proformaId): array {
         $st->execute([$proformaId]);
         foreach ($st->fetchAll() as $r) $out[(int)$r['op_id']] = ['qty' => (float)$r['q'], 'amt' => (float)$r['amt']];
     } catch (Throwable $e) {}
+    return $out;
+}
+
+/* ============================================================
+   ORDER RATES PAGE — everything one order carries, in one read
+   (owner, 26 Nov 2026: "by operation" and "by PI line", skip, add,
+   save without a reload)
+   ============================================================ */
+function zp_order_sheet(int $pf): array {
+    zp_ensure_schema();
+    zp_line_ctx(true);
+    $order = null;
+    foreach (zp_rate_orders() as $o) if ((int)$o['id'] === $pf) { $order = $o; break; }
+    if (!$order) return ['ok' => false, 'error' => 'That order is not switched on for production.'];
+    $cur = ''; $price = []; $no = [];
+    try {
+        $st = db()->prepare("SELECT currency FROM proforma_invoices WHERE id=?"); $st->execute([$pf]); $cur = (string)$st->fetchColumn();
+        $st = db()->prepare("SELECT id, unit_price FROM proforma_items WHERE proforma_id=? ORDER BY sort_order, id"); $st->execute([$pf]);
+        $k = 0; foreach ($st->fetchAll() as $r) { $price[(int)$r['id']] = (float)$r['unit_price']; $no[(int)$r['id']] = ++$k; }
+    } catch (Throwable $e) {}
+    $booked = [];
+    try {
+        $st = db()->prepare("SELECT proforma_item_id it, op_id, SUM(qty) q, SUM(amount) a FROM zp_entries WHERE status='active' AND proforma_id=? GROUP BY proforma_item_id, op_id");
+        $st->execute([$pf]);
+        foreach ($st->fetchAll() as $r) $booked[(int)$r['it']][(int)$r['op_id']] = [(float)$r['q'], (float)$r['a']];
+    } catch (Throwable $e) {}
+    $c = zp_line_ctx(); $orate = zp_order_rate_map($pf); $prog = zp_progress_map();
+    $ops = []; $lines = [];
+    $opRow = function (array $o, string $part) use (&$ops, $orate, $c, $pf) {
+        $id = (int)$o['id'];
+        if (!isset($ops[$id])) $ops[$id] = ['id' => $id, 'part_id' => (int)$o['part_id'], 'part' => $part, 'op' => (string)$o['operation_name'],
+            'stage' => zp_stage_name((int)($o['stage_id'] ?: zp_stage_id_for((string)$o['stage']))) ?: (string)$o['stage'],
+            'std' => round((float)$o['rate'], 2), 'orate' => array_key_exists($id, $orate) ? round((float)$orate[$id], 2) : null,
+            'oskip' => isset($c['skip'][$pf][0][$id]), 'extra' => !empty($o['only_proforma_id']) ? 1 : 0, 'extra_item' => (int)($o['only_item_id'] ?? 0),
+            'lines' => []];
+    };
+    foreach (zp_open_lines() as $l) {
+        if ((int)$l['proforma_id'] !== $pf) continue;
+        $it = (int)$l['item_id']; $pid = (int)$l['product_id'];
+        $szRates = zp_op_rate_map($pid); $szId = zp_line_size_id($l);
+        $L = ['item' => $it, 'no' => $no[$it] ?? 0, 'prod' => trim((string)$l['product_name']), 'size' => (string)($l['size'] ?? ''),
+              'qty' => (float)$l['ordered_qty'], 'price' => $price[$it] ?? 0.0, 'parts' => []];
+        foreach (zp_product_parts($pid) as $p) {
+            $pt = (int)$p['id']; $need = zp_pieces_needed($l, $pt); if ($need === ZP_NO_SIZE) $need = 0.0;
+            /* every operation this line could carry: its own list, plus the
+               skipped ones (so they can be switched back on) */
+            $cand = zp_part_ops($pt, true);
+            foreach ($c['extra'][$pt] ?? [] as $x) if ((int)$x['only_proforma_id'] === $pf && ((int)$x['only_item_id'] === 0 || (int)$x['only_item_id'] === $it)) $cand[] = $x;
+            $rows = [];
+            foreach ($cand as $o) {
+                $id = (int)$o['id']; $opRow($o, (string)$p['part_name']);
+                if (!in_array($it, $ops[$id]['lines'], true)) $ops[$id]['lines'][] = $it;
+                $done = (float)($prog['op'][$it][$pt][$id] ?? 0);
+                $rows[] = ['id' => $id, 'base' => round(zp_rate_for($id, (float)$o['rate'], [], $szRates, $szId), 2),
+                           'lrate' => isset($c['lrate'][$it][$id]) ? round($c['lrate'][$it][$id], 2) : null,
+                           'lskip' => isset($c['skip'][$pf][$it][$id]), 'need' => round($need, 2), 'done' => round($done, 2),
+                           'bq' => round($booked[$it][$id][0] ?? 0, 2), 'ba' => round($booked[$it][$id][1] ?? 0, 2)];
+            }
+            $L['parts'][] = ['part_id' => $pt, 'part' => (string)$p['part_name'], 'ops' => $rows];
+        }
+        $lines[] = $L;
+    }
+    usort($lines, fn($a, $b) => $a['no'] <=> $b['no']);
+    $stages = array_map(fn($s) => ['id' => (int)$s['id'], 'name' => (string)$s['name']], zp_stage_all(true));
+    return ['ok' => true, 'order' => ['id' => $pf, 'pi_no' => (string)$order['pi_no'], 'customer' => (string)($order['customer_name'] ?? ''), 'currency' => $cur],
+            'ops' => array_values($ops), 'lines' => $lines, 'stages' => $stages];
+}
+
+/* ALL THE CHANGES OF ONE SAVE, UNDER ONE REASON — all or nothing.
+   $ch = ['orate' => {op: "7.50"|""}, 'lrate' => {"item:op": ...}, 'oskip' => {op: true|false},
+          'lskip' => {"item:op": bool}, 'add' => [{item, part, stage, name, rate}], 'remove' => [op ids]] */
+function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): array {
+    $reason = trim($reason);
+    $sheet = zp_order_sheet($pf);
+    if (!$sheet['ok']) return $sheet;
+    if ($reason === '') return ['ok' => false, 'error' => 'Give the reason for this change — it is kept with it.'];
+    $opInfo = []; foreach ($sheet['ops'] as $o) $opInfo[$o['id']] = $o;
+    $lineOp = []; $lineParts = [];
+    foreach ($sheet['lines'] as $l) foreach ($l['parts'] as $p) { $lineParts[$l['item']][$p['part_id']] = $p['part']; foreach ($p['ops'] as $o) $lineOp[$l['item'] . ':' . $o['id']] = $o; }
+    $stageOk = []; foreach ($sheet['stages'] as $s) $stageOk[$s['id']] = $s['name'];
+    $num = function ($v) { $v = str_replace(',', '', trim((string)$v)); return is_numeric($v) && (float)$v >= 0 && (float)$v <= 100000 ? round((float)$v, 2) : null; };
+    $todo = []; $bad = [];
+    foreach ((array)($ch['orate'] ?? []) as $op => $v) {
+        $op = (int)$op; if (!isset($opInfo[$op])) { $bad[] = 'An operation that is not on this order was sent.'; continue; }
+        if (trim((string)$v) === '') { if ($opInfo[$op]['orate'] !== null) $todo[] = ['oclear', $op]; continue; }
+        $r = $num($v); if ($r === null) { $bad[] = '"' . $v . '" is not a rate.'; continue; }
+        $todo[] = ['orate', $op, $r];
+    }
+    foreach ((array)($ch['lrate'] ?? []) as $k => $v) {
+        if (!isset($lineOp[$k])) { $bad[] = 'An operation that is not on that line was sent.'; continue; }
+        [$it, $op] = array_map('intval', explode(':', $k));
+        if (trim((string)$v) === '') { if ($lineOp[$k]['lrate'] !== null) $todo[] = ['lclear', $it, $op]; continue; }
+        $r = $num($v); if ($r === null) { $bad[] = '"' . $v . '" is not a rate.'; continue; }
+        $todo[] = ['lrate', $it, $op, $r];
+    }
+    foreach ((array)($ch['oskip'] ?? []) as $op => $on) {
+        $op = (int)$op; if (!isset($opInfo[$op])) { $bad[] = 'An operation that is not on this order was sent.'; continue; }
+        if ((bool)$on !== $opInfo[$op]['oskip']) $todo[] = ['oskip', $op, (bool)$on];
+    }
+    foreach ((array)($ch['lskip'] ?? []) as $k => $on) {
+        if (!isset($lineOp[$k])) { $bad[] = 'An operation that is not on that line was sent.'; continue; }
+        [$it, $op] = array_map('intval', explode(':', $k));
+        if ((bool)$on !== $lineOp[$k]['lskip']) $todo[] = ['lskip', $it, $op, (bool)$on];
+    }
+    foreach ((array)($ch['add'] ?? []) as $a) {
+        $it = (int)($a['item'] ?? 0); $pt = (int)($a['part'] ?? 0); $sg = (int)($a['stage'] ?? 0);
+        $name = trim(preg_replace('/\s+/u', ' ', (string)($a['name'] ?? '')) ?? ''); $r = $num($a['rate'] ?? '');
+        $onPart = $it > 0 ? isset($lineParts[$it][$pt]) : (bool)array_filter($lineParts, fn($ps) => isset($ps[$pt]));
+        if (!$onPart) { $bad[] = 'A new operation must be on a part this ' . ($it ? 'line' : 'order') . ' makes.'; continue; }
+        if (!isset($stageOk[$sg])) { $bad[] = 'Choose the stage of the new operation.'; continue; }
+        if ($name === '' || mb_strlen($name) > 120) { $bad[] = 'Give the new operation a name (up to 120 letters).'; continue; }
+        if ($r === null) { $bad[] = 'Give the new operation a rate.'; continue; }
+        $todo[] = ['add', $it, $pt, $sg, $name, $r];
+    }
+    foreach ((array)($ch['remove'] ?? []) as $op) {
+        $op = (int)$op; if (!isset($opInfo[$op]) || !$opInfo[$op]['extra']) { $bad[] = 'Only an operation added for this order can be removed — skip a normal one instead.'; continue; }
+        $todo[] = ['remove', $op];
+    }
+    if ($bad) return ['ok' => false, 'error' => implode(' ', array_unique($bad)) . ' Nothing was saved.'];
+    if (!$todo) return ['ok' => false, 'error' => 'Nothing changed.'];
+    $lineName = []; foreach ($sheet['lines'] as $l) $lineName[$l['item']] = 'Line ' . $l['no'] . ' (' . $l['prod'] . ($l['size'] !== '' ? ' ' . $l['size'] : '') . ')';
+    db()->beginTransaction();
+    try {
+        foreach ($todo as $t) {
+            $o = isset($t[1]) && in_array($t[0], ['orate', 'oclear', 'oskip', 'remove'], true) ? $opInfo[$t[1]] : (isset($t[2]) && isset($opInfo[$t[2]]) ? $opInfo[$t[2]] : null);
+            switch ($t[0]) {
+                case 'orate':
+                    $r = zp_order_rate_save($pf, $t[1], $t[2], $reason, $userId);
+                    if (!$r['ok']) throw new RuntimeException($r['error']);
+                    break;
+                case 'oclear':
+                    zp_order_rate_clear($pf, $t[1], $userId);
+                    break;
+                case 'lrate':
+                    $old = $lineOp[$t[1] . ':' . $t[2]]['lrate'];
+                    db()->prepare("INSERT INTO zp_line_rates (proforma_id, proforma_item_id, op_id, rate, reason, created_by) VALUES (?,?,?,?,?,?)
+                                   ON DUPLICATE KEY UPDATE rate=VALUES(rate), reason=VALUES(reason), created_by=VALUES(created_by)")
+                        ->execute([$pf, $t[1], $t[2], $t[3], mb_substr($reason, 0, 255), $userId]);
+                    zp_rate_log($t[2], $pf, $o['part'], $o['op'], $old ?? $o['orate'] ?? $o['std'], $t[3], $lineName[$t[1]] . ' only: ' . $reason, $userId);
+                    break;
+                case 'lclear':
+                    $old = $lineOp[$t[1] . ':' . $t[2]]['lrate'];
+                    db()->prepare("DELETE FROM zp_line_rates WHERE proforma_item_id=? AND op_id=?")->execute([$t[1], $t[2]]);
+                    zp_rate_log($t[2], $pf, $o['part'], $o['op'], $old, $o['orate'] ?? $o['std'], $lineName[$t[1]] . ': back to the order rate — ' . $reason, $userId);
+                    break;
+                case 'oskip': case 'lskip':
+                    $it = $t[0] === 'oskip' ? 0 : $t[1]; $op = $t[0] === 'oskip' ? $t[1] : $t[2]; $on = $t[0] === 'oskip' ? $t[2] : $t[3];
+                    if ($on) db()->prepare("INSERT IGNORE INTO zp_op_skip (proforma_id, proforma_item_id, op_id, reason, created_by) VALUES (?,?,?,?,?)")->execute([$pf, $it, $op, mb_substr($reason, 0, 255), $userId]);
+                    else db()->prepare("DELETE FROM zp_op_skip WHERE proforma_id=? AND proforma_item_id=? AND op_id=?")->execute([$pf, $it, $op]);
+                    zp_rate_log($op, $pf, $o['part'], $o['op'], $o['std'], $o['std'], ($on ? 'SKIPPED for ' : 'Back on for ') . ($it ? $lineName[$it] : 'the whole order') . ' — ' . $reason, $userId);
+                    break;
+                case 'add':
+                    [, $it, $pt, $sg, $name, $r] = $t;
+                    $seq = (int)db()->query("SELECT COALESCE(MAX(seq),0)+1 FROM zp_part_ops WHERE part_id=" . (int)$pt)->fetchColumn();
+                    db()->prepare("INSERT INTO zp_part_ops (part_id, stage_id, seq, stage, operation_name, rate, is_active, only_proforma_id, only_item_id) VALUES (?,?,?,?,?,?,1,?,?)")
+                        ->execute([$pt, $sg, $seq, $stageOk[$sg], $name, $r, $pf, $it]);
+                    $pname = ''; foreach ($lineParts as $ps) if (isset($ps[$pt])) { $pname = $ps[$pt]; break; }
+                    zp_rate_log((int)db()->lastInsertId(), $pf, $pname, $name, null, $r, 'ADDED for ' . ($it ? $lineName[$it] : 'the whole order') . ' — ' . $reason, $userId);
+                    break;
+                case 'remove':
+                    db()->prepare("UPDATE zp_part_ops SET is_active=0 WHERE id=? AND only_proforma_id=?")->execute([$t[1], $pf]);
+                    zp_rate_log($t[1], $pf, $o['part'], $o['op'], $o['std'], 0, 'REMOVED from this order (wages already booked on it stay) — ' . $reason, $userId);
+                    break;
+            }
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return ['ok' => false, 'error' => $e->getMessage() . ' Nothing was saved.'];
+    }
+    zp_line_ctx(true);
+    $out = zp_order_sheet($pf);
+    $out['saved'] = count($todo);
     return $out;
 }
 
@@ -4621,7 +4922,7 @@ function zp_work_index(): array {
     foreach (zp_open_lines() as $l) {
         if (zp_size_problem($l) !== '') continue;     // cannot be planned, so cannot be offered
         $pid   = (int)$l['product_id'];
-        $rates = zp_order_rate_map((int)$l['proforma_id']);
+        $rates = zp_line_rate_map((int)$l['proforma_id'], (int)$l['item_id']);
         /* THE LIST MUST QUOTE WHAT THE SAVE WILL PAY. If this read the standard
            rate while zp_book() froze a size rate, the floor would be shown one
            number and paid another — and the difference would only ever surface
@@ -4630,7 +4931,7 @@ function zp_work_index(): array {
         $szId    = zp_line_size_id($l);
         foreach (zp_product_parts($pid) as $p) {
             $partId = (int)$p['id'];
-            foreach (zp_part_ops($partId, true) as $o) {
+            foreach (zp_line_ops((int)$l['item_id'], $partId, (int)$l['proforma_id']) as $o) {
                 $opId  = (int)$o['id'];
                 $left = zp_remaining($l, $partId, $opId, (string)$o['stage'], $prog);
                 /* FINISHED WORK IS CARRIED, MARKED — NOT DROPPED.

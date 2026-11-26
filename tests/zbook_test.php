@@ -218,7 +218,9 @@ head('THE RATE IS FROZEN, AND NEVER COMES FROM THE BROWSER');
    server at save time, never from the browser */
 t('the rate is looked up on the server at save time',
   str_contains(preg_replace('/\s+/', ' ', $book),
-    '$rate = zp_rate_for($opId, (float)$op[\'rate\'], $rateCache[$pfid], $sizeRateCache[$prodId], zp_line_size_id($line));'));
+    '$rate = zp_rate_for($opId, (float)$op[\'rate\'], $rateCache[$pfid . \':\' . $itemId], $sizeRateCache[$prodId], zp_line_size_id($line));'));
+t('  with the LINE\'s own rate on top of the order\'s (26 Nov 2026)',
+  str_contains($book, 'zp_line_rate_map($pfid, $itemId)'));
 t('  and it knows which SIZE the line is, so a King can pay more than a Single',
   str_contains($book, 'zp_line_size_id($line)'));
 t('  and stored as rate_applied', str_contains($book, "'rate_applied' => \$rate"));

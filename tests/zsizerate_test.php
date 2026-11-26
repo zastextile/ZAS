@@ -72,7 +72,7 @@ echo "4. Both places that pay a wage now know about the size\n";
 $flat = preg_replace('/\s+/', ' ', $zp);
 ok(substr_count($zp, 'zp_rate_for($opId') === 2, 'there are still exactly two, got '
    . substr_count($zp, 'zp_rate_for($opId'));
-ok(str_contains($flat, '$rate = zp_rate_for($opId, (float)$op[\'rate\'], $rateCache[$pfid], $sizeRateCache[$prodId], zp_line_size_id($line));'),
+ok(str_contains($flat, '$rate = zp_rate_for($opId, (float)$op[\'rate\'], $rateCache[$pfid . \':\' . $itemId], $sizeRateCache[$prodId], zp_line_size_id($line));'),
    'zp_book() — the rate actually frozen onto the entry — passes the size');
 ok(str_contains($zp, "zp_rate_for(\$opId, (float)\$o['rate'], \$rates, \$szRates, \$szId)"),
    'zp_work_index() — the rate the picker SHOWS — passes it too');
