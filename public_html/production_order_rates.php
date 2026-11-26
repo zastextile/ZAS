@@ -190,8 +190,9 @@ page_header('Order Rate Amendments');
 .zf.or .pill-x{display:inline-block;font-size:10.5px;font-weight:700;border-radius:3px;padding:0 5px;margin-left:5px}
 .zf.or .pill-x.new{background:#e8f1fc;color:#0a4f96}.zf.or .pill-x.ex{background:#f1ecfb;color:#5a3fa8}.zf.or .pill-x.sk{background:#fdf0ef;color:#b42318}.zf.or .pill-x.ln{background:#fff4e2;color:#9a5710}
 .zf.or .or-add{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 10px;background:#f7f9fb;border-bottom:1px solid var(--line)}
-.zf.or .or-add select,.zf.or .or-add input{height:28px;border:1px solid #c9d3df;border-radius:3px;padding:0 6px;font:inherit;font-size:12.5px}
-.zf.or .or-add input.nm{width:200px}.zf.or .or-add input.rt{width:80px;text-align:right}
+.zf.or .or-add select,.zf.or .or-add input{width:auto !important;flex:0 0 auto;height:28px;border:1px solid #c9d3df;border-radius:3px;padding:0 6px;font:inherit;font-size:12.5px;display:inline-block}
+.zf.or .or-add select{max-width:200px}
+.zf.or .or-add input.nm{width:220px !important}.zf.or .or-add input.rt{width:80px !important;text-align:right}
 .zf.or .or-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1d2d3e;color:#fff;padding:10px 16px;border-radius:6px;font-weight:600;font-size:13px;z-index:99;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 .zf.or .or-toast.bad{background:#b42318}
 .zf.or label.skc{display:inline-flex;gap:4px;align-items:center;font-size:12px;color:var(--mut);cursor:pointer;white-space:nowrap}
@@ -252,7 +253,7 @@ page_header('Order Rate Amendments');
   <?php endif; ?>
 
   <details class="zf-card"<?= $order ? '' : ' open' ?>>
-    <summary><?= $order ? 'History for ' . e($order['pi_no']) : 'Every rate that has moved' ?> (<span id="orHn"><?= count($history) ?></span>)</summary>
+    <summary><span><?= $order ? 'History for ' . e($order['pi_no']) : 'Every rate that has moved' ?> (<span id="orHn"><?= count($history) ?></span>)</span></summary>
     <div class="zf-tw" style="max-height:420px"><table class="zf-t">
       <thead><tr><th>When</th><th>Part · operation</th><th>Scope</th><th class="n">From</th><th class="n">To</th><th>Reason</th></tr></thead>
       <tbody id="orHist">
