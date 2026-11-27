@@ -421,7 +421,7 @@ page_header('Order Rate Amendments');
   function tBad(k){ return P.tiers[k] != null && P.tiers[k].length && tiers(k) === saved(k); }
   function tDiff(k){ var a = P.tiers[k] == null ? saved(k) : (P.tiers[k].length ? (tBad(k) ? 'bad' : tiers(k)) : null); return JSON.stringify(a) !== JSON.stringify(saved(k)); }
   /* the whole order's count on one operation */
-  function oNeed(id){ var n = 0, d = 0; D.lines.forEach(function(l){ l.parts.forEach(function(p){ p.ops.forEach(function(r){ if (r.id === id) { n += r.need; d += r.done; } }); }); }); return [n, d]; }
+  function oNeed(id){ var n = 0, d = 0; D.lines.forEach(function(l){ l.parts.forEach(function(p){ p.ops.forEach(function(r){ if (r.id === id) { n += rNeed(r); d += r.done; } }); }); }); return [n, d]; }
   /* the split that prices this line's operation, and how it is counted */
   function lineTier(l, r){
     var T = tiers('l:' + l.item + ':' + r.id); if (T) return { k: 'l:' + l.item + ':' + r.id, T: T, need: r.need, done: r.done };
@@ -691,7 +691,7 @@ page_header('Order Rate Amendments');
             + '<td class="n">' + (sk ? '<span class="mut">0</span>' : pk(TR && TR.need > 0 && oLim(o) == null ? (TR.order ? r.need * tcost(TR.T, 0, TR.need) / TR.need : tcost(TR.T, 0, r.need)) : rNeed(r) * e)) + '</td>'
             + '<td class="sk">' + (edit && !os && !gone(o) ? '<label class="skc"><input type="checkbox" data-ls="' + k + '"' + (ls ? ' checked' : '') + '> this line</label>' : '') + '</td>'
             + '<td>' + (sk ? '' : spBtn(lk, LT ? LT.length : 0)) + '</td></tr>';
-          if (open['s' + lk] && !sk) h += '<tr class="or-sp"><td colspan="9">' + spPanel(lk, r.need, r.done, e, r.paid || [], TR && TR.order ? TR : null) + '</td></tr>';
+          if (open['s' + lk] && !sk) h += '<tr class="or-sp"><td colspan="9">' + spPanel(lk, rNeed(r), r.done, e, r.paid || [], TR && TR.order ? TR : null) + '</td></tr>';
         });
       });
       P.add.filter(function(a){ return (a.item === l.item || a.item === 0) && l.parts.some(function(p){ return p.part_id === a.part; }); }).forEach(function(a){ h += newRow(a); });
