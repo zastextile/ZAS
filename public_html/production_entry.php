@@ -43,6 +43,37 @@ require_login();
 if (!is_admin() && !is_colleague() && !is_production_staff()) {
     http_response_code(403); exit('Production access required.');
 }
+/* A WORKER'S SMALL PHOTO FOR THE PREVIEW PANE (owner, 27 Nov 2026).
+   Asked for only when the pane has rested on a person, and only for people
+   who have a photo. It is the small face People Finance already keeps
+   (att_photo_thumbs, made once from the photo on file), and the browser keeps
+   it for a day — so each face costs the server one small read per device per
+   day. Every face sent is written to the audit log, like any employee photo. */
+if (isset($_GET['face'])) {
+    $wid = (int)$_GET['face'];
+    $eid = 0;
+    try {
+        $st = db()->prepare("SELECT att_employee_id FROM zp_workers WHERE id = ? AND is_active = 1");
+        $st->execute([$wid]); $eid = (int)$st->fetchColumn();
+    } catch (Throwable $e) {}
+    $bytes = ''; $mime = '';
+    if ($eid > 0) {
+        foreach (['Db', 'Time', 'Policy', 'Audit', 'Storage', 'Images', 'PhotoService'] as $c) require_once __DIR__ . '/includes/att/' . $c . '.php';
+        require_once __DIR__ . '/includes/storage.php';
+        try {
+            \Att\Db::useUtc();
+            $url = \Att\PhotoService::thumbs([$eid], (int)(current_user()['id'] ?? 0), 'production entry')[$eid] ?? '';
+            if (preg_match('#^data:(image/(?:jpeg|png|webp));base64,(.+)$#s', $url, $m)) { $mime = $m[1]; $bytes = (string)base64_decode($m[2]); }
+        } catch (Throwable $e) { error_log('[production-entry] face ' . $wid . ': ' . $e->getMessage()); }
+    }
+    if ($bytes === '') { http_response_code(404); header('Cache-Control: private, max-age=3600'); exit; }
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . strlen($bytes));
+    header('Cache-Control: private, max-age=86400');
+    header('X-Content-Type-Options: nosniff');
+    echo $bytes;
+    exit;
+}
 require_once __DIR__ . '/includes/zprod.php';
 /* the booked-work helpers shared with Correct an Entry: merge, group, edit, cancel */
 require_once __DIR__ . '/includes/zp_correct.php';
@@ -174,6 +205,12 @@ foreach ($workers as $w) {
         break;
     }
 }
+/* who has a photo on file — one small query, so the page never asks for a face that is not there */
+$HASFACE = [];
+try {
+    foreach (db()->query("SELECT w.id FROM zp_workers w JOIN att_employees e ON e.id = w.att_employee_id
+                          WHERE w.is_active = 1 AND e.reference_photo_key IS NOT NULL")->fetchAll() as $r) $HASFACE[(int)$r['id']] = 1;
+} catch (Throwable $e) {}
 $stNm  = [];
 foreach (zp_stage_all(false) as $s) $stNm[(int)$s['id']] = (string)$s['name'];
 
@@ -332,16 +369,17 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .ze-fpi{display:inline-flex;align-items:center;height:30px;border:1.5px solid #d9e0ea;border-radius:16px;background:#fff;padding:0 4px 0 10px;gap:6px}
 .ze-fpi span{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:#6b7a90}
 .ze-fpi input{border:0;outline:0;width:110px;height:26px;font:600 13px/1 ui-monospace,monospace;color:#152033;background:transparent}
+.ze-fpi input::placeholder{color:#b9c3d0;font-weight:400}
 .ze-fpi:focus-within{border-color:#1d6ff2;box-shadow:0 0 0 3px rgba(29,111,242,.12)}
 .ze-fpi.on{border-color:#1d6ff2;background:#eef5ff}
 .ze-fst{display:inline-flex;gap:5px;flex-wrap:wrap}
-.ze-fc{height:28px;padding:0 10px;border-radius:14px;border:1.5px solid;font:700 12px/1 inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:transform .08s}
+.ze-fc{height:28px;padding:0 10px;border-radius:14px;border:1.5px solid;font-weight:700;font-size:12px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:transform .08s}
 .ze-fc:hover{transform:translateY(-1px)}
 .ze-fc b{font:700 10.5px/1 ui-monospace,monospace;opacity:.75}
 .ze-fc kbd{font:600 9px/1 ui-monospace,monospace;opacity:.55}
 .ze-fc.on{box-shadow:0 2px 8px -3px rgba(0,0,0,.35)}
 .ze-fc:focus-visible{outline:2px solid #1d6ff2;outline-offset:2px}
-.ze-fx{height:26px;padding:0 9px;border-radius:13px;border:1px solid #f2c4c4;background:#fff5f5;color:#b42318;font:700 11.5px inherit;cursor:pointer}
+.ze-fx{height:26px;padding:0 9px;border-radius:13px;border:1px solid #f2c4c4;background:#fff5f5;color:#b42318;font-weight:700;font-size:11.5px;font-family:inherit;cursor:pointer}
 .ze-fnote{font-size:11px;color:#1558ad;background:#eef5ff;border:1px solid #cfe0f7;border-radius:6px;padding:3px 8px;margin-top:6px;display:inline-block}
 /* ---- THE PREVIEW PANE: the highlighted row of either list, in full (27 Nov 2026) ---- */
 .ze-lv{display:flex;gap:12px;align-items:flex-start}
@@ -351,7 +389,10 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .ze-pv[hidden]{display:none}
 @media (max-width:980px){ .ze-lv{flex-direction:column;align-items:stretch} .ze-pv{width:auto;flex:none;position:static;max-height:none} }
 .zesugpv{position:fixed;z-index:1001;width:340px;max-height:70vh}
-.pv-hd{padding:10px 13px 9px;border-bottom:1px solid;border-radius:10px 10px 0 0}
+.pv-hd{padding:10px 13px 9px;border-bottom:1px solid;border-radius:10px 10px 0 0;position:relative}
+.pv-hd.has-face{padding-right:76px}
+.pv-face{position:absolute;right:12px;top:10px;width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid #fff;box-shadow:0 2px 8px -2px rgba(16,32,56,.35);background:#fff}
+.pv-ini{position:absolute;right:12px;top:10px;width:54px;height:54px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;line-height:1;color:#fff;border:2px solid #fff;box-shadow:0 2px 8px -2px rgba(16,32,56,.35)}
 .pv-k{font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;opacity:.85}
 .pv-t{font-size:18.5px;font-weight:800;letter-spacing:-.015em;margin:3px 0 6px;line-height:1.22}
 .pv-g>b.pv-prod{font-size:14px;font-weight:800}
@@ -775,7 +816,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
    ==================================================================== */
 (function(){
   var WORK    = <?= json_encode($WORK) ?>;
-  var WORKERS = <?= json_encode(array_map(function ($w) use ($wsMap, $stNm, $PAYT) {
+  var WORKERS = <?= json_encode(array_map(function ($w) use ($wsMap, $stNm, $PAYT, $HASFACE) {
       $sg = $wsMap[(int)$w['id']] ?? [];
       $sn = [];
       foreach ($sg as $sid) if (isset($stNm[$sid])) $sn[] = $stNm[$sid];
@@ -783,6 +824,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
         'id' => (int)$w['id'], 'code' => (string)$w['worker_code'], 'name' => (string)$w['worker_name'],
         'pt' => $PAYT[(int)$w['id']] ?? '',
         'dept' => (string)($w['department'] ?? ''),
+        'ph'  => isset($HASFACE[(int)$w['id']]) ? 1 : 0,
         'sg'  => array_values(array_map('intval', $sg)),
         'hay' => mb_strtolower(trim($w['worker_code'] . ' ' . $w['worker_name'] . ' '
                  . ($w['department'] ?? '') . ' ' . implode(' ', $sn) . ' '
@@ -1029,12 +1071,34 @@ table.zp-t tbody tr:hover{background:#fafcff}
     if (forWorker) { var sc = score(forWorker.id, w.op); if (sc) h += '<div class="pv-ft">' + esc(forWorker.name) + ' has done this ' + sc + ' time' + (sc === 1 ? '' : 's') + ' before.</div>'; }
     return h + '<div class="pv-ft"><kbd>Enter</kbd> choose · <kbd>↑</kbd><kbd>↓</kbd> move</div></div>';
   }
+  /* THE FACE: initials at once; the photo only once the pane has rested on
+     the person for a moment, and never twice — the browser keeps it a day */
+  var FACE = {}, faceT = null;
+  function ini(n){ return String(n || '').trim().split(/\s+/).slice(0, 2).map(function(x){ return x.charAt(0); }).join('').toUpperCase(); }
+  function faceHtml(w, col){
+    if (w.ph && FACE[w.id] && FACE[w.id] !== 'none' && FACE[w.id] !== 'wait') return '<img class="pv-face" alt="" src="' + esc(FACE[w.id]) + '">';
+    return '<span class="pv-ini" data-face="' + w.id + '" style="background:' + col + '">' + esc(ini(w.name)) + '</span>';
+  }
+  function faceLoad(w){
+    if (!w.ph || FACE[w.id]) return;
+    clearTimeout(faceT);
+    faceT = setTimeout(function(){
+      if (FACE[w.id]) return;
+      FACE[w.id] = 'wait';
+      var url = 'production_entry.php?face=' + w.id, im = new Image();
+      im.onload = function(){ FACE[w.id] = url; [].forEach.call(document.querySelectorAll('.pv-ini[data-face="' + w.id + '"]'), function(s){
+        var i = document.createElement('img'); i.className = 'pv-face'; i.alt = ''; i.src = url; s.parentNode.replaceChild(i, s); }); };
+      im.onerror = function(){ FACE[w.id] = 'none'; };
+      im.src = url;
+    }, 250);
+  }
   function pvWorker(w, forWork){
     var c = PAYC[w.pt] || ['#eef2f6', '#33465f', '#cfd8e3'];
+    faceLoad(w);
     var hab = (HABIT.byWorker || {})[w.id] || {}, top = Object.keys(hab).sort(function(a, b){ return hab[b] - hab[a]; }).slice(0, 5);
     var onSheet = 0, nSheet = 0; sheet.forEach(function(x){ if (+x.worker === w.id) { onSheet += +x.qty || 0; nSheet++; } });
     var booked = 0; if (typeof BOOKED !== 'undefined') BOOKED.forEach(function(b){ if (b.wid === w.id && b.status === 'Active') booked += +b.qty || 0; });
-    var h = '<div class="pv-hd" style="background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2] + '">'
+    var h = '<div class="pv-hd has-face" style="background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2] + '">' + faceHtml(w, c[1])
       + '<div class="pv-k">Worker' + (PAYW[w.pt] ? ' · ' + PAYW[w.pt] : '') + '</div><div class="pv-t">' + esc(w.name) + '</div>'
       + '<span class="pv-ch">' + esc(w.code) + '</span>' + (w.dept ? '<span class="pv-ch">' + esc(w.dept) + '</span>' : '') + '</div><div class="pv-b">'
       + '<div class="pv-g"><span>Stages</span><div>' + ((w.sg || []).length ? w.sg.map(function(s){ return STN[s] ? stChip(STN[s]) + ' ' : ''; }).join('') : '<span style="color:#8a97ab">not allotted</span>') + '</div>'

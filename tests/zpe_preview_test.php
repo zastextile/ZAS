@@ -26,5 +26,16 @@ ok(str_contains($pe, "WORKERS.filter(function(w){ return workerOk(w) && hit(w.ha
 ok(str_contains($pe, "sessionStorage.setItem('zeFlt'"), 'kept for this tab, so it survives the reload after Save');
 ok(str_contains($pe, "if (!e.altKey || e.ctrlKey || e.metaKey) return;"), 'Alt+1..9 picks a stage from the keyboard');
 
+
+echo "Worker photo\n";
+ok(str_contains($pe, "if (isset(\$_GET['face'])) {") && strpos($pe, "if (isset(\$_GET['face'])) {") < strpos($pe, "require_once __DIR__ . '/includes/zprod.php';"), 'the photo answer comes before the page is built (no list work for a picture)');
+ok(str_contains($pe, "if (!is_admin() && !is_colleague() && !is_production_staff())") && strpos($pe, "if (!is_admin() && !is_colleague() && !is_production_staff())") < strpos($pe, "if (isset(\$_GET['face'])) {"), '  and only after the same access check as the page');
+ok(str_contains($pe, "WHERE id = ? AND is_active = 1") && str_contains($pe, "PhotoService::thumbs([\$eid]"), 'only an active production worker, through the small cached face People Finance already makes');
+ok(str_contains($pe, "'production entry')"), '  and every face shown is written to the audit log');
+ok(str_contains($pe, "header('Cache-Control: private, max-age=86400');"), 'the browser keeps it a day — one small read per device per day');
+ok(str_contains($pe, "'ph'  => isset(\$HASFACE["), 'nobody without a photo is ever asked for');
+ok(str_contains($pe, "faceT = setTimeout(function(){") && str_contains($pe, "}, 250);"), 'fetched only once the pane rests on a person, not while arrowing past');
+ok(!preg_match('/font:[^;}]*\\binherit[;}]/', substr($pe, strpos($pe, '/* ---- THE QUICK FILTER'), 6000)), 'no invalid font shorthand in the new styles');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);
