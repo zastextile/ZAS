@@ -346,7 +346,7 @@ t('  because "nothing matches" and "that is finished" are different answers',
 t('  and the screen says which it is',
   str_contains($pe, "' already finished.</b><br>Nothing is left to book on '"));
 t('  while only OPEN work can actually be picked',
-  str_contains($pe, 'return !w.done && hit(w.hay, t);'));
+  str_contains($pe, 'return !w.done && workOk(w) && hit(w.hay, t);'));
 /* this used to live in draw()'s own markup. It now lives in the ONE row
    renderer both lists share, so the in-row list on the "By worker" tab
    finally shows it too — it never did before. */

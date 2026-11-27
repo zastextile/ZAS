@@ -16,5 +16,15 @@ ok(str_contains($zc, "\$g['msz'] = \$g['sz'];") && str_contains($zc, "\$g['mop']
 $js = substr($pe, strpos($pe, 'function pvWork('), 9000);
 ok(!preg_match('/fetch\(|XMLHttpRequest/', $js), 'it asks the server nothing — built from the data already on the page');
 ok(substr_count($js, 'esc(') > 15, 'every value shown in it is escaped');
+
+echo "Quick filter\n";
+ok(str_contains($pe, '<input id="zeFPi"') && str_contains($pe, 'id="zeFSt"'), 'a PI box and stage chips next to the tabs');
+ok(str_contains($pe, "pf.slice(-x.length) === x"), 'PI digits match the END of the PI number ("977" finds PI-261111-977)');
+ok(str_contains($pe, "split(/[,;\\s]+/)"), 'several PIs with commas');
+ok(str_contains($pe, "WORK.filter(function(w){ return !w.done && workOk(w) && hit(w.hay, t); })") && str_contains($pe, "!w.done && workOk(w) && hit(w.hay, t) && (!mine"), 'both job lists honour it (top list and in-row list)');
+ok(str_contains($pe, "WORKERS.filter(function(w){ return workerOk(w) && hit(w.hay, t); })"), 'a stage chip narrows the people tab too');
+ok(str_contains($pe, "sessionStorage.setItem('zeFlt'"), 'kept for this tab, so it survives the reload after Save');
+ok(str_contains($pe, "if (!e.altKey || e.ctrlKey || e.metaKey) return;"), 'Alt+1..9 picks a stage from the keyboard');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

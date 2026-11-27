@@ -88,6 +88,7 @@ const stubs = `
   function score(wid,op){ return (wid===1 && op===201) ? 5 : 0; }
   function usualOps(id){ return id===1 ? 5 : 0; }
   function pvSug(){} function pvSugCur(){} function pvTop(){} function pvTopCur(){}   // the preview pane (27 Nov 2026) — not under test here
+  function workOk(){ return true; } function workerOk(){ return true; }              // the quick filter, off
 `;
 
 (async () => {

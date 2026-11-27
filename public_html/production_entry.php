@@ -325,6 +325,24 @@ table.zp-t tbody tr:hover{background:#fafcff}
                text-transform:uppercase;letter-spacing:.06em}
 .ze-res mark{background:rgba(29,111,242,.16);color:#1558ad;border-radius:3px;padding:0 1px;font-weight:800}
 .ze-none{padding:22px;text-align:center;color:#8a97ab;font-size:12.5px}
+/* ---- THE QUICK FILTER: PI digits + one stage (27 Nov 2026) ---- */
+.ze-top{display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.zskin .ze-top .ze-tabs{margin-bottom:0 !important}
+.ze-flt{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.ze-fpi{display:inline-flex;align-items:center;height:30px;border:1.5px solid #d9e0ea;border-radius:16px;background:#fff;padding:0 4px 0 10px;gap:6px}
+.ze-fpi span{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:#6b7a90}
+.ze-fpi input{border:0;outline:0;width:110px;height:26px;font:600 13px/1 ui-monospace,monospace;color:#152033;background:transparent}
+.ze-fpi:focus-within{border-color:#1d6ff2;box-shadow:0 0 0 3px rgba(29,111,242,.12)}
+.ze-fpi.on{border-color:#1d6ff2;background:#eef5ff}
+.ze-fst{display:inline-flex;gap:5px;flex-wrap:wrap}
+.ze-fc{height:28px;padding:0 10px;border-radius:14px;border:1.5px solid;font:700 12px/1 inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:transform .08s}
+.ze-fc:hover{transform:translateY(-1px)}
+.ze-fc b{font:700 10.5px/1 ui-monospace,monospace;opacity:.75}
+.ze-fc kbd{font:600 9px/1 ui-monospace,monospace;opacity:.55}
+.ze-fc.on{box-shadow:0 2px 8px -3px rgba(0,0,0,.35)}
+.ze-fc:focus-visible{outline:2px solid #1d6ff2;outline-offset:2px}
+.ze-fx{height:26px;padding:0 9px;border-radius:13px;border:1px solid #f2c4c4;background:#fff5f5;color:#b42318;font:700 11.5px inherit;cursor:pointer}
+.ze-fnote{font-size:11px;color:#1558ad;background:#eef5ff;border:1px solid #cfe0f7;border-radius:6px;padding:3px 8px;margin-top:6px;display:inline-block}
 /* ---- THE PREVIEW PANE: the highlighted row of either list, in full (27 Nov 2026) ---- */
 .ze-lv{display:flex;gap:12px;align-items:flex-start}
 .ze-lv>.ze-res{flex:1 1 auto;min-width:0}
@@ -335,7 +353,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
 .zesugpv{position:fixed;z-index:1001;width:340px;max-height:70vh}
 .pv-hd{padding:10px 13px 9px;border-bottom:1px solid;border-radius:10px 10px 0 0}
 .pv-k{font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;opacity:.85}
-.pv-t{font-size:15px;font-weight:800;letter-spacing:-.01em;margin:2px 0 5px;line-height:1.25}
+.pv-t{font-size:18.5px;font-weight:800;letter-spacing:-.015em;margin:3px 0 6px;line-height:1.22}
+.pv-g>b.pv-prod{font-size:14px;font-weight:800}
 .pv-b{padding:10px 13px 12px}
 .pv-g{display:grid;grid-template-columns:86px minmax(0,1fr);gap:4px 10px;margin-bottom:9px}
 .pv-g>span{color:#6b7a90;font-size:11.5px}
@@ -468,11 +487,23 @@ table.zp-t tbody tr:hover{background:#fafcff}
                Sometimes it is one operation and the six people who worked on
                it; sometimes it is one person and everything they did. Forcing
                either shape through the other doubles the typing. */ ?>
+      <div class="ze-top">
       <div class="ze-tabs" role="tablist">
         <button type="button" class="ze-tab" role="tab" aria-selected="true" id="tabA" onclick="zeTab('A')">
           <b>By operation</b><span>one job &rarr; many workers</span></button>
         <button type="button" class="ze-tab" role="tab" aria-selected="false" id="tabB" onclick="zeTab('B')">
           <b>By worker</b><span>one person &rarr; everything they did</span></button>
+      </div>
+      <?php /* THE QUICK FILTER (owner, 27 Nov 2026): the orders being worked on
+               today, by the last digits of the PI ("977, 689"), and one stage.
+               It narrows every list on the page and stays set after Save until
+               the tab is closed. */ ?>
+      <div class="ze-flt" id="zeFlt">
+        <label class="ze-fpi" title="Last digits of the PI number — several with commas, e.g. 977, 689"><span>PI</span>
+          <input id="zeFPi" autocomplete="off" spellcheck="false" placeholder="977, 689"></label>
+        <span class="ze-fst" id="zeFSt"></span>
+        <button type="button" class="ze-fx" id="zeFClr" hidden title="Show everything again">&times; Clear</button>
+      </div>
       </div>
 
       <div class="ze-pick">
@@ -762,6 +793,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
   function payPill(t){ return PAYW[t] ? '<span class="ze-pt pt-' + t + '">' + PAYW[t] + '</span>' : ''; }
   var HABIT   = <?= json_encode($HABIT) ?>;
   var STN     = <?= json_encode($stNm, JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+  var STL     = <?= json_encode(array_map(fn($s) => [(int)$s['id'], (string)$s['name']], zp_stage_all(true)), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
   var MONEY   = <?= $showMoney ? 'true' : 'false' ?>;
 
   var tab    = 'A';      // A = pick the work first, B = pick the worker first
@@ -914,6 +946,46 @@ table.zp-t tbody tr:hover{background:#fafcff}
   }
 
   /* ============================================================
+     THE QUICK FILTER (owner, 27 Nov 2026)
+     ------------------------------------------------------------
+     "977, 689" keeps only the orders whose PI number ENDS in those digits;
+     one stage chip keeps only that stage. Every list on the page honours
+     both, and they are kept for this tab (sessionStorage) so they survive
+     the reload after Save. All in the browser: the server is not asked.
+     ============================================================ */
+  var FLT = { pi: '', sid: 0 };
+  try { var fsv = JSON.parse(sessionStorage.getItem('zeFlt') || 'null'); if (fsv) FLT = { pi: String(fsv.pi || '').slice(0, 80), sid: +fsv.sid || 0 }; } catch (e) {}
+  function fltSave(){ try { sessionStorage.setItem('zeFlt', JSON.stringify(FLT)); } catch (e) {} }
+  function piToks(){ return FLT.pi.toLowerCase().split(/[,;\s]+/).filter(Boolean); }
+  function piOk(w){
+    var tk = piToks(); if (!tk.length) return true;
+    var pf = String(w.pifull || w.pi || '').toLowerCase();
+    return tk.some(function(x){ return pf.slice(-x.length) === x || (x.length >= 4 && pf.indexOf(x) >= 0); });
+  }
+  function workOk(w){ return piOk(w) && (!FLT.sid || +w.sid === FLT.sid); }
+  /* a stage chip on the people tab: those ticked for it (nobody ticked for it yet: everybody) */
+  function workerOk(w){
+    if (!FLT.sid) return true;
+    var any = WORKERS.some(function(x){ return x.sg && x.sg.indexOf(FLT.sid) >= 0; });
+    return !any || wFits(w, FLT.sid);
+  }
+  function paintFlt(){
+    var box = $('zeFSt'); if (!box) return;
+    var cnt = {}, all = 0;
+    WORK.forEach(function(w){ if (w.done || !piOk(w)) return; all++; cnt[w.sid] = (cnt[w.sid] || 0) + 1; });
+    box.innerHTML = '<button type="button" class="ze-fc' + (FLT.sid ? '' : ' on') + '" data-sid="0" style="' + (FLT.sid ? 'background:#fff;color:#33465f;border-color:#cfd8e3' : 'background:#33465f;color:#fff;border-color:#33465f') + '" title="Alt+0">All <b>' + all + '</b></button>'
+      + (STL || []).map(function(s, i){
+          var m = /background:(#[0-9a-f]{6});color:(#[0-9a-f]{6});border-color:(#[0-9a-f]{6})/.exec(stStyle(s[1])) || [0, '#eef2f6', '#33465f', '#cfd8e3'], on = FLT.sid === s[0];
+          return '<button type="button" class="ze-fc' + (on ? ' on' : '') + '" data-sid="' + s[0] + '" title="' + esc(s[1]) + (i < 9 ? ' — Alt+' + (i + 1) : '') + '" style="'
+            + (on ? 'background:' + m[2] + ';color:#fff;border-color:' + m[2] : 'background:' + m[1] + ';color:' + m[2] + ';border-color:' + m[3]) + '">'
+            + esc(s[1]) + ' <b>' + (cnt[s[0]] || 0) + '</b></button>';
+        }).join('');
+    var fp = $('zeFPi').closest('.ze-fpi'); if (fp) fp.classList.toggle('on', !!piToks().length);
+    $('zeFClr').hidden = !FLT.pi && !FLT.sid;
+  }
+  function fltChanged(){ fltSave(); paintFlt(); cur = 0; if (!picked) draw(); }
+
+  /* ============================================================
      THE PREVIEW PANE (owner, 27 Nov 2026)
      ------------------------------------------------------------
      Whatever row is highlighted — by the arrow keys or under the mouse —
@@ -938,7 +1010,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       + (MONEY ? '<span class="pv-ch">' + n2(w.rate) + ' / ' + (set ? 'set' : 'pc') + '</span>' : '') + '</div><div class="pv-b">'
       + '<div class="pv-g"><span>Order</span><b>' + esc(w.pifull || w.pi) + '</b>'
       + (w.cust ? '<span>Customer</span><div>' + esc(w.cust) + '</div>' : '')
-      + '<span>Product</span><b>' + esc(w.prod) + '</b>'
+      + '<span>Product</span><b class="pv-prod">' + esc(w.prod) + '</b>'
       + (w.desc ? '<span>Description</span><div class="pv-d">' + esc(w.desc) + '</div>' : '')
       + (w.sizes ? '<span>Sizes</span><div>' + esc(w.sizes) + '</div>' : '') + '</div>'
       + '<div class="pv-kp"><div><small>' + (set ? 'Sets' : 'Pieces') + '</small><b>' + qn(need) + '</b></div><div><small>Made</small><b style="color:#0a4f96">' + qn(made) + '</b></div>'
@@ -1019,8 +1091,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
   function tabList(){
     var t = terms();
     /* only OPEN work is offered; finished rows are kept for the message below */
-    if (tab === 'A') return WORK.filter(function(w){ return !w.done && hit(w.hay, t); });
-    var list = WORKERS.filter(function(w){ return hit(w.hay, t); });
+    if (tab === 'A') return WORK.filter(function(w){ return !w.done && workOk(w) && hit(w.hay, t); });
+    var list = WORKERS.filter(function(w){ return workerOk(w) && hit(w.hay, t); });
     /* the people who actually book work come first — an empty search on a
        floor of 200 should not open with whoever happened to be added first */
     return list.slice().sort(function(a,b){ return usualOps(b.id) - usualOps(a.id); });
@@ -1036,12 +1108,13 @@ table.zp-t tbody tr:hover{background:#fafcff}
       /* "NOTHING MATCHES" AND "THAT IS ALL DONE" ARE DIFFERENT ANSWERS.
          One is a typo to correct; the other is good news. Saying the first when
          the second is true sends somebody hunting for a job that is finished. */
-      var fin = (tab === 'A') ? WORK.filter(function(w){ return w.done && hit(w.hay, t); }).length : 0;
+      var fin = (tab === 'A') ? WORK.filter(function(w){ return w.done && workOk(w) && hit(w.hay, t); }).length : 0;
       box.innerHTML = fin
         ? '<div class="ze-none"><b>' + fin + ' matching job' + (fin===1?' is':'s are')
           + ' already finished.</b><br>Nothing is left to book on '
           + (fin===1?'it':'them') + '.</div>'
-        : '<div class="ze-none">Nothing matches &ldquo;' + esc($('zeQ').value) + '&rdquo;.</div>';
+        : '<div class="ze-none">Nothing matches &ldquo;' + esc($('zeQ').value) + '&rdquo;'
+          + (FLT.pi || FLT.sid ? ' with the filter ' + esc([FLT.pi ? 'PI ' + FLT.pi : '', FLT.sid ? STN[FLT.sid] || '' : ''].filter(Boolean).join(' · ')) + ' &mdash; <a href="#" onclick="zeFltClear();return false">clear it</a>' : '') + '.</div>';
       return;
     }
     if (cur >= list.length) cur = list.length - 1;
@@ -1214,7 +1287,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
     /* the other way round: a person picked first is offered only the work of
        the stages they are ticked for (nobody ticked anywhere: everything) */
     var mine = picked && picked.sg && picked.sg.length ? picked.sg : null;
-    return WORK.filter(function(w){ return !w.done && hit(w.hay, t) && (!mine || !w.sid || mine.indexOf(w.sid) >= 0); })
+    return WORK.filter(function(w){ return !w.done && workOk(w) && hit(w.hay, t) && (!mine || !w.sid || mine.indexOf(w.sid) >= 0); })
       .slice().sort(function(a,b){ return score(wid, b.op) - score(wid, a.op); })
       .map(function(w){
         var o = zeWorkOpt(w, click(), '');
@@ -1587,6 +1660,26 @@ table.zp-t tbody tr:hover{background:#fafcff}
     var f = document.getElementById('cancelForm');
     f.entry_id.value = id; f.reason.value = why.trim(); f.submit();
   };
+
+  /* ---- the quick filter's controls ---- */
+  $('zeFPi').value = FLT.pi;
+  $('zeFPi').addEventListener('input', function(){ FLT.pi = this.value.slice(0, 80); fltChanged(); });
+  $('zeFPi').addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); $('zeQ').focus(); } });
+  $('zeFSt').addEventListener('click', function(e){
+    var b = e.target.closest('.ze-fc'); if (!b) return;
+    var sid = +b.dataset.sid; FLT.sid = FLT.sid === sid ? 0 : sid; fltChanged();
+    var again = $('zeFSt').querySelector('[data-sid="' + b.dataset.sid + '"]'); if (again && e.detail === 0) again.focus(); else $('zeQ').focus();
+  });
+  window.zeFltClear = function(){ FLT = { pi: '', sid: 0 }; $('zeFPi').value = ''; fltChanged(); $('zeQ').focus(); };
+  $('zeFClr').addEventListener('click', zeFltClear);
+  /* Alt+1..9 picks a stage, Alt+0 shows all — no mouse needed */
+  document.addEventListener('keydown', function(e){
+    if (!e.altKey || e.ctrlKey || e.metaKey) return;
+    var n = parseInt(e.key, 10); if (isNaN(n)) return;
+    if (n === 0) FLT.sid = 0; else if (STL && STL[n - 1]) FLT.sid = FLT.sid === STL[n - 1][0] ? 0 : STL[n - 1][0]; else return;
+    e.preventDefault(); fltChanged();
+  });
+  paintFlt();
 
   zeTab('A');
 })();

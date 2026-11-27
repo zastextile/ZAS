@@ -44,7 +44,7 @@ ok(str_contains($wi, 'zp_remaining($l, $partId, $opId'), 'it asks zp_remaining f
 /* since 22 Nov 2026 cutting is OPEN: a cutting row stays offered after its plan is met */
 ok(str_contains($wi, '$done = !$isCut && $left <= 0.0001;'), 'finished work is marked (cutting stays open)');
 ok(str_contains($wi, "'done' => \$done ? 1 : 0,"), '  and the flag rides on the row');
-ok(str_contains($pe, 'return !w.done && hit(w.hay, t);'), '  and it is never offered');
+ok(str_contains($pe, 'return !w.done && workOk(w) && hit(w.hay, t);'), '  and it is never offered');
 ok(substr_count($pe, '!w.done &&') === 2, '  on both tabs, got ' . substr_count($pe, '!w.done &&'));
 ok(str_contains($wi, 'zp_rate_for($opId, (float)$o[\'rate\'], $rates, $szRates, $szId)'),
    'the rate shown is the one this ORDER pays, amendments included');
