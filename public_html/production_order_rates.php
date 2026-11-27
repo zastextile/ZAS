@@ -197,6 +197,8 @@ page_header('Order Rate Amendments');
 .zf.or tr.or-sh td{background:#f4f7f2;color:#1f6b35;font-weight:700;font-size:12.5px;padding:5px 10px;border-top:1px solid #d5e6d9}
 .zf.or tr.or-sh small{font-weight:400;color:var(--mut);margin-left:8px}
 .zf.or .pill-x.st{background:#e8f6ec;color:#1f6b35}
+.zf.or .ld{font-weight:400;color:#4a5a6a;margin-left:8px;font-size:12.5px;font-style:italic}
+.zf.or .sp-hint{font-size:12px;color:#4a5a6a;margin:2px 0 6px}
 .zf.or .or-sadd .tk{display:flex;gap:4px 10px;flex-wrap:wrap;align-items:center;font-size:12px;flex-basis:100%}
 .zf.or .or-sadd .tk label{display:inline-flex;gap:4px;align-items:center;white-space:nowrap}
 .zf.or .or-sadd .tk input{width:auto !important;height:auto}
@@ -557,12 +559,12 @@ page_header('Order Rate Amendments');
       + (paid.length ? '<span class="mut">Paid so far: ' + paid.map(function(x){ return qn(x[1]) + ' @ ' + n2(x[0]); }).join(' · ') + '</span>' : '') + '</div>';
     if (IT) {
       h += '<div class="mut">The order\'s split applies, counted on the whole order (' + qn(inherit.done) + ' of ' + qn(inherit.need) + ' made): ' + IT.map(function(x, i){ return (x[0] == null ? 'rest' : qn(x[0])) + ' @ ' + n2(x[1]); }).join(', ') + '.</div>';
-      if (edit) h += '<div class="sp-act"><button type="button" class="zf-btn sm" data-ton="' + k + '">Give this line its own split</button></div>';
+      if (CAN) h += '<div class="sp-act"><button type="button" class="zf-btn sm" data-ton="' + k + '">Give this line its own split</button></div>';
       return h + '</div>';
     }
     if (!T && !(edit && P.tiers[k] && P.tiers[k].length)) {
       h += '<div class="mut">No split — every piece pays ' + n2(flat) + '.</div>';
-      if (edit) h += '<div class="sp-act"><button type="button" class="zf-btn sm pri" data-ton="' + k + '">Split this operation</button><span class="mut">e.g. the first 1,000 at 4.00, the rest at 4.25</span></div>';
+      if (CAN) h += '<div class="sp-act"><button type="button" class="zf-btn sm pri" data-ton="' + k + '">Split this operation</button><span class="mut">e.g. the first 1,000 at 4.00, the rest at 4.25</span></div>';
       return h + '</div>';
     }
     var cnt = T || [], scale = Math.max(need, done, 1), from = 0, bar = '', rows = '', nowAt = -1;
@@ -584,7 +586,9 @@ page_header('Order Rate Amendments');
         + '<td>' + qn(c[4]) + '</td><td>' + qn(Math.max(0, c[3] - c[4])) + '</td><td>PKR ' + n2((c[3] || 0) * (c[1] || 0)) + '</td>'
         + '<td>' + (edit && steps.length > 2 ? '<button type="button" class="zf-btn sm" data-tdel="' + k + '|' + i + '">×</button>' : (i === nowAt && !edit ? '◀ now' : '')) + '</td></tr>';
     }).join('');
+    if (edit) h += '<div class="sp-hint">Step 1: type how many pieces and their rate. The last step is <b>the rest</b> — type only its rate. Need a third rate? <b>+ Add a step</b>. Then type the reason below and <b>Save</b>.</div>';
     h += '<div class="sp-bar">' + bar + '</div><table class="sp-t"><tr><th>Pieces</th><th>Rate</th><th>Made</th><th>To make</th><th>Amount</th><th></th></tr>' + rows + '</table>';
+    if (!edit && CAN) h += '<div class="sp-act"><button type="button" class="zf-btn sm" data-goedit="' + k + '">Change the split</button></div>';
     if (edit) h += '<div class="sp-act">' + (steps.length < 6 ? '<button type="button" class="zf-btn sm" data-tadd="' + k + '">+ Add a step</button>' : '')
       + '<button type="button" class="zf-btn sm" data-toff="' + k + '">Take the split off</button>' + (tBad(k) ? '<span style="color:#b42318">Every step needs pieces above 0 and a rate.</span>' : '<span class="mut">Counted on what is produced: work booked across a step is paid part at each rate.</span>') + '</div>';
     return h + '</div>';
@@ -642,12 +646,13 @@ page_header('Order Rate Amendments');
     $('orHead').innerHTML = '<tr><th>Part · operation</th><th>Stage</th><th class="n">Order rate</th><th class="n">This line pays</th><th class="n">Booked on line</th><th class="n">Still to make</th><th class="n">Cost</th><th>Skip</th><th></th></tr>';
     var h = '', n = 0;
     D.lines.forEach(function(l){
-      var hay = l.prod + ' ' + l.size; var any = want(hay) || (l.sets || []).some(function(w){ return want(w.name + ' set pack'); }) || l.parts.some(function(p){ return p.ops.some(function(r){ var o = OP[r.id]; return want(p.part + ' ' + o.op + ' ' + o.stage); }); });
+      var hay = l.prod + ' ' + l.size + ' ' + (l.desc || ''); var any = want(hay) || (l.sets || []).some(function(w){ return want(w.name + ' set pack'); }) || l.parts.some(function(p){ return p.ops.some(function(r){ var o = OP[r.id]; return want(p.part + ' ' + o.op + ' ' + o.stage); }); });
       if (!any) return;
       n++;
       var c = lineCost(l), g = 'l' + l.item, shut = !open[g];
       h += '<tr class="or-l' + (shut ? ' shut' : '') + '" data-g="' + g + '"><td colspan="9"><span class="car">' + (shut ? '▸' : '▾') + '</span> <b>Line ' + l.no + ' · ' + esc(l.prod) + '</b>'
         + (l.size ? '<span class="lm">' + esc(l.size) + '</span>' : '') + '<span class="lm">' + qn(l.qty) + ' pcs' + (l.price ? ' · sale ' + esc(C) + ' ' + n2(l.price) : '') + '</span>'
+        + (l.desc ? '<span class="ld" title="Description on the proforma line">' + esc(l.desc) + '</span>' : '')
         + (c.own ? '<span class="pill-x ln">' + c.own + ' own rate' + (c.own === 1 ? '' : 's') + '</span>' : '') + (c.sk ? '<span class="pill-x sk">' + c.sk + ' skipped</span>' : '')
         + '<span class="lc">labour <b>PKR ' + n2(l.qty ? c.total / l.qty : 0) + '</b>/pc · ' + pk(c.total) + '</span></td></tr>';
       if (shut) return;
@@ -713,13 +718,15 @@ page_header('Order Rate Amendments');
       items.forEach(function(i){ open['l' + i] = true; }); paint(); return;
     }
     if (b.dataset.sp) { open['s' + b.dataset.sp] = !open['s' + b.dataset.sp]; paint(); return; }
-    if (b.dataset.ton) { var tk = b.dataset.ton, pp = tk.split(':'), nd, cur;
+    /* starting or changing a split from the panel switches Edit on by itself — one click, not three */
+    if (b.dataset.goedit) { startEdit(); paint(); var g0 = document.querySelector('[data-tk="' + b.dataset.goedit + '"][data-ti="0"]'); if (g0) { g0.focus(); g0.select(); } return; }
+    if (b.dataset.ton) { startEdit(); var tk = b.dataset.ton, pp = tk.split(':'), nd, cur;
       if (pp[0] === 'o') { nd = oNeed(+pp[1])[0]; cur = oRate(OP[pp[1]]); if (cur == null) cur = OP[pp[1]].std; }
       else { var LL = null, RR = null; D.lines.forEach(function(l){ if (l.item === +pp[1]) { LL = l; l.parts.forEach(function(p){ p.ops.forEach(function(r){ if (r.id === +pp[2]) RR = r; }); }); } });
         nd = RR ? RR.need : 0; cur = LL && RR ? effLine(LL, RR) : 0; }
       /* a sensible start: two thirds at today's rate, the rest the same — then type */
       P.tiers[tk] = [{ qty: nd > 1 ? String(Math.round(nd * 2 / 3)) : '', rate: cur.toFixed(2) }, { qty: '', rate: cur.toFixed(2) }];
-      open['s' + tk] = true; paint(); var f = document.querySelector('[data-tk="' + tk + '"][data-ti="1"][data-tf="rate"]'); if (f) { f.focus(); f.select(); } return; }
+      open['s' + tk] = true; paint(); var f = document.querySelector('[data-tk="' + tk + '"][data-ti="0"][data-tf="qty"]'); if (f) { f.focus(); f.select(); } return; }
     if (b.dataset.tadd) { var t2 = P.tiers[b.dataset.tadd] || []; t2.splice(t2.length - 1, 0, { qty: '', rate: t2.length ? t2[t2.length - 1].rate : '' }); paint(); return; }
     if (b.dataset.tdel) { var q2 = b.dataset.tdel.split('|'); P.tiers[q2[0]].splice(+q2[1], 1); paint(); return; }
     if (b.dataset.toff) { P.tiers[b.dataset.toff] = []; if (!saved(b.dataset.toff)) delete P.tiers[b.dataset.toff]; paint(); return; }
@@ -765,8 +772,9 @@ page_header('Order Rate Amendments');
     if (all[k + 1]) { all[k + 1].focus(); all[k + 1].select(); } else $('orWhy').focus();
   });
 
+  function startEdit(){ if (edit || !CAN) return; edit = true; reset(); if ($('orEditBtn')) $('orEditBtn').hidden = true; }
   if (CAN && $('orEditBtn')) {
-    $('orEditBtn').addEventListener('click', function(){ if (edit) return; edit = true; reset(); this.hidden = true; paint(); });
+    $('orEditBtn').addEventListener('click', function(){ startEdit(); paint(); });
     $('orDiscard').addEventListener('click', function(){
       if (changes() && !confirm('Throw away the changes you typed?')) return;
       edit = false; reset(); $('orEditBtn').hidden = false; $('orWhy').value = ''; paint();

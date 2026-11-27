@@ -4423,11 +4423,11 @@ function zp_order_sheet(int $pf): array {
     $order = null;
     foreach (zp_rate_orders() as $o) if ((int)$o['id'] === $pf) { $order = $o; break; }
     if (!$order) return ['ok' => false, 'error' => 'That order is not switched on for production.'];
-    $cur = ''; $price = []; $no = [];
+    $cur = ''; $price = []; $no = []; $desc = [];
     try {
         $st = db()->prepare("SELECT currency FROM proforma_invoices WHERE id=?"); $st->execute([$pf]); $cur = (string)$st->fetchColumn();
-        $st = db()->prepare("SELECT id, unit_price FROM proforma_items WHERE proforma_id=? ORDER BY sort_order, id"); $st->execute([$pf]);
-        $k = 0; foreach ($st->fetchAll() as $r) { $price[(int)$r['id']] = (float)$r['unit_price']; $no[(int)$r['id']] = ++$k; }
+        $st = db()->prepare("SELECT id, unit_price, description FROM proforma_items WHERE proforma_id=? ORDER BY sort_order, id"); $st->execute([$pf]);
+        $k = 0; foreach ($st->fetchAll() as $r) { $price[(int)$r['id']] = (float)$r['unit_price']; $no[(int)$r['id']] = ++$k; $desc[(int)$r['id']] = trim((string)($r['description'] ?? '')); }
     } catch (Throwable $e) {}
     $booked = []; $byRate = [];
     try {
@@ -4462,7 +4462,7 @@ function zp_order_sheet(int $pf): array {
         $it = (int)$l['item_id']; $pid = (int)$l['product_id'];
         $szRates = zp_op_rate_map($pid); $szId = zp_line_size_id($l);
         $L = ['item' => $it, 'no' => $no[$it] ?? 0, 'prod' => trim((string)$l['product_name']), 'size' => (string)($l['size'] ?? ''),
-              'qty' => (float)$l['ordered_qty'], 'price' => $price[$it] ?? 0.0, 'parts' => []];
+              'qty' => (float)$l['ordered_qty'], 'price' => $price[$it] ?? 0.0, 'desc' => mb_substr($desc[$it] ?? '', 0, 160), 'parts' => []];
         foreach (zp_product_parts($pid) as $p) {
             $pt = (int)$p['id']; $need = zp_pieces_needed($l, $pt); if ($need === ZP_NO_SIZE) $need = 0.0;
             /* every operation this line could carry: its own list, plus the
