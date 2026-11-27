@@ -169,8 +169,8 @@ ok(str_contains($dr, 'would leave those wages pointing at nothing'), '  and refu
 echo "8. Booking it: the ceiling is the order, not the parts\n";
 $bk = preg_replace('!/\*.*?\*/!s', '', lift($zp, 'zp_book'));
 ok(str_contains($bk, "if (\$kind === 'set' || \$kind === 'line')"), 'zp_book knows a set row when it sees one');
-ok(str_contains($bk, "\$left  = (float)\$line['ordered_qty'] - \$done - \$taken"),
-   'LEFT on a set job is the ORDER quantity');
+ok(str_contains($bk, "\$left  = \$cap - \$done - \$taken") && str_contains($bk, ": (float)\$line['ordered_qty'];"),
+   'LEFT on a set job is the ORDER quantity (or the few sets it was added for)');
 /* The SET BRANCH ALONE, cut out at its own `continue` — the part branch
    below it does call zp_remaining, and a lazy .*? across the whole function
    found that one and reported a fault that was not there. */

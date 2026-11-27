@@ -31,7 +31,7 @@ ok(str_contains($save, "if (!isset(\$setRow[\$k])) { \$bad[] = 'A set job that i
 ok(str_contains($save, "array_diff(\$items, array_keys(\$lineById))"), 'new set work only for lines of THIS order');
 ok(str_contains($save, "zp_line_set_own(\$it, (int)\$ln['product_id'], zp_line_size_id(\$ln))"), 'a line takes its own copy before it is changed — the product and other orders stay as they are');
 ok(str_contains($save, "SET is_active=?") && !preg_match('/DELETE FROM zp_line_set_ops/', $save), 'a skip switches the job off, never deletes it (it can be switched back on)');
-ok(substr_count($save, "zp_rate_log(null, \$pf, 'Set work'") === 3, 'every set change (add, rate, skip) goes into the history with its reason');
+ok(substr_count($save, "zp_rate_log(null, \$pf, 'Set work'") === 4, 'every set change (add, rate, skip, quantity) goes into the history with its reason');
 $own = lift($src, 'zp_line_set_own');
 ok(str_contains($own, 'zp_line_take_set_copy(') && str_contains($own, "':set:' . (int)\$r['set_op_id']"), 'a change typed on the product\'s job finds the same job on the line\'s new copy');
 

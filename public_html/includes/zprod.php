@@ -490,6 +490,12 @@ function zp_ensure_schema(): void {
        produced for the whole order (item 0) or for one line. qty NULL = the
        rest. Each booking is priced by where the running count stands, and one
        that crosses a step is booked as two entries. ---- */
+    /* A LIMITED QUANTITY (owner, 27 Nov 2026): an operation or set job added
+       for a few pieces only — washing the stained ones — carries how many.
+       NULL = the full quantity, as before. A limited job never holds back
+       the next stage: packing does not wait for the stain wash. */
+    try { db()->exec("ALTER TABLE zp_part_ops ADD COLUMN limit_qty DECIMAL(12,2) NULL DEFAULT NULL"); } catch (Throwable $e) {}
+    try { db()->exec("ALTER TABLE zp_line_set_ops ADD COLUMN limit_qty DECIMAL(12,2) NULL DEFAULT NULL"); } catch (Throwable $e) {}
     try { db()->exec("CREATE TABLE IF NOT EXISTS zp_rate_tiers (
         id INT AUTO_INCREMENT PRIMARY KEY,
         proforma_id INT NOT NULL,
@@ -745,13 +751,15 @@ function zp_line_ctx(bool $fresh = false): array {
     static $c = null;
     if ($fresh) $c = null;
     if ($c !== null) return $c;
-    $c = ['skip' => [], 'extra' => [], 'lrate' => [], 'pf' => [], 'tier' => []];
+    $c = ['skip' => [], 'extra' => [], 'lrate' => [], 'pf' => [], 'tier' => [], 'lim' => []];
     zp_ensure_schema();
     try {
         foreach (db()->query("SELECT proforma_id, proforma_item_id, op_id FROM zp_op_skip")->fetchAll() as $r)
             $c['skip'][(int)$r['proforma_id']][(int)$r['proforma_item_id']][(int)$r['op_id']] = true;
-        foreach (db()->query("SELECT * FROM zp_part_ops WHERE only_proforma_id IS NOT NULL AND is_active=1 ORDER BY seq, id")->fetchAll() as $r)
+        foreach (db()->query("SELECT * FROM zp_part_ops WHERE only_proforma_id IS NOT NULL AND is_active=1 ORDER BY seq, id")->fetchAll() as $r) {
             $c['extra'][(int)$r['part_id']][] = $r;
+            if (isset($r['limit_qty']) && $r['limit_qty'] !== null) $c['lim'][(int)$r['id']] = (float)$r['limit_qty'];
+        }
         foreach (db()->query("SELECT proforma_item_id, op_id, rate FROM zp_line_rates")->fetchAll() as $r)
             $c['lrate'][(int)$r['proforma_item_id']][(int)$r['op_id']] = (float)$r['rate'];
         foreach (db()->query("SELECT proforma_id, proforma_item_id, op_id, qty, rate FROM zp_rate_tiers ORDER BY seq, id")->fetchAll() as $r)
@@ -776,6 +784,12 @@ function zp_item_order(int $itemId): int {
 function zp_op_skipped(int $proformaId, int $itemId, int $opId): bool {
     $s = zp_line_ctx()['skip'][$proformaId] ?? [];
     return isset($s[0][$opId]) || ($itemId > 0 && isset($s[$itemId][$opId]));
+}
+/* How many pieces an added operation is for — null = all of them. */
+function zp_op_limit(int $opId): ?float {
+    if (!function_exists('zp_line_ctx')) return null;
+    $l = zp_line_ctx()['lim'][$opId] ?? null;
+    return $l === null ? null : (float)$l;
 }
 /* THE OPERATIONS ONE ORDER LINE ACTUALLY NEEDS on one part: the part's own,
    minus what is skipped for it, plus what was added for its order or for it. */
@@ -1678,6 +1692,8 @@ function zp_part_stage_ops(int $partId, int $itemId = 0): array {
        the stand-alone copies of this function in the tests working. */
     $ops = ($itemId > 0 && function_exists('zp_line_ops')) ? zp_line_ops($itemId, $partId) : zp_part_ops($partId, true);
     foreach ($ops as $o) {
+        /* a job for a few pieces only is not part of the flow: nothing waits for it */
+        if (isset($o['limit_qty']) && $o['limit_qty'] !== null) continue;
         $i = $pos[(int)($o['stage_id'] ?? 0)] ?? ($nm[mb_strtolower(trim((string)$o['stage']))] ?? null);
         if ($i === null) continue;                       // a stage switched off is not part of the flow
         $out[$i]['name'] = (string)(zp_stage_all(true)[$i]['name'] ?? '');
@@ -1771,6 +1787,9 @@ function zp_remaining(array $line, int $partId, int $opId, string $stage, array 
         $feed = zp_stage_feeder($partId, $stage, $itemId);
         if ($feed) $ceiling = min($ceiling, zp_stage_through($prog, $itemId, $partId, $feed['ops']));
     }
+    /* an operation added for a few pieces only: never more than that */
+    $lim = function_exists('zp_op_limit') ? zp_op_limit($opId) : null;
+    if ($lim !== null) $ceiling = min($ceiling, $lim);
     return max(0.0, $ceiling - $done);
 }
 
@@ -2091,6 +2110,7 @@ function zp_line_set_work(int $proformaItemId, int $productId, int $sizeId = 0):
                     'stage_id'  => (int)($r['stage_id'] ?? 0),
                     'name'  => (string)$r['operation_name'],
                     'rate'  => (float)$r['rate'],
+                    'lim'   => isset($r['limit_qty']) && $r['limit_qty'] !== null ? (float)$r['limit_qty'] : null,
                 ];
             }
         } catch (Throwable $e) {}
@@ -3637,7 +3657,8 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
             $key   = $itemId . ':set:' . $kind . ':' . $opId;
             $taken = $batch[$key] ?? 0.0;
             $done  = zp_set_done($prog, $itemId, $found);
-            $left  = (float)$line['ordered_qty'] - $done - $taken;
+            $cap   = ($found['lim'] ?? null) !== null ? min((float)$found['lim'], (float)$line['ordered_qty']) : (float)$line['ordered_qty'];
+            $left  = $cap - $done - $taken;
             if ($qty > $left + 0.0001) {
                 $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
                 $errors[] = "$label: only {$num} sets left for {$found['name']} on this order.";
@@ -3703,10 +3724,13 @@ function zp_book(string $date, array $rows, ?int $userId = null): array {
         $left  = zp_remaining($line, $partId, $opId, (string)$op['stage'], $prog) - $taken;
 
         /* cutting is open: what it shows as left is the plan, not a limit */
-        if (!zp_is_cutting((string)$op['stage']) && $qty > $left + 0.0001) {
+        $lim = zp_op_limit($opId);
+        if ((!zp_is_cutting((string)$op['stage']) || $lim !== null) && $qty > $left + 0.0001) {
             $num = rtrim(rtrim(number_format(max(0, $left), 2), '0'), '.');
             $feed = zp_is_cutting($op['stage']) ? null : zp_stage_feeder($partId, (string)$op['stage'], $itemId);
-            $why = ($feed
+            $why = $lim !== null
+                 ? 'it was added for ' . rtrim(rtrim(number_format($lim, 2), '0'), '.') . ' pieces only (change it on Order rates)'
+                 : ($feed
                    ? "{$op['stage']} cannot go past what has been through every {$feed['name']} operation"
                    : "only {$num} have been cut, and you cannot stitch more than was cut");
             $errors[] = "$label: only {$num} left for {$op['operation_name']} on \"{$op['part_name']}\" — {$why}.";
@@ -4381,11 +4405,12 @@ function zp_line_set_all(int $it, int $pid, int $szId, array $prog, array $booke
         try {
             $st = db()->prepare("SELECT * FROM zp_line_set_ops WHERE proforma_item_id=? ORDER BY seq, id"); $st->execute([$it]);
             foreach ($st->fetchAll() as $r) $rows[] = ['id' => (int)$r['id'], 'kind' => 'line', 'set_op_id' => (int)($r['set_op_id'] ?? 0),
-                'stage_id' => (int)($r['stage_id'] ?? 0), 'name' => (string)$r['operation_name'], 'rate' => (float)$r['rate'], 'on' => (bool)$r['is_active']];
+                'stage_id' => (int)($r['stage_id'] ?? 0), 'name' => (string)$r['operation_name'], 'rate' => (float)$r['rate'], 'on' => (bool)$r['is_active'],
+                'lim' => isset($r['limit_qty']) && $r['limit_qty'] !== null ? (float)$r['limit_qty'] : null];
         } catch (Throwable $e) {}
     } else {
         foreach (zp_set_ops($pid, true) as $o) $rows[] = ['id' => (int)$o['id'], 'kind' => 'set', 'set_op_id' => (int)$o['id'],
-            'stage_id' => (int)($o['stage_id'] ?? 0), 'name' => (string)$o['operation_name'], 'rate' => $std[(int)$o['id']], 'on' => true];
+            'stage_id' => (int)($o['stage_id'] ?? 0), 'name' => (string)$o['operation_name'], 'rate' => $std[(int)$o['id']], 'on' => true, 'lim' => null];
     }
     $out = [];
     foreach ($rows as $w) {
@@ -4394,7 +4419,7 @@ function zp_line_set_all(int $it, int $pid, int $szId, array $prog, array $booke
         $out[] = ['key' => $it . ':' . $w['kind'] . ':' . $w['id'], 'name' => $w['name'], 'stage_id' => $w['stage_id'],
                   'stage' => $w['stage_id'] > 0 ? zp_stage_name($w['stage_id']) : '', 'rate' => round($w['rate'], 2),
                   'std' => $w['set_op_id'] > 0 && isset($std[$w['set_op_id']]) ? round($std[$w['set_op_id']], 2) : null,
-                  'added' => $w['set_op_id'] === 0, 'on' => $w['on'], 'done' => round(zp_set_done($prog, $it, $w), 2),
+                  'added' => $w['set_op_id'] === 0, 'on' => $w['on'], 'done' => round(zp_set_done($prog, $it, $w), 2), 'lim' => $w['lim'],
                   'bq' => round($b[0], 2), 'ba' => round($b[1], 2)];
     }
     return $out;
@@ -4454,7 +4479,7 @@ function zp_order_sheet(int $pf): array {
         if (!isset($ops[$id])) $ops[$id] = ['id' => $id, 'part_id' => (int)$o['part_id'], 'part' => $part, 'op' => (string)$o['operation_name'],
             'stage' => zp_stage_name((int)($o['stage_id'] ?: zp_stage_id_for((string)$o['stage']))) ?: (string)$o['stage'],
             'std' => round((float)$o['rate'], 2), 'orate' => array_key_exists($id, $orate) ? round((float)$orate[$id], 2) : null,
-            'oskip' => isset($c['skip'][$pf][0][$id]), 'otier' => $tierOut($c['tier'][$pf][0][$id] ?? null), 'extra' => !empty($o['only_proforma_id']) ? 1 : 0, 'extra_item' => (int)($o['only_item_id'] ?? 0),
+            'oskip' => isset($c['skip'][$pf][0][$id]), 'lim' => isset($c['lim'][$id]) ? round($c['lim'][$id], 2) : null, 'otier' => $tierOut($c['tier'][$pf][0][$id] ?? null), 'extra' => !empty($o['only_proforma_id']) ? 1 : 0, 'extra_item' => (int)($o['only_item_id'] ?? 0),
             'lines' => []];
     };
     foreach (zp_open_lines() as $l) {
@@ -4540,7 +4565,10 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
         if (!isset($stageOk[$sg])) { $bad[] = 'Choose the stage of the new operation.'; continue; }
         if ($name === '' || mb_strlen($name) > 120) { $bad[] = 'Give the new operation a name (up to 120 letters).'; continue; }
         if ($r === null) { $bad[] = 'Give the new operation a rate.'; continue; }
-        $todo[] = ['add', $it, $pt, $sg, $name, $r];
+        $lq = trim((string)($a['qty'] ?? '')) === '' ? null : $num($a['qty']);
+        if ($lq !== null && $it === 0) { $bad[] = 'A quantity can be given only to an operation added for one line.'; continue; }
+        if (trim((string)($a['qty'] ?? '')) !== '' && ($lq === null || $lq <= 0)) { $bad[] = 'The quantity of a new operation must be above 0 (leave it empty for all pieces).'; continue; }
+        $todo[] = ['add', $it, $pt, $sg, $name, $r, $lq];
     }
     /* A SPLIT: "o:op" for the whole order, "l:item:op" for one line;
        [{qty, rate}, ...] — every step but the last has a quantity, the last is
@@ -4577,6 +4605,13 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
             if (abs($r - $w['rate']) > 0.001) $todo[] = ['srate', $k, $r];
         }
         if (array_key_exists('skip', $v) && (bool)$v['skip'] === $w['on']) $todo[] = ['sskip', $k, (bool)$v['skip']];
+        if (array_key_exists('lim', $v)) {
+            if (!$w['added']) { $bad[] = 'Only set work added for this order can have its own quantity.'; continue; }
+            $lq = trim((string)$v['lim']) === '' ? null : $num($v['lim']);
+            if (trim((string)$v['lim']) !== '' && ($lq === null || $lq <= 0)) { $bad[] = '"' . $v['lim'] . '" is not a quantity.'; continue; }
+            if ($lq !== null && $lq < $w['bq'] - 0.001) { $bad[] = $w['name'] . ': ' . rtrim(rtrim(number_format($w['bq'], 2), '0'), '.') . ' sets are already booked — the quantity cannot go below that.'; continue; }
+            if ($lq !== $w['lim'] && !($lq !== null && $w['lim'] !== null && abs($lq - $w['lim']) < 0.001)) $todo[] = ['slim', $k, $lq];
+        }
     }
     foreach ((array)($ch['sadd'] ?? []) as $a) {
         $items = array_values(array_unique(array_map('intval', (array)($a['items'] ?? []))));
@@ -4585,7 +4620,20 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
         if ($name === '' || mb_strlen($name) > 120) { $bad[] = 'Give the set work a name (up to 120 letters).'; continue; }
         if ($sg && !isset($stageOk[$sg])) { $bad[] = 'Choose the stage of the set work.'; continue; }
         if ($r === null) { $bad[] = 'Give the set work a rate per set.'; continue; }
-        $todo[] = ['sadd', $items, $name, $sg, $r];
+        $lq = trim((string)($a['qty'] ?? '')) === '' ? null : $num($a['qty']);
+        if (trim((string)($a['qty'] ?? '')) !== '' && ($lq === null || $lq <= 0)) { $bad[] = 'The quantity of new set work must be above 0 (leave it empty for all sets).'; continue; }
+        $todo[] = ['sadd', $items, $name, $sg, $r, $lq];
+    }
+    /* the quantity of an operation added for one line: {op: qty | ""} */
+    foreach ((array)($ch['plim'] ?? []) as $op => $v) {
+        $op = (int)$op;
+        if (!isset($opInfo[$op]) || !$opInfo[$op]['extra'] || !$opInfo[$op]['extra_item']) { $bad[] = 'Only an operation added for one line can have its own quantity.'; continue; }
+        $lq = trim((string)$v) === '' ? null : $num($v);
+        if (trim((string)$v) !== '' && ($lq === null || $lq <= 0)) { $bad[] = '"' . $v . '" is not a quantity.'; continue; }
+        $bk = (float)($lineOp[$opInfo[$op]['extra_item'] . ':' . $op]['bq'] ?? 0);
+        if ($lq !== null && $lq < $bk - 0.001) { $bad[] = $opInfo[$op]['op'] . ': ' . rtrim(rtrim(number_format($bk, 2), '0'), '.') . ' pieces are already booked — the quantity cannot go below that.'; continue; }
+        $was = $opInfo[$op]['lim'];
+        if (!($lq === null && $was === null) && !($lq !== null && $was !== null && abs($lq - $was) < 0.001)) $todo[] = ['plim', $op, $lq];
     }
     foreach ((array)($ch['remove'] ?? []) as $op) {
         $op = (int)$op; if (!isset($opInfo[$op]) || !$opInfo[$op]['extra']) { $bad[] = 'Only an operation added for this order can be removed — skip a normal one instead.'; continue; }
@@ -4598,8 +4646,8 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
     db()->beginTransaction();
     try {
         foreach ($todo as $t) {
-            $o = in_array($t[0], ['srate', 'sskip', 'sadd'], true) ? null
-               : (isset($t[1]) && in_array($t[0], ['orate', 'oclear', 'oskip', 'remove'], true) ? $opInfo[$t[1]] : (isset($t[2]) && isset($opInfo[$t[2]]) ? $opInfo[$t[2]] : null));
+            $o = in_array($t[0], ['srate', 'sskip', 'sadd', 'slim'], true) ? null
+               : (isset($t[1]) && in_array($t[0], ['orate', 'oclear', 'oskip', 'remove', 'plim'], true) ? $opInfo[$t[1]] : (isset($t[2]) && isset($opInfo[$t[2]]) ? $opInfo[$t[2]] : null));
             switch ($t[0]) {
                 case 'orate':
                     $r = zp_order_rate_save($pf, $t[1], $t[2], $reason, $userId);
@@ -4627,28 +4675,33 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
                     zp_rate_log($op, $pf, $o['part'], $o['op'], $o['std'], $o['std'], ($on ? 'SKIPPED for ' : 'Back on for ') . ($it ? $lineName[$it] : 'the whole order') . ' — ' . $reason, $userId);
                     break;
                 case 'add':
-                    [, $it, $pt, $sg, $name, $r] = $t;
+                    [, $it, $pt, $sg, $name, $r, $lq] = $t;
                     $seq = (int)db()->query("SELECT COALESCE(MAX(seq),0)+1 FROM zp_part_ops WHERE part_id=" . (int)$pt)->fetchColumn();
-                    db()->prepare("INSERT INTO zp_part_ops (part_id, stage_id, seq, stage, operation_name, rate, is_active, only_proforma_id, only_item_id) VALUES (?,?,?,?,?,?,1,?,?)")
-                        ->execute([$pt, $sg, $seq, $stageOk[$sg], $name, $r, $pf, $it]);
+                    db()->prepare("INSERT INTO zp_part_ops (part_id, stage_id, seq, stage, operation_name, rate, is_active, only_proforma_id, only_item_id, limit_qty) VALUES (?,?,?,?,?,?,1,?,?,?)")
+                        ->execute([$pt, $sg, $seq, $stageOk[$sg], $name, $r, $pf, $it, $lq]);
                     $pname = ''; foreach ($lineParts as $ps) if (isset($ps[$pt])) { $pname = $ps[$pt]; break; }
-                    zp_rate_log((int)db()->lastInsertId(), $pf, $pname, $name, null, $r, 'ADDED for ' . ($it ? $lineName[$it] : 'the whole order') . ' — ' . $reason, $userId);
+                    zp_rate_log((int)db()->lastInsertId(), $pf, $pname, $name, null, $r, 'ADDED for ' . ($it ? $lineName[$it] : 'the whole order')
+                        . ($lq !== null ? ', ' . rtrim(rtrim(number_format($lq, 2), '0'), '.') . ' pieces only' : '') . ' — ' . $reason, $userId);
                     break;
-                case 'srate': case 'sskip': case 'sadd':
+                case 'srate': case 'sskip': case 'sadd': case 'slim':
                     $its = $t[0] === 'sadd' ? $t[1] : [$setRow[$t[1]]['item']];
                     foreach ($its as $it) {
                         $ln = $openLine[$it];
                         $map = zp_line_set_own($it, (int)$ln['product_id'], zp_line_size_id($ln));
                         if ($t[0] === 'sadd') {
                             $seq = (int)db()->query("SELECT COALESCE(MAX(seq),0)+1 FROM zp_line_set_ops WHERE proforma_item_id=" . (int)$it)->fetchColumn();
-                            db()->prepare("INSERT INTO zp_line_set_ops (proforma_item_id, set_op_id, seq, stage_id, operation_name, rate, is_active) VALUES (?,NULL,?,?,?,?,1)")
-                                ->execute([$it, $seq, $t[3] ?: null, mb_substr($t[2], 0, 120), $t[4]]);
-                            zp_rate_log(null, $pf, 'Set work', $t[2], null, $t[4], 'ADDED per set for ' . $lineName[$it] . ' — ' . $reason, $userId);
+                            db()->prepare("INSERT INTO zp_line_set_ops (proforma_item_id, set_op_id, seq, stage_id, operation_name, rate, is_active, limit_qty) VALUES (?,NULL,?,?,?,?,1,?)")
+                                ->execute([$it, $seq, $t[3] ?: null, mb_substr($t[2], 0, 120), $t[4], $t[5]]);
+                            zp_rate_log(null, $pf, 'Set work', $t[2], null, $t[4], 'ADDED per set for ' . $lineName[$it]
+                                . ($t[5] !== null ? ', ' . rtrim(rtrim(number_format($t[5], 2), '0'), '.') . ' sets only' : '') . ' — ' . $reason, $userId);
                             continue;
                         }
                         $w = $setRow[$t[1]]; $lid = $map[$t[1]] ?? 0;
                         if (!$lid) throw new RuntimeException('Could not find "' . $w['name'] . '" on ' . $lineName[$it] . '.');
-                        if ($t[0] === 'srate') {
+                        if ($t[0] === 'slim') {
+                            db()->prepare("UPDATE zp_line_set_ops SET limit_qty=? WHERE id=? AND proforma_item_id=?")->execute([$t[2], $lid, $it]);
+                            zp_rate_log(null, $pf, 'Set work', $w['name'], $w['rate'], $w['rate'], $lineName[$it] . ': quantity ' . ($t[2] === null ? 'set back to all sets' : 'set to ' . rtrim(rtrim(number_format($t[2], 2), '0'), '.') . ' sets') . ' — ' . $reason, $userId);
+                        } elseif ($t[0] === 'srate') {
                             db()->prepare("UPDATE zp_line_set_ops SET rate=? WHERE id=? AND proforma_item_id=?")->execute([$t[2], $lid, $it]);
                             zp_rate_log(null, $pf, 'Set work', $w['name'], $w['rate'], $t[2], $lineName[$it] . ' only, per set: ' . $reason, $userId);
                         } else {
@@ -4656,6 +4709,10 @@ function zp_order_sheet_save(int $pf, array $ch, string $reason, int $userId): a
                             zp_rate_log(null, $pf, 'Set work', $w['name'], $w['rate'], $w['rate'], ($t[2] ? 'SKIPPED for ' : 'Back on for ') . $lineName[$it] . ' — ' . $reason, $userId);
                         }
                     }
+                    break;
+                case 'plim':
+                    db()->prepare("UPDATE zp_part_ops SET limit_qty=? WHERE id=? AND only_proforma_id=?")->execute([$t[2], $t[1], $pf]);
+                    zp_rate_log($t[1], $pf, $o['part'], $o['op'], $o['std'], $o['std'], 'Quantity ' . ($t[2] === null ? 'set back to all pieces' : 'set to ' . rtrim(rtrim(number_format($t[2], 2), '0'), '.') . ' pieces') . ' — ' . $reason, $userId);
                     break;
                 case 'tier':
                     [, $it, $op, $steps] = $t; $o = $opInfo[$op];
@@ -5173,7 +5230,8 @@ function zp_work_index(): array {
                    truth is "that job is done". Those two need different answers:
                    one is a typo to correct, the other is good news. The list
                    only OFFERS open work, but it can now say which it is. */
-                $isCut = zp_is_cutting((string)$o['stage']);
+                $lim   = zp_op_limit($opId);
+                $isCut = zp_is_cutting((string)$o['stage']) && $lim === null;   // a limited job is never open
                 /* an open cutting row stays offered after the plan is met — extra cutting is allowed */
                 $done = !$isCut && $left <= 0.0001;
                 $rate  = zp_rate_for($opId, (float)$o['rate'], $rates, $szRates, $szId);
@@ -5212,7 +5270,7 @@ function zp_work_index(): array {
                     'done' => $done ? 1 : 0,
                     /* pieces this line needs of this part — the ORDERED SHARE used to
                        split a booking across sizes (owner: "qty % same as ordered %") */
-                    'need' => round(max(0.0, zp_pieces_needed($l, $partId)), 2),
+                    'need' => round(max(0.0, $lim !== null ? min($lim, zp_pieces_needed($l, $partId)) : zp_pieces_needed($l, $partId)), 2),
                     'open' => $isCut ? 1 : 0,
                     'hay'  => mb_strtolower(trim(implode(' ', [
                                   $l['pi_no'], $l['customer_name'] ?? '', $l['product_name'],
@@ -5230,7 +5288,8 @@ function zp_work_index(): array {
            so it must not wait on the slowest part. */
         foreach (zp_line_set_work((int)$l['item_id'], $pid, $szId) as $w) {
             $done = zp_set_done($prog, (int)$l['item_id'], $w);
-            $left = max(0.0, (float)$l['ordered_qty'] - $done);
+            $cap  = ($w['lim'] ?? null) !== null ? min((float)$w['lim'], (float)$l['ordered_qty']) : (float)$l['ordered_qty'];
+            $left = max(0.0, $cap - $done);
             $stage = (int)$w['stage_id'] > 0 ? zp_stage_name((int)$w['stage_id']) : '';
             $out[] = [
                 'k'    => (int)$l['item_id'] . ':' . $w['kind'] . ':' . (int)$w['id'],

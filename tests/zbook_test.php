@@ -196,8 +196,8 @@ t('the reason is stated', str_contains($src, 'can book twice what exists by spli
 head('THE SAVE REFUSES WHAT THE SCREEN REFUSES');
 t('an over-book is rejected with the number left',
   str_contains($book, '&& $qty > $left + 0.0001)'));
-t('  but cutting is never refused for being over the plan (open)',
-  str_contains($book, "if (!zp_is_cutting((string)\$op['stage']) && \$qty > \$left + 0.0001)"));
+t('  but cutting is never refused for being over the plan (open) — unless it was added for a few pieces only',
+  str_contains($book, "if ((!zp_is_cutting((string)\$op['stage']) || \$lim !== null) && \$qty > \$left + 0.0001)"));
 t('  while stitching says why it is lower',
   str_contains($src, 'you cannot stitch more than was cut'));
 t('a blank row is skipped, not treated as an error',
