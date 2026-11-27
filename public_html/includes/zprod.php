@@ -5234,6 +5234,24 @@ function zp_work_index(): array {
                 $isCut = zp_is_cutting((string)$o['stage']) && $lim === null;   // a limited job is never open
                 /* an open cutting row stays offered after the plan is met — extra cutting is allowed */
                 $done = !$isCut && $left <= 0.0001;
+                /* A JOB ADDED BY HAND THAT IS WAITING, NOT FINISHED (owner, 27 Nov 2026):
+                   a stain wash on a line whose pieces are not cut yet has 0 left
+                   but is not done. It is listed greyed — never pickable — so the
+                   floor knows it exists. Normal operations stay hidden as before. */
+                $wait = 0; $wnote = '';
+                if ($done && !empty($o['only_proforma_id'])) {
+                    $need0  = max(0.0, zp_pieces_needed($l, $partId));
+                    $target = $lim !== null ? min($lim, $need0) : $need0;
+                    $did    = (float)($prog['op'][(int)$l['item_id']][$partId][$opId] ?? 0);
+                    if ($did < $target - 0.0001) {
+                        $done = false; $wait = 1;
+                        $feed = zp_stage_feeder($partId, (string)$o['stage'], (int)$l['item_id']);
+                        $nf = fn($v) => rtrim(rtrim(number_format($v, 2), '0'), '.');
+                        $wnote = $feed
+                            ? 'waiting for ' . $feed['name'] . ' (' . $nf(zp_stage_through($prog, (int)$l['item_id'], $partId, $feed['ops'])) . ' through)'
+                            : 'waiting for Cutting (' . $nf((float)($prog['stage'][(int)$l['item_id']][$partId]['cut'] ?? 0)) . ' cut)';
+                    }
+                }
                 $rate  = zp_rate_for($opId, (float)$o['rate'], $rates, $szRates, $szId);
                 /* a split rate: the rate the NEXT piece pays (26 Nov 2026) */
                 if (($tier = zp_tiers_for((int)$l['proforma_id'], (int)$l['item_id'], $opId)) !== null)
@@ -5268,6 +5286,7 @@ function zp_work_index(): array {
                     'rate' => round($rate, 2),
                     'left' => round($left, 2),
                     'done' => $done ? 1 : 0,
+                    'wait' => $wait, 'wnote' => $wnote,
                     /* pieces this line needs of this part — the ORDERED SHARE used to
                        split a booking across sizes (owner: "qty % same as ordered %") */
                     'need' => round(max(0.0, $lim !== null ? min($lim, zp_pieces_needed($l, $partId)) : zp_pieces_needed($l, $partId)), 2),

@@ -54,5 +54,16 @@ ok(str_contains($src, "A quantity can be given only to an operation added for on
 $pg = file_get_contents(__DIR__ . '/../public_html/production_order_rates.php');
 ok(str_contains($pg, 'class="qt" placeholder="Qty (all)"') && str_contains($pg, 'class="qt" placeholder="Sets (all)"'), 'the page: a Qty box when adding, empty = all');
 ok(str_contains($pg, 'data-pl="') && str_contains($pg, 'data-sl="'), '  and the quantity can be edited on the row');
+
+echo "4. A hand-added job that is waiting\n";
+$pe = file_get_contents(__DIR__ . '/../public_html/production_entry.php');
+$zc = file_get_contents(__DIR__ . '/../public_html/includes/zp_correct.php');
+ok(str_contains($src, "if (\$done && !empty(\$o['only_proforma_id'])) {"), 'only an operation added on Order rates can be "waiting" — normal ones stay hidden as before');
+ok(str_contains($src, "'waiting for Cutting ('") && str_contains($src, "'waiting for ' . \$feed['name']"), 'it says what it waits for');
+ok(str_contains($zc, "\$g['wait'] = (\$g['left'] <= 0.0001 && !empty(\$g['anyw'])) ? 1 : 0;"), 'a merged row waits only when nothing in it can be booked');
+ok(str_contains($pe, "return !w.done && !w.wait && workOk(w) && hit(w.hay, t);") && str_contains($pe, "!w.done && !w.wait && workOk(w) && hit(w.hay, t) && (!mine"), 'a waiting job can never be picked, in either list');
+ok(str_contains($pe, "'<div class=\"ze-wait\"") && !str_contains($pe, "class=\"ze-row ze-wait"), '  it is drawn as a plain greyed line, which the arrow keys and Enter pass by');
+ok(str_contains($pe, "if (w.done || w.wait || !piOk(w)) return;"), 'the stage counts show only what can be booked');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

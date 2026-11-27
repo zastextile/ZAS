@@ -362,6 +362,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
                text-transform:uppercase;letter-spacing:.06em}
 .ze-res mark{background:rgba(29,111,242,.16);color:#1558ad;border-radius:3px;padding:0 1px;font-weight:800}
 .ze-none{padding:22px;text-align:center;color:#8a97ab;font-size:12.5px}
+/* a hand-added job that is waiting: greyed, not pickable (27 Nov 2026) */
+.ze-wh{padding:6px 13px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#8a97ab;background:#f4f6f9;border-top:1px dashed #d9e0ea}
+.ze-wait{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:11px;align-items:center;padding:8px 13px;border-bottom:1px solid #eef2f7;
+         background:#f7f8fa;opacity:.62;cursor:not-allowed;box-shadow:inset 4px 0 0 #c3ccd8}
+.zskin .ze-wait .ze-left,.ze-wait .ze-left{color:#9a5710 !important;font-size:11.5px !important;font-family:inherit !important;font-weight:700;white-space:normal;max-width:240px}
 /* ---- THE QUICK FILTER: PI digits + one stage (27 Nov 2026) ---- */
 .ze-top{display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .zskin .ze-top .ze-tabs{margin-bottom:0 !important}
@@ -1014,7 +1019,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
   function paintFlt(){
     var box = $('zeFSt'); if (!box) return;
     var cnt = {}, all = 0;
-    WORK.forEach(function(w){ if (w.done || !piOk(w)) return; all++; cnt[w.sid] = (cnt[w.sid] || 0) + 1; });
+    WORK.forEach(function(w){ if (w.done || w.wait || !piOk(w)) return; all++; cnt[w.sid] = (cnt[w.sid] || 0) + 1; });
     box.innerHTML = '<button type="button" class="ze-fc' + (FLT.sid ? '' : ' on') + '" data-sid="0" style="' + (FLT.sid ? 'background:#fff;color:#33465f;border-color:#cfd8e3' : 'background:#33465f;color:#fff;border-color:#33465f') + '" title="Alt+0">All <b>' + all + '</b></button>'
       + (STL || []).map(function(s, i){
           var m = /background:(#[0-9a-f]{6});color:(#[0-9a-f]{6});border-color:(#[0-9a-f]{6})/.exec(stStyle(s[1])) || [0, '#eef2f6', '#33465f', '#cfd8e3'], on = FLT.sid === s[0];
@@ -1152,10 +1157,22 @@ table.zp-t tbody tr:hover{background:#fafcff}
     var c = box.querySelector('[data-cur="1"]'); if (c) c.scrollIntoView({block:'nearest'});
   }
 
+  /* JOBS ADDED BY HAND THAT ARE WAITING (27 Nov 2026): shown greyed under the
+     list, never pickable — plain divs, so the arrow keys and Enter pass them */
+  function waitList(t){ return tab === 'A' ? WORK.filter(function(w){ return w.wait && workOk(w) && hit(w.hay, t); }) : []; }
+  function waitHtml(ws){
+    if (!ws.length) return '';
+    return '<div class="ze-wh">Added for this order — waiting for the stage before</div>' + ws.slice(0, 20).map(function(w){
+      return '<div class="ze-wait" title="Nothing can be booked on it yet">'
+        + '<div><div class="ze-t">' + esc(w.pn) + ' → ' + esc(w.on) + '</div><div class="ze-s"><b>' + esc(w.pi) + '</b><i>&middot;</i>' + esc(w.prod)
+        + (w.desc ? '<i>&middot;</i>' + esc(w.desc) : '') + (szText(w) ? '<span class="ze-chip">' + esc(szText(w)) + '</span>' : '') + stChip(w.st) + '</div></div>'
+        + '<div class="ze-left">' + esc(w.wnote || 'waiting') + '</div></div>';
+    }).join('');
+  }
   function tabList(){
     var t = terms();
     /* only OPEN work is offered; finished rows are kept for the message below */
-    if (tab === 'A') return WORK.filter(function(w){ return !w.done && workOk(w) && hit(w.hay, t); });
+    if (tab === 'A') return WORK.filter(function(w){ return !w.done && !w.wait && workOk(w) && hit(w.hay, t); });
     var list = WORKERS.filter(function(w){ return workerOk(w) && hit(w.hay, t); });
     /* the people who actually book work come first — an empty search on a
        floor of 200 should not open with whoever happened to be added first */
@@ -1165,8 +1182,9 @@ table.zp-t tbody tr:hover{background:#fafcff}
   function draw(){
     var box = $('zeRes'), t = terms();
     if (picked) { box.innerHTML=''; $('zeCnt').textContent=''; pvTop(null); return; }
-    var list = tabList();
-    $('zeCnt').textContent = list.length + (list.length === 1 ? ' match' : ' matches');
+    var list = tabList(), waits = waitList(t);
+    $('zeCnt').textContent = list.length + (list.length === 1 ? ' match' : ' matches') + (waits.length ? ' · ' + waits.length + ' waiting' : '');
+    if (!list.length && waits.length) { box.innerHTML = '<div class="ze-none">Nothing can be booked here yet.</div>' + waitHtml(waits); pvTop(null); return; }
     if (!list.length) {
       pvTop(null);
       /* "NOTHING MATCHES" AND "THAT IS ALL DONE" ARE DIFFERENT ANSWERS.
@@ -1189,6 +1207,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       return tab === 'A' ? zeWorkOpt(w, 'zePick(' + i + ')', 'onclick')
                          : zeWorkerOpt(w, 0, 'zePick(' + i + ')', 'onclick');
     }), t, cur, 60);
+    if (waits.length) box.insertAdjacentHTML('beforeend', waitHtml(waits));
     pvTopCur();
   }
   /* the mouse shows a row too, without moving the keyboard's place */
@@ -1351,7 +1370,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
     /* the other way round: a person picked first is offered only the work of
        the stages they are ticked for (nobody ticked anywhere: everything) */
     var mine = picked && picked.sg && picked.sg.length ? picked.sg : null;
-    return WORK.filter(function(w){ return !w.done && workOk(w) && hit(w.hay, t) && (!mine || !w.sid || mine.indexOf(w.sid) >= 0); })
+    return WORK.filter(function(w){ return !w.done && !w.wait && workOk(w) && hit(w.hay, t) && (!mine || !w.sid || mine.indexOf(w.sid) >= 0); })
       .slice().sort(function(a,b){ return score(wid, b.op) - score(wid, a.op); })
       .map(function(w){
         var o = zeWorkOpt(w, click(), '');

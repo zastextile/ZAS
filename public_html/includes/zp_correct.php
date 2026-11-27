@@ -311,6 +311,7 @@ function ze_merge_work(array $rows): array {
         $g['open'] = (int)($r['open'] ?? 0);
         $g['left'] = round($g['left'] + (float)$r['left'], 2);
         if (!$r['done']) $g['done'] = 0;
+        if (!empty($r['wait'])) { $g['anyw'] = 1; $g['wnote'] = (string)$r['wnote']; }
         $g['sz'][(int)$r['item']] = (string)($r['size'] ?? '');
         $g['mop'][(int)$r['op']] = (string)$r['on'];          // op id → name, for the preview pane
         if (!in_array((string)$r['on'], $g['ons'], true)) $g['ons'][] = (string)$r['on'];
@@ -334,8 +335,11 @@ function ze_merge_work(array $rows): array {
         $g['size'] = $g['nsz'] === 1 ? ($sizes[0] ?? '') : '';
         $g['sizes'] = implode(', ', $sizes);
         $g['desc'] = mb_substr(implode(' / ', $g['desc']), 0, 90);
+        /* waiting = nothing can be booked on any member, and a hand-added one is waiting */
+        $g['wait'] = ($g['left'] <= 0.0001 && !empty($g['anyw'])) ? 1 : 0;
+        if (!$g['wait']) $g['wnote'] = '';
         $g['msz'] = $g['sz'];                                  // order line → size, for the preview pane
-        unset($g['dk'], $g['sz'], $g['ons']);
+        unset($g['dk'], $g['sz'], $g['ons'], $g['anyw']);
         $g['hay'] .= ' ' . mb_strtolower($g['desc']);
     }
     unset($g);
