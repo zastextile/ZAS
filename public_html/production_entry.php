@@ -325,6 +325,38 @@ table.zp-t tbody tr:hover{background:#fafcff}
                text-transform:uppercase;letter-spacing:.06em}
 .ze-res mark{background:rgba(29,111,242,.16);color:#1558ad;border-radius:3px;padding:0 1px;font-weight:800}
 .ze-none{padding:22px;text-align:center;color:#8a97ab;font-size:12.5px}
+/* ---- THE PREVIEW PANE: the highlighted row of either list, in full (27 Nov 2026) ---- */
+.ze-lv{display:flex;gap:12px;align-items:flex-start}
+.ze-lv>.ze-res{flex:1 1 auto;min-width:0}
+.ze-pv{flex:0 0 clamp(300px,30vw,460px);width:clamp(300px,30vw,460px);margin-top:10px;position:sticky;top:10px;max-height:72vh;overflow:auto;
+       border:1px solid #dfe6ef;border-radius:11px;background:#fff;box-shadow:0 6px 22px -12px rgba(16,32,56,.35);font-size:12.5px;color:#1d2d3e}
+.ze-pv[hidden]{display:none}
+@media (max-width:980px){ .ze-lv{flex-direction:column;align-items:stretch} .ze-pv{width:auto;flex:none;position:static;max-height:none} }
+.zesugpv{position:fixed;z-index:1001;width:340px;max-height:70vh}
+.pv-hd{padding:10px 13px 9px;border-bottom:1px solid;border-radius:10px 10px 0 0}
+.pv-k{font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;opacity:.85}
+.pv-t{font-size:15px;font-weight:800;letter-spacing:-.01em;margin:2px 0 5px;line-height:1.25}
+.pv-b{padding:10px 13px 12px}
+.pv-g{display:grid;grid-template-columns:86px minmax(0,1fr);gap:4px 10px;margin-bottom:9px}
+.pv-g>span{color:#6b7a90;font-size:11.5px}
+.pv-g>b,.pv-g>div{min-width:0;overflow-wrap:anywhere}
+.pv-d{font-style:italic;color:#4a5a6a}
+.pv-kp{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:4px 0 6px}
+.pv-kp div{border:1px solid #e6ecf3;border-radius:8px;padding:5px 7px;background:#fafcfe}
+.pv-kp small{display:block;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#8a97ab}
+.pv-kp b{font-family:ui-monospace,monospace;font-size:14px}
+.pv-bar{height:7px;border-radius:4px;background:#e6ecf3;overflow:hidden;margin:2px 0 10px}
+.pv-bar i{display:block;height:100%;background:linear-gradient(90deg,#0d9488,#22b8a6)}
+.ze-pv table.pv-t2{width:100% !important;min-width:0 !important;border-collapse:collapse;font-size:11.5px;margin-top:2px}
+.pv-t2 th{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:#8a97ab;text-align:left;padding:3px 4px;border-bottom:1px solid #e6ecf3}
+.pv-t2 td{padding:4px;border-bottom:1px solid #f0f3f7;font-variant-numeric:tabular-nums}
+.pv-t2 td.n,.pv-t2 th.n{text-align:right}
+.pv-t2 .mb{height:4px;border-radius:2px;background:#e6ecf3;overflow:hidden;margin-top:2px}.pv-t2 .mb i{display:block;height:100%;background:#0d9488}
+.pv-sz{display:inline-block;min-width:26px;padding:0 6px;border-radius:10px;background:#eef2f8;color:#33465f;font-weight:700;font-size:11px;text-align:center}
+.pv-note{font-size:11px;color:#9a5710;background:#fff7ea;border:1px solid #f4d9a8;border-radius:6px;padding:5px 7px;margin-top:8px}
+.pv-ft{font-size:10.5px;color:#8a97ab;margin-top:9px}
+.pv-ft kbd{font-family:ui-monospace,monospace;font-size:10px;background:#f4f7fb;border:1px solid #e2e9f1;border-radius:4px;padding:0 4px}
+.pv-ch{display:inline-block;font-size:10.5px;font-weight:700;border:1px solid #d9e0ea;border-radius:10px;padding:0 7px;margin:0 4px 4px 0;background:#f7f9fc;color:#33465f}
 .ze-usual{display:inline-block;font-size:9.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;
           background:rgba(13,148,136,.13);color:#0b7f74;padding:1px 7px;border-radius:20px}
 
@@ -454,7 +486,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
           <span><kbd>&uarr;</kbd><kbd>&darr;</kbd> move</span><span><kbd>Enter</kbd> choose</span>
           <span><kbd>Esc</kbd> clear</span><span><kbd>Ctrl</kbd>+<kbd>S</kbd> save the whole sheet</span>
         </div>
-        <div class="ze-res" id="zeRes"></div>
+        <?php /* THE LIST AND, BESIDE IT, THE ROW YOU ARE ON — in full (owner, 27 Nov 2026) */ ?>
+        <div class="ze-lv"><div class="ze-res" id="zeRes"></div><aside class="ze-pv" id="zePrev" hidden></aside></div>
         <div id="zeHead"></div>
       </div>
 
@@ -728,6 +761,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
   var PAYW = { salary: 'Fixed salary', daily: 'Daily wages', contract: 'Contractor' };
   function payPill(t){ return PAYW[t] ? '<span class="ze-pt pt-' + t + '">' + PAYW[t] + '</span>' : ''; }
   var HABIT   = <?= json_encode($HABIT) ?>;
+  var STN     = <?= json_encode($stNm, JSON_HEX_TAG | JSON_HEX_AMP) ?>;
   var MONEY   = <?= $showMoney ? 'true' : 'false' ?>;
 
   var tab    = 'A';      // A = pick the work first, B = pick the worker first
@@ -879,6 +913,91 @@ table.zp-t tbody tr:hover{background:#fafcff}
       + '</button>';
   }
 
+  /* ============================================================
+     THE PREVIEW PANE (owner, 27 Nov 2026)
+     ------------------------------------------------------------
+     Whatever row is highlighted — by the arrow keys or under the mouse —
+     is shown in full beside the list: order, customer, product, the
+     proforma description, each size with its own made / left, the rate and
+     what is left to earn. Built from the data already on the page, so it
+     costs the server nothing.
+     ============================================================ */
+  var PAYC = { salary: ['#e8f1fc','#0a4f96','#b9d3f1'], daily: ['#fff4e2','#9a5710','#f1cf97'], contract: ['#f1ecfb','#5a3fa8','#d6cbf2'] };
+  var OPN = {}; WORK.forEach(function(w){ for (var o in (w.mop || {})) OPN[o] = (w.pn ? w.pn + ' → ' : '') + w.mop[o]; });
+  function workByKey(k){ for (var i = 0; i < WORK.length; i++) if (WORK[i].k === k) return WORK[i]; return null; }
+  function workerById(id){ for (var i = 0; i < WORKERS.length; i++) if (WORKERS[i].id === +id) return WORKERS[i]; return null; }
+  function pvWork(w, forWorker){
+    var m = /background:(#[0-9a-f]{6});color:(#[0-9a-f]{6});border-color:(#[0-9a-f]{6})/.exec(stStyle(w.st)) || [0, '#eef2f6', '#33465f', '#cfd8e3'];
+    var need = 0, left = 0; (w.mem || []).forEach(function(x){ need += +x[3] || 0; left += Math.max(0, +x[2] || 0); });
+    if (!need) need = left;
+    var made = Math.max(0, need - left), pct = need > 0 ? Math.min(100, made / need * 100) : 0, set = w.kind === 'set' || w.kind === 'line';
+    var h = '<div class="pv-hd" style="background:' + m[1] + ';color:' + m[2] + ';border-color:' + m[3] + '">'
+      + '<div class="pv-k">' + (set ? 'Set / pack work · per set' : 'Part work') + (w.st ? ' · ' + esc(w.st) : '') + '</div>'
+      + '<div class="pv-t">' + esc(w.pn) + ' → ' + esc(w.on) + '</div>'
+      + (w.nop > 1 ? '<span class="pv-ch">' + w.nop + ' operations</span>' : '') + (w.nsz > 1 ? '<span class="pv-ch">' + w.nsz + ' sizes</span>' : (w.size ? '<span class="pv-ch">Size ' + esc(w.size) + '</span>' : ''))
+      + (MONEY ? '<span class="pv-ch">' + n2(w.rate) + ' / ' + (set ? 'set' : 'pc') + '</span>' : '') + '</div><div class="pv-b">'
+      + '<div class="pv-g"><span>Order</span><b>' + esc(w.pifull || w.pi) + '</b>'
+      + (w.cust ? '<span>Customer</span><div>' + esc(w.cust) + '</div>' : '')
+      + '<span>Product</span><b>' + esc(w.prod) + '</b>'
+      + (w.desc ? '<span>Description</span><div class="pv-d">' + esc(w.desc) + '</div>' : '')
+      + (w.sizes ? '<span>Sizes</span><div>' + esc(w.sizes) + '</div>' : '') + '</div>'
+      + '<div class="pv-kp"><div><small>' + (set ? 'Sets' : 'Pieces') + '</small><b>' + qn(need) + '</b></div><div><small>Made</small><b style="color:#0a4f96">' + qn(made) + '</b></div>'
+      + '<div><small>Left</small><b style="color:' + (left > 0 ? '#0d9488' : '#9a5710') + '">' + qn(left) + '</b></div></div>'
+      + '<div class="pv-bar" title="' + Math.round(pct) + '% made"><i style="width:' + pct + '%"></i></div>';
+    if ((w.mem || []).length > 1 || w.nop > 1) {
+      h += '<table class="pv-t2"><tr><th>Size</th>' + (w.nop > 1 ? '<th>Operation</th>' : '') + '<th class="n">Need</th><th class="n">Left</th><th style="width:60px">Made</th></tr>'
+        + w.mem.map(function(x){ var nd = +x[3] || 0, lf = Math.max(0, +x[2] || 0), p = nd > 0 ? Math.min(100, (nd - lf) / nd * 100) : 0;
+            return '<tr><td><span class="pv-sz">' + esc((w.msz || {})[x[0]] || '—') + '</span></td>' + (w.nop > 1 ? '<td>' + esc((w.mop || {})[x[1]] || '') + '</td>' : '')
+              + '<td class="n">' + qn(nd) + '</td><td class="n"><b>' + qn(lf) + '</b></td><td><div class="mb"><i style="width:' + p + '%"></i></div></td></tr>'; }).join('')
+        + '</table>';
+      if (w.nsz > 1) h += '<div class="pv-ft">A quantity typed here is shared across the sizes by their ordered %.</div>';
+    }
+    if (MONEY && left > 0) h += '<div class="pv-g" style="margin-top:8px"><span>Left to earn</span><b>PKR ' + n2(left * w.rate) + '</b></div>';
+    if (w.open) h += '<div class="pv-note">Cutting is open: you may cut more than the order needs — the extra is shown as information.</div>';
+    if (forWorker) { var sc = score(forWorker.id, w.op); if (sc) h += '<div class="pv-ft">' + esc(forWorker.name) + ' has done this ' + sc + ' time' + (sc === 1 ? '' : 's') + ' before.</div>'; }
+    return h + '<div class="pv-ft"><kbd>Enter</kbd> choose · <kbd>↑</kbd><kbd>↓</kbd> move</div></div>';
+  }
+  function pvWorker(w, forWork){
+    var c = PAYC[w.pt] || ['#eef2f6', '#33465f', '#cfd8e3'];
+    var hab = (HABIT.byWorker || {})[w.id] || {}, top = Object.keys(hab).sort(function(a, b){ return hab[b] - hab[a]; }).slice(0, 5);
+    var onSheet = 0, nSheet = 0; sheet.forEach(function(x){ if (+x.worker === w.id) { onSheet += +x.qty || 0; nSheet++; } });
+    var booked = 0; if (typeof BOOKED !== 'undefined') BOOKED.forEach(function(b){ if (b.wid === w.id && b.status === 'Active') booked += +b.qty || 0; });
+    var h = '<div class="pv-hd" style="background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2] + '">'
+      + '<div class="pv-k">Worker' + (PAYW[w.pt] ? ' · ' + PAYW[w.pt] : '') + '</div><div class="pv-t">' + esc(w.name) + '</div>'
+      + '<span class="pv-ch">' + esc(w.code) + '</span>' + (w.dept ? '<span class="pv-ch">' + esc(w.dept) + '</span>' : '') + '</div><div class="pv-b">'
+      + '<div class="pv-g"><span>Stages</span><div>' + ((w.sg || []).length ? w.sg.map(function(s){ return STN[s] ? stChip(STN[s]) + ' ' : ''; }).join('') : '<span style="color:#8a97ab">not allotted</span>') + '</div>'
+      + '<span>Booked today</span><b>' + qn(booked) + ' pcs</b>'
+      + (nSheet ? '<span>On this sheet</span><b>' + qn(onSheet) + ' pcs · ' + nSheet + ' line' + (nSheet === 1 ? '' : 's') + '</b>' : '') + '</div>';
+    if (forWork) { var sc = score(w.id, forWork.op); h += '<div class="pv-g"><span>This job</span><b>' + (sc ? 'done ' + sc + ' time' + (sc === 1 ? '' : 's') + ' before' : 'not done before') + '</b></div>'; }
+    if (top.length) h += '<table class="pv-t2"><tr><th>Usually does</th><th class="n">Times</th></tr>'
+      + top.map(function(o){ return '<tr><td>' + esc(OPN[o] || ('operation #' + o)) + '</td><td class="n">' + hab[o] + '</td></tr>'; }).join('') + '</table>';
+    return h + '<div class="pv-ft"><kbd>Enter</kbd> choose · <kbd>↑</kbd><kbd>↓</kbd> move</div></div>';
+  }
+  /* the top list: tab A lists work, tab B lists people */
+  function pvTop(v){
+    var p = $('zePrev'); if (!p) return;
+    if (picked || v == null) { p.hidden = true; return; }
+    var o = tab === 'A' ? workByKey(v) : workerById(v);
+    if (!o) { p.hidden = true; return; }
+    p.innerHTML = tab === 'A' ? pvWork(o) : pvWorker(o); p.hidden = false;
+  }
+  function pvTopCur(){ var c = document.querySelector('#zeRes .ze-row[data-cur="1"]') || document.querySelector('#zeRes .ze-row'); pvTop(c ? c.getAttribute('data-pick') : null); }
+  /* the in-row list: tab A lists people for the chosen work, tab B lists work for the chosen person */
+  function pvSug(v){
+    var box = $('zeSugBox'), p = $('zeSugPrev');
+    if (!p) { p = document.createElement('aside'); p.id = 'zeSugPrev'; p.className = 'ze-pv zesugpv'; p.hidden = true; (document.querySelector('.zskin') || document.body).appendChild(p); }
+    if (!box || box.hidden || v == null) { p.hidden = true; return; }
+    var o = tab === 'A' ? workerById(v) : workByKey(v);
+    if (!o) { p.hidden = true; return; }
+    p.innerHTML = tab === 'A' ? pvWorker(o, picked) : pvWork(o, picked);
+    var r = box.getBoundingClientRect(), w = 340;
+    if (r.right + 10 + w <= window.innerWidth) p.style.left = (r.right + 8) + 'px';
+    else if (r.left - 10 - w >= 0) p.style.left = (r.left - w - 8) + 'px';
+    else { p.hidden = true; return; }                       // a phone: no room beside it, the list alone is clearer
+    p.style.top = Math.max(8, Math.min(r.top, window.innerHeight - 260)) + 'px'; p.hidden = false;
+  }
+  function pvSugCur(){ var b = $('zeSugBox'); var c = b && (b.querySelector('.ze-row[data-cur="1"]') || b.querySelector('.ze-row')); pvSug(c ? c.getAttribute('data-pick') : null); }
+
   /* A LONG LIST IS DRAWN SHORT. Painting 1,200 rows on every keystroke is what
      makes a search feel heavy. The cut is SAID OUT LOUD, because a list that
      silently stops at eight looks like the other matches do not exist. */
@@ -909,10 +1028,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
 
   function draw(){
     var box = $('zeRes'), t = terms();
-    if (picked) { box.innerHTML=''; $('zeCnt').textContent=''; return; }
+    if (picked) { box.innerHTML=''; $('zeCnt').textContent=''; pvTop(null); return; }
     var list = tabList();
     $('zeCnt').textContent = list.length + (list.length === 1 ? ' match' : ' matches');
     if (!list.length) {
+      pvTop(null);
       /* "NOTHING MATCHES" AND "THAT IS ALL DONE" ARE DIFFERENT ANSWERS.
          One is a typo to correct; the other is good news. Saying the first when
          the second is true sends somebody hunting for a job that is finished. */
@@ -932,7 +1052,11 @@ table.zp-t tbody tr:hover{background:#fafcff}
       return tab === 'A' ? zeWorkOpt(w, 'zePick(' + i + ')', 'onclick')
                          : zeWorkerOpt(w, 0, 'zePick(' + i + ')', 'onclick');
     }), t, cur, 60);
+    pvTopCur();
   }
+  /* the mouse shows a row too, without moving the keyboard's place */
+  $('zeRes').addEventListener('mouseover', function(e){ var r = e.target.closest('.ze-row'); if (r) pvTop(r.getAttribute('data-pick')); });
+  $('zeRes').addEventListener('mouseleave', pvTopCur);
 
   window.zePick = function(i){
     var w = tabList()[i]; if (!w) return;
@@ -954,7 +1078,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
         + (w.dept ? '<span class="ze-chip">' + esc(w.dept) + '</span>' : '')
         + payPill(w.pt)
         + '</div></div><button type="button" class="zp-b sm" onclick="zeReset()">Change</button></div>';
-    $('zeRes').innerHTML = ''; $('zeCnt').textContent = '';
+    $('zeRes').innerHTML = ''; $('zeCnt').textContent = ''; pvTop(null);
     $('zeGrid').hidden = false;
     rows = [];
     zeAddRow();
@@ -1134,6 +1258,8 @@ table.zp-t tbody tr:hover{background:#fafcff}
          for these rows is written as `.zskin .ze-row` — hang the panel off
          <body> and it lands OUTSIDE that ancestor and loses all of it. The
          wrapper is the outermost element on the page, so it clips nothing. */
+      b.addEventListener('mouseover', function(e){ var r = e.target.closest ? e.target.closest('.ze-row') : null; if (r) pvSug(r.getAttribute('data-pick')); });
+      b.addEventListener('mouseleave', pvSugCur);
       (document.querySelector('.zskin') || document.body).appendChild(b);
     }
     return b;
@@ -1161,23 +1287,23 @@ table.zp-t tbody tr:hover{background:#fafcff}
   function zeSugTrack(){
     if (sugRow < 0) return;
     var el = document.querySelectorAll('#erows .pk')[sugRow];
-    if (el) zeSugPlace(el); else zeSugHide();
+    if (el) { zeSugPlace(el); pvSugCur(); } else zeSugHide();
   }
   window.addEventListener('scroll', zeSugTrack, true);
   window.addEventListener('resize', zeSugTrack);
-  function zeSugHide(){ var b = $('zeSugBox'); if (b) b.hidden = true; sugRow = -1; }
+  function zeSugHide(){ var b = $('zeSugBox'); if (b) b.hidden = true; sugRow = -1; pvSug(null); }
 
   window.zeSug = function(i, el){
     rows[i].label = el.value;
     var pop = zeSugBox(), list = sugList(i, el.value);
     sugRow = i;
-    if (!list.length) { pop.hidden = true; return; }
+    if (!list.length) { pop.hidden = true; pvSug(null); return; }
     /* 12, not 8, and the cut is stated. Eight was a silent truncation on a
        floor with 200 workers: the name you wanted was simply not there, with
        nothing on screen to say more existed. */
     zePaint(pop, list, (el.value||'').trim().toLowerCase().split(/\s+/).filter(Boolean), 0, 12);
     pop.hidden = false;
-    zeSugPlace(el);
+    zeSugPlace(el); pvSugCur();
   };
   window.zeSugKey = function(e, i){
     var pop = $('zeSugBox');
@@ -1189,7 +1315,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       e.preventDefault();
       if (o[k]) o[k].dataset.cur = '0';
       k = e.key === 'ArrowDown' ? Math.min(k+1, o.length-1) : Math.max(k-1, 0);
-      o[k].dataset.cur = '1'; o[k].scrollIntoView({block:'nearest'});
+      o[k].dataset.cur = '1'; o[k].scrollIntoView({block:'nearest'}); pvSugCur();
     } else if (e.key === 'Enter') {
       e.preventDefault();
       var p = o[k < 0 ? 0 : k];

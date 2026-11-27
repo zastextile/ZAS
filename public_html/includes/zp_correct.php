@@ -312,6 +312,7 @@ function ze_merge_work(array $rows): array {
         $g['left'] = round($g['left'] + (float)$r['left'], 2);
         if (!$r['done']) $g['done'] = 0;
         $g['sz'][(int)$r['item']] = (string)($r['size'] ?? '');
+        $g['mop'][(int)$r['op']] = (string)$r['on'];          // op id → name, for the preview pane
         if (!in_array((string)$r['on'], $g['ons'], true)) $g['ons'][] = (string)$r['on'];
         /* the same words typed twice with different capitals or spaces are one description */
         $dk = mb_strtolower(preg_replace('/\s+/', ' ', $d));
@@ -333,6 +334,7 @@ function ze_merge_work(array $rows): array {
         $g['size'] = $g['nsz'] === 1 ? ($sizes[0] ?? '') : '';
         $g['sizes'] = implode(', ', $sizes);
         $g['desc'] = mb_substr(implode(' / ', $g['desc']), 0, 90);
+        $g['msz'] = $g['sz'];                                  // order line → size, for the preview pane
         unset($g['dk'], $g['sz'], $g['ons']);
         $g['hay'] .= ' ' . mb_strtolower($g['desc']);
     }
