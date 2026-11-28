@@ -35,5 +35,20 @@ ok(str_contains($pg, "if (/^[=+\\-@]/.test(v) && isNaN(+v))"), 'the Excel file c
 ok(str_contains($pg, '92 * 86400'), 'at most about three months are loaded at once');
 ok(str_contains($pg, '<div class="zskin">') && substr_count($pg, 'closes .zskin') === 1, 'it stays inside the module skin');
 
+
+echo "5. The Excel-style grid (28 Nov 2026)\n";
+ok(str_contains($pg, "if (\$_SERVER['REQUEST_METHOD'] === 'POST' && (\$_POST['action'] ?? '') === 'save_grid') {") && substr_count($pg, 'verify_csrf();') >= 2, 'one save for the whole grid, with the form token');
+ok(str_contains($pg, "ze_edit_row(\$t['ids'], \$t['d'], \$t['qty'], \$t['wid'], \$why, \$userId, \$t['nd'], \$t['exact'], \$t['rate'])"), '  every changed row through the same ze_edit_row');
+ok(str_contains($pg, "if (\$why === '') { echo json_encode(['ok' => false"), '  under one reason, required');
+ok(str_contains($pg, "usort(\$todo, fn(\$a, \$b) => (\$b['down'] <=> \$a['down'])"), '  lower quantities first (later stages first), then the rest (earlier stages first)');
+ok(str_contains($pg, '$canRate = $showMoney && is_admin();') && str_contains($pg, "if (\$t['rate'] !== null && !\$canRate)"), 'only an admin may correct a rate');
+ok(str_contains($zc, '$rateNow = $newRate !== null ? round($newRate, 2) : $wasRate;') && str_contains($zc, "UPDATE zp_entries SET rate_applied=?, amount=ROUND(qty*?, 2) WHERE note=? AND status='active'"), 'the paid rate stays unless the rate itself is corrected');
+ok(str_contains($zc, ", rate ' . number_format(\$wasRate, 2) . ' → '"), '  and a rate change is written into the reason on the old line');
+ok(str_contains($pg, "if (k === 'ArrowDown' || k === 'ArrowUp')") && str_contains($pg, "else if (k === 'Tab')") && str_contains($pg, "e.key === 'Enter') { e.preventDefault(); commit(); move(1, 0); }"), 'arrows, Tab and Enter move between cells');
+ok(str_contains($pg, "document.addEventListener('paste'") && str_contains($pg, "(k === 'd' || k === 'D')"), 'paste from Excel and Ctrl+D copy-from-above');
+$js = substr($pg, strpos($pg, '/* ============ THE GRID'));
+ok(substr_count($js, 'fetch(') === 1, 'the grid asks the server nothing until Save');
+ok(str_contains($pg, "window.addEventListener('beforeunload', guard);"), 'leaving with unsaved changes asks first');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

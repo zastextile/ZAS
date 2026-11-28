@@ -131,7 +131,7 @@ function ze_alloc(array $mem, float $qty, bool $open, array $taken = []): array 
     return [$out, round($rem * $unit, 2)];
 }
 
-function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, string $why, int $userId, ?string $newDate = null, bool $exact = false): array {
+function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, string $why, int $userId, ?string $newDate = null, bool $exact = false, ?float $newRate = null): array {
     $why = trim($why);
     /* THE DAY CAN MOVE TOO (owner, 22 Nov 2026: Correct an Entry edits qty,
        worker and date). The new lines go on $bookOn; never a future day. */
@@ -145,6 +145,7 @@ function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, st
     if ($exact && count($ids) !== 1) return ['ok' => false, 'error' => 'Edit one line at a time in this view.'];
     if ($newQty <= 0)   return ['ok' => false, 'error' => 'The new quantity must be more than 0. To remove the line, use Cancel.'];
     if ($why === '')    return ['ok' => false, 'error' => 'Give a reason for the edit — it is kept against the old line.'];
+    if ($newRate !== null && ($newRate < 0 || $newRate > 100000)) return ['ok' => false, 'error' => 'That rate is not possible.'];
     $st = db()->prepare('SELECT * FROM zp_entries WHERE id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') ORDER BY id');
     $st->execute($ids);
     $old = $st->fetchAll();
@@ -161,10 +162,18 @@ function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, st
     $wasQty = array_sum(array_map(fn($o) => (float)$o['qty'], $old));
     $worker = $newWorker ?: (int)$f['worker_id'];
     $qn = fn($v) => rtrim(rtrim(number_format($v, 2), '0'), '.');
-    if (abs($wasQty - $newQty) < 0.0001 && $worker === (int)$f['worker_id'] && $bookOn === $date) return ['ok' => false, 'error' => 'Nothing changed.'];
+    /* THE RATE THAT WAS PAID STAYS, unless the correction is the rate itself
+       (owner, 28 Nov 2026: the grid edits qty and rate). Re-booking used to
+       price the new lines again by today's rules, so changing only a
+       quantity could quietly move the rate as well. */
+    $wasRate = (float)$f['rate_applied'];
+    $rateNow = $newRate !== null ? round($newRate, 2) : $wasRate;
+    $rateMoved = abs($rateNow - $wasRate) > 0.0001;
+    if (abs($wasQty - $newQty) < 0.0001 && $worker === (int)$f['worker_id'] && $bookOn === $date && !$rateMoved) return ['ok' => false, 'error' => 'Nothing changed.'];
 
     $reason = 'Edited: was ' . $qn($wasQty) . ', now ' . $qn($newQty) . ($worker !== (int)$f['worker_id'] ? ', worker changed' : '')
-            . ($bookOn !== $date ? ', moved to ' . date('j M', strtotime($bookOn)) : '') . ' — ' . $why;
+            . ($bookOn !== $date ? ', moved to ' . date('j M', strtotime($bookOn)) : '')
+            . ($rateMoved ? ', rate ' . number_format($wasRate, 2) . ' → ' . number_format($rateNow, 2) : '') . ' — ' . $why;
     /* THE RESULT IS CHECKED, NOT THE HALF-WAY POINT. Cancelling 900 of cutting
        on its own would leave stitching above the cut for a moment, and the
        cancel guard would refuse it — though 900 → 800 is a perfectly good
@@ -239,8 +248,11 @@ function ze_edit_row(array $ids, string $date, float $newQty, int $newWorker, st
             return ['ok' => false, 'error' => $why2 . ' Reduce the later stage first. Nothing was changed.'];
         }
     }
+    /* the new lines pay the rate that was paid — or the corrected one */
+    db()->prepare("UPDATE zp_entries SET rate_applied=?, amount=ROUND(qty*?, 2) WHERE note=? AND status='active'")->execute([$rateNow, $rateNow, $tag]);
     return ['ok' => true, 'msg' => 'Edited: ' . $qn($wasQty) . ' → ' . $qn($newQty)
         . ($worker !== (int)$f['worker_id'] ? ', new worker' : '') . ($bookOn !== $date ? ', moved to ' . date('j M Y', strtotime($bookOn)) : '')
+        . ($rateMoved ? ', rate ' . number_format($wasRate, 2) . ' → ' . number_format($rateNow, 2) : '')
         . '. The old line stays on the list, marked, with the reason.'];
 }
 
