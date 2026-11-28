@@ -2571,6 +2571,45 @@ function zp_stage_bulk(array $workerIds, array $addIds, array $removeIds): array
     return ['ok' => true, 'n' => count($ids), 'stages' => $now];
 }
 
+/* MANY PEOPLE'S STAGES IN ONE SAVE (owner, 28 Nov 2026: "did not talk to
+   server live … save at last with Ctrl+S"). $want = [worker id => [stage ids]]
+   is each person's whole list as the screen now shows it; $was = the list the
+   screen started from. A person whose stages changed in the meantime (another
+   tab, another user) is not overwritten: the whole save is refused and names
+   them. One transaction — all or nothing. */
+function zp_stage_save_many(array $want, array $was): array {
+    zp_ensure_schema();
+    $valid = [];
+    foreach (zp_stage_all(false) as $s) $valid[(int)$s['id']] = true;
+    $clean = function ($list) use ($valid) { $o = []; foreach ((array)$list as $x) { $x = (int)$x; if (isset($valid[$x])) $o[$x] = $x; } ksort($o); return array_values($o); };
+    $ids = array_values(array_unique(array_filter(array_map('intval', array_keys($want)), fn($x) => $x > 0)));
+    if (!$ids) return ['ok' => false, 'error' => 'Nothing to save.'];
+    if (count($ids) > 2000) return ['ok' => false, 'error' => 'Too many people in one save.'];
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $st = db()->prepare("SELECT id, worker_name FROM zp_workers WHERE id IN ($in)"); $st->execute($ids);
+    $names = []; foreach ($st->fetchAll() as $r) $names[(int)$r['id']] = (string)$r['worker_name'];
+    $map = zp_worker_stage_map(); $moved = [];
+    foreach ($ids as $w) {
+        if (!isset($names[$w])) return ['ok' => false, 'error' => 'Somebody on the list was not found — reload the page.'];
+        $now = $clean($map[$w] ?? []);
+        if ($clean($was[$w] ?? []) !== $now) $moved[] = $names[$w];
+    }
+    if ($moved) return ['ok' => false, 'error' => 'These people were changed by someone else since you opened the page: ' . implode(', ', array_slice($moved, 0, 8)) . (count($moved) > 8 ? '…' : '') . '. Reload, then make your changes again. Nothing was saved.'];
+    db()->beginTransaction();
+    try {
+        $del = db()->prepare("DELETE FROM zp_worker_stage WHERE worker_id=?");
+        $ins = db()->prepare("INSERT INTO zp_worker_stage (worker_id, stage_id) VALUES (?,?)");
+        foreach ($ids as $w) { $del->execute([$w]); foreach ($clean($want[$w]) as $sid) $ins->execute([$w, $sid]); }
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        return ['ok' => false, 'error' => 'Could not save: ' . $e->getMessage() . ' Nothing was saved.'];
+    }
+    $map = zp_worker_stage_map(); $out = [];
+    foreach ($ids as $w) $out[$w] = $clean($map[$w] ?? []);
+    return ['ok' => true, 'n' => count($ids), 'stages' => $out];
+}
+
 function zp_save_worker_stages(int $workerId, array $stageIds): void {
     zp_ensure_schema();
     if ($workerId <= 0) return;
