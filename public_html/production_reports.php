@@ -1,21 +1,32 @@
 <?php
 /*
-  PRODUCTION REPORTS — five views of the same ledger.
-  ==================================================
+  PRODUCTION REPORTS — seven views of the same ledger.
+  ===================================================
 
-      Worker      what each person made and earned
-      Department  the six floors, side by side          <- asked for directly
-      Product     where the wage bill actually goes
-      Operation   which step costs what
-      Daily       day by day, for payroll
+      By worker      what each person made and earned   ▸ their operations
+      By department  the floors side by side            ▸ their people
+      By product     where the wage bill goes           ▸ operations ▸ workers
+      By order       each PI                            ▸ lines (product · size) ▸ operations
+      By operation   which step costs what              ▸ who did it
+      Day by day     for payroll, a column per stage    ▸ stages ▸ workers
+      Every entry    the audit view, cancelled ones marked with the reason
 
-  ONE SOURCE, ONE FILTER. Every view is a grouped query over zp_entries with
-  status='active'. They cannot disagree with each other or with the dashboard,
-  because there is only one ledger and one definition of what counts.
+  REBUILT 28 NOV 2026 (owner: "not proper, standard and professional … like SAP
+  Fiori / Oracle Fusion … filters that work nicely … cards that flip"). The
+  period is read ONCE (includes/zp_report.php); tabs, filters, sorting, the
+  ▸ drill-down, the column chooser, the side panel for one worker / order /
+  product and the CSV all happen on the page (assets/js/zprep.js). Only a
+  different period asks the server again.
 
-  EVERY VIEW EXPORTS THE EXACT ROWS ON SCREEN. Not a second query built for the
-  file — the same array, written out. A CSV that quietly differs from the screen
-  is how two people end up arguing from two numbers that were both "the report".
+  ONE SOURCE, ONE RULE. Every view counts active entries only; "Every entry"
+  is the one place cancelled rows are shown, faded, with the reason.
+
+  THE CSV IS THE SCREEN: it is written from the table as drawn — the same
+  filters, the same rows, the opened detail too. Names that start with = + - @
+  get a ' in front so Excel never runs them as a formula.
+
+  OLD LINKS STILL WORK: ?r=worker|dept|product|op|daily|entries&from=&to= opens
+  that tab for that period (Daily Entry's "Full report" uses it).
 */
 require_once __DIR__ . '/includes/bootstrap.php';
 require_login();
@@ -23,271 +34,76 @@ if (!is_admin() && !is_colleague() && !is_production_staff()) {
     http_response_code(403); exit('Production access required.');
 }
 require_once __DIR__ . '/includes/zprod.php';
+require_once __DIR__ . '/includes/zp_report.php';
 zp_ensure_schema();
-
-$showMoney = can_see_rates();
-[$from, $to] = zp_range($_GET['from'] ?? null, $_GET['to'] ?? null);
-$report = (string)($_GET['r'] ?? 'worker');
-
-$REPORTS = [
-    'worker'  => 'By worker',
-    'dept'    => 'By department',
-    'product' => 'By product',
-    'op'      => 'By operation',
-    'daily'   => 'Day by day',
-    'entries' => 'Every entry',
-];
-if (!isset($REPORTS[$report])) $report = 'worker';
-
-/* ------------------------------------------------------------------
-   BUILD THE ROWS — once. The screen and the CSV both render THIS.
-   ------------------------------------------------------------------ */
-function zr_build(string $report, string $from, string $to, bool $money): array {
-    $money_ = fn(string $label) => $money ? [$label] : [];
-    switch ($report) {
-        case 'dept':
-            $rows = [];
-            foreach (zp_by_department($from, $to) as $d) {
-                $r = ['Department' => $d['dept'], 'Workers' => (int)$d['workers'], 'Pieces' => (float)$d['qty']];
-                if ($money) $r['Wages (PKR)'] = (float)$d['wage'];
-                $rows[] = $r;
-            }
-            return ['cols' => array_merge(['Department', 'Workers', 'Pieces'], $money_('Wages (PKR)')),
-                    'num'  => array_merge(['Workers', 'Pieces'], $money_('Wages (PKR)')),
-                    'tot'  => array_merge(['Pieces'], $money_('Wages (PKR)')), 'rows' => $rows];
-
-        case 'product':
-            $rows = [];
-            foreach (zp_by_product($from, $to) as $p) {
-                $r = ['Product' => $p['product_name'] ?? '(removed product)',
-                      'Entries' => (int)$p['entries'], 'Pieces' => (float)$p['qty']];
-                if ($money) $r['Wages (PKR)'] = (float)$p['wage'];
-                $rows[] = $r;
-            }
-            return ['cols' => array_merge(['Product', 'Entries', 'Pieces'], $money_('Wages (PKR)')),
-                    'num'  => array_merge(['Entries', 'Pieces'], $money_('Wages (PKR)')),
-                    'tot'  => array_merge(['Entries', 'Pieces'], $money_('Wages (PKR)')), 'rows' => $rows];
-
-        case 'op':
-            $rows = [];
-            foreach (zp_by_operation($from, $to) as $o) {
-                $r = ['Part' => $o['part_name'], 'Operation' => $o['operation_name'],
-                      'Stage' => $o['stage'], 'Pieces' => (float)$o['qty']];
-                if ($money) $r['Wages (PKR)'] = (float)$o['wage'];
-                $rows[] = $r;
-            }
-            return ['cols' => array_merge(['Part', 'Operation', 'Stage', 'Pieces'], $money_('Wages (PKR)')),
-                    'num'  => array_merge(['Pieces'], $money_('Wages (PKR)')),
-                    'tot'  => array_merge(['Pieces'], $money_('Wages (PKR)')), 'rows' => $rows];
-
-        case 'daily':
-            $rows = [];
-            foreach (zp_daily($from, $to) as $d) {
-                $r = ['Date' => $d['date'], 'Day' => date('D', strtotime($d['date']))];
-                foreach (zp_stages() as $s) $r[$s] = (float)$d[$s];
-                $r['Total Pieces'] = (float)$d['qty'];
-                if ($money) $r['Wages (PKR)'] = (float)$d['wage'];
-                $rows[] = $r;
-            }
-            $stageCols = zp_stages();
-            return ['cols' => array_merge(['Date', 'Day'], $stageCols, ['Total Pieces'], $money_('Wages (PKR)')),
-                    'num'  => array_merge($stageCols, ['Total Pieces'], $money_('Wages (PKR)')),
-                    'tot'  => array_merge($stageCols, ['Total Pieces'], $money_('Wages (PKR)')), 'rows' => $rows];
-
-        case 'entries':
-            $rows = [];
-            /* EVERY ENTRY, CANCELLED ONES INCLUDED AND MARKED. This is the audit
-               view: the one report where seeing what was undone is the point. */
-            foreach (zp_entries(['from' => $from, 'to' => $to], 2000) as $e) {
-                $r = ['Date' => $e['entry_date'],
-                      'Worker' => ($e['worker_name'] ?? '(removed)') . ' (' . ($e['worker_code'] ?? '?') . ')',
-                      'Order' => $e['pi_no'] ?? '—',
-                      'Product' => $e['product_name'] ?? '(removed product)',
-                      'Part' => $e['part_name'] ?? '—',
-                      'Operation' => $e['operation_name'] ?? '(removed operation)',
-                      'Stage' => $e['stage'], 'Qty' => (float)$e['qty']];
-                if ($money) { $r['Rate'] = (float)$e['rate_applied']; $r['Amount (PKR)'] = (float)$e['amount']; }
-                $r['Status'] = $e['status'] === 'active' ? 'Active' : 'CANCELLED';
-                $r['Reason'] = (string)($e['cancel_reason'] ?? '');
-                $rows[] = $r;
-            }
-            return ['cols' => array_merge(['Date', 'Worker', 'Order', 'Product', 'Part', 'Operation', 'Stage', 'Qty'],
-                                          $money ? ['Rate', 'Amount (PKR)'] : [], ['Status', 'Reason']),
-                    'num'  => array_merge(['Qty'], $money ? ['Rate', 'Amount (PKR)'] : []),
-                    'tot'  => [], 'rows' => $rows];
-
-        default:  // worker
-            $rows = [];
-            foreach (zp_by_worker($from, $to) as $w) {
-                $r = ['Worker' => $w['worker_name'] ?? '(removed worker)',
-                      'Code' => $w['worker_code'] ?? '',
-                      'Department' => $w['department'] ?: '(none)',
-                      'Days Worked' => (int)$w['days'], 'Entries' => (int)$w['entries'],
-                      'Pieces' => (float)$w['qty']];
-                if ($money) {
-                    $r['Wages (PKR)'] = (float)$w['wage'];
-                    /* AVERAGE PER DAY IS COMPUTED, NOT STORED — so it can never
-                       be stale against the two numbers beside it. */
-                    $r['Avg / Day'] = (int)$w['days'] > 0 ? round((float)$w['wage'] / (int)$w['days'], 2) : 0.0;
-                }
-                $rows[] = $r;
-            }
-            return ['cols' => array_merge(['Worker', 'Code', 'Department', 'Days Worked', 'Entries', 'Pieces'],
-                                          $money ? ['Wages (PKR)', 'Avg / Day'] : []),
-                    'num'  => array_merge(['Days Worked', 'Entries', 'Pieces'], $money ? ['Wages (PKR)', 'Avg / Day'] : []),
-                    'tot'  => array_merge(['Days Worked', 'Entries', 'Pieces'], $money ? ['Wages (PKR)'] : []), 'rows' => $rows];
-    }
-}
-
-$data = zr_build($report, $from, $to, $showMoney);
-
-/* ---- the CSV writes THIS array, not a second query ---- */
-if (($_GET['export'] ?? '') === 'csv') {
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="' . $report . '_' . $from . '_to_' . $to . '.csv"');
-    header('Cache-Control: no-store');
-    $out = fopen('php://output', 'w');
-    fwrite($out, "\xEF\xBB\xBF");
-    fputcsv($out, zp_csv_row([$REPORTS[$report] . ' — ' . $from . ' to ' . $to]));
-    fputcsv($out, []);
-    fputcsv($out, $data['cols']);
-    /* worker, product and part names all reach this file, and all of them are
-       typed by somebody. A name beginning with = is a formula to Excel. */
-    foreach ($data['rows'] as $r) {
-        fputcsv($out, zp_csv_row(array_map(fn($c) => $r[$c] ?? '', $data['cols'])));
-    }
-    if ($data['tot']) {
-        $totRow = [];
-        foreach ($data['cols'] as $c) {
-            $totRow[] = in_array($c, $data['tot'], true)
-                ? array_sum(array_map(fn($r) => (float)($r[$c] ?? 0), $data['rows']))
-                : ($c === $data['cols'][0] ? 'TOTAL' : '');
-        }
-        /* guarded as well. Its cells are 'TOTAL' and numbers today, but an
-           unguarded fputcsv in the file is an exception the next person copies. */
-        fputcsv($out, zp_csv_row($totRow));
-    }
-    fclose($out);
-    exit;
-}
 
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 header('Expires: 0');
 
-$qs = 'from=' . urlencode($from) . '&to=' . urlencode($to);
+$showMoney = can_see_rates();
+[$from, $to] = zp_range($_GET['from'] ?? null, $_GET['to'] ?? null);
+$TABS = ['worker' => 'By worker', 'dept' => 'By department', 'product' => 'By product', 'order' => 'By order',
+         'op' => 'By operation', 'daily' => 'Day by day', 'entries' => 'Every entry'];
+$tab = (string)($_GET['r'] ?? 'worker');
+if (!isset($TABS[$tab])) $tab = 'worker';
+
+csrf_token();
+ob_start();
 page_header('Production Reports');
+$pageHead = ob_get_clean();
+if (session_status() === PHP_SESSION_ACTIVE) session_write_close();   // nothing below writes the session
+
+$D = zpr_dataset($from, $to, $showMoney);
+$D['page'] = 'rep';
+$D['tab']  = $tab;
+$D['prev'] = zpr_previous($from, $to);
+if (!$showMoney) $D['prev']['amt'] = 0;
+
+echo $pageHead;
 ?>
+<link rel="stylesheet" href="assets/css/zprep.css?v=1">
 <style>
-.zr-wrap{max-width:1500px}
-.zp-b{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:9px;border:1px solid #d9e0ea;
-      background:#fff;color:#33465f;font-size:12.5px;font-weight:700;cursor:pointer;text-decoration:none;line-height:1.15}
-.zp-b:hover{border-color:#0ea8c9;color:#0b7f99}
-.zp-b.pri{background:#1d76e2;border-color:#1d76e2;color:#fff}.zp-b.pri:hover{background:#1667c9;color:#fff}
-.zp-b.on{background:#0ea8c9;border-color:#0ea8c9;color:#fff}
-.zp-card{background:#fff;border:1px solid #e6ebf2;border-radius:13px;padding:16px 17px;margin-bottom:16px;
-         box-shadow:0 1px 2px rgba(20,35,60,.04)}
-.zin{padding:7px 9px;border:1px solid #d9e0ea;border-radius:8px;font-size:12.5px;font-family:inherit;color:#152033;background:#fff}
-.lab{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#8a97ab;font-weight:800;margin-bottom:4px}
-.tabs{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:15px}
-table.zp-t{width:100%;border-collapse:collapse;font-size:12.5px}
-table.zp-t th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#8a97ab;
-              font-weight:800;padding:8px;border-bottom:1px solid #e6ebf2;white-space:nowrap}
-table.zp-t td{padding:7px 8px;border-bottom:1px solid #f1f4f9}
-table.zp-t tbody tr:hover{background:#fafcff}
-table.zp-t tr.canc td{opacity:.55}
-.num{text-align:right;font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace}
-.empty{padding:28px;text-align:center;color:#8a97ab;font-size:12.5px;line-height:1.6}
-.note{padding:11px 13px;border-radius:10px;font-size:12.5px;line-height:1.55;background:#eef6ff;border:1px solid #cfe3fb;color:#28527d}
+.zr-wrap .tabs{background:#fff;border:1px solid var(--line);border-bottom:0;border-radius:10px 10px 0 0}
+.zr-wrap .rbox{background:#fff;border:1px solid var(--line);border-radius:0 0 10px 10px;margin-bottom:12px;box-shadow:0 1px 2px rgba(29,45,62,.04)}
 </style>
-<?php /* THE SKIN, OPTED IN. Every rule in assets/css/zskin.css is scoped
-         under .zskin, so this one attribute is the whole of the restyle and
-         removing it puts the page back exactly as it was. The page keeps its
-         own .zp-card / .zp-t / .zp-b names; the skin maps onto them. */ ?>
+<?php /* THE SKIN, OPTED IN — see assets/css/zskin.css. */ ?>
 <div class="zskin">
+<div class="zpr zr-wrap" id="zpr">
+  <?php zpr_head('Production Reports', 'rep', $from, $to, [['production_dashboard.php', 'Dashboard', true]]); ?>
 
-<div class="zr-wrap">
-  <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:14px">
-    <div>
-      <h1 style="margin:0;font-size:20px;color:#152033">Production Reports</h1>
-      <p style="margin:2px 0 0;font-size:12.5px;color:#8a97ab">
-        <?= e(date('j M Y', strtotime($from))) ?> &ndash; <?= e(date('j M Y', strtotime($to))) ?>
-        &middot; <?= count($data['rows']) ?> row<?= count($data['rows']) === 1 ? '' : 's' ?></p>
+  <?php if ($D['err']): ?><div class="warnbox"><?= e($D['err']) ?></div><?php endif; ?>
+  <?php if ($D['cut']): ?><div class="warnbox">This period has more than 120,000 entries — only the first 120,000 are shown. Choose a shorter period.</div><?php endif; ?>
+
+  <div class="cards" id="zprK"></div>
+
+  <div class="tabs" id="zprTabs" role="tablist">
+    <?php foreach ($TABS as $k => $l): ?><button type="button" role="tab" data-tab="<?= e($k) ?>"><?= e($l) ?></button><?php endforeach; ?>
+  </div>
+  <div class="rbox">
+    <div class="tbar">
+      <input class="q" id="zprTQ" type="search" placeholder="Find in this table…" aria-label="Find in this table">
+      <label id="zprStat" hidden style="display:inline-flex;gap:5px;align-items:center;font-size:12px;color:#5b6f86">Show
+        <select id="zprStatS" style="height:30px;border:1px solid #dde3ea;border-radius:6px;font:inherit">
+          <option value="active">Active entries</option><option value="cancelled">Cancelled only</option><option value="all">All (cancelled marked)</option></select></label>
+      <span class="cnt" id="zprCnt"></span>
+      <span class="sp"></span>
+      <button type="button" class="btn" id="zprExpand" title="Open or close the ▸ detail of every row">▸ Expand / collapse all</button>
+      <div class="cols"><button type="button" class="btn" id="zprColsB">☰ Columns</button>
+        <div class="pop" id="zprColsP" hidden><div class="lst" id="zprColsL"></div><div class="pf"><button type="button" class="btn sm ghost" id="zprColsR">Show all</button></div></div></div>
+      <button type="button" class="btn" id="zprCsv" title="Exactly the rows on screen">⇩ Excel (CSV)</button>
+      <button type="button" class="btn" id="zprPrint">⎙ Print</button>
     </div>
-    <form method="get" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-      <input type="hidden" name="r" value="<?= e($report) ?>">
-      <div><span class="lab">From</span><input class="zin" type="date" name="from" value="<?= e($from) ?>"></div>
-      <div><span class="lab">To</span><input class="zin" type="date" name="to" value="<?= e($to) ?>" max="<?= e(date('Y-m-d')) ?>"></div>
-      <button class="zp-b pri">Show</button>
-      <a class="zp-b" href="production_reports.php?r=<?= e($report) ?>&amp;<?= $qs ?>&amp;export=csv">Download CSV</a>
-      <a class="zp-b" href="production_dashboard.php">Dashboard</a>
-    </form>
+    <div class="tw" id="zprT"><div style="padding:16px"><div class="skel"></div></div></div>
   </div>
 
-  <div class="tabs">
-    <?php foreach ($REPORTS as $k => $label): ?>
-      <a class="zp-b <?= $k === $report ? 'on' : '' ?>"
-         href="production_reports.php?r=<?= e($k) ?>&amp;<?= $qs ?>"><?= e($label) ?></a>
-    <?php endforeach; ?>
-  </div>
+  <p class="note"><b>Cancelled entries are not counted</b> in any view except <b>Every entry</b>, where they are shown faded with the reason.
+    Click ▸ to open the detail of a row, a column heading to sort, a name for its own panel. The CSV holds exactly what is on screen.</p>
 
-  <div class="zp-card">
-    <?php if (!$data['rows']): ?>
-      <div class="empty">
-        Nothing booked between <?= e(date('j M Y', strtotime($from))) ?>
-        and <?= e(date('j M Y', strtotime($to))) ?>.<br>
-        Try a wider range, or book a day on <a href="production_entry.php">Daily Production Entry</a>.
-      </div>
-    <?php else: ?>
-      <div style="overflow-x:auto">
-      <table class="zp-t">
-        <thead><tr>
-          <?php foreach ($data['cols'] as $c): ?>
-            <th class="<?= in_array($c, $data['num'], true) ? 'num' : '' ?>"><?= e($c) ?></th>
-          <?php endforeach; ?>
-        </tr></thead>
-        <tbody>
-        <?php foreach ($data['rows'] as $r): $canc = ($r['Status'] ?? '') === 'CANCELLED'; ?>
-          <tr class="<?= $canc ? 'canc' : '' ?>">
-            <?php foreach ($data['cols'] as $c):
-              $v = $r[$c] ?? '';
-              $isNum = in_array($c, $data['num'], true);
-            ?>
-              <td class="<?= $isNum ? 'num' : '' ?>"><?php
-                if ($isNum) echo is_float($v) ? number_format((float)$v, 2) : number_format((float)$v);
-                else echo e((string)$v);
-              ?></td>
-            <?php endforeach; ?>
-          </tr>
-        <?php endforeach; ?>
-        </tbody>
-        <?php if ($data['tot']): ?>
-        <tfoot><tr style="background:#f7f9fc">
-          <?php foreach ($data['cols'] as $i => $c): ?>
-            <td class="<?= in_array($c, $data['num'], true) ? 'num' : '' ?>" style="font-weight:800;font-size:12px"><?php
-              if (in_array($c, $data['tot'], true)) {
-                  $sum = array_sum(array_map(fn($r) => (float)($r[$c] ?? 0), $data['rows']));
-                  echo number_format($sum, 2);
-              } elseif ($i === 0) echo 'TOTAL';
-            ?></td>
-          <?php endforeach; ?>
-        </tr></tfoot>
-        <?php endif; ?>
-      </table>
-      </div>
-    <?php endif; ?>
-  </div>
-
-  <div class="note">
-    <?php if ($report === 'entries'): ?>
-      <b>This is the audit view, and it is the only one that shows cancelled entries.</b>
-      They are marked and faded, with the reason beside them. Every other report counts active rows only.
-    <?php else: ?>
-      <b>Cancelled entries are not counted.</b> That decision is made once, in the ledger query, so every
-      report and the dashboard always agree. To see what was cancelled and why, open <b>Every entry</b>.
-    <?php endif; ?>
-    The CSV contains exactly the rows on this screen &mdash; the same array, written out, not a second query.
-  </div>
+  <div class="ov" id="zprOv"></div>
+  <aside class="side" id="zprSide" aria-label="Detail"></aside>
 </div>
 </div><?php /* closes .zskin */ ?>
+<script>window.ZPR_DATA = <?= zpr_json($D) ?>;</script>
+<script src="assets/js/zprep.js?v=1"></script>
 <?php page_footer(); ?>

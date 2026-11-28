@@ -1,0 +1,247 @@
+/* ZPREP — Production Dashboard & Reports (owner, 28 Nov 2026: "standard and
+   professional like SAP Fiori / Oracle Fusion … animated show / hide … cards
+   that flip: summary on the front, detail on the back").
+   Everything is scoped under .zpr so no other page changes. */
+.zpr{--ink:#1d2d3e;--mut:#5b6f86;--soft:#8396ab;--line:#dde3ea;--bg:#f5f6f7;--pri:#0a6ed1;--pri2:#0854a1;--ok:#107e3e;--warn:#c35500;--bad:#bb0000;
+     --c1:#0a6ed1;--c2:#e9730c;--c3:#1a9898;--c4:#7c48c4;--c5:#d0406a;--c6:#5b8a12;--c7:#925ace;--c8:#3d7dd6;
+     font-size:13px;color:var(--ink);max-width:1560px}
+.zpr *{box-sizing:border-box}
+.zpr [hidden]{display:none!important}
+.zpr button{font:inherit}
+.zpr .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* ---- the page header: title, period, actions ---- */
+.zpr .ph{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin:0 0 10px}
+.zpr .ph h1{margin:0;font-size:21px;font-weight:600;letter-spacing:-.01em}
+.zpr .ph .sub{margin-top:3px;color:var(--mut);font-size:12.5px}
+.zpr .ph .sub b{color:var(--ink)}
+.zpr .acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.zpr .btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:6px;border:1px solid var(--line);background:#fff;color:var(--pri);
+          font-weight:600;font-size:12.5px;cursor:pointer;text-decoration:none;white-space:nowrap;transition:background .15s,border-color .15s,transform .1s}
+.zpr .btn:hover{background:#eaf2fc;border-color:#b9d3f1}
+.zpr .btn:active{transform:scale(.97)}
+.zpr .btn.pri{background:var(--pri);border-color:var(--pri);color:#fff}.zpr .btn.pri:hover{background:var(--pri2)}
+.zpr .btn.ghost{border-color:transparent;background:transparent}
+.zpr .btn.sm{height:25px;padding:0 9px;font-size:11.5px}
+.zpr .btn .ico{font-size:14px;line-height:1}
+
+/* ---- period chips ---- */
+.zpr .per{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 8px}
+.zpr .per a,.zpr .per label{display:inline-flex;align-items:center;height:28px;padding:0 11px;border-radius:14px;border:1px solid var(--line);background:#fff;color:var(--ink);
+          font-size:12px;font-weight:500;text-decoration:none;cursor:pointer;transition:all .15s}
+.zpr .per a:hover{border-color:var(--pri);color:var(--pri)}
+.zpr .per a.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.zpr .per form{display:inline-flex;gap:5px;align-items:center;margin-left:4px}
+.zpr .per input[type=date]{height:28px;border:1px solid var(--line);border-radius:6px;padding:0 6px;font:inherit;font-size:12px;color:var(--ink);background:#fff}
+
+/* ---- the filter bar: folds away with an animation ---- */
+.zpr .fbar{background:#fff;border:1px solid var(--line);border-radius:10px;margin:0 0 12px;box-shadow:0 1px 2px rgba(29,45,62,.04)}
+.zpr .fhead{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;user-select:none}
+.zpr .fhead .t{font-weight:600;font-size:12.5px}
+.zpr .fhead .badge{background:var(--pri);color:#fff;border-radius:9px;font-size:11px;font-weight:700;padding:1px 7px}
+.zpr .fhead .chev{margin-left:auto;transition:transform .25s;color:var(--mut)}
+.zpr .fbar.closed .chev{transform:rotate(-90deg)}
+.zpr .fold{display:grid;grid-template-rows:1fr;transition:grid-template-rows .3s ease,opacity .25s}
+.zpr .fold>div{overflow:hidden;min-height:0}
+.zpr .closed>.fold,.zpr .fold.shut{grid-template-rows:0fr;opacity:0}
+.zpr .fbody{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;padding:2px 12px 10px}
+.zpr .fld{display:flex;flex-direction:column;gap:3px;min-width:150px;flex:1 1 150px;max-width:240px;position:relative}
+.zpr .fld>span{font-size:11px;color:var(--mut);font-weight:600}
+.zpr .fld .vh{height:30px;border:1px solid var(--line);border-radius:6px;background:#fff;text-align:left;padding:0 26px 0 9px;cursor:pointer;color:var(--ink);
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;transition:border-color .15s}
+.zpr .fld .vh:after{content:'▾';position:absolute;right:9px;top:6px;color:var(--soft)}
+.zpr .fld .vh:hover,.zpr .fld .vh.open{border-color:var(--pri)}
+.zpr .fld .vh.set{border-color:var(--pri);background:#f1f7fe;color:var(--pri2);font-weight:600}
+.zpr .fld input.q{height:30px;border:1px solid var(--line);border-radius:6px;padding:0 9px;font:inherit;color:var(--ink)}
+.zpr .fld input.q:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px rgba(10,110,209,.12)}
+/* value help popover */
+.zpr .pop{position:absolute;top:100%;left:0;z-index:40;margin-top:4px;width:290px;max-width:86vw;background:#fff;border:1px solid var(--line);border-radius:8px;
+          box-shadow:0 10px 30px -8px rgba(29,45,62,.3);padding:8px;animation:zprPop .16s ease-out}
+@keyframes zprPop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+.zpr .pop input{width:100%;height:28px;border:1px solid var(--line);border-radius:5px;padding:0 8px;font:inherit;margin-bottom:6px}
+.zpr .pop .lst{max-height:260px;overflow:auto}
+.zpr .pop label{display:flex;gap:7px;align-items:center;padding:4px 5px;border-radius:4px;cursor:pointer;font-size:12.5px}
+.zpr .pop label:hover{background:#f1f5f9}
+.zpr .pop label small{margin-left:auto;color:var(--soft);font-variant-numeric:tabular-nums}
+.zpr .pop .pf{display:flex;justify-content:space-between;border-top:1px solid var(--line);margin-top:6px;padding-top:6px}
+/* the tokens: every filter that is on, each with its own × */
+.zpr .toks{display:flex;gap:6px;flex-wrap:wrap;padding:0 12px 10px}
+.zpr .tok{display:inline-flex;align-items:center;gap:5px;background:#eef4fb;border:1px solid #cfe0f3;color:var(--pri2);border-radius:13px;padding:2px 4px 2px 10px;font-size:12px;
+          animation:zprPop .18s ease-out}
+.zpr .tok b{font-weight:600;color:var(--mut)}
+.zpr .tok button{border:0;background:transparent;color:var(--pri2);cursor:pointer;border-radius:50%;width:18px;height:18px;line-height:1;padding:0}
+.zpr .tok button:hover{background:#d6e6f7}
+
+/* ---- flip cards ---- */
+.zpr .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(205px,1fr));gap:10px;margin:0 0 12px}
+.zpr .fc{perspective:1100px;height:156px;cursor:pointer;outline:none}
+.zpr .fc .in{position:relative;width:100%;height:100%;transition:transform .6s cubic-bezier(.4,.2,.2,1);transform-style:preserve-3d}
+.zpr .fc.flip .in{transform:rotateY(180deg)}
+.zpr .fc .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border-radius:10px;padding:12px 14px;
+          background:#fff;border:1px solid var(--line);box-shadow:0 1px 2px rgba(29,45,62,.05);overflow:hidden;display:flex;flex-direction:column}
+.zpr .fc:hover .face{box-shadow:0 6px 18px -8px rgba(29,45,62,.28);border-color:#c8d3df}
+.zpr .fc:focus-visible .face{box-shadow:0 0 0 3px rgba(10,110,209,.3)}
+.zpr .fc .front{border-top:3px solid var(--k,var(--pri))}
+.zpr .fc .back{transform:rotateY(180deg);background:linear-gradient(160deg,#1d2d3e,#24425f);color:#fff;border-color:transparent}
+.zpr .fc .lbl{font-size:11.5px;font-weight:600;color:var(--mut);display:flex;justify-content:space-between;align-items:center;gap:6px}
+.zpr .fc .lbl .hint{font-size:13px;color:var(--soft);transition:transform .3s}
+.zpr .fc:hover .lbl .hint{transform:rotate(180deg);color:var(--pri)}
+.zpr .fc .big{font-size:26px;font-weight:600;letter-spacing:-.01em;margin-top:4px;font-variant-numeric:tabular-nums;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.zpr .fc .big small{font-size:12px;font-weight:500;color:var(--mut);margin-left:3px}
+.zpr .fc .foot{margin-top:auto;display:flex;justify-content:space-between;align-items:flex-end;gap:6px;font-size:11.5px;color:var(--mut)}
+.zpr .fc svg.sp{width:92px;height:30px;flex:none}
+.zpr .dl{font-weight:700;font-size:11.5px;white-space:nowrap}
+.zpr .dl.up{color:var(--ok)}.zpr .dl.dn{color:var(--bad)}.zpr .dl.eq{color:var(--soft)}
+.zpr .back .lbl{color:rgba(255,255,255,.7)}
+.zpr .back ul{list-style:none;margin:6px 0 0;padding:0;overflow:auto;flex:1;font-size:12px}
+.zpr .back li{display:grid;grid-template-columns:1fr auto;gap:2px 8px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.1)}
+.zpr .back li:last-child{border-bottom:0}
+.zpr .back li span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.zpr .back li b{font-weight:600;font-variant-numeric:tabular-nums}
+.zpr .back li i{grid-column:1/3;height:3px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden;display:block}
+.zpr .back li i em{display:block;height:100%;background:#5fb4ff;border-radius:2px;transition:width .8s}
+.zpr .back .empty{color:rgba(255,255,255,.6);font-size:12px;margin-top:10px}
+
+/* ---- sections: open and close with an animation, remembered ---- */
+.zpr .sec{background:#fff;border:1px solid var(--line);border-radius:10px;margin:0 0 12px;box-shadow:0 1px 2px rgba(29,45,62,.04);min-width:0}
+.zpr .sec>.sh{display:flex;align-items:center;gap:8px;padding:10px 14px;cursor:pointer;user-select:none;border-bottom:1px solid transparent;transition:border-color .2s}
+.zpr .sec:not(.closed)>.sh{border-bottom-color:#eef1f4}
+.zpr .sec>.sh h2{margin:0;font-size:14.5px;font-weight:600}
+.zpr .sec>.sh .s2{color:var(--mut);font-size:12px}
+.zpr .sec>.sh .tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+.zpr .sec>.sh .chev{color:var(--mut);transition:transform .25s;width:16px;text-align:center}
+.zpr .sec.closed>.sh .chev{transform:rotate(-90deg)}
+.zpr .sec .sb{padding:12px 14px}
+.zpr .grid2{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+@media(min-width:1150px){.zpr .grid2{grid-template-columns:minmax(0,1.2fr) minmax(0,1fr)}}
+.zpr .grid2>.sec{margin:0}
+.zpr .grid2+.grid2,.zpr .grid2+.sec{margin-top:12px}
+
+/* ---- the day chart ---- */
+.zpr .chart{position:relative}
+.zpr .chart svg{width:100%;height:230px;display:block}
+.zpr .chart rect.c{transition:opacity .15s;cursor:pointer}
+.zpr .chart g.col:hover rect.c{opacity:.8}
+.zpr .chart g.col.sel rect.hit{fill:rgba(10,110,209,.09)}
+.zpr .chart .grow{animation:zprGrow .7s cubic-bezier(.2,.7,.2,1) both;transform-origin:bottom;transform-box:fill-box}
+@keyframes zprGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+.zpr .tip{position:absolute;pointer-events:none;background:#1d2d3e;color:#fff;border-radius:6px;padding:7px 10px;font-size:12px;box-shadow:0 8px 20px -6px rgba(0,0,0,.4);
+          white-space:nowrap;z-index:30;opacity:0;transition:opacity .12s}
+.zpr .tip.on{opacity:1}
+.zpr .tip i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
+.zpr .legend{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.zpr .legend button{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#fff;border-radius:12px;padding:2px 10px;cursor:pointer;font-size:12px;color:var(--ink);transition:opacity .2s}
+.zpr .legend button i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.zpr .legend button.off{opacity:.4;text-decoration:line-through}
+
+/* ---- horizontal bars (department, product, worker) ---- */
+.zpr .hb{display:grid;grid-template-columns:minmax(90px,170px) 1fr auto;gap:6px 10px;align-items:center}
+.zpr .hb .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;cursor:pointer}
+.zpr .hb .nm:hover{color:var(--pri);text-decoration:underline}
+.zpr .hb .tr{height:14px;background:#f0f3f6;border-radius:4px;overflow:hidden;cursor:pointer}
+.zpr .hb .tr em{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--k,var(--pri)),color-mix(in srgb,var(--k,var(--pri)) 70%,#fff));width:0;transition:width .8s cubic-bezier(.2,.7,.2,1)}
+.zpr .hb .v{font-size:12px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.zpr .hb .v small{color:var(--soft);margin-left:4px}
+.zpr .more{margin-top:10px}
+
+/* ---- orders furthest behind ---- */
+.zpr .ord{display:block;padding:9px 0;border-top:1px solid #f0f3f6;color:inherit;text-decoration:none}
+.zpr .ord:first-child{border-top:0}
+.zpr .ord .top{display:flex;justify-content:space-between;gap:10px;font-size:12.5px}
+.zpr .ord .nm{font-weight:600}
+.zpr .ord:hover .nm{color:var(--pri)}
+.zpr .ord .s{font-size:11.5px;color:var(--mut)}
+.zpr .ord .pc{font-weight:700;font-variant-numeric:tabular-nums}
+.zpr .ord .bar{height:7px;background:#eef1f4;border-radius:4px;overflow:hidden;margin-top:5px}
+.zpr .ord .bar em{display:block;height:100%;background:var(--ok);border-radius:4px;width:0;transition:width .9s cubic-bezier(.2,.7,.2,1)}
+.zpr .ord .bar em.late{background:var(--warn)}
+.zpr .ord .w{font-size:11px;color:var(--warn);margin-top:3px}
+.zpr .ord.extra{animation:zprIn .3s ease-out both}
+@keyframes zprIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+
+/* ---- the report table ---- */
+.zpr .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:0 0 0;overflow-x:auto;padding:0 6px}
+.zpr .tabs button{border:0;background:transparent;padding:10px 13px 9px;font-weight:600;font-size:12.5px;color:var(--mut);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;transition:color .15s,border-color .2s}
+.zpr .tabs button:hover{color:var(--ink)}
+.zpr .tabs button.on{color:var(--pri);border-bottom-color:var(--pri)}
+.zpr .tabs button small{font-weight:500;color:var(--soft);margin-left:4px}
+.zpr .tbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px}
+.zpr .tbar .cnt{color:var(--mut);font-size:12px}
+.zpr .tbar input.q{height:30px;border:1px solid var(--line);border-radius:6px;padding:0 9px;font:inherit;min-width:200px;flex:0 1 260px}
+.zpr .tbar input.q:focus{outline:none;border-color:var(--pri)}
+.zpr .tbar .sp{flex:1}
+.zpr .tw{overflow:auto;max-height:calc(100vh - 250px);border-top:1px solid var(--line)}
+.zpr table.rt{width:100%;min-width:0;border-collapse:separate;border-spacing:0;font-size:12.5px}
+.zpr table.rt th{position:sticky;top:0;z-index:2;background:#f7f9fb;text-align:left;font-size:11.5px;font-weight:600;color:var(--mut);padding:8px 10px;border-bottom:1px solid var(--line);
+          white-space:nowrap;cursor:pointer;user-select:none}
+.zpr table.rt th:hover{color:var(--ink);background:#eef2f6}
+.zpr table.rt th.num{text-align:right}
+.zpr table.rt th .ar{color:var(--pri);margin-left:3px}
+.zpr table.rt td{padding:7px 10px;border-bottom:1px solid #eef1f4;vertical-align:middle}
+.zpr table.rt tbody tr{transition:background .12s}
+.zpr table.rt tbody tr:hover td{background:#f6f9fc}
+.zpr table.rt tr.g1 td{background:#fbfcfd}
+.zpr table.rt tr.g1 td:first-child{padding-left:30px}
+.zpr table.rt tr.g2 td:first-child{padding-left:50px}
+.zpr table.rt tr.g1,.zpr table.rt tr.g2{animation:zprIn .22s ease-out both}
+.zpr table.rt tr.g1 td,.zpr table.rt tr.g2 td{color:#34495e;font-size:12px}
+.zpr table.rt tr.canc td{color:#a0adbb;text-decoration:line-through}
+.zpr table.rt tr.canc td.why{text-decoration:none;color:var(--bad)}
+.zpr table.rt tfoot td{position:sticky;bottom:0;background:#f2f5f8;font-weight:700;border-top:1px solid var(--line);padding:8px 10px}
+.zpr .tg{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border-radius:4px;border:0;background:transparent;color:var(--mut);cursor:pointer;margin:0 4px 0 -4px;transition:transform .2s,background .15s;vertical-align:middle}
+.zpr .tg:hover{background:#e6eef7;color:var(--pri)}
+.zpr .tg.open{transform:rotate(90deg);color:var(--pri)}
+.zpr .lk{color:var(--pri);cursor:pointer}
+.zpr .lk:hover{text-decoration:underline}
+.zpr .mini{display:inline-block;height:6px;border-radius:3px;background:var(--pri);vertical-align:middle;margin-left:6px;opacity:.55;transition:width .6s}
+.zpr .pill{display:inline-block;font-size:11px;font-weight:600;border-radius:10px;padding:1px 8px;background:#eef2f6;color:var(--mut);white-space:nowrap}
+.zpr .empty{padding:34px 14px;text-align:center;color:var(--soft);line-height:1.6}
+.zpr .cols{position:relative}
+.zpr .cols .pop{left:auto;right:0;width:220px}
+
+/* ---- the side panel: one worker / order / product, in detail ---- */
+.zpr .ov{position:fixed;inset:0;background:rgba(15,25,38,.35);z-index:80;opacity:0;pointer-events:none;transition:opacity .25s}
+.zpr .ov.on{opacity:1;pointer-events:auto}
+.zpr .side{position:fixed;top:0;right:0;bottom:0;width:min(620px,96vw);background:var(--bg);z-index:81;transform:translateX(102%);transition:transform .32s cubic-bezier(.3,.7,.2,1);
+          display:flex;flex-direction:column;box-shadow:-14px 0 40px -18px rgba(0,0,0,.45)}
+.zpr .side.on{transform:none}
+.zpr .side .sh2{background:#1d2d3e;color:#fff;padding:14px 16px;display:flex;align-items:flex-start;gap:10px}
+.zpr .side .sh2 h3{margin:0;font-size:16px;font-weight:600}
+.zpr .side .sh2 .s{font-size:12px;opacity:.75;margin-top:2px}
+.zpr .side .sh2 button{margin-left:auto;border:0;background:rgba(255,255,255,.12);color:#fff;width:30px;height:30px;border-radius:6px;cursor:pointer;font-size:16px}
+.zpr .side .sb2{padding:12px;overflow:auto;flex:1}
+.zpr .side .cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+.zpr .side .fc{height:138px}
+.zpr .side .sec .sb{padding:0}
+.zpr .side table.rt th{position:static}
+
+.zpr .note{margin:4px 0 14px;font-size:12px;color:var(--mut);line-height:1.55}
+.zpr .warnbox{margin:0 0 12px;padding:9px 12px;border-radius:8px;background:#fff4e5;border:1px solid #f4c98a;color:#8a4600;font-size:12.5px}
+.zpr .skel{height:14px;border-radius:4px;background:linear-gradient(90deg,#eef1f4,#f7f9fb,#eef1f4);background-size:200% 100%;animation:zprSk 1.2s infinite}
+@keyframes zprSk{from{background-position:200% 0}to{background-position:-200% 0}}
+
+/* the shared skin paints every button and table its own way; these keep ours */
+.zskin .zpr .btn{box-shadow:none}
+.zskin .zpr table.rt{min-width:0}
+
+@media (prefers-reduced-motion:reduce){.zpr *{animation:none!important;transition:none!important}}
+@media print{
+  .zpr .fbar,.zpr .per,.zpr .acts,.zpr .tbar .btn,.zpr .tabs,.zpr .tools{display:none!important}
+  .zpr .tw{max-height:none;overflow:visible}
+  .zpr .fc .back{display:none}
+  .zpr .sec.closed>.fold{grid-template-rows:1fr;opacity:1}
+}
+@media (max-width:640px){
+  .zpr .fld{max-width:none;flex-basis:44%}
+  .zpr .fc{height:146px}
+  .zpr .hb{grid-template-columns:minmax(80px,120px) 1fr auto}
+}
+/* an open filter bar lets its value lists hang below it */
+.zpr .fbar:not(.closed)>.fold>div{overflow:visible}
+.zpr .side .sh2 h3,.zskin .zpr .side .sh2 h3{color:#fff!important}
+/* the app's own input rules make every checkbox a full-width box; not in these lists */
+.zpr .pop label input[type=checkbox],.zskin .zpr .pop label input[type=checkbox]{width:15px!important;height:15px!important;min-width:0!important;margin:0!important;padding:0!important;flex:none;box-shadow:none!important}
+.zpr .pop label span{flex:1;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.zpr table.rt td{white-space:nowrap}
+.zpr table.rt tr.zero td{color:#b0bac6}
+.zpr .sp0{display:inline-block;width:18px;margin:0 4px 0 -4px}
