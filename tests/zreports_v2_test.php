@@ -16,7 +16,12 @@ echo "1. One read of the period, nothing written\n";
 $code = preg_replace('!/\*.*?\*/!s', '', $rp);
 ok(substr_count($code, 'FROM zp_entries e') === 1, 'one query reads the entries of the period');
 ok(!preg_match('/\b(INSERT|UPDATE|DELETE)\b/i', $code), 'the report code writes nothing');
-ok(!str_contains($js, 'fetch(') && !str_contains($js, 'XMLHttpRequest'), 'the page never asks the server while filters, tabs, sorting or cards change');
+ok(substr_count($js, 'fetch(') === 1 && strpos($js, 'fetch(') > strpos($js, 'function showPeriod(') && !str_contains($js, 'XMLHttpRequest'),
+   'the page never asks the server while filters, tabs, sorting or cards change — only a new period is fetched');
+ok(str_contains($js, "if (CACHE[key]) return done(CACHE[key]);"), '  a period already seen comes from memory');
+foreach (['production_dashboard.php' => $db, 'production_reports.php' => $pr] as $f => $c)
+    ok(str_contains($c, "if ((\$_GET['json'] ?? '') === '1') {") && strpos($c, "\$_GET['json']") < strpos($c, 'page_header('), "$f answers ?json=1 with the rows only, before any page is drawn");
+ok(!str_contains(substr($db, strpos($db, "\$_GET['json']"), 600), 'zp_order_progress'), '  the open-orders list is not worked out again for a new period');
 ok(str_contains($rp, "LEFT JOIN zp_line_set_ops lo ON lo.id = e.op_id AND e.op_kind = 'line'"), 'set work copied onto a line is named, like on Order Status');
 ok(str_contains($rp, 'LIMIT " . ($cap + 1)') && str_contains($db, 'only the first 120,000 are shown'), 'a period nobody meant is capped, and the page says so');
 
@@ -37,7 +42,7 @@ ok(str_contains($js, "c.classList.toggle('flip')") && str_contains($js, "e.key =
 ok(str_contains($css, 'grid-template-rows:0fr') && str_contains($js, "store('zpr_sec_' + s.id"), 'sections fold away with an animation, and the page remembers');
 ok(str_contains($js, "var DORD = ['dept', 'stage', 'w', 'p', 'f'];"), 'filters: department, stage, worker, product, order (+ a day and a search)');
 ok(str_contains($js, 'filtered({ skip: k })'), '  a value list counts what the OTHER filters leave');
-ok(str_contains($js, 'history.replaceState(null'), '  the filters live in the address, so a view can be shared');
+ok(str_contains($js, 'history.replaceState(history.state'), '  the filters live in the address, so a view can be shared');
 ok(str_contains($css, '@media (prefers-reduced-motion:reduce)'), 'people who turn motion off get no animation');
 
 echo "5. The reports\n";

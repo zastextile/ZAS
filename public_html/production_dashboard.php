@@ -37,6 +37,19 @@ header('Expires: 0');
 $showMoney = can_see_rates();
 [$from, $to] = zp_range($_GET['from'] ?? null, $_GET['to'] ?? null);
 
+/* ANOTHER PERIOD WITHOUT RELOADING THE PAGE: the page's script asks for
+   ?json=1 and gets only that period's rows — no menu, no page, no order
+   progress (that does not depend on the period). */
+if (($_GET['json'] ?? '') === '1') {
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
+    header('Content-Type: application/json; charset=utf-8');
+    $J = zpr_dataset($from, $to, $showMoney);
+    $J['prev'] = zpr_previous($from, $to);
+    if (!$showMoney) $J['prev']['amt'] = 0;
+    echo zpr_json($J);
+    exit;
+}
+
 csrf_token();
 ob_start();
 page_header('Production Dashboard');
@@ -55,7 +68,7 @@ $D['orders'] = array_map(fn($o) => [
 
 echo $pageHead;
 ?>
-<link rel="stylesheet" href="assets/css/zprep.css?v=1">
+<link rel="stylesheet" href="assets/css/zprep.css?v=2">
 <style>
 /* the dashboard tables fit their cards (app.css gives every table min-width:980px) */
 .zd-wrap table.zp-t{min-width:0}
@@ -118,5 +131,5 @@ echo $pageHead;
 </div>
 </div><?php /* closes .zskin */ ?>
 <script>window.ZPR_DATA = <?= zpr_json($D) ?>;</script>
-<script src="assets/js/zprep.js?v=1"></script>
+<script src="assets/js/zprep.js?v=2"></script>
 <?php page_footer(); ?>

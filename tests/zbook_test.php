@@ -313,9 +313,8 @@ t('the reason is written down',
 
 head('THE SCREENS');
 $pe = file_get_contents($B . 'production_entry.php');
-$mw = file_get_contents($B . 'production_my_work.php');
 $pw = file_get_contents($B . 'production_workers.php');
-foreach (['production_entry.php' => $pe, 'production_my_work.php' => $mw, 'production_workers.php' => $pw] as $f => $c) {
+foreach (['production_entry.php' => $pe, 'production_workers.php' => $pw] as $f => $c) {
     t("$f uses the new module", str_contains($c, "includes/zprod.php"));
     t("  and not the old one", !str_contains($c, "includes/production.php"));
     t("  and cannot be served from cache", str_contains($c, "header('Cache-Control: no-store"));
@@ -325,10 +324,8 @@ head('  both booking screens go through the SAME function');
 /* two screens that book work in two different ways will disagree eventually,
    and the disagreement will be about money */
 t('the day sheet calls zp_book()', str_contains($pe, 'zp_book($date, $rows, $userId)'));
-t('My Work calls zp_book() too', str_contains($mw, 'zp_book($date, [['));
-t('  and says why that matters', str_contains(flat($mw), 'the disagreement will be about money'));
-t('neither writes to zp_entries directly',
-  !str_contains($pe, 'INSERT INTO zp_entries') && !str_contains($mw, 'INSERT INTO zp_entries'));
+t('My Work is gone (owner, 28 Nov 2026) — Daily Entry is the one booking screen', !file_exists($B . 'production_my_work.php'));
+t('the day sheet does not write to zp_entries directly', !str_contains($pe, 'INSERT INTO zp_entries'));
 
 head('  the day sheet offers only work that exists');
 /* THE SCREEN CHANGED SHAPE, THE RULES DID NOT.
@@ -362,13 +359,6 @@ t('  and it is the SUM that is checked, not each line alone',
 t('Enter on the quantity starts the next line',
   str_contains($pe, 'if (i === rows.length - 1) zeAddRow();'));
 
-head('  My Work shows what is LEFT, not what was ordered');
-t('finished work is not shown as a card', str_contains($mw, 'if ($left <= 0.0001) continue;'));
-t('cutting is sorted first', str_contains($mw, 'zp_is_cutting($a[\'stage\']) ? 0 : 1'));
-t('  then whatever is furthest behind', str_contains($mw, "return \$a['pct'] <=> \$b['pct'];"));
-t('the big number on the card is what is left', str_contains($mw, 'left to do'));
-t('  and the reasoning is recorded', str_contains($mw, 'is trivia you have to do arithmetic'));
-
 head('  workers: a code is given, not demanded');
 $sw = code_only(lift($src, 'zp_save_worker'));
 t('a blank code gets the next free one', str_contains($sw, "\$code = 'W' . str_pad("));
@@ -398,7 +388,7 @@ head('THE FLOOR CAN OPEN THE FLOOR\'S OWN SCREEN');
 /* A real bug, caught by a test on its way to being retired: I had guarded both
    booking screens with admin-and-colleague only, which locked out the operators
    the screens exist for. */
-foreach (['production_entry.php' => $pe, 'production_my_work.php' => $mw] as $f => $c) {
+foreach (['production_entry.php' => $pe] as $f => $c) {
     t("$f admits production staff", str_contains($c, 'is_production_staff()'));
     t("  alongside admin and colleague",
       str_contains($c, '!is_admin() && !is_colleague() && !is_production_staff()'));
@@ -410,16 +400,10 @@ t('Production Workers stays admin/colleague — it is not a floor screen',
 
 head('  BOOKING A QUANTITY AND SEEING THE WAGE ARE DIFFERENT PERMISSIONS');
 /* conflating them is how a wage rate ends up on a screen it should not be on */
-t('My Work asks can_see_rates() once', str_contains($mw, '$showMoney = can_see_rates();'));
-t('  and the card rate is behind it', str_contains($mw, "<?php if (\$showMoney): ?><span>PKR"));
-t('  as is the day total', str_contains($mw, "<?php if (\$showMoney): ?><span>PKR <b>"));
-t('  and the confirmation message says nothing about money when hidden',
-  str_contains($mw, "? 'Booked — PKR '") && str_contains($mw, ": 'Booked.'"));
 t('the day sheet does the same', str_contains($pe, '$showMoney = can_see_rates();'));
 t('  including its saved-message', str_contains($pe, "(\$showMoney ? ' — PKR '"));
-t('the reason is recorded in both files',
-  str_contains(flat($mw), 'how a wage rate ends up on a screen it should not be on')
-  && str_contains(flat($pe), 'booking a quantity and seeing the wage are two'));
+t('the reason is recorded',
+  str_contains(flat($pe), 'booking a quantity and seeing the wage are two'));
 
 head('The menu points at the rebuilt pages');
 $menu = file_get_contents($B . 'includes/menu.php');

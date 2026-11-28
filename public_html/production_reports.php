@@ -43,6 +43,19 @@ header('Expires: 0');
 
 $showMoney = can_see_rates();
 [$from, $to] = zp_range($_GET['from'] ?? null, $_GET['to'] ?? null);
+
+/* ANOTHER PERIOD WITHOUT RELOADING THE PAGE: the page's script asks for
+   ?json=1 and gets only that period's rows — no menu, no page, no order
+   progress (that does not depend on the period). */
+if (($_GET['json'] ?? '') === '1') {
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
+    header('Content-Type: application/json; charset=utf-8');
+    $J = zpr_dataset($from, $to, $showMoney);
+    $J['prev'] = zpr_previous($from, $to);
+    if (!$showMoney) $J['prev']['amt'] = 0;
+    echo zpr_json($J);
+    exit;
+}
 $TABS = ['worker' => 'By worker', 'dept' => 'By department', 'product' => 'By product', 'order' => 'By order',
          'op' => 'By operation', 'daily' => 'Day by day', 'entries' => 'Every entry'];
 $tab = (string)($_GET['r'] ?? 'worker');
@@ -62,7 +75,7 @@ if (!$showMoney) $D['prev']['amt'] = 0;
 
 echo $pageHead;
 ?>
-<link rel="stylesheet" href="assets/css/zprep.css?v=1">
+<link rel="stylesheet" href="assets/css/zprep.css?v=2">
 <style>
 .zr-wrap .tabs{background:#fff;border:1px solid var(--line);border-bottom:0;border-radius:10px 10px 0 0}
 .zr-wrap .rbox{background:#fff;border:1px solid var(--line);border-radius:0 0 10px 10px;margin-bottom:12px;box-shadow:0 1px 2px rgba(29,45,62,.04)}
@@ -105,5 +118,5 @@ echo $pageHead;
 </div>
 </div><?php /* closes .zskin */ ?>
 <script>window.ZPR_DATA = <?= zpr_json($D) ?>;</script>
-<script src="assets/js/zprep.js?v=1"></script>
+<script src="assets/js/zprep.js?v=2"></script>
 <?php page_footer(); ?>

@@ -245,3 +245,6 @@
 .zpr table.rt td{white-space:nowrap}
 .zpr table.rt tr.zero td{color:#b0bac6}
 .zpr .sp0{display:inline-block;width:18px;margin:0 4px 0 -4px}
+/* another period is on its way: the page stays, dimmed for a moment */
+.zpr.loading .cards,.zpr.loading .sec,.zpr.loading .rbox{opacity:.45;pointer-events:none;transition:opacity .2s}
+.zpr.loading .per:after{content:'Loading…';font-size:12px;color:#0a6ed1;margin-left:6px;animation:zprSk 1s infinite}

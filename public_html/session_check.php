@@ -256,7 +256,7 @@ ul.tight li{margin-bottom:4px}
      a leftover. */
   $watch = [
       'product_master.php', 'part_library.php', 'products_csv.php', 'set_quantities_csv.php',
-      'production_entry.php', 'production_my_work.php', 'production_workers.php',
+      'production_entry.php', 'production_workers.php',
       'production_dashboard.php', 'production_reports.php',
       'production_order_rates.php', 'production_amend.php',
       'login.php', 'session_check.php',

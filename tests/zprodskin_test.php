@@ -348,7 +348,7 @@ echo "11. Ten production pages are in, and each can be taken back out\n";
 $pages = ['production_entry.php','product_master.php',
           'production_stages.php','production_order_rates.php','production_reports.php',
           'production_dashboard.php','production_amend.php','production_workers.php',
-          'production_my_work.php','part_library.php'];
+          'part_library.php'];
 foreach ($pages as $p) {
     $src = file_get_contents($B . $p);
     $in  = substr_count($src, '<div class="zskin">');

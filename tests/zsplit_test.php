@@ -64,8 +64,6 @@ ok(str_contains($src, "\$tierBatch[\$sk] = (\$tierBatch[\$sk] ?? 0.0) + \$qty;")
 ok(substr_count($src, 'zp_tier_rate_now($tier[1], zp_scope_done(') === 1, 'the work list quotes the rate the next piece pays');
 ok(str_contains($src, "'SPLIT for '") && str_contains($src, "'Split taken off for '"), 'every split goes into the rate history with its reason');
 ok(str_contains($src, "A split needs 2 to 6 steps."), 'a split with one step is refused');
-$mw = file_get_contents(__DIR__ . '/../public_html/production_my_work.php');
-ok(str_contains($mw, 'zp_tier_rate_now('), 'My Work shows the same rate');
 $pg = file_get_contents(__DIR__ . '/../public_html/production_order_rates.php');
 ok(str_contains($pg, 'function tsplit(') && str_contains($pg, 'data-sp="'), 'Order rates: the Split toggle on each operation');
 ok(str_contains($pg, 'Produced <b>') && str_contains($pg, 'Balance <b>'), '  shows produced and balance');

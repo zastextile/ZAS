@@ -12,7 +12,9 @@ require_once __DIR__ . '/includes/costing.php';
 require_once __DIR__ . '/includes/export.php';
 require_once __DIR__ . '/includes/pfcontracts.php';
 require_login();
-if (is_production_staff()) { redirect('production_my_work.php'); }
+/* Production Staff logins open Daily Production Entry (My Work was removed
+   on the owner's word, 28 Nov 2026: "no need"). */
+if (is_production_staff()) { redirect('production_entry.php'); }
 
 $u = current_user();
 $admin = is_admin();

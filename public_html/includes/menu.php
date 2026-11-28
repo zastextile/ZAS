@@ -157,7 +157,6 @@ function zas_menu(): array {
             'label' => 'Production', 'icon' => 'gear',
             'show'  => $prodAny,
             'items' => [
-                ['label' => 'My Production Work',    'href' => 'production_my_work.php',   'show' => $prodAny],
                 ['label' => 'Production Dashboard',  'href' => 'production_dashboard.php', 'show' => $prodAny],
                 /* every order in production, stage by stage, and each one in detail */
                 ['label' => 'Order Status',          'href' => 'production_orders.php',    'show' => $prodAny],

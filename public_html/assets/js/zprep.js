@@ -1,7 +1,9 @@
 /* ZPREP — Production Dashboard & Reports, worked out in the browser.
    The page hands over one period of entries (includes/zp_report.php) and
    every filter, tab, sort, drill-down, flip card and chart below is computed
-   here. Nothing is sent back to the server until the period changes. */
+   here. Nothing is sent back to the server until the period changes — and
+   then only that period's rows are fetched, the page itself does not reload
+   (owner, 28 Nov 2026: "show reports within page without refresh"). */
 (function () {
   'use strict';
   var D = window.ZPR_DATA; if (!D) return;
@@ -20,10 +22,18 @@
 
   /* ---------------- the rows ----------------
      r = [day, worker, product, op, order, line, stage, qty, amount, rate, cancelled, reason, id] */
-  var R = D.R, W = D.W, P = D.P, O = D.O, F = D.F, L = D.L, S = D.S, X = D.X, DAYS = D.days;
+  var R, W, P, O, F, L, S, X, DAYS, SORD, SCOL;
   var PAL = ['#0a6ed1', '#e9730c', '#1a9898', '#7c48c4', '#d0406a', '#5b8a12', '#925ace', '#3d7dd6', '#a36a00', '#2f6f8f'];
-  var SORD = S.map(function (s, i) { return i; }).sort(function (a, b) { return (D.stageOrder[a] - D.stageOrder[b]) || (S[a][0] < S[b][0] ? -1 : 1); });
-  var SCOL = {}; SORD.forEach(function (si, n) { SCOL[si] = PAL[n % PAL.length]; });
+  var WBY = {}, PBY = {}, FBY = {};          // names for the filter chips — kept across periods
+  var SCOLN = {};                             // a stage keeps its colour across periods
+  function setData(nd) {
+    var orders = D.orders; D = nd; if (!D.orders) D.orders = orders;   // open orders do not depend on the period
+    R = D.R; W = D.W; P = D.P; O = D.O; F = D.F; L = D.L; S = D.S; X = D.X; DAYS = D.days;
+    SORD = S.map(function (s, i) { return i; }).sort(function (a, b) { return (D.stageOrder[a] - D.stageOrder[b]) || (S[a][0] < S[b][0] ? -1 : 1); });
+    SCOL = {}; SORD.forEach(function (si) { var nm = S[si][0]; if (!SCOLN[nm]) SCOLN[nm] = PAL[Object.keys(SCOLN).length % PAL.length]; SCOL[si] = SCOLN[nm]; });
+    W.forEach(function (w) { WBY[String(w[3])] = w; }); P.forEach(function (p) { PBY[String(p[1])] = p; }); F.forEach(function (f) { FBY[String(f[2])] = f; });
+  }
+  setData(D);
 
   var DIM = {
     dept:  { t: 'Department', key: function (r) { return W[r[1]][2]; }, lbl: function (k) { return k; } },
@@ -32,8 +42,6 @@
     p:     { t: 'Product',    key: function (r) { return String(P[r[2]][1]); }, lbl: function (k) { var p = PBY[k]; return p ? p[0] : k; } },
     f:     { t: 'Order',      key: function (r) { return String(F[r[4]][2]); }, lbl: function (k) { var f = FBY[k]; return f ? f[0] + (f[1] ? ' · ' + f[1] : '') : k; } }
   };
-  var WBY = {}, PBY = {}, FBY = {};
-  W.forEach(function (w) { WBY[String(w[3])] = w; }); P.forEach(function (p) { PBY[String(p[1])] = p; }); F.forEach(function (f) { FBY[String(f[2])] = f; });
   var DORD = ['dept', 'stage', 'w', 'p', 'f'];
 
   /* ---------------- state, kept in the address (#…) so a view can be shared ---------------- */
@@ -56,7 +64,7 @@
   }
   function writeHash() {
     var h = hashStr();
-    try { history.replaceState(null, '', location.pathname + location.search + (h ? '#' + h : '')); } catch (e) {}
+    try { history.replaceState(history.state, '', location.pathname + location.search + (h ? '#' + h : '')); } catch (e) {}
     $$('a[data-carry]').forEach(function (a) { var base = a.getAttribute('href').split('#')[0]; a.setAttribute('href', base + (h ? '#' + h : '')); });
   }
   function nFilters() { var n = ST.day ? 1 : 0; DORD.forEach(function (k) { n += ST.f[k].length; }); return n + (ST.q ? 1 : 0); }
@@ -576,6 +584,46 @@
     $('#zprFT').hidden = !n; $('#zprFN').textContent = n; $('#zprFN').hidden = !n;
     DORD.forEach(function (k) { var b = $('[data-vh="' + k + '"]'); if (b) { b.classList.toggle('set', !!ST.f[k].length); if (!b.classList.contains('open')) b.textContent = fieldLabel(k); } });
   }
+  /* ---------------- another period, without reloading the page ----------------
+     The chips and the date boxes fetch only the rows of that period (one read
+     on the server, no menu, no page). A period already seen comes from memory.
+     Filters, the tab and the opened cards stay as they are. */
+  var CACHE = {}, SELF = location.pathname;
+  CACHE[D.from + '|' + D.to] = D;
+  function showPeriod(from, to, push) {
+    var key = from + '|' + to, done = function (nd) {
+      CACHE[key] = nd; setData(nd);
+      if (ST.day && DAYS.indexOf(ST.day) < 0) ST.day = '';
+      ST.open = {}; ST.page = 1; root.classList.remove('loading');
+      $$('.per a').forEach(function (a) { var u = a.getAttribute('href').split('#')[0]; a.classList.toggle('on', u.indexOf('from=' + from) >= 0 && u.indexOf('to=' + to) >= 0); });
+      var fi = $('.per input[name=from]'), ti = $('.per input[name=to]'); if (fi) fi.value = from; if (ti) ti.value = to;
+      var qs = '?from=' + from + '&to=' + to + (PAGE === 'rep' ? '&r=' + ST.tab : '');
+      try { history[push ? 'pushState' : 'replaceState']({ from: from, to: to }, '', SELF + qs + location.hash); } catch (e) {}
+      $$('.per a').forEach(function (a) { a.setAttribute('href', a.getAttribute('href').split('#')[0] + location.hash); });
+      refresh();
+    };
+    if (CACHE[key]) return done(CACHE[key]);
+    root.classList.add('loading');
+    fetch(SELF + '?json=1&from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (nd) { nd.page = PAGE; nd.tab = ST.tab; done(nd); })
+      .catch(function () { location.href = SELF + '?from=' + from + '&to=' + to + location.hash; });   // fall back to a normal page load
+  }
+  $$('.per a').forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return;               // a new tab still works
+      var u = a.getAttribute('href'), f = /from=([\d-]+)/.exec(u), t = /to=([\d-]+)/.exec(u); if (!f || !t) return;
+      e.preventDefault(); showPeriod(f[1], t[1], true);
+    });
+  });
+  var pf = $('.per form');
+  if (pf) pf.addEventListener('submit', function (e) {
+    var f = pf.querySelector('[name=from]').value, t = pf.querySelector('[name=to]').value; if (!f || !t) return;
+    e.preventDefault(); if (f > t) { var x = f; f = t; t = x; } showPeriod(f, t, true);
+  });
+  window.addEventListener('popstate', function (e) { if (e.state && e.state.from) showPeriod(e.state.from, e.state.to, false); });
+  try { history.replaceState({ from: D.from, to: D.to }, '', location.href); } catch (e) {}
+
   drawFilterBar(); writeHash();
   if (PAGE === 'dash') drawDash(); else drawReport();
   window.ZPR = { refresh: refresh, state: ST, open: openSide };

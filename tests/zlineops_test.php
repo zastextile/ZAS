@@ -67,8 +67,6 @@ ok(str_contains($src, 'WHERE part_id=? AND only_proforma_id IS NULL'), 'the part
 ok(str_contains($src, "is skipped for this order — nothing is booked on it.") && str_contains($src, 'was added for another order and cannot be booked on this one.'), 'Production Entry refuses work on a skipped operation, or on another order\'s extra');
 ok(str_contains($src, "foreach (zp_line_ops((int)\$l['item_id'], \$partId, (int)\$l['proforma_id']) as \$o) {"), 'the work list offers each line its own operations');
 ok(str_contains($src, "zp_part_stage_ops(\$pt, \$it)"), 'Order Status and corrections follow each line\'s own stages');
-$mw = file_get_contents(__DIR__ . '/../public_html/production_my_work.php');
-ok(str_contains($mw, 'zp_line_ops(') && str_contains($mw, 'zp_line_rate_map('), 'My Work shows the same list and the same rate');
 
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);
