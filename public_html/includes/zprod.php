@@ -327,6 +327,18 @@ function zp_ensure_schema(): void {
         INDEX(worker_id), INDEX(stage_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
 
+    /* ---- NOT PRODUCTION: taken off the Production Workers list (owner,
+       28 Nov 2026: "remove some emp names from list which are not production
+       workers"). Production's own decision, like the stages: the person stays
+       in People Finance, every wage already booked stays theirs, and one
+       "Put back" undoes it. A removed person has no stage and is not offered
+       on Daily Entry. */
+    try { db()->exec("CREATE TABLE IF NOT EXISTS zp_worker_hidden (
+        worker_id INT NOT NULL PRIMARY KEY,
+        hidden_by INT NULL,
+        hidden_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"); } catch (Throwable $e) {}
+
     /* ---- the wage ledger ----
        rate_applied IS A SNAPSHOT AND IS NEVER RECALCULATED. The rate that was
        in force the moment this was booked is frozen onto the row. Change a rate
@@ -2577,12 +2589,25 @@ function zp_stage_bulk(array $workerIds, array $addIds, array $removeIds): array
    screen started from. A person whose stages changed in the meantime (another
    tab, another user) is not overwritten: the whole save is refused and names
    them. One transaction — all or nothing. */
-function zp_stage_save_many(array $want, array $was): array {
+function zp_hidden_workers(): array {
+    zp_ensure_schema();
+    $o = [];
+    try { foreach (db()->query("SELECT worker_id FROM zp_worker_hidden")->fetchAll() as $r) $o[(int)$r['worker_id']] = true; } catch (Throwable $e) {}
+    return $o;
+}
+
+/* $hide = [worker id => true (remove from the list) | false (put back)],
+   sent in the same Save. A person removed loses every stage in the same
+   transaction, so they drop off Daily Entry at once; put back, they return
+   with no stage, under "No stage". */
+function zp_stage_save_many(array $want, array $was, array $hide = []): array {
     zp_ensure_schema();
     $valid = [];
     foreach (zp_stage_all(false) as $s) $valid[(int)$s['id']] = true;
     $clean = function ($list) use ($valid) { $o = []; foreach ((array)$list as $x) { $x = (int)$x; if (isset($valid[$x])) $o[$x] = $x; } ksort($o); return array_values($o); };
-    $ids = array_values(array_unique(array_filter(array_map('intval', array_keys($want)), fn($x) => $x > 0)));
+    $sids = array_values(array_unique(array_filter(array_map('intval', array_keys($want)), fn($x) => $x > 0)));
+    $hids = array_values(array_unique(array_filter(array_map('intval', array_keys($hide)), fn($x) => $x > 0)));
+    $ids  = array_values(array_unique(array_merge($sids, $hids)));
     if (!$ids) return ['ok' => false, 'error' => 'Nothing to save.'];
     if (count($ids) > 2000) return ['ok' => false, 'error' => 'Too many people in one save.'];
     $in = implode(',', array_fill(0, count($ids), '?'));
@@ -2591,23 +2616,26 @@ function zp_stage_save_many(array $want, array $was): array {
     $map = zp_worker_stage_map(); $moved = [];
     foreach ($ids as $w) {
         if (!isset($names[$w])) return ['ok' => false, 'error' => 'Somebody on the list was not found — reload the page.'];
-        $now = $clean($map[$w] ?? []);
-        if ($clean($was[$w] ?? []) !== $now) $moved[] = $names[$w];
+        if (in_array($w, $sids, true) && $clean($was[$w] ?? []) !== $clean($map[$w] ?? [])) $moved[] = $names[$w];
     }
     if ($moved) return ['ok' => false, 'error' => 'These people were changed by someone else since you opened the page: ' . implode(', ', array_slice($moved, 0, 8)) . (count($moved) > 8 ? '…' : '') . '. Reload, then make your changes again. Nothing was saved.'];
+    $by = function_exists('current_user') ? (int)((current_user()['id'] ?? 0)) : 0;
     db()->beginTransaction();
     try {
         $del = db()->prepare("DELETE FROM zp_worker_stage WHERE worker_id=?");
         $ins = db()->prepare("INSERT INTO zp_worker_stage (worker_id, stage_id) VALUES (?,?)");
-        foreach ($ids as $w) { $del->execute([$w]); foreach ($clean($want[$w]) as $sid) $ins->execute([$w, $sid]); }
+        foreach ($sids as $w) { $del->execute([$w]); if (empty($hide[$w])) foreach ($clean($want[$w]) as $sid) $ins->execute([$w, $sid]); }
+        $hOn  = db()->prepare("INSERT IGNORE INTO zp_worker_hidden (worker_id, hidden_by) VALUES (?,?)");
+        $hOff = db()->prepare("DELETE FROM zp_worker_hidden WHERE worker_id=?");
+        foreach ($hids as $w) { if ($hide[$w]) { $del->execute([$w]); $hOn->execute([$w, $by ?: null]); } else $hOff->execute([$w]); }
         db()->commit();
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
         return ['ok' => false, 'error' => 'Could not save: ' . $e->getMessage() . ' Nothing was saved.'];
     }
-    $map = zp_worker_stage_map(); $out = [];
-    foreach ($ids as $w) $out[$w] = $clean($map[$w] ?? []);
-    return ['ok' => true, 'n' => count($ids), 'stages' => $out];
+    $map = zp_worker_stage_map(); $hid = zp_hidden_workers(); $out = []; $hout = [];
+    foreach ($ids as $w) { $out[$w] = $clean($map[$w] ?? []); $hout[$w] = isset($hid[$w]); }
+    return ['ok' => true, 'n' => count($ids), 'stages' => $out, 'hidden' => $hout];
 }
 
 function zp_save_worker_stages(int $workerId, array $stageIds): void {

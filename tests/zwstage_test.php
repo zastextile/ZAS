@@ -289,6 +289,6 @@ ok(str_contains($pe, "mine.indexOf(w.sid) >= 0"), 'a worker picked first is offe
 $pw = file_get_contents($B . 'production_workers.php');
 ok(str_contains($pw, '<option value="prod">In production (has a stage)</option>'), 'Production Workers opens on the people in production');
 ok(str_contains($pw, "if (s === 'prod' && !r.st.length && !(q && PRODQ) && !changed(r)) return false;"), '  hides the no-stage people, and still finds one by name to give a stage');
-ok(str_contains($pw, "if (s && s !== 'none' && s !== 'prod' && r.st.indexOf(+s) < 0 && !changed(r)) return false;"), '  and "In production" is not mistaken for a stage number (the demo caught it showing nobody)');
+ok(str_contains($pw, "if (s && s !== 'none' && s !== 'prod' && s !== 'hid' && r.st.indexOf(+s) < 0 && !changed(r)) return false;"), '  and "In production" is not mistaken for a stage number (the demo caught it showing nobody)');
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);

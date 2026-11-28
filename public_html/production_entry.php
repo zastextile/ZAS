@@ -163,6 +163,9 @@ if (!empty($_SESSION['zp_err'])) { $errors[] = $_SESSION['zp_err']; unset($_SESS
 $lines   = zp_open_lines();
 $prog    = zp_progress_map();
 $workers = zp_workers(true);
+/* taken off Production Workers as not production (28 Nov 2026): never offered here */
+$HIDW = zp_hidden_workers();
+if ($HIDW) $workers = array_values(array_filter($workers, fn($w) => !isset($HIDW[(int)$w['id']])));
 
 /* AN ORDER LINE WHOSE SIZE DOES NOT RESOLVE IS NAMED, NOT HIDDEN.
    Its operations would all read "0 left", which looks exactly like finished

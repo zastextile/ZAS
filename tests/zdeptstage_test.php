@@ -157,7 +157,7 @@ ok($r3['ok'] === true && $r3['people'] === 0 && $SAVED === [],
 echo "8. The screen (rebuilt 18 Nov 2026): a department is a filter, then tick everyone shown, then a stage\n";
 ok(str_contains($pw, 'id="fd"') && str_contains($pw, 'All departments'), 'the list filters by department');
 ok(str_contains($pw, 'id="all"') && str_contains($pw, 'shown().forEach(function(r){ sel[r.id] = on; })'), '  and one box ticks everyone shown — the whole department');
-ok(str_contains($pw, "fd.append('action', 'stage_save')") && str_contains($pw, 'zp_stage_save_many($want, $was)'), '  and a stage button changes all of them, sent in one save (28 Nov 2026: Save / Ctrl+S, not on every click)');
+ok(str_contains($pw, "fd.append('action', 'stage_save')") && str_contains($pw, 'zp_stage_save_many($want, $was, $hide)'), '  and a stage button changes all of them, sent in one save (28 Nov 2026: Save / Ctrl+S, not on every click)');
 ok(str_contains($pw, 'value="none">No stage yet'), 'who has no stage yet can be listed on its own');
 $pwF = preg_replace('/\s+/', ' ', $pw);
 ok(str_contains($pwF, 'NO STAGE TICKED MEANS NOT PRODUCTION'),
