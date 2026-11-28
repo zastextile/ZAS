@@ -130,7 +130,32 @@ $PAYT   = ze_pay_types();
 $wsMap  = zp_worker_stage_map();
 $PTW    = ['salary' => 'Fixed salary', 'daily' => 'Daily wages', 'contract' => 'Contractor'];
 
-$pack = function (array $t, bool $grp) use ($showMoney, $PAYT, $PTW) {
+/* THE MOST EACH ROW CAN BE CORRECTED TO (owner, 28 Nov 2026: "show the max
+   qty"). A correction frees the row's own pieces first, so the ceiling is
+   this row's quantity + what is still left on its job — on its one size in
+   the every-line view, on the whole merged job (all sizes) in the grouped
+   view, exactly as ze_edit_row() books it. Cutting is open: no ceiling.
+   A job no longer on the list (finished, switched off) cannot go up. */
+$byId = []; foreach ($lines as $t) $byId[(int)$t['id']] = $t;
+$WI = zp_work_index(); $LEFT = []; $OPEN = []; $GRP = [];
+foreach ($WI as $w) { $k = $w['item'] . ':' . $w['op'] . ':' . ($w['kind'] ?? 'part'); $LEFT[$k] = (float)$w['left']; $OPEN[$k] = !empty($w['open']); }
+foreach (ze_merge_work($WI) as $g) foreach ($g['mem'] as $m) $GRP[$m[0] . ':' . $m[1] . ':' . ($g['kind'] ?? 'part')] = ['k' => (string)$g['k'], 'left' => (float)$g['left'], 'open' => !empty($g['open'])];
+$ceil = function (array $t, bool $grp) use ($byId, $LEFT, $OPEN, $GRP): array {
+    $first = $grp ? ($byId[min($t['ids'])] ?? $t) : $t;
+    $k = (int)$first['proforma_item_id'] . ':' . (int)$first['op_id'] . ':' . ((string)($first['op_kind'] ?? '') ?: 'part');
+    $q = round((float)$t['qty'], 2);
+    if ($grp) {
+        if (!isset($GRP[$k])) return ['max' => $q, 'jk' => 'x' . implode(',', $t['ids']), 'jl' => 0.0];
+        if ($GRP[$k]['open']) return ['max' => null, 'jk' => 'G' . $GRP[$k]['k'], 'jl' => null];
+        return ['max' => round($q + $GRP[$k]['left'], 2), 'jk' => 'G' . $GRP[$k]['k'], 'jl' => round($GRP[$k]['left'], 2)];
+    }
+    if (!isset($LEFT[$k])) return ['max' => $q, 'jk' => 'x' . (int)$t['id'], 'jl' => 0.0];
+    if ($OPEN[$k]) return ['max' => null, 'jk' => 'L' . $k, 'jl' => null];
+    return ['max' => round($q + $LEFT[$k], 2), 'jk' => 'L' . $k, 'jl' => round($LEFT[$k], 2)];
+};
+
+$pack = function (array $t, bool $grp) use ($showMoney, $PAYT, $PTW, $ceil) {
+    $cl = $t['status'] === 'active' ? $ceil($t, $grp) : ['max' => null, 'jk' => '', 'jl' => null];
     $sizes = $grp ? array_values(array_filter($t['items'], fn($x) => $x !== '')) : array_filter([(string)($t['size'] ?? '')]);
     return [
         'ids' => $grp ? implode(',', $t['ids']) : (string)(int)$t['id'], 'n' => $grp ? (int)$t['n'] : 1,
@@ -147,6 +172,7 @@ $pack = function (array $t, bool $grp) use ($showMoney, $PAYT, $PTW) {
         'why' => (string)($t['cancel_reason'] ?? ''), 'cby' => (string)($t['cname'] ?? ''),
         'cat' => $t['cancelled_at'] ? date('j M H:i', strtotime((string)$t['cancelled_at'])) : '',
         'ed' => str_starts_with((string)($t['cancel_reason'] ?? ''), 'Edited:'),
+        'max' => $cl['max'], 'jk' => $cl['jk'], 'jl' => $cl['jl'],
     ];
 };
 $G = array_map(fn($t) => $pack($t, true), $groups);
@@ -200,6 +226,8 @@ page_header('Correct Entries');
 .zf.ca table.gr td:focus{outline:none}
 .zf.ca table.gr td.ac:focus{outline:2px solid #0a6ed1}
 .zf.ca table.gr .was{font-size:10.5px;color:#9a5710;text-decoration:line-through}
+.zf.ca table.gr .mx{font-size:10px;color:#0a6ed1;font-weight:700;letter-spacing:.02em}
+.zf.ca table.gr td.bad .mx{color:#b42318}
 .zf.ca table.gr td.amch{color:#9a5710;font-weight:700}
 .zf.ca table.gr tr.rch td:first-child{box-shadow:inset 3px 0 0 #e9a23b}
 .zf.ca table.gr tr.rerr td:first-child{box-shadow:inset 3px 0 0 #e5484d}
@@ -320,11 +348,30 @@ page_header('Correct Entries');
   function bad(r, c){
     if (!isCh(r, c)) return '';
     var v = val(r, c);
-    if (c === 'qty') { var q = num(v); return isNaN(q) || q <= 0 ? 'A quantity above 0 (to remove a line use Cancel)' : ''; }
+    if (c === 'qty') {
+      var q = num(v);
+      if (isNaN(q) || q <= 0) return 'A quantity above 0 (to remove a line use Cancel)';
+      var m = maxFor(r);
+      if (m !== null && q > m + 0.0001) return 'Too many — the most this row can be is ' + qn(m) + ' (its own ' + qn(r.qty) + ' + ' + qn(Math.max(0, m - r.qty)) + ' still left on this job).';
+      return '';
+    }
     if (c === 'rate') { var t = num(v); return isNaN(t) || t < 0 ? 'Not a rate' : ''; }
     if (c === 'nd') return /^\d{4}-\d{2}-\d{2}$/.test(v) && v <= TODAY ? '' : 'A real date, not in the future';
     if (c === 'wid') return WBY[v] ? '' : 'Choose a worker from the list';
     return '';
+  }
+  /* the most this row can be now: its own qty + what is left on its job,
+     less what OTHER changed rows of the same job already take */
+  function maxFor(r){
+    if (r.max === null || r.max === undefined) return null;
+    if (r.jl === null || r.jl === undefined) return r.max;
+    var others = 0;
+    Object.keys(CH).forEach(function(k){
+      if (k === key(r) || CH[k].qty === undefined) return;
+      var o = byKey(k); if (!o || o.jk !== r.jk) return;
+      var nq = num(CH[k].qty); if (!isNaN(nq) && nq > o.qty) others += nq - o.qty;
+    });
+    return Math.round((r.qty + Math.max(0, r.jl - others)) * 100) / 100;
   }
   function setVal(r, c, v){
     if (!r.act || DONE[key(r)]) return;
@@ -363,7 +410,9 @@ page_header('Correct Entries');
       + '<td>' + esc(r.prod) + '<div class="s2">' + esc(r.pi) + (r.cust ? ' · ' + esc(r.cust) : '') + '</div>' + (r.desc ? '<div class="desc" title="' + esc(r.desc) + '">' + esc(r.desc) + '</div>' : '') + '</td>'
       + '<td>' + esc(r.part) + '<div class="s2">' + esc(r.ops) + '</div></td>'
       + '<td>' + stPill(r.st) + '</td>'
-      + cell(r, i, 'qty', (isNaN(q) ? esc(val(r, 'qty')) : qn(q)) + (r.sizes ? '<div class="s2" title="' + esc(r.sizes) + '">' + (r.nsz > 1 ? r.nsz + ' sizes' : esc(r.sizes)) + '</div>' : '') + (isCh(r, 'qty') && !isNaN(q) ? '<div class="was">was ' + qn(r.qty) + '</div>' : ''), 'n')
+      + cell(r, i, 'qty', (isNaN(q) ? esc(val(r, 'qty')) : qn(q)) + (r.sizes ? '<div class="s2" title="' + esc(r.sizes) + '">' + (r.nsz > 1 ? r.nsz + ' sizes' : esc(r.sizes)) + '</div>' : '') + (isCh(r, 'qty') && !isNaN(q) ? '<div class="was">was ' + qn(r.qty) + '</div>' : '')
+              + (r.act && !DONE[k] ? (r.max === null || r.max === undefined ? '<div class="mx" title="Cutting is open: more than the plan is allowed, shown as information">open</div>'
+                                    : '<div class="mx" title="Its own ' + qn(r.qty) + ' + what is still left on this job">max ' + qn(maxFor(r)) + '</div>') : ''), 'n')
       + (MONEY ? (CANRATE ? cell(r, i, 'rate', (isNaN(rt) ? esc(val(r, 'rate')) : n2(rt)) + (isCh(r, 'rate') && !isNaN(rt) ? '<div class="was">was ' + n2(r.rate) + '</div>' : ''), 'n') : '<td class="n">' + n2(r.rate) + '</td>')
                + '<td class="n' + (CH[k] && amt !== null && Math.abs(amt - r.amt) > 0.004 ? ' amch' : '') + '">' + (amt === null ? '—' : n2(amt)) + '</td>' : '')
       + '<td' + (r.act ? ' style="white-space:nowrap"' : '') + '>' + (DONE[k] ? '<span class="okb" title="Reload the page to see the new line">Saved ✓ · reload to see</span>'
@@ -460,7 +509,9 @@ page_header('Correct Entries');
   function commit(){
     if (!ED) return; var e = ED; ED = null;
     setVal(RS[e.r], COLS[e.c], e.el.value);
-    repaintRow(e.r); focusAc();
+    /* a quantity moves the max of other rows of the same job too */
+    if (COLS[e.c] === 'qty' && RS.some(function(x, j){ return j !== e.r && x.jk && x.jk === RS[e.r].jk; })) paint(); else repaintRow(e.r);
+    focusAc();
   }
   function cancelEdit(){ if (!ED) return; var e = ED; ED = null; repaintRow(e.r); focusAc(); }
 

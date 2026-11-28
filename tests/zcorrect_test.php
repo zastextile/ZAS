@@ -50,5 +50,11 @@ $js = substr($pg, strpos($pg, '/* ============ THE GRID'));
 ok(substr_count($js, 'fetch(') === 1, 'the grid asks the server nothing until Save');
 ok(str_contains($pg, "window.addEventListener('beforeunload', guard);"), 'leaving with unsaved changes asks first');
 
+ok(str_contains($pg, "return ['max' => round(\$q + \$LEFT[\$k], 2)") && str_contains($pg, "return ['max' => round(\$q + \$GRP[\$k]['left'], 2)"), 'each row shows its max: its own qty + what is left (one size, or the whole merged job)');
+ok(str_contains($pg, "if (\$OPEN[\$k]) return ['max' => null") && str_contains($pg, "if (\$GRP[\$k]['open']) return ['max' => null"), '  cutting is open — no max');
+ok(str_contains($pg, "if (!isset(\$LEFT[\$k])) return ['max' => \$q"), '  a job no longer on the list cannot go up');
+ok(str_contains($pg, 'function maxFor(r){') && str_contains($pg, "if (!o || o.jk !== r.jk) return;"), '  rows of the same job share what is left');
+ok(str_contains($pg, "'Too many — the most this row can be is '"), '  above it the cell is red and Save waits');
+
 echo "\n$P passed, $F failed\n";
 exit($F ? 1 : 0);
