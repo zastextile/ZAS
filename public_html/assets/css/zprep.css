@@ -248,3 +248,15 @@
 /* another period is on its way: the page stays, dimmed for a moment */
 .zpr.loading .cards,.zpr.loading .sec,.zpr.loading .rbox{opacity:.45;pointer-events:none;transition:opacity .2s}
 .zpr.loading .per:after{content:'Loading…';font-size:12px;color:#0a6ed1;margin-left:6px;animation:zprSk 1s infinite}
+/* finished products (28 Nov 2026) */
+.zpr .seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.zpr .seg button{border:0;background:#fff;padding:0 11px;height:30px;font-size:12px;font-weight:600;color:var(--mut);cursor:pointer;border-right:1px solid var(--line)}
+.zpr .seg button:last-child{border-right:0}
+.zpr .seg button.on{background:var(--ink);color:#fff}
+.zpr table.rt.fin td{vertical-align:middle}
+.zpr .fsub{display:block;font-size:11px;color:var(--soft);font-weight:400;white-space:nowrap;max-width:360px;overflow:hidden;text-overflow:ellipsis}
+.zpr td.fst{min-width:116px}
+.zpr td.fst .fbx{height:6px;border-radius:3px;background:#eef1f4;overflow:hidden;margin-bottom:3px}
+.zpr td.fst .fbx em{display:block;height:100%;border-radius:3px;transition:width .7s}
+.zpr td.fst b{font-weight:600;font-size:12px}
+.zpr td.fst small{display:block;font-size:10.5px;color:var(--soft)}

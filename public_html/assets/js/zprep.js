@@ -21,14 +21,15 @@
   function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
 
   /* ---------------- the rows ----------------
-     r = [day, worker, product, op, order, line, stage, qty, amount, rate, cancelled, reason, id] */
-  var R, W, P, O, F, L, S, X, DAYS, SORD, SCOL;
+     r = [day, worker, product, op, order, line, stage, qty, amount, rate, cancelled, reason, id, entered-by] */
+  var R, W, P, O, F, L, S, X, U, DAYS, SORD, SCOL;
   var PAL = ['#0a6ed1', '#e9730c', '#1a9898', '#7c48c4', '#d0406a', '#5b8a12', '#925ace', '#3d7dd6', '#a36a00', '#2f6f8f'];
-  var WBY = {}, PBY = {}, FBY = {};          // names for the filter chips — kept across periods
+  var WBY = {}, PBY = {}, FBY = {}, UBY = {};   // names for the filter chips — kept across periods
   var SCOLN = {};                             // a stage keeps its colour across periods
   function setData(nd) {
-    var orders = D.orders; D = nd; if (!D.orders) D.orders = orders;   // open orders do not depend on the period
-    R = D.R; W = D.W; P = D.P; O = D.O; F = D.F; L = D.L; S = D.S; X = D.X; DAYS = D.days;
+    var orders = D.orders, fin = D.fin; D = nd; if (!D.orders) D.orders = orders; if (!D.fin) D.fin = fin;   // open orders do not depend on the period
+    R = D.R; W = D.W; P = D.P; O = D.O; F = D.F; L = D.L; S = D.S; X = D.X; U = D.U || []; DAYS = D.days;
+    U.forEach(function (u) { UBY[String(u[1])] = u; });
     SORD = S.map(function (s, i) { return i; }).sort(function (a, b) { return (D.stageOrder[a] - D.stageOrder[b]) || (S[a][0] < S[b][0] ? -1 : 1); });
     SCOL = {}; SORD.forEach(function (si) { var nm = S[si][0]; if (!SCOLN[nm]) SCOLN[nm] = PAL[Object.keys(SCOLN).length % PAL.length]; SCOL[si] = SCOLN[nm]; });
     W.forEach(function (w) { WBY[String(w[3])] = w; }); P.forEach(function (p) { PBY[String(p[1])] = p; }); F.forEach(function (f) { FBY[String(f[2])] = f; });
@@ -42,10 +43,11 @@
     p:     { t: 'Product',    key: function (r) { return String(P[r[2]][1]); }, lbl: function (k) { var p = PBY[k]; return p ? p[0] : k; } },
     f:     { t: 'Order',      key: function (r) { return String(F[r[4]][2]); }, lbl: function (k) { var f = FBY[k]; return f ? f[0] + (f[1] ? ' · ' + f[1] : '') : k; } }
   };
-  var DORD = ['dept', 'stage', 'w', 'p', 'f'];
+  DIM.u = { t: 'Entered by', key: function (r) { return String(U[r[13]] ? U[r[13]][1] : 0); }, lbl: function (k) { var u = UBY[k]; return u ? u[0] : k; } };
+  var DORD = ['dept', 'stage', 'w', 'p', 'f', 'u'];
 
   /* ---------------- state, kept in the address (#…) so a view can be shared ---------------- */
-  var ST = { f: { dept: [], stage: [], w: [], p: [], f: [] }, day: '', q: '', tab: D.tab || 'worker', sort: null, open: {}, status: 'active', page: 1 };
+  var ST = { f: { dept: [], stage: [], w: [], p: [], f: [], u: [] }, day: '', q: '', tab: D.tab || 'worker', sort: null, open: {}, status: 'active', page: 1 };
   (function readHash() {
     var h = location.hash.replace(/^#/, ''); if (!h) return;
     h.split('&').forEach(function (kv) {
@@ -67,12 +69,13 @@
     try { history.replaceState(history.state, '', location.pathname + location.search + (h ? '#' + h : '')); } catch (e) {}
     $$('a[data-carry]').forEach(function (a) { var base = a.getAttribute('href').split('#')[0]; a.setAttribute('href', base + (h ? '#' + h : '')); });
   }
+  function floorNote() { return D.floors && D.floors.length ? ' · <span style="color:#107e3e;font-weight:600">your floors: ' + esc(D.floors.join(', ')) + '</span>' : ''; }
   function nFilters() { var n = ST.day ? 1 : 0; DORD.forEach(function (k) { n += ST.f[k].length; }); return n + (ST.q ? 1 : 0); }
 
   /* ---------------- filtering ---------------- */
   function qHit(r, q) {
     var w = W[r[1]], o = O[r[3]], f = F[r[4]];
-    return (w[0] + ' ' + w[1] + ' ' + P[r[2]][0] + ' ' + o[0] + ' ' + o[1] + ' ' + f[0] + ' ' + f[1] + ' ' + L[r[5]][1]).toLowerCase().indexOf(q) >= 0;
+    return (w[0] + ' ' + w[1] + ' ' + (U[r[13]] ? U[r[13]][0] : '') + ' ' + P[r[2]][0] + ' ' + o[0] + ' ' + o[1] + ' ' + f[0] + ' ' + f[1] + ' ' + L[r[5]][1]).toLowerCase().indexOf(q) >= 0;
   }
   /* every filter but `skip` — so a value list counts what the other filters leave */
   function filtered(opts) {
@@ -109,10 +112,11 @@
     l: function (g) { var l = L[g.k]; return P[l[2]][0] + (l[1] ? ' · ' + l[1] : ''); },
     s: function (g) { return S[g.k][0]; },
     d: function (g) { return fd(DAYS[g.k], true); },
-    dept: function (g) { return g.k; }
+    dept: function (g) { return g.k; },
+    u: function (g) { return U[g.k] ? U[g.k][0] : '(not recorded)'; }
   };
   var KEY = { w: function (r) { return r[1]; }, p: function (r) { return r[2]; }, o: function (r) { return r[3]; }, f: function (r) { return r[4]; },
-              l: function (r) { return r[5]; }, s: function (r) { return r[6]; }, d: function (r) { return r[0]; }, dept: function (r) { return W[r[1]][2]; } };
+              l: function (r) { return r[5]; }, s: function (r) { return r[6]; }, d: function (r) { return r[0]; }, dept: function (r) { return W[r[1]][2]; }, u: function (r) { return r[13]; } };
 
   /* ---------------- flip cards ---------------- */
   function spark(vals, col) {
@@ -314,6 +318,7 @@
     else if (kind === 'f') { var f = F[k]; title = f[0]; sub = f[1] || ''; parts = [['l', 'Lines', 'Product · size'], ['o', 'Operations', 'Part · operation'], ['w', 'Workers', 'Worker']]; }
     else if (kind === 'p') { title = P[k][0]; sub = 'Product'; parts = [['o', 'Operations', 'Part · operation'], ['f', 'Orders', 'Order'], ['w', 'Workers', 'Worker']]; }
     else if (kind === 'o') { var o = O[k]; title = o[1]; sub = o[0] + ' · ' + S[o[2]][0]; parts = [['w', 'Workers', 'Worker'], ['f', 'Orders', 'Order'], ['d', 'Day by day', 'Day']]; }
+    else if (kind === 'u') { title = U[k][0]; sub = 'Data entry (who typed it)'; parts = [['w', 'Workers', 'Worker'], ['d', 'Day by day', 'Day'], ['o', 'Operations', 'Part · operation']]; }
     else { title = k; sub = 'Department'; parts = [['w', 'Workers', 'Worker'], ['o', 'Operations', 'Part · operation'], ['d', 'Day by day', 'Day']]; }
     var t = sum(rows), days = new Set(rows.map(function (r) { return r[0]; })).size, byDay = new Array(DAYS.length).fill(0); rows.forEach(function (r) { byDay[r[0]] += r[7]; });
     var cs = [{ id: 's1', label: 'Pieces', col: '#0a6ed1', big: fq(t.q), unit: 'pcs', foot: rows.length + ' entries', spark: spark(byDay, '#0a6ed1'), backT: 'By stage',
@@ -340,7 +345,9 @@
   /* ======================= THE DASHBOARD ======================= */
   function drawDash() {
     var rows = filtered(), rowsAllDays = filtered({ noDay: true });
-    var kc = $('#zprK'); kc.innerHTML = kpiCards(rows).map(function (c) { c.flip = FLIPPED[c.id]; return card(c); }).join('');
+    var cs = kpiCards(rows);
+    if (D.fin && D.fin.length) { var fc = finCards(finList())[0]; fc.id = 'fin'; fc.label = 'Finished products'; fc.backT = 'Whole products — done / ordered'; cs.splice(1, 0, fc); }
+    var kc = $('#zprK'); kc.innerHTML = cs.map(function (c) { c.flip = FLIPPED[c.id]; return card(c); }).join('');
     /* one card per stage */
     var tq = sum(rows).q || 1, sc = SORD.map(function (si) {
       var sr = rows.filter(function (r) { return r[6] === si; }); if (!sr.length) return null;
@@ -360,7 +367,7 @@
     var op = top(group(rows, KEY.o), 10).map(function (g) { return { k: g.k, n: NAME.o(g), v: measure(g), c: SCOL[O[g.k][2]] }; });
     $('#dOp').innerHTML = hbars(op, MONEY ? f0 : fq, 'op'); grow($('#dOp'));
     drawOrders();
-    $('#zprSub').innerHTML = '<b>' + esc(fd(D.from, true) + ' – ' + fd(D.to, true)) + '</b> · ' + rows.length + ' entries' + (nFilters() ? ' · <span style="color:#0a6ed1">' + nFilters() + ' filter(s) on</span>' : '') + (MONEY ? '' : ' · wages hidden for your login');
+    $('#zprSub').innerHTML = '<b>' + esc(fd(D.from, true) + ' – ' + fd(D.to, true)) + '</b> · ' + rows.length + ' entries' + (nFilters() ? ' · <span style="color:#0a6ed1">' + nFilters() + ' filter(s) on</span>' : '') + (MONEY ? '' : ' · wages hidden for your login') + floorNote();
   }
   var ORDALL = false;
   function drawOrders() {
@@ -396,12 +403,15 @@
     order:   { t: 'By order',      g: 'f',    drill: ['l', 'o'], side: 'f' },
     op:      { t: 'By operation',  g: 'o',    drill: ['w'], side: 'o' },
     daily:   { t: 'Day by day',    g: 'd',    drill: ['s', 'w'] },
-    entries: { t: 'Every entry' }
+    user:    { t: 'By data entry', g: 'u',    drill: ['w', 'd'], side: 'u' },
+    entries: { t: 'Every entry' },
+    fin:     { t: 'Finished products' }
   };
   function colsFor(tab) {
     var C = [];
     var c = function (k, t, o) { o = o || {}; o.k = k; o.t = t; C.push(o); };
-    if (tab === 'worker') { c('name', 'Worker'); c('code', 'Code'); c('dept', 'Department'); c('days', 'Days', { n: 1, d: 1 }); }
+    if (tab === 'user') { c('name', 'Entered by'); c('wk', 'Workers', { n: 1, d: 1 }); c('days', 'Days', { n: 1, d: 1 }); }
+    else if (tab === 'worker') { c('name', 'Worker'); c('code', 'Code'); c('dept', 'Department'); c('days', 'Days', { n: 1, d: 1 }); }
     else if (tab === 'dept') { c('name', 'Department'); c('wk', 'Workers', { n: 1, d: 1 }); c('days', 'Days', { n: 1, d: 1 }); }
     else if (tab === 'product') { c('name', 'Product'); c('ord', 'Orders', { n: 1, d: 1 }); c('wk', 'Workers', { n: 1, d: 1 }); }
     else if (tab === 'order') { c('name', 'Order (PI)'); c('cust', 'Customer'); c('lines', 'Lines', { n: 1, d: 1 }); c('wk', 'Workers', { n: 1, d: 1 }); }
@@ -412,8 +422,130 @@
     c('share', 'Share', { bar: 1 });
     return C;
   }
+  /* ======================= FINISHED PRODUCTS =======================
+     Whole products, not operations: a duvet set of 300 is 300, however many
+     operations it went through. Built from D.fin (includes/zp_report.php). */
+  var FING = 'line';
+  function madeIn(item) { var s = 0; (D.A || []).forEach(function (a) { if (a[1] === item && (!ST.day || DAYS[a[0]] === ST.day)) s += a[2]; }); return s; }
+  function finList() {
+    var q = (ST.q + ' ' + TQ).toLowerCase().trim().split(/\s+/).filter(Boolean), pS = ST.f.p, fS = ST.f.f;
+    return (D.fin || []).filter(function (o) {
+      if (pS.length && pS.indexOf(String(o.pid)) < 0) return false;
+      if (fS.length && fS.indexOf(String(o.f)) < 0) return false;
+      var t = (o.pi + ' ' + o.cust + ' ' + o.prod + ' ' + o.size + ' ' + o.desc).toLowerCase();
+      return q.every(function (w) { return t.indexOf(w) >= 0; });
+    });
+  }
+  function finStageNames(list) {
+    var names = []; list.forEach(function (o) { o.stages.forEach(function (s) { if (names.indexOf(s[0]) < 0) names.push(s[0]); }); });
+    var ord = D.stageNames || []; return names.sort(function (a, b) { var x = ord.indexOf(a), y = ord.indexOf(b); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
+  }
+  function finGroup(list, by) {
+    if (by === 'line') return list.map(function (o) { var c = Object.assign({}, o); c.made = madeIn(o.item); c.key = 'l' + o.item; c.kids = null; return c; });
+    var m = {}, out = [];
+    list.forEach(function (o) {
+      var k = by === 'prod' ? 'p' + o.pid : 'f' + o.f, g = m[k];
+      if (!g) { g = m[k] = { key: k, kids: [], pi: o.pi, cust: o.cust, prod: o.prod, pid: o.pid, f: o.f, size: '', desc: '', ord: 0, ready: 0, sets: 0, done: 0, left: 0, made: 0, set: false, stages: [], behind: '', lines: 0 }; out.push(g); }
+      g.ord += o.ord; g.ready += o.ready; g.sets += o.sets; g.done += o.done; g.left += o.left; g.made += madeIn(o.item); g.set = g.set || o.set; g.lines++;
+      o.stages.forEach(function (s) { var x = null; g.stages.forEach(function (y) { if (y[0] === s[0]) x = y; }); if (!x) { x = [s[0], 0, 0]; g.stages.push(x); } x[1] += s[1]; x[2] += s[2]; });
+      if (!g.behind && o.behind) g.behind = o.behind;
+      g.kids.push(o);
+    });
+    out.forEach(function (g) { g.pct = g.ord ? Math.min(100, g.done / g.ord * 100) : 0; });
+    return out;
+  }
+  function stCell(st, name) {
+    var x = null; (st || []).forEach(function (y) { if (y[0] === name) x = y; });
+    if (!x || !x[1]) return '<td class="num" style="color:#c2cbd6">—</td>';
+    var p = Math.min(100, x[2] / x[1] * 100);
+    return '<td class="num fst"><div class="fbx"><em style="width:' + p.toFixed(1) + '%;background:' + (p >= 99.95 ? '#107e3e' : p < 50 ? '#e9730c' : '#0a6ed1') + '"></em></div><b>' + p.toFixed(p >= 99.95 || p === 0 ? 0 : 1) + '%</b><small>' + fq(x[2]) + ' / ' + fq(x[1]) + '</small></td>';
+  }
+  function finCards(list) {
+    var t = { ord: 0, done: 0, ready: 0, sets: 0, made: 0, behind: 0, extra: 0 }, byP = {};
+    list.forEach(function (o) { var mi = madeIn(o.item); t.ord += o.ord; t.done += o.done; t.made += mi; if (o.pct < 50) t.behind++; if (o.set) t.extra += Math.max(0, o.ready - o.sets);
+      var b = byP[o.prod] || (byP[o.prod] = { n: o.prod, a: 0, b: 0, m: 0, x: 0 }); b.a += o.done; b.b += o.ord; b.m += mi; if (o.set) b.x += Math.max(0, o.ready - o.sets); });
+    var prods = Object.keys(byP).map(function (k) { return byP[k]; }).sort(function (a, b) { return b.b - a.b; });
+    var pctList = function (items) { return items.length ? '<ul>' + items.slice(0, 8).map(function (x) { var p = x.b ? x.a / x.b * 100 : 0; return '<li><span title="' + esc(x.n) + '">' + esc(x.n) + '</span><b>' + fq(x.a) + ' / ' + fq(x.b) + '</b><i><em style="width:' + Math.min(100, p).toFixed(1) + '%"></em></i></li>'; }).join('') + '</ul>' : '<div class="empty">Nothing in this view.</div>'; };
+    var worst = list.slice().sort(function (a, b) { return a.pct - b.pct; });
+    return [
+      { id: 'f1', label: 'Finished (whole products)', col: '#107e3e', big: fq(t.done), unit: 'of ' + fq(t.ord), foot: (t.ord ? (t.done / t.ord * 100).toFixed(1) : '0') + '% of what is ordered · ' + fq(Math.max(0, t.ord - t.done)) + ' left',
+        backT: 'By product (done / ordered)', back: pctList(prods.map(function (p) { return { n: p.n, a: p.a, b: p.b }; })) },
+      { id: 'f2', label: 'Ready to make into sets', col: '#0a6ed1', big: fq(t.extra), unit: 'sets', foot: 'every part through its last stage, not yet on Make Sets',
+        backT: 'Ready, by product', back: backList(prods.filter(function (p) { return p.x > 0; }).map(function (p) { return { n: p.n, v: p.x }; })) },
+      { id: 'f3', label: 'Made in this period', col: '#1a9898', big: fq(t.made), unit: 'sets', foot: esc(fd(D.from) + ' – ' + fd(D.to)) + ' · Make Sets',
+        backT: 'Made, by product', back: backList(prods.filter(function (p) { return p.m > 0; }).map(function (p) { return { n: p.n, v: p.m }; })) },
+      { id: 'f4', label: 'Lines under 50%', col: '#e9730c', big: f0(t.behind), unit: 'of ' + list.length + ' lines', foot: 'open order lines, worst first on the back',
+        backT: 'Furthest behind', back: pctList(worst.slice(0, 8).map(function (o) { return { n: o.prod + (o.size ? ' · ' + o.size : '') + ' — ' + o.pi, a: o.done, b: o.ord }; })) }
+    ];
+  }
+  function drawFinished() {
+    var list = finList();
+    $('#zprK').innerHTML = finCards(list).map(function (c) { c.flip = FLIPPED[c.id]; return card(c); }).join('');
+    $('#zprSub').innerHTML = '<b>Whole products on open orders</b> · order to date · "Made in this period" uses ' + esc(fd(D.from, true) + ' – ' + fd(D.to, true)) + (ST.f.p.length || ST.f.f.length || ST.q ? ' · <span style="color:#0a6ed1">filtered</span>' : '');
+    $('#zprStat').hidden = true;
+    var names = finStageNames(list), gs = finGroup(list, FING);
+    var so = ST.sort && ST.sort.tab === 'fin' ? ST.sort : { k: 'pct', dir: 1 };
+    var val = function (g, k) { if (k.indexOf('st:') === 0) { var x = null; g.stages.forEach(function (y) { if (y[0] === k.slice(3)) x = y; }); return x && x[1] ? x[2] / x[1] : -1; }
+      return k === 'name' ? (FING === 'ord' ? g.pi : g.prod + ' ' + g.size) : g[k]; };
+    gs.sort(function (a, b) { var x = val(a, so.k), y = val(b, so.k); return so.dir * (typeof x === 'string' ? x.localeCompare(y) : (x || 0) - (y || 0)); });
+    var cols = [['name', FING === 'ord' ? 'Order (PI)' : FING === 'prod' ? 'Product' : 'Product · size'], ['ord', 'Ordered', 1]]
+      .concat(names.map(function (n) { return ['st:' + n, n, 1]; }))
+      .concat([['ready', 'Ready', 1], ['sets', 'Sets made', 1], ['made', 'Made in period', 1], ['left', 'Left', 1], ['pct', 'Done', 1], ['behind', 'Waiting on']]);
+    function label(g, lvl) {
+      if (FING === 'ord' && lvl === 0) return '<span class="lk" data-fside="f|' + g.f + '">' + esc(g.pi) + '</span><small class="fsub">' + esc(g.cust || '') + ' · ' + g.lines + ' line' + (g.lines === 1 ? '' : 's') + '</small>';
+      if (FING === 'prod' && lvl === 0) return '<b>' + esc(g.prod) + '</b><small class="fsub">' + g.lines + ' line' + (g.lines === 1 ? '' : 's') + '</small>';
+      return '<b>' + esc(g.prod) + (g.size ? ' · ' + esc(g.size) : '') + '</b><small class="fsub">' + esc(g.pi) + (g.cust ? ' · ' + esc(g.cust) : '') + (g.desc ? ' · ' + esc(g.desc) : '') + '</small>';
+    }
+    function row(g, lvl, key, hasKids) {
+      var open = ST.open['fin:' + key], pct = g.pct;
+      var tg = hasKids ? '<button type="button" class="tg' + (open ? ' open' : '') + '" data-ftg="' + esc(key) + '" title="Show the detail">▸</button>' : '<span class="sp0"></span>';
+      var h = '<tr class="' + (lvl ? 'g' + lvl : '') + '"><td>' + tg + '<span style="display:inline-block;vertical-align:middle">' + label(g, lvl) + '</span></td><td class="num">' + fq(g.ord) + '</td>'
+        + names.map(function (n) { return stCell(g.stages, n); }).join('')
+        + '<td class="num">' + fq(g.ready) + '</td><td class="num">' + (g.set ? fq(g.sets) : '<span style="color:#c2cbd6" title="one-part product: finished at its last stage">—</span>') + '</td><td class="num">' + (g.made ? fq(g.made) : '') + '</td>'
+        + '<td class="num"><b>' + fq(g.left) + '</b></td><td class="num"><span class="pill" style="' + (pct >= 99.95 ? 'background:#e6f4ea;color:#107e3e' : pct < 50 ? 'background:#fff1e2;color:#9a4a00' : 'background:#e8f1fc;color:#0a4f96') + '">' + pct.toFixed(1) + '%</span></td>'
+        + '<td style="color:#9a5710;font-size:12px">' + esc(g.nosize || g.behind || '') + '</td></tr>';
+      return h;
+    }
+    function partRows(o, lvl) {
+      return (o.parts || []).map(function (p) {
+        return '<tr class="g' + lvl + '"><td><span class="sp0"></span>' + esc(p[0]) + ' <small class="fsub" style="display:inline">× ' + fq(p[1]) + ' a set</small></td><td class="num">' + fq(o.ord * p[1]) + '</td>'
+          + names.map(function (n) { return stCell(p[2], n); }).join('') + '<td class="num" title="whole sets this part is good for">' + fq(p[3]) + '</td><td></td><td></td><td></td><td></td><td></td></tr>';
+      }).join('');
+    }
+    var body = [];
+    gs.forEach(function (g) {
+      if (FING === 'line') { body.push(row(g, 0, g.key, (g.parts || []).length > 0)); if (ST.open['fin:' + g.key]) body.push(partRows(g, 1)); return; }
+      body.push(row(g, 0, g.key, true));
+      if (!ST.open['fin:' + g.key]) return;
+      g.kids.forEach(function (o) { var c = Object.assign({}, o); c.made = madeIn(o.item); var k2 = g.key + '/l' + o.item;
+        body.push(row(c, 1, k2, (o.parts || []).length > 0)); if (ST.open['fin:' + k2]) body.push(partRows(o, 2)); });
+    });
+    var T = { ord: 0, ready: 0, sets: 0, made: 0, left: 0, done: 0 }; gs.forEach(function (g) { for (var k in T) T[k] += g[k] || 0; });
+    var tst = []; gs.forEach(function (g) { g.stages.forEach(function (s) { var x = null; tst.forEach(function (y) { if (y[0] === s[0]) x = y; }); if (!x) { x = [s[0], 0, 0]; tst.push(x); } x[1] += s[1]; x[2] += s[2]; }); });
+    var foot = '<tr><td>Total · ' + gs.length + '</td><td class="num">' + fq(T.ord) + '</td>' + names.map(function (n) { return stCell(tst, n); }).join('')
+      + '<td class="num">' + fq(T.ready) + '</td><td class="num">' + fq(T.sets) + '</td><td class="num">' + fq(T.made) + '</td><td class="num">' + fq(T.left) + '</td><td class="num">' + (T.ord ? (T.done / T.ord * 100).toFixed(1) : '0.0') + '%</td><td></td></tr>';
+    $('#zprT').innerHTML = gs.length ? '<table class="rt fin"><thead><tr>' + cols.map(function (c) { return '<th class="' + (c[2] ? 'num' : '') + '" data-fsort="' + esc(c[0]) + '">' + esc(c[1]) + (so.k === c[0] ? '<span class="ar">' + (so.dir > 0 ? '▲' : '▼') + '</span>' : '') + '</th>'; }).join('') + '</tr></thead><tbody>' + body.join('') + '</tbody><tfoot>' + foot + '</tfoot></table>'
+      : '<div class="empty">No open order line matches.<br>Only orders switched on for production are counted here.</div>';
+    $('#zprCnt').innerHTML = gs.length + ' row' + (gs.length === 1 ? '' : 's') + ' · <span title="Department, stage, worker and day filters do not apply: a finished set belongs to an order, not to a floor">product, order and search filters apply</span>';
+    TBL = { tab: 'fin', csv: function () {
+      var out = [cols.map(function (c) { return c[1]; })];
+      gs.forEach(function (g) { var stv = names.map(function (n) { var x = null; g.stages.forEach(function (y) { if (y[0] === n) x = y; }); return x ? fq(x[2]) + ' / ' + fq(x[1]) : ''; });
+        out.push([FING === 'ord' ? g.pi + (g.cust ? ' · ' + g.cust : '') : FING === 'prod' ? g.prod : g.prod + (g.size ? ' · ' + g.size : '') + ' — ' + g.pi + (g.desc ? ' — ' + g.desc : ''), g.ord].concat(stv).concat([g.ready, g.set ? g.sets : '', g.made, g.left, Math.round(g.pct * 10) / 10 + '%', g.nosize || g.behind || ''])); });
+      return out; } };
+    drawColsPicker([], {});
+  }
+  if (PAGE === 'rep') {
+    var finG = $('#zprFinG');
+    if (finG) finG.addEventListener('click', function (e) { var b = e.target.closest('[data-fg]'); if (!b) return; FING = b.getAttribute('data-fg'); $$('[data-fg]', finG).forEach(function (x) { x.classList.toggle('on', x === b); }); ST.open = {}; drawReport(); });
+    $('#zprT').addEventListener('click', function (e) {
+      var th = e.target.closest('th[data-fsort]');
+      if (th) { var k = th.getAttribute('data-fsort'), cur = ST.sort && ST.sort.tab === 'fin' && ST.sort.k === k ? ST.sort.dir : 0; ST.sort = { tab: 'fin', k: k, dir: cur ? -cur : (k === 'name' || k === 'behind' || k === 'pct' ? 1 : -1) }; drawReport(); return; }
+      var t = e.target.closest('[data-ftg]'); if (t) { var key = 'fin:' + t.getAttribute('data-ftg'); if (ST.open[key]) delete ST.open[key]; else ST.open[key] = 1; drawReport(); return; }
+      var fs = e.target.closest('[data-fside]'); if (fs) { var q = fs.getAttribute('data-fside').split('|'); location.href = 'production_orders.php?order=' + encodeURIComponent(q[1]); }
+    });
+  }
   var ECOLS = [['date', 'Date'], ['worker', 'Worker'], ['code', 'Code'], ['dept', 'Department'], ['order', 'Order'], ['product', 'Product'], ['size', 'Size'], ['part', 'Part'], ['op', 'Operation'], ['stage', 'Stage'], ['q', 'Qty', 1]]
-    .concat(MONEY ? [['rate', 'Rate', 1], ['a', 'Amount', 1]] : []).concat([['status', 'Status'], ['why', 'Reason']]);
+    .concat(MONEY ? [['rate', 'Rate', 1], ['a', 'Amount', 1]] : []).concat([['user', 'Entered by'], ['status', 'Status'], ['why', 'Reason']]);
   function rowVals(tab, g, level, kind) {
     var v = { n: g.n, q: g.q, a: g.a, days: g.d.size, wk: g.w.size, ord: g.f.size, lines: g.l.size };
     v.name = NAME[kind](g);
@@ -431,9 +563,11 @@
   function drawReport() {
     var tab = VIEWS[ST.tab] ? ST.tab : 'worker'; ST.tab = tab;
     $$('#zprTabs button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === tab); });
+    var fg = $('#zprFinG'); if (fg) fg.hidden = tab !== 'fin';
+    if (tab === 'fin') return drawFinished();
     var rows = filtered({ all: tab === 'entries' });
     $('#zprK').innerHTML = kpiCards(tab === 'entries' ? rows.filter(function (r) { return !r[10]; }) : rows, { short: true }).map(function (c) { c.flip = FLIPPED[c.id]; return card(c); }).join('');
-    $('#zprSub').innerHTML = '<b>' + esc(fd(D.from, true) + ' – ' + fd(D.to, true)) + '</b> · ' + VIEWS[tab].t + (nFilters() ? ' · <span style="color:#0a6ed1">' + nFilters() + ' filter(s) on</span>' : '') + (MONEY ? '' : ' · wages hidden for your login');
+    $('#zprSub').innerHTML = '<b>' + esc(fd(D.from, true) + ' – ' + fd(D.to, true)) + '</b> · ' + VIEWS[tab].t + (nFilters() ? ' · <span style="color:#0a6ed1">' + nFilters() + ' filter(s) on</span>' : '') + (MONEY ? '' : ' · wages hidden for your login') + floorNote();
     $('#zprStat').hidden = tab !== 'entries';
     if (tab === 'entries') return drawEntries(rows);
     var V = VIEWS[tab], C = colsFor(tab), H = hidden(tab), vis = C.filter(function (c) { return !H[c.k]; });
@@ -495,7 +629,7 @@
     var so = ST.sort && ST.sort.tab === 'entries' ? ST.sort : { k: 'date', dir: -1 };
     var val = function (r, k) { var w = W[r[1]], o = O[r[3]];
       return k === 'date' ? r[0] * 1e9 + r[12] : k === 'worker' ? w[1] : k === 'code' ? w[0] : k === 'dept' ? w[2] : k === 'order' ? F[r[4]][0] : k === 'product' ? P[r[2]][0] : k === 'size' ? L[r[5]][1]
-        : k === 'part' ? o[0] : k === 'op' ? o[1] : k === 'stage' ? S[r[6]][0] : k === 'q' ? r[7] : k === 'rate' ? r[9] : k === 'a' ? r[8] : k === 'status' ? r[10] : k === 'why' ? (X[r[11]] || [''])[0] : 0; };
+        : k === 'part' ? o[0] : k === 'op' ? o[1] : k === 'stage' ? S[r[6]][0] : k === 'q' ? r[7] : k === 'rate' ? r[9] : k === 'a' ? r[8] : k === 'status' ? r[10] : k === 'why' ? (X[r[11]] || [''])[0] : k === 'user' ? (U[r[13]] ? U[r[13]][0] : '') : 0; };
     rows = rows.slice().sort(function (a, b) { var x = val(a, so.k), y = val(b, so.k); return so.dir * (typeof x === 'string' ? x.localeCompare(y) : x - y); });
     var H = hidden('entries'), vis = ECOLS.filter(function (c) { return !H[c[0]]; }), shown = rows.slice(0, ST.page * 300);
     var t = sum(rows.filter(function (r) { return !r[10]; }));
@@ -503,7 +637,7 @@
       + shown.map(function (r) {
         var w = W[r[1]], o = O[r[3]];
         var cells = { date: fd(DAYS[r[0]], true), worker: '<span class="lk" data-side="w|' + r[1] + '">' + esc(w[1]) + '</span>', code: esc(w[0]), dept: esc(w[2]), order: '<span class="lk" data-side="f|' + r[4] + '">' + esc(F[r[4]][0]) + '</span>', product: esc(P[r[2]][0]), size: esc(L[r[5]][1]),
-          part: esc(o[0]), op: esc(o[1]), stage: esc(S[r[6]][0]), q: fq(r[7]), rate: fm(r[9]), a: fm(r[8]), status: r[10] ? '<b style="color:#bb0000">Cancelled</b>' : 'Active', why: esc((X[r[11]] || [''])[0]) };
+          part: esc(o[0]), op: esc(o[1]), stage: esc(S[r[6]][0]), q: fq(r[7]), rate: fm(r[9]), a: fm(r[8]), user: U[r[13]] ? '<span class="lk" data-side="u|' + r[13] + '">' + esc(U[r[13]][0]) + '</span>' : '', status: r[10] ? '<b style="color:#bb0000">Cancelled</b>' : 'Active', why: esc((X[r[11]] || [''])[0]) };
         return '<tr class="' + (r[10] ? 'canc' : '') + '">' + vis.map(function (c) { return '<td class="' + (c[2] ? 'num' : '') + (c[0] === 'why' || c[0] === 'status' ? ' why' : '') + '">' + cells[c[0]] + '</td>'; }).join('') + '</tr>';
       }).join('') + '</tbody><tfoot><tr>' + vis.map(function (c, i) { return '<td class="' + (c[2] ? 'num' : '') + '">' + (i === 0 ? 'Active total' : c[0] === 'q' ? fq(t.q) : c[0] === 'a' ? fm(t.a) : '') + '</td>'; }).join('') + '</tr></tfoot></table>'
       + (rows.length > shown.length ? '<div style="padding:10px 14px"><button type="button" class="btn" id="zprMore">Show 300 more (' + (rows.length - shown.length) + ' left)</button></div>' : '')
@@ -523,10 +657,11 @@
   function exportCsv() {
     if (!TBL) return;
     var out = [[VIEWS[TBL.tab].t + ' — ' + D.from + ' to ' + D.to + (nFilters() ? ' (filtered)' : '')], []];
-    if (TBL.tab === 'entries') {
+    if (TBL.csv) { out = out.concat(TBL.csv()); }
+    else if (TBL.tab === 'entries') {
       out.push(TBL.cols.map(function (c) { return c[1]; }));
       TBL.rows.forEach(function (r) { var w = W[r[1]], o = O[r[3]];
-        var v = { date: DAYS[r[0]], worker: w[1], code: w[0], dept: w[2], order: F[r[4]][0], product: P[r[2]][0], size: L[r[5]][1], part: o[0], op: o[1], stage: S[r[6]][0], q: r[7], rate: r[9], a: r[8], status: r[10] ? 'CANCELLED' : 'Active', why: (X[r[11]] || [''])[0] };
+        var v = { date: DAYS[r[0]], worker: w[1], code: w[0], dept: w[2], order: F[r[4]][0], product: P[r[2]][0], size: L[r[5]][1], part: o[0], op: o[1], stage: S[r[6]][0], q: r[7], rate: r[9], a: r[8], status: r[10] ? 'CANCELLED' : 'Active', why: (X[r[11]] || [''])[0], user: U[r[13]] ? U[r[13]][0] : '' };
         out.push(TBL.cols.map(function (c) { return v[c[0]]; })); });
     } else {
       var cols = TBL.cols.filter(function (c) { return !c.bar; });
@@ -553,6 +688,10 @@
     $('#zprCsv').onclick = exportCsv;
     $('#zprPrint').onclick = function () { window.print(); };
     $('#zprExpand').onclick = function () {
+      if (TBL && TBL.tab === 'fin') { var anyF = Object.keys(ST.open).some(function (k) { return k.indexOf('fin:') === 0; });
+        if (anyF) Object.keys(ST.open).forEach(function (k) { if (k.indexOf('fin:') === 0) delete ST.open[k]; });
+        else $$('#zprT [data-ftg]').forEach(function (b) { ST.open['fin:' + b.getAttribute('data-ftg')] = 1; });
+        return drawReport(); }
       if (!TBL || !TBL.list) return; var V = VIEWS[TBL.tab], any = Object.keys(ST.open).some(function (k) { return k.indexOf(TBL.tab + ':0:') === 0; });
       if (any) Object.keys(ST.open).forEach(function (k) { if (k.indexOf(TBL.tab + ':') === 0) delete ST.open[k]; });
       else if (V.drill) TBL.list.forEach(function (x) { if (x.g.n) ST.open[TBL.tab + ':0:' + x.g.k + ':'] = 1; });

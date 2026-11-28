@@ -35,7 +35,10 @@ if (!is_admin() && !is_colleague() && !is_production_staff()) {
 }
 require_once __DIR__ . '/includes/zprod.php';
 require_once __DIR__ . '/includes/zp_report.php';
+require_once __DIR__ . '/includes/zp_staff.php';   // a Production Staff login may be limited to its floors
 zp_ensure_schema();
+zps_ensure();
+$FLOORS = zps_depts();
 
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
@@ -50,16 +53,16 @@ $showMoney = can_see_rates();
 if (($_GET['json'] ?? '') === '1') {
     if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
     header('Content-Type: application/json; charset=utf-8');
-    $J = zpr_dataset($from, $to, $showMoney);
-    $J['prev'] = zpr_previous($from, $to);
+    $J = zpr_dataset($from, $to, $showMoney, $FLOORS);
+    $J['prev'] = zpr_previous($from, $to, $FLOORS);
     if (!$showMoney) $J['prev']['amt'] = 0;
     echo zpr_json($J);
     exit;
 }
-$TABS = ['worker' => 'By worker', 'dept' => 'By department', 'product' => 'By product', 'order' => 'By order',
-         'op' => 'By operation', 'daily' => 'Day by day', 'entries' => 'Every entry'];
-$tab = (string)($_GET['r'] ?? 'worker');
-if (!isset($TABS[$tab])) $tab = 'worker';
+$TABS = ['fin' => 'Finished products', 'worker' => 'By worker', 'dept' => 'By department', 'product' => 'By product', 'order' => 'By order',
+         'op' => 'By operation', 'daily' => 'Day by day', 'user' => 'By data entry', 'entries' => 'Every entry'];
+$tab = (string)($_GET['r'] ?? 'fin');     // whole products first (owner, 28 Nov 2026)
+if (!isset($TABS[$tab])) $tab = 'fin';
 
 csrf_token();
 ob_start();
@@ -67,15 +70,16 @@ page_header('Production Reports');
 $pageHead = ob_get_clean();
 if (session_status() === PHP_SESSION_ACTIVE) session_write_close();   // nothing below writes the session
 
-$D = zpr_dataset($from, $to, $showMoney);
+$D = zpr_dataset($from, $to, $showMoney, $FLOORS);
 $D['page'] = 'rep';
 $D['tab']  = $tab;
-$D['prev'] = zpr_previous($from, $to);
+$D['fin']  = zpr_finished();   // whole products: the Finished products tab
+$D['prev'] = zpr_previous($from, $to, $FLOORS);
 if (!$showMoney) $D['prev']['amt'] = 0;
 
 echo $pageHead;
 ?>
-<link rel="stylesheet" href="assets/css/zprep.css?v=2">
+<link rel="stylesheet" href="assets/css/zprep.css?v=3">
 <style>
 .zr-wrap .tabs{background:#fff;border:1px solid var(--line);border-bottom:0;border-radius:10px 10px 0 0}
 .zr-wrap .rbox{background:#fff;border:1px solid var(--line);border-radius:0 0 10px 10px;margin-bottom:12px;box-shadow:0 1px 2px rgba(29,45,62,.04)}
@@ -99,6 +103,7 @@ echo $pageHead;
       <label id="zprStat" hidden style="display:inline-flex;gap:5px;align-items:center;font-size:12px;color:#5b6f86">Show
         <select id="zprStatS" style="height:30px;border:1px solid #dde3ea;border-radius:6px;font:inherit">
           <option value="active">Active entries</option><option value="cancelled">Cancelled only</option><option value="all">All (cancelled marked)</option></select></label>
+      <span class="seg" id="zprFinG" hidden><button type="button" data-fg="line" class="on">Each order line</button><button type="button" data-fg="prod">By product</button><button type="button" data-fg="ord">By order</button></span>
       <span class="cnt" id="zprCnt"></span>
       <span class="sp"></span>
       <button type="button" class="btn" id="zprExpand" title="Open or close the ▸ detail of every row">▸ Expand / collapse all</button>
@@ -111,6 +116,7 @@ echo $pageHead;
   </div>
 
   <p class="note"><b>Cancelled entries are not counted</b> in any view except <b>Every entry</b>, where they are shown faded with the reason.
+    <b>Finished products</b> counts whole products (a duvet set is one, however many operations it went through); every other tab counts the work done on operations, which is what wages are paid on.
     Click ▸ to open the detail of a row, a column heading to sort, a name for its own panel. The CSV holds exactly what is on screen.</p>
 
   <div class="ov" id="zprOv"></div>
@@ -118,5 +124,5 @@ echo $pageHead;
 </div>
 </div><?php /* closes .zskin */ ?>
 <script>window.ZPR_DATA = <?= zpr_json($D) ?>;</script>
-<script src="assets/js/zprep.js?v=2"></script>
+<script src="assets/js/zprep.js?v=3"></script>
 <?php page_footer(); ?>

@@ -28,7 +28,10 @@ if (!is_admin() && !is_colleague() && !is_production_staff()) {
 }
 require_once __DIR__ . '/includes/zprod.php';
 require_once __DIR__ . '/includes/zp_report.php';
+require_once __DIR__ . '/includes/zp_staff.php';   // a Production Staff login may be limited to its floors
 zp_ensure_schema();
+zps_ensure();
+$FLOORS = zps_depts();
 
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
@@ -43,8 +46,8 @@ $showMoney = can_see_rates();
 if (($_GET['json'] ?? '') === '1') {
     if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
     header('Content-Type: application/json; charset=utf-8');
-    $J = zpr_dataset($from, $to, $showMoney);
-    $J['prev'] = zpr_previous($from, $to);
+    $J = zpr_dataset($from, $to, $showMoney, $FLOORS);
+    $J['prev'] = zpr_previous($from, $to, $FLOORS);
     if (!$showMoney) $J['prev']['amt'] = 0;
     echo zpr_json($J);
     exit;
@@ -56,19 +59,21 @@ page_header('Production Dashboard');
 $pageHead = ob_get_clean();
 if (session_status() === PHP_SESSION_ACTIVE) session_write_close();   // nothing below writes the session
 
-$D = zpr_dataset($from, $to, $showMoney);
+$D = zpr_dataset($from, $to, $showMoney, $FLOORS);
 $D['page'] = 'dash';
-$D['prev'] = zpr_previous($from, $to);
+$D['prev'] = zpr_previous($from, $to, $FLOORS);
 if (!$showMoney) $D['prev']['amt'] = 0;
+/* FINISHED PRODUCTS and the furthest-behind list come from ONE pass over the
+   open order lines (zpr_finished uses zp_line_flow, as Order Status does). */
+$D['fin'] = zpr_finished();
 $D['orders'] = array_map(fn($o) => [
-    'proforma_id' => (int)$o['proforma_id'], 'pi_no' => (string)$o['pi_no'], 'customer' => (string)($o['customer'] ?? ''),
-    'product' => (string)$o['product'], 'size' => trim((string)$o['size']), 'ordered' => (float)$o['ordered'],
-    'pct' => round((float)$o['pct'], 1), 'behind' => array_values((array)$o['behind']),
-], zp_order_progress());
+    'proforma_id' => $o['f'], 'pi_no' => $o['pi'], 'customer' => $o['cust'], 'product' => $o['prod'], 'size' => $o['size'],
+    'ordered' => $o['ord'], 'pct' => round($o['pct'], 1), 'behind' => $o['behind'] !== '' ? [$o['behind']] : [],
+], $D['fin']);
 
 echo $pageHead;
 ?>
-<link rel="stylesheet" href="assets/css/zprep.css?v=2">
+<link rel="stylesheet" href="assets/css/zprep.css?v=3">
 <style>
 /* the dashboard tables fit their cards (app.css gives every table min-width:980px) */
 .zd-wrap table.zp-t{min-width:0}
@@ -131,5 +136,5 @@ echo $pageHead;
 </div>
 </div><?php /* closes .zskin */ ?>
 <script>window.ZPR_DATA = <?= zpr_json($D) ?>;</script>
-<script src="assets/js/zprep.js?v=2"></script>
+<script src="assets/js/zprep.js?v=3"></script>
 <?php page_footer(); ?>

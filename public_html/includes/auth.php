@@ -12,7 +12,12 @@ function current_user(): ?array {
     $user = cache_remember($key, 20, function () use ($uid) {
         $stmt = db()->prepare("SELECT * FROM users WHERE id = ? AND is_active = 1");
         $stmt->execute([$uid]);
-        return $stmt->fetch() ?: false;
+        $row = $stmt->fetch() ?: false;
+        /* A LOGIN THAT BELONGS TO A PERSON WHO HAS LEFT STOPS WORKING (owner,
+           28 Nov 2026). The person is marked as left in People Finance; the
+           login is not touched, so marking them back brings it back. */
+        if ($row && zas_login_person_left($row) !== '') $row = false;
+        return $row;
     });
     if ($user === false) $user = null;
 
@@ -36,6 +41,20 @@ function current_user(): ?array {
         }
     }
     return $user;
+}
+
+/* '' when the login may be used; otherwise why not. A login with no person
+   linked (includes/zp_staff.php) is never stopped by this. */
+function zas_login_person_left(array $u): string {
+    $eid = (int)($u['att_employee_id'] ?? 0);
+    if ($eid <= 0) return '';
+    try {
+        $st = db()->prepare("SELECT active, full_name FROM att_employees WHERE id = ?");
+        $st->execute([$eid]);
+        $r = $st->fetch();
+    } catch (Throwable $e) { return ''; }
+    if (!$r || (int)$r['active'] === 1) return '';
+    return 'This login belongs to ' . $r['full_name'] . ', who is marked as left in People Finance. Ask the admin.';
 }
 
 function require_login(): void {

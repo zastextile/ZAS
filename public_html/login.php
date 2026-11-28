@@ -43,13 +43,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->execute([$email]);
     $user = $stmt->fetch();
 
-    if ($user && password_verify($password, $user['password_hash'])) {
+    $left = $user ? zas_login_person_left($user) : '';
+    if ($user && $left !== '' && password_verify($password, $user['password_hash'])) {
+        $error = $left;
+    } elseif ($user && password_verify($password, $user['password_hash'])) {
         session_regenerate_id(true);
         $_SESSION['user_id'] = $user['id'];
         if ($user['role'] === 'customer') redirect('customer_dashboard.php');
         redirect($next !== '' ? $next : 'dashboard.php');
     }
-    $error = 'Invalid login details.';
+    if ($error === '') $error = 'Invalid login details.';
 }
 
 page_header('Login');

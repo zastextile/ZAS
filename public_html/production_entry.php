@@ -85,6 +85,12 @@ header('Expires: 0');
 
 $me     = current_user();
 $userId = (int)($me['id'] ?? 0);
+/* A PRODUCTION STAFF LOGIN MAY BE LIMITED TO ITS FLOORS (Users page, 28 Nov
+   2026). [] = every floor. The list below offers only those workers, and the
+   save refuses anybody else — the list is a convenience, the refusal is the rule. */
+require_once __DIR__ . '/includes/zp_staff.php';
+zps_ensure();
+$FLOORS = zps_depts($me);
 /* Same separation as My Work: booking a quantity and seeing the wage are two
    different permissions, and the app already answers the second one. */
 $showMoney = can_see_rates();
@@ -96,6 +102,15 @@ $msg = ''; $errors = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $a = $_POST['action'] ?? '';
+    if ($FLOORS) {
+        $who = $a === 'book' ? (array)($_POST['r_worker'] ?? [])
+             : array_merge(zps_entry_workers(ze_post_ids()), [(int)($_POST['new_worker'] ?? 0)]);
+        $no = zps_refuse_workers($who, $FLOORS);
+        if ($no !== '') {
+            if ($a === 'book') { $errors[] = $no; $a = ''; }
+            else { $_SESSION['zp_err'] = $no; redirect('production_entry.php?d=' . urlencode($date)); }
+        }
+    }
 
     if ($a === 'book') {
         $rows = [];
@@ -166,6 +181,8 @@ $workers = zp_workers(true);
 /* taken off Production Workers as not production (28 Nov 2026): never offered here */
 $HIDW = zp_hidden_workers();
 if ($HIDW) $workers = array_values(array_filter($workers, fn($w) => !isset($HIDW[(int)$w['id']])));
+/* only this login's floors */
+if ($FLOORS) $workers = array_values(array_filter($workers, fn($w) => zps_dept_ok($FLOORS, (string)($w['department'] ?? ''))));
 
 /* AN ORDER LINE WHOSE SIZE DOES NOT RESOLVE IS NAMED, NOT HIDDEN.
    Its operations would all read "0 left", which looks exactly like finished
@@ -224,6 +241,7 @@ foreach ($lines as $l) {
 }
 
 $today   = zp_entries(['date' => $date], 400);
+if ($FLOORS) { $WDM = zps_worker_dept_map(); $today = array_values(array_filter($today, fn($t) => zps_dept_ok($FLOORS, $WDM[(int)$t['worker_id']] ?? ''))); }
 $today   = ze_entries_more($today);   // customer, size, description, who booked it — see includes/zp_correct.php
 $PAYT = ze_pay_types();   // fixed salary / daily wages / contractor, from People Finance
 
@@ -477,6 +495,7 @@ table.zp-t tbody tr:hover{background:#fafcff}
       <h1 style="margin:0;font-size:20px;color:#152033">Daily Production Entry</h1>
       <p style="margin:2px 0 0;font-size:12.5px;color:#8a97ab">
         Log what was cut and stitched today, and by whom. The wage follows automatically.</p>
+      <?php if ($FLOORS): ?><p style="margin:4px 0 0;font-size:12px;color:#107e3e;font-weight:600">Your login works on: <?= e(implode(', ', $FLOORS)) ?> — only these workers are offered.</p><?php endif; ?>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <a class="zp-b" href="production_workers.php">Workers</a>

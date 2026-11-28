@@ -2,7 +2,9 @@
 require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/includes/costing.php';
 require_once __DIR__ . '/includes/customer.php';
+require_once __DIR__ . '/includes/zp_staff.php';     // the People Finance link and the floors of a Production Staff login
 require_admin();
+zps_ensure();
 costing_ensure_schema(); // self-heal cost_* permission columns
 customer_ensure_schema(); // self-heal the 'customer' role + company_name column
 
@@ -72,12 +74,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([...$data, $id]);
             }
             $_SESSION['flash'] = 'User updated.';
+            $savedId = $id;
         } else {
             if (strlen($password) < 8) {
                 $_SESSION['error'] = 'Password minimum 8 characters.';
             } else {
                 $stmt = db()->prepare("INSERT INTO users (name,email,role,department,company_name,$costInsCols,password_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
                 $stmt->execute([...$data, password_hash($password, PASSWORD_DEFAULT)]);
+                $savedId = (int)db()->lastInsertId();
                 $_SESSION['flash'] = 'User created.';
             }
         }
@@ -86,11 +90,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ? 'That email address is already used by another account.'
             : 'Could not save user: ' . $e->getMessage();
     }
+    if (!empty($savedId) && $data[2] !== 'customer') {
+        $why = zps_save_user((int)$savedId, $data[2], (int)($_POST['att_employee_id'] ?? 0), (array)($_POST['prod_depts'] ?? []));
+        if ($why !== '') $_SESSION['error'] = $why;
+    }
     redirect('users.php');
 }
 
 $users = db()->query("SELECT * FROM users ORDER BY id DESC")->fetchAll();
 $meId = (int)current_user()['id'];
+$PEOPLE = zps_people();
+$FLOORS = zps_floor_list();
 
 function usr_role_badge($role) {
     $map = [
@@ -145,6 +155,21 @@ flash();
       <label class="zchk"><input type="checkbox" name="can_see_rates" id="uf_rates"> Can see rates</label>
       <label class="zchk"><input type="checkbox" name="is_active" id="uf_active" checked> Active</label>
     </div>
+    <div id="prodLink" style="margin-top:16px;padding:14px 16px;border:1px solid #e3e9f2;border-radius:12px;background:#f7fbf8">
+      <div style="font-size:12px;font-weight:700;color:#5a6b82;text-transform:uppercase;letter-spacing:.03em;margin-bottom:10px">Person in People Finance <span style="font-weight:400;text-transform:none">— reports show this name, and the login stops working when the person is marked as left</span></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <label class="zlabel" style="flex:0 1 220px">Find<input class="zin" id="uf_pfind" placeholder="Type a name or code" autocomplete="off"></label>
+        <label class="zlabel" style="flex:1 1 320px">Person<select class="zin" name="att_employee_id" id="uf_emp"><option value="0">— Not linked —</option>
+          <?php foreach ($PEOPLE as $pid => [$pc, $pn, $pd, $pa]): ?><option value="<?= (int)$pid ?>"><?= e($pn) ?> · <?= e($pc) ?><?= $pd !== '' ? ' · ' . e($pd) : '' ?><?= $pa ? '' : ' · LEFT' ?></option><?php endforeach; ?></select></label>
+      </div>
+      <div id="uf_floors_wrap" style="margin-top:12px">
+        <div style="font-size:12px;font-weight:700;color:#5a6b82;margin-bottom:6px">Floors this Production Staff login works on <span style="font-weight:400">— none ticked = every floor. Daily Entry, Dashboard and Reports show only these.</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 16px">
+          <?php foreach ($FLOORS as $fk => $fl): ?><label class="zchk" style="margin:0"><input type="checkbox" name="prod_depts[]" value="<?= e($fl) ?>" data-floor="<?= e($fk) ?>"> <?= e($fl) ?></label><?php endforeach; ?>
+          <?php if (!$FLOORS): ?><span style="color:#8a97ab;font-size:12px">No production floors yet — they come from People Finance departments of people with a stage.</span><?php endif; ?>
+        </div>
+      </div>
+    </div>
     <div id="costPerms" style="margin-top:16px;padding:14px 16px;border:1px solid #e3e9f2;border-radius:12px;background:#ffffff">
       <div style="font-size:12px;font-weight:700;color:#5a6b82;text-transform:uppercase;letter-spacing:.03em;margin-bottom:10px">Costing Permissions <span style="font-weight:400;text-transform:none">(Colleague only — Admin always full, Staff never)</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:14px">
@@ -165,7 +190,7 @@ flash();
   <div class="zhead"><h2>All Users</h2><span style="color:#8a97ab;font-size:12px">Click Edit to load a user into the form</span></div>
   <div style="overflow-x:auto">
     <table class="ztable">
-      <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Department / Company</th><th>Rates</th><th>Active</th><th>Action</th></tr></thead>
+      <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Department / Company</th><th>Person · floors</th><th>Rates</th><th>Active</th><th>Action</th></tr></thead>
       <tbody>
       <?php foreach($users as $u): ?>
         <tr>
@@ -174,10 +199,11 @@ flash();
           <td style="color:#5a6b82"><?= e($u['email']) ?></td>
           <td><?= usr_role_badge($u['role']) ?></td>
           <td><?= e($u['role']==='customer' ? ($u['company_name'] ?: '—') : ($u['department'] ?: '—')) ?></td>
+          <td style="font-size:12px;color:#33415c"><?php $lp = $PEOPLE[(int)($u['att_employee_id'] ?? 0)] ?? null; ?><?= $lp ? e($lp[1]) . ($lp[3] ? '' : ' <b style="color:#b8283f">(left — login stopped)</b>') : '<span style="color:#8a97ab">—</span>' ?><?php if (($u['role'] ?? '') === 'production_staff'): ?><div style="color:#16a34a"><?= e(trim((string)($u['prod_depts'] ?? '')) !== '' ? str_replace('|', ', ', (string)$u['prod_depts']) : 'every floor') ?></div><?php endif; ?></td>
           <td><?= $u['can_see_rates']?'<span style="color:#16a34a">Yes</span>':'<span style="color:#8a97ab">No</span>' ?></td>
           <td><?= $u['is_active']?'<span style="color:#16a34a">Yes</span>':'<span style="color:#b8283f">No</span>' ?></td>
           <td style="white-space:nowrap">
-            <button type="button" data-uid="<?= (int)$u['id'] ?>" class="zbtn sec" style="padding:7px 11px;font-size:12px" onclick='editUser(<?= json_encode(["id"=>$u["id"],"name"=>$u["name"],"email"=>$u["email"],"role"=>$u["role"],"department"=>$u["department"],"company_name"=>$u["company_name"]??"","can_see_rates"=>(int)$u["can_see_rates"],"is_active"=>(int)$u["is_active"],"cost_view"=>(int)($u["cost_view"]??0),"cost_create"=>(int)($u["cost_create"]??0),"cost_edit"=>(int)($u["cost_edit"]??0),"cost_import"=>(int)($u["cost_import"]??0),"cost_print"=>(int)($u["cost_print"]??0),"cost_proforma"=>(int)($u["cost_proforma"]??0),"cost_delete"=>(int)($u["cost_delete"]??0)], JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>Edit</button>
+            <button type="button" data-uid="<?= (int)$u['id'] ?>" class="zbtn sec" style="padding:7px 11px;font-size:12px" onclick='editUser(<?= json_encode(["id"=>$u["id"],"name"=>$u["name"],"email"=>$u["email"],"role"=>$u["role"],"department"=>$u["department"],"company_name"=>$u["company_name"]??"","can_see_rates"=>(int)$u["can_see_rates"],"is_active"=>(int)$u["is_active"],"cost_view"=>(int)($u["cost_view"]??0),"cost_create"=>(int)($u["cost_create"]??0),"cost_edit"=>(int)($u["cost_edit"]??0),"cost_import"=>(int)($u["cost_import"]??0),"cost_print"=>(int)($u["cost_print"]??0),"cost_proforma"=>(int)($u["cost_proforma"]??0),"cost_delete"=>(int)($u["cost_delete"]??0),"att_employee_id"=>(int)($u["att_employee_id"]??0),"prod_depts"=>(string)($u["prod_depts"]??"")], JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>Edit</button>
             <?php if((int)$u['id'] !== $meId): ?>
             <form method="post" style="display:inline" onsubmit="return confirm('Delete user <?= e(addslashes($u['name'])) ?>? This cannot be undone.')">
               <?= csrf_field() ?>
@@ -212,6 +238,9 @@ function editUser(u){
   document.getElementById('uf_cp').checked = !!u.cost_print;
   document.getElementById('uf_cf').checked = !!u.cost_proforma;
   document.getElementById('uf_cd').checked = !!u.cost_delete;
+  document.getElementById('uf_emp').value = String(u.att_employee_id || 0);
+  var fl = (u.prod_depts || '').split('|').map(function(x){ return x.trim().toUpperCase(); });
+  document.querySelectorAll('[data-floor]').forEach(function(c){ c.checked = fl.indexOf(c.getAttribute('data-floor')) >= 0; });
   document.getElementById('uf_pw').value = '';
   document.getElementById('uf_pwhint').textContent = '(leave blank to keep current)';
   document.getElementById('uf_pw').removeAttribute('minlength');
@@ -232,7 +261,16 @@ function toggleCompanyField(){
   var isCustomer = document.getElementById('uf_role').value === 'customer';
   document.getElementById('uf_company_wrap').style.display = isCustomer ? 'block' : 'none';
   document.getElementById('costPerms').style.display = isCustomer ? 'none' : 'block';
+  document.getElementById('prodLink').style.display = isCustomer ? 'none' : 'block';
+  document.getElementById('uf_floors_wrap').style.display = document.getElementById('uf_role').value === 'production_staff' ? 'block' : 'none';
 }
+/* typing filters the long People Finance list */
+document.getElementById('uf_pfind').addEventListener('input', function(){
+  var q = this.value.trim().toLowerCase(), sel = document.getElementById('uf_emp'), first = null;
+  Array.prototype.forEach.call(sel.options, function(o){ var hit = !q || o.value === '0' || o.text.toLowerCase().indexOf(q) >= 0; o.hidden = !hit; if (hit && o.value !== '0' && !first) first = o; });
+  if (q && first && sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = first.value;
+});
+toggleCompanyField();
 var _editId = <?= (int)($_GET['edit'] ?? 0) ?>;
 if (_editId) {
   var btn = document.querySelector('button[onclick^="editUser"][data-uid="'+_editId+'"]');

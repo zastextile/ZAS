@@ -14,7 +14,8 @@ $pr = file_get_contents($B . 'production_reports.php');
 
 echo "1. One read of the period, nothing written\n";
 $code = preg_replace('!/\*.*?\*/!s', '', $rp);
-ok(substr_count($code, 'FROM zp_entries e') === 1, 'one query reads the entries of the period');
+$dsf = substr($code, strpos($code, 'function zpr_dataset('), strpos($code, 'function zpr_previous(') - strpos($code, 'function zpr_dataset('));
+ok(substr_count($dsf, 'FROM zp_entries e') === 1, 'one query reads the entries of the period');
 ok(!preg_match('/\b(INSERT|UPDATE|DELETE)\b/i', $code), 'the report code writes nothing');
 ok(substr_count($js, 'fetch(') === 1 && strpos($js, 'fetch(') > strpos($js, 'function showPeriod(') && !str_contains($js, 'XMLHttpRequest'),
    'the page never asks the server while filters, tabs, sorting or cards change — only a new period is fetched');
@@ -34,13 +35,13 @@ ok(str_contains($js, "if (MONEY) out.push({ id: 'pkr'"), 'the Wage bill card onl
 echo "3. Cancelled entries\n";
 ok(str_contains($js, 'if (!opts.all && r[10]) return false;'), 'every total skips cancelled rows');
 ok(str_contains($js, "filtered({ all: tab === 'entries' })"), 'only Every entry shows them');
-ok(str_contains($rp, "WHERE status='active' AND entry_date BETWEEN ? AND ?"), 'the previous-period comparison counts active rows only');
+ok(str_contains($rp, "WHERE e.status='active' AND e.entry_date BETWEEN ? AND ?"), 'the previous-period comparison counts active rows only');
 
 echo "4. Flip cards, animated sections, filters\n";
 ok(str_contains($css, '.zpr .fc.flip .in{transform:rotateY(180deg)}') && str_contains($css, 'backface-visibility:hidden'), 'a card turns over: summary on the front, detail on the back');
 ok(str_contains($js, "c.classList.toggle('flip')") && str_contains($js, "e.key === 'Enter' || e.key === ' '"), '  by click, or Enter / Space from the keyboard');
 ok(str_contains($css, 'grid-template-rows:0fr') && str_contains($js, "store('zpr_sec_' + s.id"), 'sections fold away with an animation, and the page remembers');
-ok(str_contains($js, "var DORD = ['dept', 'stage', 'w', 'p', 'f'];"), 'filters: department, stage, worker, product, order (+ a day and a search)');
+ok(str_contains($js, "var DORD = ['dept', 'stage', 'w', 'p', 'f', 'u'];"), 'filters: department, stage, worker, product, order, entered by (+ a day and a search)');
 ok(str_contains($js, 'filtered({ skip: k })'), '  a value list counts what the OTHER filters leave');
 ok(str_contains($js, 'history.replaceState(history.state'), '  the filters live in the address, so a view can be shared');
 ok(str_contains($css, '@media (prefers-reduced-motion:reduce)'), 'people who turn motion off get no animation');
@@ -49,7 +50,7 @@ echo "5. The reports\n";
 foreach (['worker', 'dept', 'product', 'order', 'op', 'daily', 'entries'] as $t) ok(str_contains($pr, "'$t' =>") && str_contains($js, "$t:"), "tab: $t");
 ok(str_contains($js, "order:   { t: 'By order',      g: 'f',    drill: ['l', 'o']"), '▸ an order opens its lines (product · size), then operations');
 ok(str_contains($js, "product: { t: 'By product',    g: 'p',    drill: ['o', 'w']"), '▸ a product opens its operations, then who did them');
-ok(str_contains($pr, "\$tab = (string)(\$_GET['r'] ?? 'worker');"), 'old ?r= links still open the right tab (Daily Entry\'s "Full report")');
+ok(str_contains($pr, "\$tab = (string)(\$_GET['r'] ?? 'fin');") && str_contains($pr, "if (!isset(\$TABS[\$tab]))"), 'old ?r= links still open the right tab (Daily Entry\'s "Full report")');
 ok(str_contains($js, "if (/^[=+\\-@\\t\\r']/.test(v)) v = \"'\" + v;"), 'the CSV puts a \' before a name Excel would run as a formula');
 
 echo "6. Safe on the page\n";
